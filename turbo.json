@@ -1,0 +1,31 @@
+{
+    "$schema": "https://turbo.build/schema.json",
+    "ui": "tui",
+    "tasks": {
+        "build": {
+            "dependsOn": ["^build"],
+            "inputs": ["$TURBO_DEFAULT$", ".env*"],
+            "outputs": ["dist/**"]
+        },
+        "dev": {
+            "cache": false,
+            "persistent": true
+        },
+        "lint": {
+            "dependsOn": ["^build"],
+            "cache": true
+        },
+        "@valiq-trading/convex#build": {
+            "outputs": []
+        },
+        "@valiq-trading/core#build": {
+            "outputs": []
+        },
+        "@valiq-trading/agent#build": {
+            "outputs": []
+        },
+        "@valiq-trading/valiq#build": {
+            "outputs": []
+        }
+    }
+}

@@ -1,0 +1,19 @@
+{
+    "name": "@valiq-trading/mt5",
+    "version": "1.0.0",
+    "type": "module",
+    "private": true,
+    "main": "src/index.ts",
+    "license": "UNLICENSED",
+    "scripts": {
+        "dev": "bun --watch src/index.ts",
+        "start": "bun src/index.ts",
+        "build": "tsc --noEmit"
+    },
+    "dependencies": {
+        "@valiq-trading/core": "workspace:*",
+        "@valiq-trading/agent": "workspace:*",
+        "@valiq-trading/valiq": "workspace:*",
+        "@valiq-trading/convex": "workspace:*"
+    }
+}

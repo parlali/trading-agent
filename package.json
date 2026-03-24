@@ -1,0 +1,23 @@
+{
+    "name": "valiq-trading",
+    "version": "0.0.1",
+    "private": true,
+    "packageManager": "bun@1.3.0",
+    "workspaces": [
+        "apps/*",
+        "packages/*"
+    ],
+    "scripts": {
+        "dev": "turbo dev",
+        "build": "turbo build",
+        "lint": "turbo lint",
+        "clean": "bun run clean:modules && bun run clean:dist",
+        "clean:modules": "rm -rf node_modules && rm -rf apps/*/node_modules && rm -rf packages/*/node_modules",
+        "clean:dist": "rm -rf apps/*/dist && rm -rf packages/*/dist"
+    },
+    "devDependencies": {
+        "@types/node": "^25.5.0",
+        "turbo": "^2.8.20",
+        "typescript": "^6.0.2"
+    }
+}
