@@ -187,7 +187,8 @@ export default defineSchema({
             v.union(
                 v.literal("alpaca-options"),
                 v.literal("polymarket"),
-                v.literal("mt5")
+                v.literal("mt5"),
+                v.literal("backend")
             )
         ),
         severity: v.union(
@@ -201,4 +202,63 @@ export default defineSchema({
     })
         .index("by_severity", ["severity"])
         .index("by_acknowledged", ["acknowledged"]),
+
+    system_state: defineTable({
+        key: v.literal("kill_switches"),
+        globalKillSwitch: v.boolean(),
+        appKillSwitches: v.object({
+            alpaca_options: v.boolean(),
+            polymarket: v.boolean(),
+            mt5: v.boolean(),
+        }),
+        updatedAt: v.number(),
+        updatedBy: v.optional(v.string()),
+    }).index("by_key", ["key"]),
+
+    app_heartbeats: defineTable({
+        app: v.union(
+            v.literal("alpaca-options"),
+            v.literal("polymarket"),
+            v.literal("mt5"),
+            v.literal("backend")
+        ),
+        status: v.union(
+            v.literal("healthy"),
+            v.literal("degraded"),
+            v.literal("unhealthy")
+        ),
+        lastHeartbeat: v.number(),
+        metadata: v.optional(v.any()),
+    }).index("by_app", ["app"]),
+
+    account_snapshots: defineTable({
+        app: v.union(
+            v.literal("alpaca-options"),
+            v.literal("polymarket"),
+            v.literal("mt5"),
+            v.literal("backend")
+        ),
+        venue: v.string(),
+        balance: v.number(),
+        buyingPower: v.number(),
+        marginUsed: v.number(),
+        marginAvailable: v.number(),
+        openPnl: v.number(),
+        dayPnl: v.number(),
+        timestamp: v.number(),
+    })
+        .index("by_app", ["app"])
+        .index("by_app_timestamp", ["app", "timestamp"]),
+
+    manual_run_requests: defineTable({
+        strategyId: v.id("strategies"),
+        app: v.union(
+            v.literal("alpaca-options"),
+            v.literal("polymarket"),
+            v.literal("mt5")
+        ),
+        requestedAt: v.number(),
+    })
+        .index("by_app", ["app"])
+        .index("by_strategy", ["strategyId"]),
 })

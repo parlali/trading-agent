@@ -273,6 +273,34 @@ export const syncPositions = mutation({
     },
 })
 
+export const triggerManualRun = mutation({
+    args: {
+        strategyId: v.id("strategies"),
+    },
+    handler: async (ctx, args) => {
+        const strategy = await ctx.db.get(args.strategyId)
+
+        if (!strategy) {
+            throw new Error(`Strategy not found: ${args.strategyId}`)
+        }
+
+        const existing = await ctx.db
+            .query("manual_run_requests")
+            .withIndex("by_strategy", (q) => q.eq("strategyId", args.strategyId))
+            .first()
+
+        if (existing) {
+            return existing._id
+        }
+
+        return await ctx.db.insert("manual_run_requests", {
+            strategyId: args.strategyId,
+            app: strategy.app,
+            requestedAt: Date.now(),
+        })
+    },
+})
+
 // Create a new alert
 export const createAlert = mutation({
     args: {
@@ -281,7 +309,8 @@ export const createAlert = mutation({
             v.union(
                 v.literal("alpaca-options"),
                 v.literal("polymarket"),
-                v.literal("mt5")
+                v.literal("mt5"),
+                v.literal("backend")
             )
         ),
         severity: v.union(
@@ -299,6 +328,17 @@ export const createAlert = mutation({
             message: args.message,
             acknowledged: false,
             timestamp: Date.now(),
+        })
+    },
+})
+
+export const acknowledgeAlert = mutation({
+    args: {
+        alertId: v.id("alerts"),
+    },
+    handler: async (ctx, args) => {
+        await ctx.db.patch(args.alertId, {
+            acknowledged: true,
         })
     },
 })
@@ -350,5 +390,141 @@ export const disableStrategy = mutation({
     args: { strategyId: v.id("strategies") },
     handler: async (ctx, args) => {
         await ctx.db.patch(args.strategyId, { enabled: false })
+    },
+})
+
+// Report heartbeat from an app
+export const reportHeartbeat = mutation({
+    args: {
+        app: v.union(
+            v.literal("alpaca-options"),
+            v.literal("polymarket"),
+            v.literal("mt5"),
+            v.literal("backend")
+        ),
+        status: v.union(
+            v.literal("healthy"),
+            v.literal("degraded"),
+            v.literal("unhealthy")
+        ),
+        metadata: v.optional(v.any()),
+    },
+    handler: async (ctx, args) => {
+        const existing = await ctx.db
+            .query("app_heartbeats")
+            .withIndex("by_app", (q) => q.eq("app", args.app))
+            .first()
+
+        const payload = {
+            app: args.app,
+            status: args.status,
+            lastHeartbeat: Date.now(),
+            metadata: args.metadata,
+        }
+
+        if (existing) {
+            await ctx.db.patch(existing._id, payload)
+            return existing._id
+        }
+
+        return await ctx.db.insert("app_heartbeats", payload)
+    },
+})
+
+// Snapshot account state from an app
+export const snapshotAccountState = mutation({
+    args: {
+        app: v.union(
+            v.literal("alpaca-options"),
+            v.literal("polymarket"),
+            v.literal("mt5"),
+            v.literal("backend")
+        ),
+        venue: v.string(),
+        balance: v.number(),
+        buyingPower: v.number(),
+        marginUsed: v.number(),
+        marginAvailable: v.number(),
+        openPnl: v.number(),
+        dayPnl: v.number(),
+    },
+    handler: async (ctx, args) => {
+        return await ctx.db.insert("account_snapshots", {
+            app: args.app,
+            venue: args.venue,
+            balance: args.balance,
+            buyingPower: args.buyingPower,
+            marginUsed: args.marginUsed,
+            marginAvailable: args.marginAvailable,
+            openPnl: args.openPnl,
+            dayPnl: args.dayPnl,
+            timestamp: Date.now(),
+        })
+    },
+})
+
+// Set kill switch state (global or per-app)
+export const setKillSwitch = mutation({
+    args: {
+        scope: v.union(
+            v.literal("global"),
+            v.literal("alpaca-options"),
+            v.literal("polymarket"),
+            v.literal("mt5")
+        ),
+        enabled: v.boolean(),
+        updatedBy: v.optional(v.string()),
+    },
+    handler: async (ctx, args) => {
+        const existing = await ctx.db
+            .query("system_state")
+            .withIndex("by_key", (q) => q.eq("key", "kill_switches"))
+            .first()
+
+        const now = Date.now()
+
+        if (!existing) {
+            const state = {
+                key: "kill_switches" as const,
+                globalKillSwitch: args.scope === "global" ? args.enabled : false,
+                appKillSwitches: {
+                    alpaca_options: args.scope === "alpaca-options" ? args.enabled : false,
+                    polymarket: args.scope === "polymarket" ? args.enabled : false,
+                    mt5: args.scope === "mt5" ? args.enabled : false,
+                },
+                updatedAt: now,
+                updatedBy: args.updatedBy,
+            }
+            return await ctx.db.insert("system_state", state)
+        }
+
+        if (args.scope === "global") {
+            await ctx.db.patch(existing._id, {
+                globalKillSwitch: args.enabled,
+                updatedAt: now,
+                updatedBy: args.updatedBy,
+            })
+        } else {
+            const killSwitchKey = args.scope === "alpaca-options" ? "alpaca_options" : args.scope
+            await ctx.db.patch(existing._id, {
+                appKillSwitches: {
+                    ...existing.appKillSwitches,
+                    [killSwitchKey]: args.enabled,
+                },
+                updatedAt: now,
+                updatedBy: args.updatedBy,
+            })
+        }
+
+        return existing._id
+    },
+})
+
+export const clearManualRunRequest = mutation({
+    args: {
+        requestId: v.id("manual_run_requests"),
+    },
+    handler: async (ctx, args) => {
+        await ctx.db.delete(args.requestId)
     },
 })

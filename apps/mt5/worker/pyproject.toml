@@ -1,7 +1,7 @@
 [project]
 name = "mt5-trading-worker"
 version = "0.1.0"
-description = "MT5 Python worker -- exposes broker operations via HTTP"
+description = "MT5 Python worker -- exposes broker operations via HTTP for the TS orchestrator"
 requires-python = ">=3.10"
 dependencies = [
     "MetaTrader5>=5.0.4424",
@@ -17,3 +17,6 @@ dependencies = [
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[project.scripts]
+mt5-worker = "main:app"

@@ -20,3 +20,4 @@ export {
     createWebFetchTool,
 } from "./tools"
 export type { WebSearchProvider, SearchResult } from "./tools"
+export { DuckDuckGoSearchProvider } from "./web-search-provider"

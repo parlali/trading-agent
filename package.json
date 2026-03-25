@@ -8,9 +8,10 @@
         "packages/*"
     ],
     "scripts": {
-        "dev": "turbo dev",
+        "dev": "bun --watch apps/backend/src/index.ts",
         "build": "turbo build",
         "lint": "turbo lint",
+        "deploy:convex": "cd packages/convex && bunx convex deploy --prod",
         "clean": "bun run clean:modules && bun run clean:dist",
         "clean:modules": "rm -rf node_modules && rm -rf apps/*/node_modules && rm -rf packages/*/node_modules",
         "clean:dist": "rm -rf apps/*/dist && rm -rf packages/*/dist"

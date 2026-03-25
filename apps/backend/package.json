@@ -1,5 +1,5 @@
 {
-    "name": "@valiq-trading/polymarket",
+    "name": "@valiq-trading/backend",
     "version": "1.0.0",
     "type": "module",
     "private": true,
@@ -13,6 +13,7 @@
     "dependencies": {
         "@valiq-trading/core": "workspace:*",
         "@valiq-trading/agent": "workspace:*",
+        "@valiq-trading/valiq": "workspace:*",
         "@valiq-trading/convex": "workspace:*",
         "viem": "^2.21.0"
     }

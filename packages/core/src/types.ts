@@ -1,6 +1,6 @@
 import type { OrderAction, OrderStatus } from "./orders"
 
-export type App = "alpaca-options" | "polymarket" | "mt5"
+export type App = "alpaca-options" | "polymarket" | "mt5" | "backend"
 
 export interface OrderIntent {
     instrument: string

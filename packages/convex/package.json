@@ -20,7 +20,7 @@
     },
     "scripts": {
         "build": "tsc --noEmit",
-        "dev": "convex dev"
+        "deploy": "convex deploy"
     },
     "dependencies": {
         "@valiq-trading/core": "workspace:*",

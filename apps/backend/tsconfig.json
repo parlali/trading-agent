@@ -1,0 +1,15 @@
+{
+    "extends": "../../tsconfig.json",
+    "compilerOptions": {
+        "outDir": "dist",
+        "rootDir": "../..",
+        "types": ["node"]
+    },
+    "include": [
+        "src/**/*.ts",
+        "../alpaca-options/src/**/*.ts",
+        "../polymarket/src/**/*.ts",
+        "../mt5/src/**/*.ts"
+    ],
+    "exclude": ["node_modules", "dist"]
+}

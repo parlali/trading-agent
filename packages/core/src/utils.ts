@@ -1,7 +1,5 @@
-import { randomUUID } from "crypto"
-
 export function generateRunId(): string {
-    return randomUUID()
+    return globalThis.crypto.randomUUID()
 }
 
 export function now(): number {
