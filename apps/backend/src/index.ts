@@ -17,16 +17,18 @@ import {
 import {
     createConvexOrderPersistenceAdapter,
     createTradingBackendClient,
-    toKillSwitchKey,
-    type KillSwitchState,
     type StoredStrategy,
 } from "@valiq-trading/convex"
 import {
     ExecutionPipeline,
     Scheduler,
+    createAccountSnapshotPersister,
+    createKillSwitchChecker,
+    createKillSwitchGuardedVenue as createRuntimeKillSwitchGuardedVenue,
     createLogger,
+    startHealthServer as startRuntimeHealthServer,
     validatePolicy,
-    type AccountState,
+    wireShutdown as wireRuntimeShutdown,
     type App,
     type VenueAdapter,
 } from "@valiq-trading/core"
@@ -78,19 +80,59 @@ let manualRunPollTimer: ReturnType<typeof setInterval> | null = null
 let manualRunPollInFlight = false
 let periodicSyncTimer: ReturnType<typeof setInterval> | null = null
 let periodicSyncInFlight = false
+const killSwitchCheckers = {
+    "alpaca-options": createKillSwitchChecker({
+        appName: "alpaca-options",
+        backend,
+        logger,
+    }),
+    "polymarket": createKillSwitchChecker({
+        appName: "polymarket",
+        backend,
+        logger,
+    }),
+    "mt5": createKillSwitchChecker({
+        appName: "mt5",
+        backend,
+        logger,
+    }),
+} as const
+const accountSnapshotPersisters = {
+    "alpaca-options": createAccountSnapshotPersister({
+        appName: "alpaca-options",
+        venueName: "alpaca",
+        backend,
+        logger,
+    }),
+    "polymarket": createAccountSnapshotPersister({
+        appName: "polymarket",
+        venueName: "polymarket",
+        backend,
+        logger,
+    }),
+    "mt5": createAccountSnapshotPersister({
+        appName: "mt5",
+        venueName: "mt5",
+        backend,
+        logger,
+    }),
+} as const
 
-const syncStrategies: Partial<Record<VenueApp, {
+interface SyncStrategyEntry {
     strategy: StoredStrategy
     policy: Record<string, unknown>
-}>> = {}
+    secrets: Record<string, string | null>
+}
+
+const syncStrategies: Partial<Record<VenueApp, SyncStrategyEntry[]>> = {}
 
 async function main(): Promise<void> {
     await resolveAllSecrets()
-    await validateAllEnvironments()
 
     const scheduler = new Scheduler({ logger })
 
     const allApps: VenueApp[] = ["alpaca-options", "polymarket", "mt5"]
+    const activeApps: VenueApp[] = []
     let totalStrategies = 0
 
     for (const app of allApps) {
@@ -99,34 +141,43 @@ async function main(): Promise<void> {
         const activeStrategies = strategies.filter((s) => s.enabled)
         totalStrategies += activeStrategies.length
 
+        if (activeStrategies.length > 0) {
+            activeApps.push(app)
+        }
+
         for (const strategy of activeStrategies) {
             const policy = validatePolicy(app, strategy.policy)
-
-            if (app === "polymarket") {
-                const polyPlugin = plugin as PolymarketPlugin
-                const additionalKeys = polyPlugin.resolveAdditionalCredentialKeys(policy)
-                if (additionalKeys.length > 0) {
-                    const additionalSecrets = await backend.resolveSecrets(additionalKeys)
-                    polyPlugin.setAdditionalSecrets(additionalSecrets)
-                }
+            const additionalSecretKeys = plugin.resolveAdditionalSecretKeys?.(policy) ?? []
+            const additionalSecrets =
+                additionalSecretKeys.length > 0
+                    ? await backend.resolveSecrets(additionalSecretKeys)
+                    : {}
+            const strategySecrets = {
+                ...resolvedSecrets,
+                ...additionalSecrets,
             }
 
-            if (!syncStrategies[app]) {
-                syncStrategies[app] = { strategy, policy }
-            }
+            syncStrategies[app] ??= []
+            syncStrategies[app].push({
+                strategy,
+                policy,
+                secrets: strategySecrets,
+            })
 
             scheduler.register({
                 strategyId: strategy._id,
                 scheduleType: "cron",
                 cronExpression: strategy.schedule,
                 handler: async () => {
-                    await runStrategy(app, plugin, strategy, policy)
+                    await runStrategy(app, plugin, strategy, policy, strategySecrets)
                 },
             })
         }
 
         logger.info(`Loaded ${activeStrategies.length} strategies for ${app}`)
     }
+
+    await validateAllEnvironments(activeApps)
 
     healthState.strategyCount = totalStrategies
 
@@ -182,11 +233,12 @@ async function resolveAllSecrets(): Promise<void> {
     logger.info("Secrets resolved from Convex", { resolved, missing })
 }
 
-async function validateAllEnvironments(): Promise<void> {
-    for (const [appKey, plugin] of Object.entries(plugins)) {
-        const app = appKey as VenueApp
+async function validateAllEnvironments(apps: VenueApp[]): Promise<void> {
+    for (const app of apps) {
+        const plugin = plugins[app]
+        const validationSecrets = syncStrategies[app]?.[0]?.secrets ?? resolvedSecrets
         try {
-            await plugin.validateEnvironment(resolvedSecrets)
+            await plugin.validateEnvironment(validationSecrets)
             healthState.venues[app] = { validated: true }
             logger.info(`${app} environment validated`)
         } catch (error) {
@@ -203,29 +255,7 @@ async function validateAllEnvironments(): Promise<void> {
 }
 
 async function checkKillSwitch(app: VenueApp, context: string): Promise<boolean> {
-    try {
-        const state: KillSwitchState = await backend.getSystemState()
-
-        if (state.globalKillSwitch) {
-            logger.warn("Global kill switch is active", { context, app })
-            return true
-        }
-
-        if (state.appKillSwitches[toKillSwitchKey(app)]) {
-            logger.warn("App kill switch is active", { context, app })
-            return true
-        }
-
-        return false
-    } catch (error) {
-        const message = error instanceof Error ? error.message : String(error)
-        logger.error("Failed to check kill switch -- proceeding with caution", {
-            context,
-            app,
-            error: message,
-        })
-        return false
-    }
+    return await killSwitchCheckers[app](context)
 }
 
 function createKillSwitchGuardedVenue(
@@ -233,26 +263,19 @@ function createKillSwitchGuardedVenue(
     app: VenueApp,
     strategyId: string
 ): VenueAdapter {
-    return new Proxy(venue, {
-        get(target, prop, receiver) {
-            if (prop === "submitOrder") {
-                return async (...args: Parameters<typeof target.submitOrder>) => {
-                    if (await checkKillSwitch(app, `pre-order:${strategyId}`)) {
-                        throw new Error("Order submission blocked: kill switch is active")
-                    }
-                    return target.submitOrder(...args)
-                }
-            }
-            return Reflect.get(target, prop, receiver)
-        },
-    })
+    return createRuntimeKillSwitchGuardedVenue(
+        venue,
+        strategyId,
+        killSwitchCheckers[app]
+    )
 }
 
 async function runStrategy(
     app: VenueApp,
     plugin: VenuePlugin,
     strategy: StoredStrategy,
-    policy: Record<string, unknown>
+    policy: Record<string, unknown>,
+    strategySecrets: Record<string, string | null>
 ): Promise<void> {
     if (await checkKillSwitch(app, `pre-run:${strategy._id}`)) {
         logger.warn("Run skipped due to active kill switch", { strategyId: strategy._id, app })
@@ -265,7 +288,7 @@ async function runStrategy(
         return
     }
 
-    const venue = plugin.createVenueAdapter(policy, resolvedSecrets)
+    const venue = plugin.createVenueAdapter(policy, strategySecrets)
 
     if (plugin.preRunHooks) {
         const hookResult = await plugin.preRunHooks({
@@ -310,7 +333,7 @@ async function runStrategy(
     const tools = new ToolRegistry()
 
     const extraTools = plugin.getExtraTools({
-        secrets: resolvedSecrets,
+        secrets: strategySecrets,
         runLogger,
     })
     for (const tool of extraTools) {
@@ -359,7 +382,7 @@ async function runStrategy(
         await backend.syncPositions(strategy._id, app, syncedPositions)
 
         const finalAccountState = await venue.getAccountState()
-        await persistAccountSnapshot(app, plugin.venueName, finalAccountState)
+        await accountSnapshotPersisters[app](finalAccountState)
 
         if (plugin.postRunHooks) {
             await plugin.postRunHooks({
@@ -386,7 +409,7 @@ async function runStrategy(
 
         try {
             const failureAccountState = await venue.getAccountState()
-            await persistAccountSnapshot(app, plugin.venueName, failureAccountState)
+            await accountSnapshotPersisters[app](failureAccountState)
         } catch {
             // Cannot reach venue for snapshot
         }
@@ -394,19 +417,6 @@ async function runStrategy(
         throw error
     } finally {
         pipeline.stopAllTracking()
-    }
-}
-
-async function persistAccountSnapshot(
-    app: VenueApp,
-    venueName: string,
-    accountState: AccountState
-): Promise<void> {
-    try {
-        await backend.snapshotAccountState(app, venueName, accountState)
-    } catch (error) {
-        const message = error instanceof Error ? error.message : String(error)
-        logger.error("Failed to persist account snapshot", { app, error: message })
     }
 }
 
@@ -479,7 +489,7 @@ async function pollManualRunRequests(scheduler: Scheduler): Promise<void> {
 async function performStartupSync(): Promise<void> {
     logger.info("Performing startup sync for validated venues")
 
-    for (const [appKey, entry] of Object.entries(syncStrategies)) {
+    for (const [appKey, entries] of Object.entries(syncStrategies)) {
         const app = appKey as VenueApp
         const plugin = plugins[app]
 
@@ -488,44 +498,53 @@ async function performStartupSync(): Promise<void> {
             continue
         }
 
-        try {
-            const venue = plugin.createVenueAdapter(entry.policy, resolvedSecrets)
-            const accountState = await venue.getAccountState()
-            await persistAccountSnapshot(app, plugin.venueName, accountState)
+        for (const entry of entries) {
+            try {
+                const venue = plugin.createVenueAdapter(entry.policy, entry.secrets)
+                const accountState = await venue.getAccountState()
+                await accountSnapshotPersisters[app](accountState)
 
-            const positions = await venue.getPositions()
-            await backend.syncPositions(entry.strategy._id, app, positions)
+                const positions = await venue.getPositions()
+                await backend.syncPositions(entry.strategy._id, app, positions)
 
-            healthState.venues[app] = {
-                ...healthState.venues[app],
-                validated: true,
-                lastSyncAt: Date.now(),
+                healthState.venues[app] = {
+                    ...healthState.venues[app],
+                    validated: true,
+                    lastSyncAt: Date.now(),
+                    lastSyncError: undefined,
+                }
+
+                await backend.reportHeartbeat(app, "healthy", {
+                    source: "startup_sync",
+                    strategyId: entry.strategy._id,
+                    positionCount: positions.length,
+                    balance: accountState.balance,
+                })
+
+                logger.info(`Startup sync completed for ${app}`, {
+                    strategyId: entry.strategy._id,
+                    balance: accountState.balance,
+                    positions: positions.length,
+                })
+            } catch (error) {
+                const message = error instanceof Error ? error.message : String(error)
+                logger.error(`Startup sync failed for ${app}`, {
+                    strategyId: entry.strategy._id,
+                    error: message,
+                })
+
+                healthState.venues[app] = {
+                    ...healthState.venues[app],
+                    validated: healthState.venues[app]?.validated ?? false,
+                    lastSyncError: message,
+                }
+
+                await backend.reportHeartbeat(app, "degraded", {
+                    strategyId: entry.strategy._id,
+                    error: message,
+                    source: "startup_sync",
+                })
             }
-
-            await backend.reportHeartbeat(app, "healthy", {
-                source: "startup_sync",
-                positionCount: positions.length,
-                balance: accountState.balance,
-            })
-
-            logger.info(`Startup sync completed for ${app}`, {
-                balance: accountState.balance,
-                positions: positions.length,
-            })
-        } catch (error) {
-            const message = error instanceof Error ? error.message : String(error)
-            logger.error(`Startup sync failed for ${app}`, { error: message })
-
-            healthState.venues[app] = {
-                ...healthState.venues[app],
-                validated: healthState.venues[app]?.validated ?? false,
-                lastSyncError: message,
-            }
-
-            await backend.reportHeartbeat(app, "degraded", {
-                error: message,
-                source: "startup_sync",
-            })
         }
     }
 }
@@ -554,105 +573,94 @@ function stopPeriodicSync(): void {
 }
 
 async function performPeriodicSync(): Promise<void> {
-    for (const [appKey, entry] of Object.entries(syncStrategies)) {
+    for (const [appKey, entries] of Object.entries(syncStrategies)) {
         const app = appKey as VenueApp
         const plugin = plugins[app]
 
         if (!healthState.venues[app]?.validated) continue
 
-        try {
-            const venue = plugin.createVenueAdapter(entry.policy, resolvedSecrets)
-            const accountState = await venue.getAccountState()
-            await persistAccountSnapshot(app, plugin.venueName, accountState)
+        for (const entry of entries) {
+            try {
+                const venue = plugin.createVenueAdapter(entry.policy, entry.secrets)
+                const accountState = await venue.getAccountState()
+                await accountSnapshotPersisters[app](accountState)
 
-            const positions = await venue.getPositions()
-            await backend.syncPositions(entry.strategy._id, app, positions)
+                const positions = await venue.getPositions()
+                await backend.syncPositions(entry.strategy._id, app, positions)
 
-            healthState.venues[app] = {
-                ...healthState.venues[app],
-                validated: true,
-                lastSyncAt: Date.now(),
-                lastSyncError: undefined,
+                healthState.venues[app] = {
+                    ...healthState.venues[app],
+                    validated: true,
+                    lastSyncAt: Date.now(),
+                    lastSyncError: undefined,
+                }
+
+                await backend.reportHeartbeat(app, "healthy", {
+                    source: "periodic_sync",
+                    strategyId: entry.strategy._id,
+                    positionCount: positions.length,
+                    balance: accountState.balance,
+                })
+            } catch (error) {
+                const message = error instanceof Error ? error.message : String(error)
+                logger.error(`Periodic sync failed for ${app}`, {
+                    strategyId: entry.strategy._id,
+                    error: message,
+                })
+
+                healthState.venues[app] = {
+                    ...healthState.venues[app],
+                    validated: healthState.venues[app]?.validated ?? false,
+                    lastSyncAt: Date.now(),
+                    lastSyncError: message,
+                }
+
+                await backend.reportHeartbeat(app, "degraded", {
+                    strategyId: entry.strategy._id,
+                    error: message,
+                    source: "periodic_sync",
+                })
+
+                await backend.createAlert({
+                    app,
+                    severity: "warning",
+                    message: `Periodic sync failed for ${app} strategy ${entry.strategy.name}: ${message}`,
+                })
             }
-
-            await backend.reportHeartbeat(app, "healthy", {
-                source: "periodic_sync",
-                positionCount: positions.length,
-                balance: accountState.balance,
-            })
-        } catch (error) {
-            const message = error instanceof Error ? error.message : String(error)
-            logger.error(`Periodic sync failed for ${app}`, { error: message })
-
-            healthState.venues[app] = {
-                ...healthState.venues[app],
-                validated: healthState.venues[app]?.validated ?? false,
-                lastSyncAt: Date.now(),
-                lastSyncError: message,
-            }
-
-            await backend.reportHeartbeat(app, "degraded", {
-                error: message,
-                source: "periodic_sync",
-            })
-
-            await backend.createAlert({
-                app,
-                severity: "warning",
-                message: `Periodic sync failed for ${app}: ${message}`,
-            })
         }
     }
 }
 
 function startHealthServer(scheduler: Scheduler): void {
-    Bun.serve({
+    startRuntimeHealthServer({
         port: healthPort,
-        fetch(request) {
-            const { pathname } = new URL(request.url)
-
-            if (pathname !== "/health") {
-                return new Response("Not Found", { status: 404 })
-            }
-
-            return Response.json({
-                app: APP_NAME,
-                ready: healthState.ready,
-                startedAt: healthState.startedAt,
-                strategyCount: healthState.strategyCount,
-                venues: healthState.venues,
-                registeredStrategies: scheduler.getRegisteredStrategies(),
-                lastRunAt: healthState.lastRunAt,
-                lastRunStatus: healthState.lastRunStatus,
-                lastRunSummary: healthState.lastRunSummary,
-                lastRunError: healthState.lastRunError,
-            })
-        },
+        appName: APP_NAME,
+        getHealth: () => ({
+            ready: healthState.ready,
+            startedAt: healthState.startedAt,
+            strategyCount: healthState.strategyCount,
+            venues: healthState.venues,
+            registeredStrategies: scheduler.getRegisteredStrategies(),
+            lastRunAt: healthState.lastRunAt,
+            lastRunStatus: healthState.lastRunStatus,
+            lastRunSummary: healthState.lastRunSummary,
+            lastRunError: healthState.lastRunError,
+        }),
     })
 }
 
 function wireShutdown(scheduler: Scheduler): void {
-    const shutdown = async () => {
-        healthState.ready = false
-        stopHeartbeat()
-        stopManualRunPolling()
-        stopPeriodicSync()
-
-        try {
-            await backend.reportHeartbeat(APP_NAME, "unhealthy", {
-                reason: "shutdown",
-                shutdownAt: Date.now(),
-            })
-        } catch {
-            // Best effort
-        }
-
-        await scheduler.shutdown()
-        process.exit(0)
-    }
-
-    process.on("SIGINT", shutdown)
-    process.on("SIGTERM", shutdown)
+    wireRuntimeShutdown({
+        appName: APP_NAME,
+        scheduler,
+        backend,
+        onShutdown: () => {
+            healthState.ready = false
+            stopHeartbeat()
+            stopManualRunPolling()
+            stopPeriodicSync()
+        },
+    })
 }
 
 function updateHealth(

@@ -6,9 +6,8 @@ Private trading monorepo. LLM agents execute strategies across multiple venues w
 
 | App | Description | Venue |
 |---|---|---|
-| `apps/alpaca-options` | Options strategies (iron condors) | Alpaca |
-| `apps/polymarket` | Prediction market trading | Polymarket |
-| `apps/mt5` | Intraday forex/CFD (TS orchestrator + Python worker) | MetaTrader 5 |
+| `apps/backend` | Single TypeScript runtime for all venue strategies | Alpaca, Polymarket, MT5 |
+| `apps/mt5-worker` | Lightweight Python worker that exposes MT5 broker operations over HTTP | MetaTrader 5 |
 
 ## Packages
 
@@ -18,6 +17,9 @@ Private trading monorepo. LLM agents execute strategies across multiple venues w
 | `packages/core` | Shared types, risk engine, execution pipeline, utilities |
 | `packages/agent` | Agent runtime, tool registry, LLM client |
 | `packages/valiq` | Val-iQ API client (data endpoints + research chat API) |
+| `packages/alpaca-options` | Alpaca venue client, adapter, and risk rules |
+| `packages/polymarket` | Polymarket venue client, adapter, and risk rules |
+| `packages/mt5` | MT5 venue client, adapter, and risk rules |
 
 ## Setup
 
@@ -40,7 +42,7 @@ bun run dev
 
 ## Architecture
 
-Each app runs N strategies, each defined by a config record in Convex:
+The backend runs N strategies, each defined by a config record in Convex:
 - **policy** -- typed, schema-validated. Deterministic risk limits enforced by code.
 - **context** -- freeform string injected into the agent system prompt.
 

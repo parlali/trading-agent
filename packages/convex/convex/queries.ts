@@ -9,28 +9,24 @@ const venueApps = [
 
 type VenueApp = typeof venueApps[number]
 
-function getLatestSnapshotPositions(
-    positions: Array<{
+function getLatestSyncedAtByStrategy(
+    syncs: Array<{
         strategyId: unknown
         syncedAt: number
     }>
-): Set<string> {
+): Map<string, number> {
     const latestSyncedAtByStrategy = new Map<string, number>()
 
-    for (const position of positions) {
-        const strategyId = String(position.strategyId)
+    for (const sync of syncs) {
+        const strategyId = String(sync.strategyId)
         const currentLatest = latestSyncedAtByStrategy.get(strategyId) ?? 0
 
-        if (position.syncedAt > currentLatest) {
-            latestSyncedAtByStrategy.set(strategyId, position.syncedAt)
+        if (sync.syncedAt > currentLatest) {
+            latestSyncedAtByStrategy.set(strategyId, sync.syncedAt)
         }
     }
 
-    return new Set(
-        positions
-            .filter((position) => latestSyncedAtByStrategy.get(String(position.strategyId)) === position.syncedAt)
-            .map((position) => `${String(position.strategyId)}:${position.syncedAt}`)
-    )
+    return latestSyncedAtByStrategy
 }
 
 // Return all enabled strategies for a given app
@@ -93,17 +89,22 @@ export const getActiveRun = query({
 export const getOpenPositions = query({
     args: { strategyId: v.id("strategies") },
     handler: async (ctx, args) => {
-        const snapshots = await ctx.db
-            .query("positions")
+        const latestSync = await ctx.db
+            .query("position_syncs")
             .withIndex("by_strategy_synced_at", (q) => q.eq("strategyId", args.strategyId))
             .order("desc")
-            .collect()
+            .first()
 
-        const latestSyncedAt = snapshots[0]?.syncedAt
-        if (latestSyncedAt === undefined) {
+        if (!latestSync || latestSync.positionCount === 0) {
             return []
         }
 
+        const snapshots = await ctx.db
+            .query("positions")
+            .withIndex("by_strategy_synced_at", (q) => q.eq("strategyId", args.strategyId))
+            .collect()
+
+        const latestSyncedAt = latestSync.syncedAt
         return snapshots.filter((position) => position.syncedAt === latestSyncedAt)
     },
 })
@@ -255,6 +256,7 @@ export const getDashboardOverview = query({
             runs,
             alerts,
             accountSnapshots,
+            positionSyncs,
             positions,
         ] = await Promise.all([
             ctx.db
@@ -266,6 +268,7 @@ export const getDashboardOverview = query({
             ctx.db.query("strategy_runs").order("desc").take(50),
             ctx.db.query("alerts").order("desc").take(20),
             ctx.db.query("account_snapshots").order("desc").collect(),
+            ctx.db.query("position_syncs").collect(),
             ctx.db.query("positions").collect(),
         ])
 
@@ -284,7 +287,7 @@ export const getDashboardOverview = query({
             }
         }
 
-        const latestPositionKeys = getLatestSnapshotPositions(positions)
+        const latestSyncedAtByStrategy = getLatestSyncedAtByStrategy(positionSyncs)
         const strategiesById = new Map(strategies.map((strategy) => [String(strategy._id), strategy]))
 
         return {
@@ -304,7 +307,7 @@ export const getDashboardOverview = query({
             recentAlerts: alerts,
             openPositions: positions
                 .filter((position) =>
-                    latestPositionKeys.has(`${String(position.strategyId)}:${position.syncedAt}`)
+                    latestSyncedAtByStrategy.get(String(position.strategyId)) === position.syncedAt
                 )
                 .map((position) => ({
                     ...position,

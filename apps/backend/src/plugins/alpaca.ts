@@ -1,9 +1,7 @@
 import type { ToolDefinition } from "@valiq-trading/agent"
 import { createValiqDataTool, createValiqResearchTool, ValiqClient, ValiqDataAdapter, ValiqResearchAdapter } from "@valiq-trading/valiq"
-import type { RiskValidator, VenueAdapter } from "@valiq-trading/core"
-import { AlpacaClient, type AlpacaCredentials } from "../../../alpaca-options/src/alpaca-client"
-import { alpacaRiskValidators } from "../../../alpaca-options/src/risk-rules"
-import { AlpacaOptionsVenueAdapter } from "../../../alpaca-options/src/venue-adapter"
+import { AlpacaClient, type AlpacaCredentials, alpacaRiskValidators, AlpacaOptionsVenueAdapter } from "@valiq-trading/alpaca-options"
+import { requireResolvedSecret, resolveCredentialPrefix, type RiskValidator, type VenueAdapter } from "@valiq-trading/core"
 import type { VenuePlugin, ExtraToolsConfig } from "../types"
 
 const PAPER_URL_PATTERN = /paper/i
@@ -27,23 +25,24 @@ export class AlpacaPlugin implements VenuePlugin {
         ]
     }
 
+    resolveAdditionalSecretKeys(policy: Record<string, unknown>): string[] {
+        const brokerRef = String(policy.broker ?? "").trim()
+        if (!brokerRef) {
+            return []
+        }
+
+        const prefix = resolveCredentialPrefix(brokerRef)
+
+        return [
+            `ALPACA_${prefix}_API_KEY`,
+            `ALPACA_${prefix}_SECRET_KEY`,
+            `ALPACA_${prefix}_BASE_URL`,
+        ]
+    }
+
     async validateEnvironment(secrets: Record<string, string | null>): Promise<void> {
-        const apiKey = secrets.ALPACA_PRIMARY_API_KEY ?? secrets.ALPACA_API_KEY
-        const secretKey = secrets.ALPACA_PRIMARY_SECRET_KEY ?? secrets.ALPACA_SECRET_KEY
-        const baseUrl = secrets.ALPACA_PRIMARY_BASE_URL ?? secrets.ALPACA_BASE_URL
-
-        if (!apiKey || !secretKey) {
-            throw new Error("Alpaca API credentials not found in resolved secrets")
-        }
-
-        const credentials: AlpacaCredentials = {
-            apiKey,
-            secretKey,
-            accountId: "",
-            baseUrl: baseUrl ?? undefined,
-        }
-
-        const effectiveUrl = baseUrl ?? "https://paper-api.alpaca.markets"
+        const credentials = this.resolveValidationCredentials(secrets)
+        const effectiveUrl = credentials.baseUrl ?? "https://paper-api.alpaca.markets"
         this.environment = PAPER_URL_PATTERN.test(effectiveUrl) ? "paper" : "live"
 
         const client = new AlpacaClient(credentials)
@@ -104,17 +103,9 @@ export class AlpacaPlugin implements VenuePlugin {
             throw new Error("Alpaca policy accountId is required")
         }
 
-        const prefix = brokerRef.toUpperCase().replace(/[^A-Z0-9]+/g, "_")
-
-        const apiKey = secrets[`ALPACA_${prefix}_API_KEY`] ?? secrets.ALPACA_API_KEY
-        const secretKey = secrets[`ALPACA_${prefix}_SECRET_KEY`] ?? secrets.ALPACA_SECRET_KEY
-
-        if (!apiKey) {
-            throw new Error(`Missing Alpaca API key for broker ${brokerRef}`)
-        }
-        if (!secretKey) {
-            throw new Error(`Missing Alpaca secret key for broker ${brokerRef}`)
-        }
+        const prefix = resolveCredentialPrefix(brokerRef)
+        const apiKey = requireResolvedSecret(secrets, `ALPACA_${prefix}_API_KEY`, "ALPACA_API_KEY")
+        const secretKey = requireResolvedSecret(secrets, `ALPACA_${prefix}_SECRET_KEY`, "ALPACA_SECRET_KEY")
 
         return {
             apiKey,
@@ -122,5 +113,49 @@ export class AlpacaPlugin implements VenuePlugin {
             accountId,
             baseUrl: secrets[`ALPACA_${prefix}_BASE_URL`] ?? secrets.ALPACA_BASE_URL ?? undefined,
         }
+    }
+
+    private resolveValidationCredentials(
+        secrets: Record<string, string | null>
+    ): AlpacaCredentials {
+        if (secrets.ALPACA_PRIMARY_API_KEY && secrets.ALPACA_PRIMARY_SECRET_KEY) {
+            return {
+                apiKey: secrets.ALPACA_PRIMARY_API_KEY,
+                secretKey: secrets.ALPACA_PRIMARY_SECRET_KEY,
+                accountId: "",
+                baseUrl: secrets.ALPACA_PRIMARY_BASE_URL ?? secrets.ALPACA_BASE_URL ?? undefined,
+            }
+        }
+
+        if (secrets.ALPACA_API_KEY && secrets.ALPACA_SECRET_KEY) {
+            return {
+                apiKey: secrets.ALPACA_API_KEY,
+                secretKey: secrets.ALPACA_SECRET_KEY,
+                accountId: "",
+                baseUrl: secrets.ALPACA_BASE_URL ?? undefined,
+            }
+        }
+
+        for (const key of Object.keys(secrets)) {
+            const match = key.match(/^ALPACA_(.+)_API_KEY$/)
+            if (!match) {
+                continue
+            }
+
+            const prefix = match[1]
+            const apiKey = secrets[key]
+            const secretKey = secrets[`ALPACA_${prefix}_SECRET_KEY`]
+
+            if (apiKey && secretKey) {
+                return {
+                    apiKey,
+                    secretKey,
+                    accountId: "",
+                    baseUrl: secrets[`ALPACA_${prefix}_BASE_URL`] ?? secrets.ALPACA_BASE_URL ?? undefined,
+                }
+            }
+        }
+
+        throw new Error("Alpaca API credentials not found in resolved secrets")
     }
 }

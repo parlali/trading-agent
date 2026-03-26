@@ -1,16 +1,21 @@
 import type { ToolDefinition } from "@valiq-trading/agent"
 import { createValiqDataTool, createValiqResearchTool, ValiqClient, ValiqDataAdapter, ValiqResearchAdapter } from "@valiq-trading/valiq"
-import { mt5PolicySchema, type RiskValidator, type VenueAdapter } from "@valiq-trading/core"
-import { MT5Client, type MT5WorkerCredentials } from "../../../mt5/src/mt5-client"
-import { mt5RiskValidators } from "../../../mt5/src/risk-rules"
-import { MT5VenueAdapter } from "../../../mt5/src/venue-adapter"
+import {
+    getCurrentTimeInTimezone,
+    mt5PolicySchema,
+    padTime,
+    requireResolvedSecret,
+    resolveCredentialPrefix,
+    type RiskValidator,
+    type VenueAdapter,
+} from "@valiq-trading/core"
+import { MT5Client, type MT5WorkerCredentials, mt5RiskValidators, MT5VenueAdapter } from "@valiq-trading/mt5"
 import type {
     VenuePlugin,
     ExtraToolsConfig,
     PreRunHookConfig,
     PreRunHookResult,
     PostRunHookConfig,
-    VenueApp,
 } from "../types"
 
 export class MT5Plugin implements VenuePlugin {
@@ -32,27 +37,30 @@ export class MT5Plugin implements VenuePlugin {
         ]
     }
 
-    async validateEnvironment(secrets: Record<string, string | null>): Promise<void> {
-        const workerUrl = secrets.MT5_WORKER_URL
-        if (!workerUrl) {
-            throw new Error("MT5_WORKER_URL not found in resolved secrets")
+    resolveAdditionalSecretKeys(policy: Record<string, unknown>): string[] {
+        const credentialsRef = String(policy.credentialsRef ?? "").trim()
+        if (!credentialsRef) {
+            return []
         }
 
+        const prefix = resolveCredentialPrefix(credentialsRef)
+
+        return [
+            `MT5_${prefix}_LOGIN`,
+            `MT5_${prefix}_PASSWORD`,
+            `MT5_${prefix}_SERVER`,
+        ]
+    }
+
+    async validateEnvironment(secrets: Record<string, string | null>): Promise<void> {
+        const workerUrl = requireResolvedSecret(secrets, "MT5_WORKER_URL")
         const accessKey = secrets.MT5_WORKER_ACCESS_KEY ?? ""
         const client = new MT5Client({ workerUrl, accessKey })
 
         await client.getHealth()
 
-        const login = secrets.MT5_PRIMARY_LOGIN ?? secrets.MT5_LOGIN
-        const password = secrets.MT5_PRIMARY_PASSWORD ?? secrets.MT5_PASSWORD
-        const server = secrets.MT5_PRIMARY_SERVER ?? secrets.MT5_SERVER
-
-        if (login && password && server) {
-            const credentials: MT5WorkerCredentials = {
-                login: Number(login),
-                password,
-                server,
-            }
+        const credentials = this.resolveValidationCredentials(secrets)
+        if (credentials) {
             await client.connect(credentials)
         }
     }
@@ -148,7 +156,7 @@ export class MT5Plugin implements VenuePlugin {
             const result = await venue.closeAllPositions()
             config.logger.info("Emergency flatten completed", {
                 closed: result.closed,
-                results: result.results.map((r) => ({
+                results: result.results.map((r: { orderId: string; status: string }) => ({
                     orderId: r.orderId,
                     status: r.status,
                 })),
@@ -212,20 +220,11 @@ export class MT5Plugin implements VenuePlugin {
         secrets: Record<string, string | null>
     ): { workerUrl: string; accessKey: string; credentials: MT5WorkerCredentials } {
         const credentialsRef = String(policy.credentialsRef ?? "").trim()
-        const prefix = credentialsRef.toUpperCase().replace(/[^A-Z0-9]+/g, "_")
-
-        const workerUrl = secrets.MT5_WORKER_URL
-        if (!workerUrl) {
-            throw new Error("MT5_WORKER_URL is required")
-        }
-
-        const login = secrets[`MT5_${prefix}_LOGIN`] ?? secrets.MT5_LOGIN
-        const password = secrets[`MT5_${prefix}_PASSWORD`] ?? secrets.MT5_PASSWORD
-        const server = secrets[`MT5_${prefix}_SERVER`] ?? secrets.MT5_SERVER
-
-        if (!login) throw new Error(`Missing MT5 login for ${credentialsRef}`)
-        if (!password) throw new Error(`Missing MT5 password for ${credentialsRef}`)
-        if (!server) throw new Error(`Missing MT5 server for ${credentialsRef}`)
+        const prefix = resolveCredentialPrefix(credentialsRef)
+        const workerUrl = requireResolvedSecret(secrets, "MT5_WORKER_URL")
+        const login = requireResolvedSecret(secrets, `MT5_${prefix}_LOGIN`, "MT5_LOGIN")
+        const password = requireResolvedSecret(secrets, `MT5_${prefix}_PASSWORD`, "MT5_PASSWORD")
+        const server = requireResolvedSecret(secrets, `MT5_${prefix}_SERVER`, "MT5_SERVER")
 
         return {
             workerUrl,
@@ -237,30 +236,42 @@ export class MT5Plugin implements VenuePlugin {
             },
         }
     }
-}
 
-function getCurrentTimeInTimezone(timezone: string): { hours: number; minutes: number } {
-    try {
-        const formatter = new Intl.DateTimeFormat("en-US", {
-            timeZone: timezone,
-            hour: "numeric",
-            minute: "numeric",
-            hour12: false,
-        })
-        const parts = formatter.formatToParts(new Date())
-        const hourPart = parts.find((p) => p.type === "hour")
-        const minutePart = parts.find((p) => p.type === "minute")
+    private resolveValidationCredentials(
+        secrets: Record<string, string | null>
+    ): MT5WorkerCredentials | null {
+        const login = secrets.MT5_PRIMARY_LOGIN ?? secrets.MT5_LOGIN
+        const password = secrets.MT5_PRIMARY_PASSWORD ?? secrets.MT5_PASSWORD
+        const server = secrets.MT5_PRIMARY_SERVER ?? secrets.MT5_SERVER
 
-        return {
-            hours: Number(hourPart?.value ?? 0),
-            minutes: Number(minutePart?.value ?? 0),
+        if (login && password && server) {
+            return {
+                login: Number(login),
+                password,
+                server,
+            }
         }
-    } catch {
-        const now = new Date()
-        return { hours: now.getUTCHours(), minutes: now.getUTCMinutes() }
-    }
-}
 
-function padTime(n: number): string {
-    return String(n).padStart(2, "0")
+        for (const key of Object.keys(secrets)) {
+            const match = key.match(/^MT5_(.+)_LOGIN$/)
+            if (!match || match[1] === "PRIMARY") {
+                continue
+            }
+
+            const prefix = match[1]
+            const fallbackLogin = secrets[key]
+            const fallbackPassword = secrets[`MT5_${prefix}_PASSWORD`]
+            const fallbackServer = secrets[`MT5_${prefix}_SERVER`]
+
+            if (fallbackLogin && fallbackPassword && fallbackServer) {
+                return {
+                    login: Number(fallbackLogin),
+                    password: fallbackPassword,
+                    server: fallbackServer,
+                }
+            }
+        }
+
+        return null
+    }
 }

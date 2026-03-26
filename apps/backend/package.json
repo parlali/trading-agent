@@ -15,6 +15,9 @@
         "@valiq-trading/agent": "workspace:*",
         "@valiq-trading/valiq": "workspace:*",
         "@valiq-trading/convex": "workspace:*",
+        "@valiq-trading/alpaca-options": "workspace:*",
+        "@valiq-trading/polymarket": "workspace:*",
+        "@valiq-trading/mt5": "workspace:*",
         "viem": "^2.21.0"
     }
 }

@@ -40,4 +40,3 @@ venv/
 
 # Misc
 *.tsbuildinfo
-bun.lock

@@ -1,6 +1,6 @@
 """MT5 Python worker -- FastAPI HTTP server exposing MT5 broker operations.
 
-Architecture: The TS orchestrator (apps/mt5/src/) calls this worker over HTTP.
+Architecture: The backend runtime (apps/backend/) calls this worker over HTTP.
 This worker is stateless apart from the MT5 terminal session. It runs on a
 Windows machine where the MetaTrader 5 SDK is available.
 """

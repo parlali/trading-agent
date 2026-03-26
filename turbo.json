@@ -4,8 +4,8 @@
     "tasks": {
         "build": {
             "dependsOn": ["^build"],
-            "inputs": ["$TURBO_DEFAULT$", ".env*"],
-            "outputs": ["dist/**"]
+            "inputs": ["$TURBO_DEFAULT$", "!.turbo/**", ".env*"],
+            "outputs": []
         },
         "dev": {
             "cache": false,
@@ -14,18 +14,6 @@
         "lint": {
             "dependsOn": ["^build"],
             "cache": true
-        },
-        "@valiq-trading/convex#build": {
-            "outputs": []
-        },
-        "@valiq-trading/core#build": {
-            "outputs": []
-        },
-        "@valiq-trading/agent#build": {
-            "outputs": []
-        },
-        "@valiq-trading/valiq#build": {
-            "outputs": []
         }
     }
 }

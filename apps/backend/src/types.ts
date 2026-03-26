@@ -9,6 +9,7 @@ export interface VenuePlugin {
     readonly venueName: string
 
     resolveSecretKeys(): string[]
+    resolveAdditionalSecretKeys?(policy: Record<string, unknown>): string[]
 
     validateEnvironment(secrets: Record<string, string | null>): Promise<void>
 

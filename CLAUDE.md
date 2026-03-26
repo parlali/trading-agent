@@ -45,11 +45,9 @@ Web App (Next.js) -> Convex (backend) -> Windows VPS (mt5-worker)
 - `packages/convex/convex/tradingIngest.ts` -- trade/position upsert logic
 - `packages/convex/convex/http.ts` -- worker HTTP endpoints (accounts, ingest, sync-status, add-broker)
 - `packages/convex/convex/cacheWriter.ts` -- dashboard + analytics cache computation
-- `apps/mt5-worker/src/worker.py` -- main worker loop, sync orchestration
-- `apps/mt5-worker/src/mt5_client.py` -- MT5 API wrapper
-- `apps/mt5-worker/src/config.py` -- worker settings
-- `apps/mt5-worker/src/add_broker.py` -- broker provisioning via GUI automation
-- `apps/mt5-worker/src/sync_dat.py` -- sync servers.dat to portable instances
+- `apps/mt5-worker/main.py` -- MT5 worker HTTP server
+- `apps/mt5-worker/mt5_client.py` -- MT5 API wrapper
+- `apps/mt5-worker/config.py` -- worker settings
 
 ## Seeding dev with prod data
 

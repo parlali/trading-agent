@@ -5,11 +5,6 @@
         "rootDir": "../..",
         "types": ["node"]
     },
-    "include": [
-        "src/**/*.ts",
-        "../alpaca-options/src/**/*.ts",
-        "../polymarket/src/**/*.ts",
-        "../mt5/src/**/*.ts"
-    ],
+    "include": ["src/**/*.ts"],
     "exclude": ["node_modules", "dist"]
 }

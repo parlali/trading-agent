@@ -256,6 +256,13 @@ export const syncPositions = mutation({
     },
     handler: async (ctx, args) => {
         const now = Date.now()
+        await ctx.db.insert("position_syncs", {
+            strategyId: args.strategyId,
+            app: args.app,
+            syncedAt: now,
+            positionCount: args.positions.length,
+        })
+
         for (const pos of args.positions) {
             await ctx.db.insert("positions", {
                 strategyId: args.strategyId,

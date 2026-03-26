@@ -7,9 +7,10 @@
  */
 
 import {
+    getCurrentTimeInTimezone,
     mt5PolicySchema,
+    padTime,
     type AccountState,
-    type MT5Policy,
     type OrderIntent,
     type Position,
     type RiskValidator,
@@ -221,31 +222,4 @@ function emergencyFlattenValidator(
 function isCloseAction(intent: OrderIntent): boolean {
     const action = intent.metadata?.action
     return action === "close" || action === "close_position" || action === "cancel" || action === "cancel_order"
-}
-
-function getCurrentTimeInTimezone(timezone: string): { hours: number; minutes: number } {
-    try {
-        const formatter = new Intl.DateTimeFormat("en-US", {
-            timeZone: timezone,
-            hour: "numeric",
-            minute: "numeric",
-            hour12: false,
-        })
-        const parts = formatter.formatToParts(new Date())
-        const hourPart = parts.find((p) => p.type === "hour")
-        const minutePart = parts.find((p) => p.type === "minute")
-
-        return {
-            hours: Number(hourPart?.value ?? 0),
-            minutes: Number(minutePart?.value ?? 0),
-        }
-    } catch {
-        // Fallback to UTC
-        const now = new Date()
-        return { hours: now.getUTCHours(), minutes: now.getUTCMinutes() }
-    }
-}
-
-function padTime(n: number): string {
-    return String(n).padStart(2, "0")
 }

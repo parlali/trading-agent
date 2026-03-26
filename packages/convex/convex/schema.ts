@@ -181,6 +181,19 @@ export default defineSchema({
         .index("by_strategy_synced_at", ["strategyId", "syncedAt"])
         .index("by_app", ["app"]),
 
+    position_syncs: defineTable({
+        strategyId: v.id("strategies"),
+        app: v.union(
+            v.literal("alpaca-options"),
+            v.literal("polymarket"),
+            v.literal("mt5")
+        ),
+        syncedAt: v.number(),
+        positionCount: v.number(),
+    })
+        .index("by_strategy_synced_at", ["strategyId", "syncedAt"])
+        .index("by_app", ["app"]),
+
     alerts: defineTable({
         strategyId: v.optional(v.id("strategies")),
         app: v.optional(

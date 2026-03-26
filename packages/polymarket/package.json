@@ -3,11 +3,16 @@
     "version": "1.0.0",
     "type": "module",
     "private": true,
-    "main": "src/index.ts",
+    "main": "src/lib.ts",
+    "types": "src/lib.ts",
     "license": "UNLICENSED",
+    "exports": {
+        ".": {
+            "import": "./src/lib.ts",
+            "types": "./src/lib.ts"
+        }
+    },
     "scripts": {
-        "dev": "bun --watch src/index.ts",
-        "start": "bun src/index.ts",
         "build": "tsc --noEmit"
     },
     "dependencies": {
