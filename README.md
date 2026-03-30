@@ -34,6 +34,20 @@ cd packages/convex
 bunx convex dev
 ```
 
+Configure these secrets before starting the backend:
+
+- `CONVEX_URL` in the backend runtime
+- `BACKEND_SERVICE_TOKEN` in both Convex env vars and the backend runtime
+- `MT5_WORKER_ACCESS_KEY` in both Convex env vars and the MT5 worker runtime
+
+Generate machine credentials with a high-entropy random value, for example:
+
+```bash
+openssl rand -hex 32
+```
+
+Use one generated value for `BACKEND_SERVICE_TOKEN` and a different one for `MT5_WORKER_ACCESS_KEY`.
+
 ### Development
 
 ```bash
@@ -47,6 +61,14 @@ The backend runs N strategies, each defined by a config record in Convex:
 - **context** -- freeform string injected into the agent system prompt.
 
 The agent proposes intents. The risk layer validates. The venue adapter executes. Everything is logged to Convex.
+
+## Auth Model
+
+- Dashboard users should use Convex Auth only
+- Backend machine traffic uses `BACKEND_SERVICE_TOKEN` only for machine-only Convex actions such as secret resolution
+- MT5 worker traffic uses `MT5_WORKER_ACCESS_KEY` on every backend-to-worker request, including health checks
+
+Rotate machine secrets by generating a new value, updating the target service first, then updating the caller, and redeploying both ends so there is no mismatch window.
 
 See `plan.md` for the full implementation plan.
 

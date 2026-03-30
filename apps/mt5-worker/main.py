@@ -114,7 +114,7 @@ app = FastAPI(
 # Endpoints
 # ---------------------------------------------------------------------------
 
-@app.get("/health")
+@app.get("/health", dependencies=[Depends(verify_access_key)])
 async def health() -> dict[str, Any]:
     connected = _client is not None and _client._connected
     return {

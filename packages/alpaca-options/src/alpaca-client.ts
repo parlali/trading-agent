@@ -58,7 +58,7 @@ export class AlpacaClient {
         this.apiKey = credentials.apiKey
         this.secretKey = credentials.secretKey
         this.accountId = credentials.accountId
-        this.baseUrl = credentials.baseUrl ?? DEFAULT_BASE_URL
+        this.baseUrl = normalizeBaseUrl(credentials.baseUrl)
     }
 
     async getAccount(): Promise<AlpacaAccountResponse> {
@@ -208,4 +208,9 @@ function mapOrderResponse(order: AlpacaOrderResponse): ExecutionResult {
         timestamp: Date.now(),
         error: mapOrderStatus(order.status) === "rejected" ? order.status : undefined,
     }
+}
+
+function normalizeBaseUrl(baseUrl?: string): string {
+    const resolved = (baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, "")
+    return resolved.endsWith("/v2") ? resolved.slice(0, -3) : resolved
 }

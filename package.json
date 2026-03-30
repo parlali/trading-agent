@@ -9,6 +9,7 @@
     ],
     "scripts": {
         "dev": "bun --watch apps/backend/src/index.ts",
+        "dev:dashboard": "cd apps/dashboard && bun run dev",
         "build": "turbo build",
         "lint": "turbo lint",
         "deploy:convex": "cd packages/convex && bunx convex deploy --prod",

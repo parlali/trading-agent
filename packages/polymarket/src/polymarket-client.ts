@@ -155,6 +155,7 @@ export class PolymarketClient {
     private readonly apiPassphrase: string
     private readonly host: string
     private readonly chainId: number
+    private readonly signatureType = 0
 
     // Per-token metadata caches (TTL: 5 minutes)
     private tickSizeCache = new Map<string, { value: string; fetchedAt: number }>()
@@ -171,7 +172,7 @@ export class PolymarketClient {
         this.apiKey = credentials.apiKey
         this.apiSecret = credentials.apiSecret
         this.apiPassphrase = credentials.apiPassphrase
-        this.host = credentials.host ?? DEFAULT_HOST
+        this.host = (credentials.host ?? DEFAULT_HOST).replace(/\/+$/, "")
         this.chainId = credentials.chainId ?? DEFAULT_CHAIN_ID
     }
 
@@ -217,12 +218,12 @@ export class PolymarketClient {
     }
 
     async getMarket(conditionId: string): Promise<PolymarketMarket> {
-        const raw = await this.requestPublic<RawMarket>(`/markets/${conditionId}`)
+        const raw = await this.requestPublic<RawMarket>(`/market/${conditionId}`)
         return mapRawMarket(raw)
     }
 
     async getOrderBook(tokenId: string): Promise<PolymarketOrderBook> {
-        return this.requestPublic<PolymarketOrderBook>(`/book?token_id=${tokenId}`)
+        return this.requestPublic<PolymarketOrderBook>(`/order-book?token_id=${tokenId}`)
     }
 
     async getMidpoint(tokenId: string): Promise<number> {
@@ -368,19 +369,17 @@ export class PolymarketClient {
     }
 
     async getOrder(orderId: string): Promise<PolymarketOpenOrder> {
-        return this.requestAuthenticated<PolymarketOpenOrder>("GET", `/data/order/${orderId}`)
+        return this.requestAuthenticated<PolymarketOpenOrder>("GET", `/order/${orderId}`)
     }
 
     async getOpenOrders(params?: {
         market?: string
         assetId?: string
     }): Promise<PolymarketOpenOrder[]> {
-        const query = new URLSearchParams()
-        if (params?.market) query.set("market", params.market)
-        if (params?.assetId) query.set("asset_id", params.assetId)
-
-        const path = `/data/orders${query.toString() ? `?${query}` : ""}`
-        return this.requestAuthenticated<PolymarketOpenOrder[]>("GET", path)
+        return this.requestAuthenticated<PolymarketOpenOrder[]>("GET", "/orders", undefined, {
+            market: params?.market,
+            asset_id: params?.assetId,
+        })
     }
 
     async cancelOrder(orderId: string): Promise<void> {
@@ -405,17 +404,15 @@ export class PolymarketClient {
         let cursor: string | undefined
 
         do {
-            const query = new URLSearchParams()
-            if (params?.market) query.set("market", params.market)
-            if (params?.assetId) query.set("asset_id", params.assetId)
-            if (params?.before) query.set("before", params.before)
-            if (params?.after) query.set("after", params.after)
-            if (cursor) query.set("next_cursor", cursor)
-
-            const path = `/data/trades${query.toString() ? `?${query}` : ""}`
             const response = await this.requestAuthenticated<
                 PolymarketTrade[] | PaginatedResponse<PolymarketTrade>
-            >("GET", path)
+            >("GET", "/trades", undefined, {
+                market: params?.market,
+                asset_id: params?.assetId,
+                before: params?.before,
+                after: params?.after,
+                next_cursor: cursor,
+            })
 
             if (Array.isArray(response)) {
                 allTrades.push(...response)
@@ -433,7 +430,12 @@ export class PolymarketClient {
     async getBalance(): Promise<number> {
         const resp = await this.requestAuthenticated<{ balance: string }>(
             "GET",
-            "/balance-allowance?asset_type=COLLATERAL"
+            "/balance-allowance",
+            undefined,
+            {
+                asset_type: "COLLATERAL",
+                signature_type: this.signatureType,
+            }
         )
         return Number(resp.balance)
     }
@@ -442,7 +444,13 @@ export class PolymarketClient {
     async getTokenBalance(tokenId: string): Promise<number> {
         const resp = await this.requestAuthenticated<{ balance: string }>(
             "GET",
-            `/balance-allowance?asset_type=CONDITIONAL&token_id=${tokenId}`
+            "/balance-allowance",
+            undefined,
+            {
+                asset_type: "CONDITIONAL",
+                token_id: tokenId,
+                signature_type: this.signatureType,
+            }
         )
         return Number(resp.balance)
     }
@@ -469,11 +477,13 @@ export class PolymarketClient {
     private async requestAuthenticated<T>(
         method: string,
         path: string,
-        body?: unknown
+        body?: unknown,
+        query?: Record<string, string | number | boolean | undefined>
     ): Promise<T> {
         return retryWithBackoff(async () => {
             const bodyString = body ? JSON.stringify(body) : ""
             const headers = this.buildL2Headers(method, path, bodyString)
+            const url = appendQueryParams(`${this.host}${path}`, query)
 
             const init: RequestInit = {
                 method,
@@ -487,7 +497,7 @@ export class PolymarketClient {
                 init.body = bodyString
             }
 
-            const response = await fetch(`${this.host}${path}`, init)
+            const response = await fetch(url, init)
 
             if (!response.ok) {
                 const text = await response.text().catch(() => "")
@@ -509,8 +519,10 @@ export class PolymarketClient {
     ): Record<string, string> {
         const timestamp = Math.floor(Date.now() / 1000).toString()
         const message = timestamp + method + requestPath + body
-        const hmacKey = Buffer.from(this.apiSecret, "base64")
-        const signature = createHmac("sha256", hmacKey).update(message).digest("base64")
+        const hmacKey = Buffer.from(normalizeBase64(this.apiSecret), "base64")
+        const signature = toUrlSafeBase64(
+            createHmac("sha256", hmacKey).update(message).digest("base64")
+        )
 
         return {
             POLY_ADDRESS: this.address,
@@ -594,4 +606,35 @@ function roundToTickSize(price: number, tickSize: string): number {
 function generateSalt(): bigint {
     const bytes = randomBytes(32)
     return BigInt("0x" + bytes.toString("hex"))
+}
+
+function appendQueryParams(
+    url: string,
+    query?: Record<string, string | number | boolean | undefined>
+): string {
+    if (!query) {
+        return url
+    }
+
+    const searchParams = new URLSearchParams()
+
+    for (const [key, value] of Object.entries(query)) {
+        if (value !== undefined) {
+            searchParams.set(key, String(value))
+        }
+    }
+
+    const queryString = searchParams.toString()
+    return queryString ? `${url}?${queryString}` : url
+}
+
+function normalizeBase64(value: string): string {
+    return value
+        .replace(/-/g, "+")
+        .replace(/_/g, "/")
+        .replace(/[^A-Za-z0-9+/=]/g, "")
+}
+
+function toUrlSafeBase64(value: string): string {
+    return value.replace(/\+/g, "-").replace(/\//g, "_")
 }

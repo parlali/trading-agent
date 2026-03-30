@@ -64,8 +64,14 @@ const healthState: HealthState = {
 
 const logger = createLogger({ app: APP_NAME })
 const convexUrl = requireEnv("CONVEX_URL")
+const backendServiceToken = requireEnv("BACKEND_SERVICE_TOKEN")
 const healthPort = Number(Bun.env.HEALTH_PORT ?? 3100)
-const backend = createTradingBackendClient(convexUrl)
+const backend = createTradingBackendClient({
+    url: convexUrl,
+    machineAuth: {
+        serviceToken: backendServiceToken,
+    },
+})
 const searchProvider = new DuckDuckGoSearchProvider()
 
 const plugins: Record<VenueApp, VenuePlugin> = {
@@ -221,16 +227,20 @@ async function resolveAllSecrets(): Promise<void> {
 
     resolvedSecrets = await backend.resolveSecrets(Array.from(allKeys))
 
-    if (!resolvedSecrets.OPENROUTER_API_KEY) {
-        throw new Error(
-            "Missing required secret: OPENROUTER_API_KEY. Set this in Convex environment variables."
-        )
-    }
-
     const resolved = Object.keys(resolvedSecrets).filter((k) => resolvedSecrets[k] !== null)
     const missing = Object.keys(resolvedSecrets).filter((k) => resolvedSecrets[k] === null)
 
     logger.info("Secrets resolved from Convex", { resolved, missing })
+
+    if (missing.length > 0) {
+        logger.warn("Some secrets are missing from Convex environment variables", { missing })
+    }
+
+    if (!resolvedSecrets.OPENROUTER_API_KEY) {
+        logger.error(
+            "OPENROUTER_API_KEY is missing. Agent runs will fail until this is set in Convex environment variables."
+        )
+    }
 }
 
 async function validateAllEnvironments(apps: VenueApp[]): Promise<void> {
@@ -353,6 +363,10 @@ async function runStrategy(
     tools.register(createWebFetchTool())
 
     try {
+        if (!resolvedSecrets.OPENROUTER_API_KEY) {
+            throw new Error("Cannot run strategy: OPENROUTER_API_KEY is not set in Convex environment variables")
+        }
+
         const positions = await venue.getPositions()
         const accountState = await venue.getAccountState()
 
@@ -369,7 +383,7 @@ async function runStrategy(
             },
             {
                 llm: {
-                    apiKey: resolvedSecrets.OPENROUTER_API_KEY!,
+                    apiKey: resolvedSecrets.OPENROUTER_API_KEY,
                     model: resolvedSecrets.OPENROUTER_MODEL ?? "anthropic/claude-3.7-sonnet",
                 },
                 tools,

@@ -31,6 +31,13 @@ export interface ConvexOrderPersistenceConfig {
     url: string
 }
 
+export interface TradingBackendClientConfig {
+    url: string
+    machineAuth?: {
+        serviceToken: string
+    }
+}
+
 export interface StoredStrategy {
     _id: Id<"strategies">
     _creationTime: number
@@ -100,8 +107,22 @@ export interface TradingBackendClient extends TradeEventLoggerMethods {
     acknowledgeAlert(alertId: Id<"alerts">): Promise<void>
 }
 
-export const createTradingBackendClient = (url: string): TradingBackendClient => {
-    const client = new ConvexHttpClient(url)
+export const createTradingBackendClient = (config: string | TradingBackendClientConfig): TradingBackendClient => {
+    const resolvedConfig =
+        typeof config === "string"
+            ? { url: config }
+            : config
+    const client = new ConvexHttpClient(resolvedConfig.url)
+
+    const requireMachineAuth = (): { serviceToken: string } => {
+        const serviceToken = resolvedConfig.machineAuth?.serviceToken?.trim()
+
+        if (!serviceToken) {
+            throw new Error("Machine-authenticated Convex call requires a backend service token")
+        }
+
+        return { serviceToken }
+    }
 
     return {
         async getStrategyConfigs(app: App): Promise<StoredStrategy[]> {
@@ -219,7 +240,10 @@ export const createTradingBackendClient = (url: string): TradingBackendClient =>
             })
         },
         async resolveSecrets(keys: string[]): Promise<Record<string, string | null>> {
-            return await client.action(api.actions.resolveSecrets, { keys }) as Record<string, string | null>
+            return await client.action(api.actions.resolveSecrets, {
+                keys,
+                ...requireMachineAuth(),
+            }) as Record<string, string | null>
         },
         async reportHeartbeat(app: App, status: "healthy" | "degraded" | "unhealthy", metadata?: Record<string, unknown>): Promise<void> {
             await client.mutation(api.mutations.reportHeartbeat, {

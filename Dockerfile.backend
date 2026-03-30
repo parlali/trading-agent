@@ -37,6 +37,7 @@ COPY --from=builder /app/apps/backend ./apps/backend
 WORKDIR /app/apps/backend
 
 ENV NODE_ENV=production
+ENV BACKEND_SERVICE_TOKEN=""
 EXPOSE 3100
 CMD ["bun", "run", "src/index.ts"]
 

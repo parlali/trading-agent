@@ -1,18 +1,58 @@
+import type { ActionCtx } from "./_generated/server"
 import { action } from "./_generated/server"
 import { v } from "convex/values"
 
-// Resolve secrets from Convex environment variables.
-// All broker credentials, API keys, and tokens are stored as Convex env vars
-// and accessed at runtime. The only local env var apps need is CONVEX_URL.
+const BACKEND_SERVICE_TOKEN_ENV_VAR = "BACKEND_SERVICE_TOKEN"
+
+function readEnv(): Record<string, string | undefined> {
+    return (
+        globalThis as {
+            process?: {
+                env?: Record<string, string | undefined>
+            }
+        }
+    ).process?.env ?? {}
+}
+
+function readBackendServiceToken(): string {
+    const env = readEnv()[BACKEND_SERVICE_TOKEN_ENV_VAR]?.trim()
+
+    if (!env) {
+        throw new Error(
+            `${BACKEND_SERVICE_TOKEN_ENV_VAR} is not configured in Convex environment variables`
+        )
+    }
+
+    return env
+}
+
+async function requireBackendServiceAuth(ctx: ActionCtx, serviceToken: string): Promise<void> {
+    const identity = await ctx.auth.getUserIdentity()
+
+    if (identity) {
+        throw new Error("Machine-only action cannot be called with a user-authenticated identity")
+    }
+
+    if (!serviceToken.trim()) {
+        throw new Error("Machine-only action requires a backend service token")
+    }
+
+    const expectedToken = readBackendServiceToken()
+    if (serviceToken !== expectedToken) {
+        throw new Error("Invalid backend service token")
+    }
+}
+
 export const resolveSecrets = action({
     args: {
         keys: v.array(v.string()),
+        serviceToken: v.string(),
     },
-    handler: async (_ctx, args) => {
+    handler: async (ctx, args) => {
+        await requireBackendServiceAuth(ctx, args.serviceToken)
+
         const resolved: Record<string, string | null> = {}
-        // Convex actions run in Node.js and have access to environment variables
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const env: Record<string, string | undefined> = (globalThis as any).process?.env ?? {}
+        const env = readEnv()
 
         for (const key of args.keys) {
             resolved[key] = env[key] ?? null

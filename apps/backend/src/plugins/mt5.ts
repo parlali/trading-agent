@@ -54,7 +54,7 @@ export class MT5Plugin implements VenuePlugin {
 
     async validateEnvironment(secrets: Record<string, string | null>): Promise<void> {
         const workerUrl = requireResolvedSecret(secrets, "MT5_WORKER_URL")
-        const accessKey = secrets.MT5_WORKER_ACCESS_KEY ?? ""
+        const accessKey = requireResolvedSecret(secrets, "MT5_WORKER_ACCESS_KEY")
         const client = new MT5Client({ workerUrl, accessKey })
 
         await client.getHealth()
@@ -228,7 +228,7 @@ export class MT5Plugin implements VenuePlugin {
 
         return {
             workerUrl,
-            accessKey: secrets.MT5_WORKER_ACCESS_KEY ?? "",
+            accessKey: requireResolvedSecret(secrets, "MT5_WORKER_ACCESS_KEY"),
             credentials: {
                 login: Number(login),
                 password,

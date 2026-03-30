@@ -454,3 +454,51 @@ export const getPnlSummary = query({
         }
     },
 })
+
+export const getEquityTimeSeries = query({
+    args: {
+        timeRange: v.union(
+            v.literal("24h"),
+            v.literal("7d"),
+            v.literal("30d"),
+            v.literal("90d"),
+            v.literal("all")
+        ),
+    },
+    handler: async (ctx, args) => {
+        const durationMsByRange = {
+            "24h": 24 * 60 * 60 * 1000,
+            "7d": 7 * 24 * 60 * 60 * 1000,
+            "30d": 30 * 24 * 60 * 60 * 1000,
+            "90d": 90 * 24 * 60 * 60 * 1000,
+            "all": Infinity,
+        } as const
+
+        const end = Date.now()
+        const start = args.timeRange === "all" ? 0 : end - durationMsByRange[args.timeRange]
+
+        const snapshots = await ctx.db.query("account_snapshots").collect()
+
+        return snapshots
+            .filter((s) =>
+                venueApps.includes(s.app as VenueApp) &&
+                s.timestamp >= start &&
+                s.timestamp <= end
+            )
+            .sort((a, b) => a.timestamp - b.timestamp)
+            .map((s) => ({
+                app: s.app,
+                timestamp: s.timestamp,
+                equity: s.balance + s.openPnl,
+                balance: s.balance,
+                openPnl: s.openPnl,
+            }))
+    },
+})
+
+export const getAllStrategies = query({
+    args: {},
+    handler: async (ctx) => {
+        return await ctx.db.query("strategies").collect()
+    },
+})
