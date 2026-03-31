@@ -1,5 +1,5 @@
 import type { ToolDefinition } from "@valiq-trading/agent"
-import { createValiqDataTool, createValiqResearchTool, ValiqClient, ValiqDataAdapter, ValiqResearchAdapter } from "@valiq-trading/valiq"
+import { createValiqDataTool, createValiqResearchTool, ValiqClient, ValiqDataAdapter, ValiqResearchAdapter, createOAuthTokenProvider } from "@valiq-trading/valiq"
 import {
     getCurrentTimeInTimezone,
     mt5PolicySchema,
@@ -33,7 +33,10 @@ export class MT5Plugin implements VenuePlugin {
             "MT5_PASSWORD",
             "MT5_SERVER",
             "VALIQ_API_URL",
-            "VALIQ_AUTH_TOKEN",
+            "VALIQ_AUTH_URL",
+            "VALIQ_OAUTH_CLIENT_ID",
+            "VALIQ_OAUTH_CLIENT_SECRET",
+            "VALIQ_OAUTH_USER_UUID",
         ]
     }
 
@@ -83,15 +86,26 @@ export class MT5Plugin implements VenuePlugin {
 
     getExtraTools(config: ExtraToolsConfig): ToolDefinition[] {
         const valiqUrl = config.secrets.VALIQ_API_URL
-        const valiqToken = config.secrets.VALIQ_AUTH_TOKEN
+        const authUrl = config.secrets.VALIQ_AUTH_URL
+        const clientId = config.secrets.VALIQ_OAUTH_CLIENT_ID
+        const clientSecret = config.secrets.VALIQ_OAUTH_CLIENT_SECRET
+        const userUuid = config.secrets.VALIQ_OAUTH_USER_UUID
 
-        if (!valiqUrl || !valiqToken) {
+        if (!valiqUrl || !authUrl || !clientId || !clientSecret || !userUuid) {
             return []
         }
 
+        const tokenProvider = createOAuthTokenProvider({
+            authUrl,
+            clientId,
+            clientSecret,
+            userUuid,
+            logger: config.runLogger,
+        })
+
         const valiqClient = new ValiqClient({
             apiUrl: valiqUrl,
-            authToken: valiqToken,
+            tokenProvider,
             logger: config.runLogger,
         })
         const research = new ValiqResearchAdapter(valiqClient, config.runLogger)

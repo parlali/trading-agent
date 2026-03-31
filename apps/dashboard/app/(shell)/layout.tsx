@@ -7,17 +7,9 @@ import { Separator } from "@/components/ui/separator"
 
 const pageNames: Record<string, string> = {
     "/": "Overview",
-    "/equity": "Equity",
-    "/venues/alpaca-options": "Alpaca Options",
-    "/venues/polymarket": "Polymarket",
-    "/venues/mt5": "MT5",
+    "/test": "Connection Tests",
     "/strategies": "Strategies",
-    "/runs": "Runs",
-    "/trades": "Trades",
-    "/positions": "Positions",
     "/system/kill-switches": "Kill Switches",
-    "/system/health": "Health",
-    "/system/alerts": "Alerts",
 }
 
 function getPageTitle(pathname: string): string {

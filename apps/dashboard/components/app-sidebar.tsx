@@ -5,22 +5,14 @@ import Link from "next/link"
 import { usePathname } from "next/navigation"
 import { useTheme } from "next-themes"
 import {
-    Activity,
-    AlertTriangle,
-    BarChart3,
-    Coins,
     Gauge,
-    Heart,
-    History,
     LayoutDashboard,
-    LineChart,
-    List,
     Moon,
     Monitor,
+    Plug,
     Power,
     Settings2,
     Sun,
-    TrendingUp,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import {
@@ -38,28 +30,14 @@ import {
     useSidebar,
 } from "@/components/ui/sidebar"
 
-const overviewItems = [
+const mainItems = [
     { label: "Overview", href: "/", icon: LayoutDashboard },
-    { label: "Equity", href: "/equity", icon: LineChart },
-]
-
-const venueItems = [
-    { label: "Alpaca Options", href: "/venues/alpaca-options", icon: TrendingUp },
-    { label: "Polymarket", href: "/venues/polymarket", icon: Coins },
-    { label: "MT5", href: "/venues/mt5", icon: BarChart3 },
-]
-
-const operationsItems = [
+    { label: "Test", href: "/test", icon: Plug },
     { label: "Strategies", href: "/strategies", icon: Settings2 },
-    { label: "Runs", href: "/runs", icon: History },
-    { label: "Trades", href: "/trades", icon: List },
-    { label: "Positions", href: "/positions", icon: Activity },
 ]
 
 const systemItems = [
     { label: "Kill Switches", href: "/system/kill-switches", icon: Power },
-    { label: "Health", href: "/system/health", icon: Heart },
-    { label: "Alerts", href: "/system/alerts", icon: AlertTriangle },
 ]
 
 type NavItem = {
@@ -136,30 +114,9 @@ export function AppSidebar() {
             <SidebarSeparator className="mx-4" />
             <SidebarContent>
                 <SidebarGroup>
-                    <SidebarGroupLabel>Dashboard</SidebarGroupLabel>
                     <SidebarGroupContent>
                         <SidebarMenu>
-                            {overviewItems.map((item) => (
-                                <NavItemRow key={item.label} item={item} pathname={pathname} />
-                            ))}
-                        </SidebarMenu>
-                    </SidebarGroupContent>
-                </SidebarGroup>
-                <SidebarGroup>
-                    <SidebarGroupLabel>Venues</SidebarGroupLabel>
-                    <SidebarGroupContent>
-                        <SidebarMenu>
-                            {venueItems.map((item) => (
-                                <NavItemRow key={item.label} item={item} pathname={pathname} />
-                            ))}
-                        </SidebarMenu>
-                    </SidebarGroupContent>
-                </SidebarGroup>
-                <SidebarGroup>
-                    <SidebarGroupLabel>Operations</SidebarGroupLabel>
-                    <SidebarGroupContent>
-                        <SidebarMenu>
-                            {operationsItems.map((item) => (
+                            {mainItems.map((item) => (
                                 <NavItemRow key={item.label} item={item} pathname={pathname} />
                             ))}
                         </SidebarMenu>

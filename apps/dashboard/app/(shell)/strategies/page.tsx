@@ -12,7 +12,7 @@ import { StatusDot } from "@/components/status-dot"
 import { EmptyState } from "@/components/empty-state"
 import { formatRelativeTime } from "@/lib/format"
 import { VENUE_APPS, VENUE_META, type VenueApp } from "@/lib/constants"
-import { Layers, Play } from "lucide-react"
+import { Layers, Play, Plus } from "lucide-react"
 import { toast } from "sonner"
 
 export default function StrategiesPage() {
@@ -37,16 +37,34 @@ export default function StrategiesPage() {
 
     if (groupedByVenue.length === 0) {
         return (
-            <EmptyState
-                icon={Layers}
-                title="No strategies"
-                description="No strategies configured yet"
-            />
+            <div className="space-y-6">
+                <div className="flex justify-end">
+                    <Button asChild>
+                        <Link href="/strategies/new">
+                            <Plus className="h-4 w-4" />
+                            New Strategy
+                        </Link>
+                    </Button>
+                </div>
+                <EmptyState
+                    icon={Layers}
+                    title="No strategies"
+                    description="No strategies configured yet"
+                />
+            </div>
         )
     }
 
     return (
         <div className="space-y-6">
+            <div className="flex justify-end">
+                <Button asChild>
+                    <Link href="/strategies/new">
+                        <Plus className="h-4 w-4" />
+                        New Strategy
+                    </Link>
+                </Button>
+            </div>
             {groupedByVenue.map(({ app, meta, strategies }) => (
                 <div key={app} className="space-y-3">
                     <div className="flex items-center gap-2">

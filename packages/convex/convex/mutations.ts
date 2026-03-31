@@ -400,6 +400,30 @@ export const disableStrategy = mutation({
     },
 })
 
+// Delete a strategy permanently
+export const deleteStrategy = mutation({
+    args: { strategyId: v.id("strategies") },
+    handler: async (ctx, args) => {
+        const strategy = await ctx.db.get(args.strategyId)
+        if (!strategy) {
+            throw new Error(`Strategy not found: ${args.strategyId}`)
+        }
+
+        const activeRun = await ctx.db
+            .query("strategy_runs")
+            .withIndex("by_strategy_status", (q) =>
+                q.eq("strategyId", args.strategyId).eq("status", "running")
+            )
+            .first()
+
+        if (activeRun) {
+            throw new Error("Cannot delete a strategy with an active run")
+        }
+
+        await ctx.db.delete(args.strategyId)
+    },
+})
+
 // Report heartbeat from an app
 export const reportHeartbeat = mutation({
     args: {

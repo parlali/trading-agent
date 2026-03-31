@@ -1,5 +1,5 @@
 import type { ToolDefinition } from "@valiq-trading/agent"
-import { createValiqDataTool, createValiqResearchTool, ValiqClient, ValiqDataAdapter, ValiqResearchAdapter } from "@valiq-trading/valiq"
+import { createValiqDataTool, createValiqResearchTool, ValiqClient, ValiqDataAdapter, ValiqResearchAdapter, createOAuthTokenProvider } from "@valiq-trading/valiq"
 import { AlpacaClient, type AlpacaCredentials, alpacaRiskValidators, AlpacaOptionsVenueAdapter } from "@valiq-trading/alpaca-options"
 import { requireResolvedSecret, resolveCredentialPrefix, type RiskValidator, type VenueAdapter } from "@valiq-trading/core"
 import type { VenuePlugin, ExtraToolsConfig } from "../types"
@@ -21,7 +21,10 @@ export class AlpacaPlugin implements VenuePlugin {
             "ALPACA_PRIMARY_SECRET_KEY",
             "ALPACA_PRIMARY_BASE_URL",
             "VALIQ_API_URL",
-            "VALIQ_AUTH_TOKEN",
+            "VALIQ_AUTH_URL",
+            "VALIQ_OAUTH_CLIENT_ID",
+            "VALIQ_OAUTH_CLIENT_SECRET",
+            "VALIQ_OAUTH_USER_UUID",
         ]
     }
 
@@ -64,15 +67,26 @@ export class AlpacaPlugin implements VenuePlugin {
 
     getExtraTools(config: ExtraToolsConfig): ToolDefinition[] {
         const valiqUrl = config.secrets.VALIQ_API_URL
-        const valiqToken = config.secrets.VALIQ_AUTH_TOKEN
+        const authUrl = config.secrets.VALIQ_AUTH_URL
+        const clientId = config.secrets.VALIQ_OAUTH_CLIENT_ID
+        const clientSecret = config.secrets.VALIQ_OAUTH_CLIENT_SECRET
+        const userUuid = config.secrets.VALIQ_OAUTH_USER_UUID
 
-        if (!valiqUrl || !valiqToken) {
+        if (!valiqUrl || !authUrl || !clientId || !clientSecret || !userUuid) {
             return []
         }
 
+        const tokenProvider = createOAuthTokenProvider({
+            authUrl,
+            clientId,
+            clientSecret,
+            userUuid,
+            logger: config.runLogger,
+        })
+
         const valiqClient = new ValiqClient({
             apiUrl: valiqUrl,
-            authToken: valiqToken,
+            tokenProvider,
             logger: config.runLogger,
         })
         const research = new ValiqResearchAdapter(valiqClient, config.runLogger)

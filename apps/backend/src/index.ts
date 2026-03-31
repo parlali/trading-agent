@@ -183,7 +183,7 @@ async function main(): Promise<void> {
         logger.info(`Loaded ${activeStrategies.length} strategies for ${app}`)
     }
 
-    await validateAllEnvironments(activeApps)
+    await validateAllEnvironments(allApps)
 
     healthState.strategyCount = totalStrategies
 
@@ -251,10 +251,20 @@ async function validateAllEnvironments(apps: VenueApp[]): Promise<void> {
             await plugin.validateEnvironment(validationSecrets)
             healthState.venues[app] = { validated: true }
             logger.info(`${app} environment validated`)
+
+            await backend.reportHeartbeat(app, "healthy", {
+                source: "environment_validation",
+            })
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error)
             healthState.venues[app] = { validated: false, error: message }
             logger.error(`${app} environment validation failed`, { error: message })
+
+            await backend.reportHeartbeat(app, "degraded", {
+                source: "environment_validation",
+                error: message,
+            })
+
             await backend.createAlert({
                 app,
                 severity: "critical",
@@ -444,6 +454,15 @@ function startHeartbeat(): void {
                 lastRunStatus: healthState.lastRunStatus,
                 uptime: Date.now() - healthState.startedAt,
             })
+
+            for (const [app, venueState] of Object.entries(healthState.venues) as [VenueApp, typeof healthState.venues[string]][]) {
+                const status = venueState?.validated ? "healthy" : "degraded"
+                await backend.reportHeartbeat(app, status, {
+                    source: "periodic",
+                    lastSyncAt: venueState?.lastSyncAt,
+                    error: venueState?.lastSyncError ?? venueState?.error,
+                })
+            }
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error)
             logger.error("Failed to report heartbeat", { error: message })

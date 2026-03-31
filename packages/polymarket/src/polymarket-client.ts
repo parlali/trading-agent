@@ -426,7 +426,7 @@ export class PolymarketClient {
         return allTrades
     }
 
-    /** Get USDC balance */
+    /** Get USDC balance (converted from raw 6-decimal integer to USD) */
     async getBalance(): Promise<number> {
         const resp = await this.requestAuthenticated<{ balance: string }>(
             "GET",
@@ -437,10 +437,10 @@ export class PolymarketClient {
                 signature_type: this.signatureType,
             }
         )
-        return Number(resp.balance)
+        return Number(resp.balance) / AMOUNT_MULTIPLIER
     }
 
-    /** Get conditional token balance for a specific token */
+    /** Get conditional token balance for a specific token (converted from raw 6-decimal integer) */
     async getTokenBalance(tokenId: string): Promise<number> {
         const resp = await this.requestAuthenticated<{ balance: string }>(
             "GET",
@@ -452,7 +452,7 @@ export class PolymarketClient {
                 signature_type: this.signatureType,
             }
         )
-        return Number(resp.balance)
+        return Number(resp.balance) / AMOUNT_MULTIPLIER
     }
 
     // -----------------------------------------------------------------------

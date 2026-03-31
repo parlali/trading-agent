@@ -24,6 +24,10 @@
     },
     "dependencies": {
         "@valiq-trading/core": "workspace:*",
-        "convex": "^1.34.0"
+        "convex": "^1.34.0",
+        "viem": "^2.21.0"
+    },
+    "devDependencies": {
+        "@types/node": "^22.0.0"
     }
 }
