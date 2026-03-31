@@ -106,6 +106,13 @@ class MT5Client:
             if os.path.isfile(src):
                 shutil.copy2(src, terminal_dst)
 
+        config_dir = os.path.join(path, "config")
+        os.makedirs(config_dir, exist_ok=True)
+        servers_dst = os.path.join(config_dir, "servers.dat")
+        servers_src = os.path.join(os.path.dirname(__file__), "servers.dat")
+        if os.path.isfile(servers_src) and not os.path.isfile(servers_dst):
+            shutil.copy2(servers_src, servers_dst)
+
         return path
 
     def connect(self) -> bool:
