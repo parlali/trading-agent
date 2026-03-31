@@ -394,7 +394,7 @@ async function runStrategy(
             {
                 llm: {
                     apiKey: resolvedSecrets.OPENROUTER_API_KEY,
-                    model: resolvedSecrets.OPENROUTER_MODEL ?? "anthropic/claude-3.7-sonnet",
+                    model: resolvedSecrets.OPENROUTER_MODEL ?? "anthropic/claude-opus-4.6",
                 },
                 tools,
                 logger: runLogger,

@@ -122,6 +122,57 @@ export class ValiqClient {
     }
 }
 
+export interface ValiqDataClientConfig {
+    apiUrl: string
+    apiKey: string
+    timeout?: number
+    logger?: Logger
+}
+
+export class ValiqDataClient {
+    private config: ValiqDataClientConfig
+    private logger?: Logger
+
+    constructor(config: ValiqDataClientConfig) {
+        this.config = config
+        this.logger = config.logger
+    }
+
+    async request<T>(path: string, options?: RequestInit): Promise<T> {
+        const url = `${this.config.apiUrl}${path}`
+        this.logger?.debug("ValiqDataClient request", { method: options?.method ?? "GET", path })
+
+        const response = await retryWithBackoff(
+            () =>
+                fetch(url, {
+                    ...options,
+                    headers: {
+                        "X-API-Key": this.config.apiKey,
+                        "Content-Type": "application/json",
+                        ...options?.headers,
+                    },
+                    signal: AbortSignal.timeout(this.config.timeout ?? 30_000),
+                }),
+            3,
+            1000
+        )
+
+        if (!response.ok) {
+            const body = await response.text().catch(() => "")
+            this.logger?.error("ValiqDataClient request failed", {
+                path,
+                status: response.status,
+                body: body.slice(0, 500),
+            })
+            throw new Error(`Val-iQ Data API error: ${response.status} ${response.statusText}`)
+        }
+
+        const result = (await response.json()) as T
+        this.logger?.debug("ValiqDataClient response ok", { path })
+        return result
+    }
+}
+
 export function createStaticTokenProvider(token: string): TokenProvider {
     return async () => token
 }

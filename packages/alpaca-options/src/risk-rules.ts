@@ -14,9 +14,7 @@ interface ParsedOptionContract {
 }
 
 export const alpacaRiskValidators: readonly RiskValidator[] = [
-    maxLossPerStructureValidator,
-    maxConcurrentStructuresValidator,
-    allowedUnderlyingsValidator,
+    maxLossPerPlayValidator,
     expiryValidationValidator,
     spreadWidthValidationValidator,
 ]
@@ -49,7 +47,7 @@ export function parseOptionContractSymbol(symbol: string): ParsedOptionContract 
     }
 }
 
-function maxLossPerStructureValidator(
+function maxLossPerPlayValidator(
     intent: OrderIntent,
     rawPolicy: Record<string, unknown>,
     _state: AccountState,
@@ -65,66 +63,10 @@ function maxLossPerStructureValidator(
         }
     }
 
-    if (estimatedMaxLoss > policy.maxLossPerStructure) {
+    if (estimatedMaxLoss > policy.maxLossPerPlay) {
         return {
             allowed: false,
-            reason: `Estimated max loss ${estimatedMaxLoss} exceeds structure limit ${policy.maxLossPerStructure}`,
-        }
-    }
-
-    return { allowed: true }
-}
-
-function maxConcurrentStructuresValidator(
-    intent: OrderIntent,
-    rawPolicy: Record<string, unknown>,
-    _state: AccountState,
-    positions: Position[]
-) {
-    const policy = alpacaOptionsPolicySchema.parse(rawPolicy)
-
-    if ((intent.metadata?.action as string | undefined) === "close") {
-        return { allowed: true }
-    }
-
-    const openStructureCount = positions.reduce((count, position) => {
-        const structureType = position.metadata?.structureType
-        if (structureType === "iron_condor") {
-            return count + Math.max(position.quantity, 1)
-        }
-        return count + 1
-    }, 0)
-
-    if (openStructureCount >= policy.maxConcurrentStructures) {
-        return {
-            allowed: false,
-            reason: `Opening another structure would exceed max concurrent structures ${policy.maxConcurrentStructures}`,
-        }
-    }
-
-    return { allowed: true }
-}
-
-function allowedUnderlyingsValidator(
-    intent: OrderIntent,
-    rawPolicy: Record<string, unknown>
-) {
-    const policy = alpacaOptionsPolicySchema.parse(rawPolicy)
-    const underlyings = getIntentUnderlyings(intent)
-
-    if (underlyings.length === 0) {
-        return {
-            allowed: false,
-            reason: "Unable to determine underlying for Alpaca options order",
-        }
-    }
-
-    for (const underlying of underlyings) {
-        if (!policy.allowedUnderlyings.includes(underlying)) {
-            return {
-                allowed: false,
-                reason: `Underlying ${underlying} is not in the allowed underlyings list`,
-            }
+            reason: `Estimated max loss ${estimatedMaxLoss} exceeds limit ${policy.maxLossPerPlay}`,
         }
     }
 
@@ -187,28 +129,14 @@ function spreadWidthValidationValidator(
 
     const maxLossFromWidth = width * 100 * intent.quantity
 
-    if (maxLossFromWidth > policy.maxLossPerStructure) {
+    if (maxLossFromWidth > policy.maxLossPerPlay) {
         return {
             allowed: false,
-            reason: `Spread width implies max loss ${maxLossFromWidth}, exceeding ${policy.maxLossPerStructure}`,
+            reason: `Spread width implies max loss ${maxLossFromWidth}, exceeding ${policy.maxLossPerPlay}`,
         }
     }
 
     return { allowed: true }
-}
-
-function getIntentUnderlyings(intent: OrderIntent): string[] {
-    const explicitUnderlying = intent.metadata?.underlying
-    if (typeof explicitUnderlying === "string") {
-        return [explicitUnderlying.toUpperCase()]
-    }
-
-    const instruments = [intent.instrument, ...(intent.legs?.map((leg) => leg.instrument) ?? [])]
-    const underlyings = instruments
-        .map((instrument) => parseOptionContractSymbol(instrument)?.underlying ?? extractUnderlyingFromSyntheticInstrument(instrument))
-        .filter((value): value is string => Boolean(value))
-
-    return Array.from(new Set(underlyings))
 }
 
 function getIntentExpirations(intent: OrderIntent): string[] {
@@ -257,15 +185,6 @@ function estimateStructureMaxLoss(intent: OrderIntent): number | null {
     const creditOffset = credit * 100 * intent.quantity
 
     return Math.max(grossRisk - creditOffset, 0)
-}
-
-function extractUnderlyingFromSyntheticInstrument(instrument: string): string | null {
-    if (!instrument.startsWith("IC:")) {
-        return null
-    }
-
-    const parts = instrument.split(":")
-    return parts[1] ?? null
 }
 
 function diffDays(expiration: string): number | null {

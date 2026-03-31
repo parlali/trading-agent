@@ -1,7 +1,7 @@
 import type { ToolDefinition } from "@valiq-trading/agent"
-import { createValiqDataTool, createValiqResearchTool, ValiqClient, ValiqDataAdapter, ValiqResearchAdapter, createOAuthTokenProvider } from "@valiq-trading/valiq"
+import { createValiqDataTool, createValiqResearchTool, ValiqClient, ValiqDataClient, ValiqDataAdapter, ValiqResearchAdapter, createOAuthTokenProvider } from "@valiq-trading/valiq"
 import { AlpacaClient, type AlpacaCredentials, alpacaRiskValidators, AlpacaOptionsVenueAdapter } from "@valiq-trading/alpaca-options"
-import { requireResolvedSecret, resolveCredentialPrefix, type RiskValidator, type VenueAdapter } from "@valiq-trading/core"
+import { requireResolvedSecret, type RiskValidator, type VenueAdapter } from "@valiq-trading/core"
 import type { VenuePlugin, ExtraToolsConfig } from "../types"
 
 const PAPER_URL_PATTERN = /paper/i
@@ -17,6 +17,7 @@ export class AlpacaPlugin implements VenuePlugin {
             "ALPACA_API_KEY",
             "ALPACA_SECRET_KEY",
             "ALPACA_BASE_URL",
+            "ALPACA_ACCOUNT_ID",
             "ALPACA_PRIMARY_API_KEY",
             "ALPACA_PRIMARY_SECRET_KEY",
             "ALPACA_PRIMARY_BASE_URL",
@@ -25,22 +26,13 @@ export class AlpacaPlugin implements VenuePlugin {
             "VALIQ_OAUTH_CLIENT_ID",
             "VALIQ_OAUTH_CLIENT_SECRET",
             "VALIQ_OAUTH_USER_UUID",
+            "VALIQ_DATA_API_URL",
+            "VALIQ_DATA_API_KEY",
         ]
     }
 
-    resolveAdditionalSecretKeys(policy: Record<string, unknown>): string[] {
-        const brokerRef = String(policy.broker ?? "").trim()
-        if (!brokerRef) {
-            return []
-        }
-
-        const prefix = resolveCredentialPrefix(brokerRef)
-
-        return [
-            `ALPACA_${prefix}_API_KEY`,
-            `ALPACA_${prefix}_SECRET_KEY`,
-            `ALPACA_${prefix}_BASE_URL`,
-        ]
+    resolveAdditionalSecretKeys(_policy: Record<string, unknown>): string[] {
+        return []
     }
 
     async validateEnvironment(secrets: Record<string, string | null>): Promise<void> {
@@ -66,36 +58,46 @@ export class AlpacaPlugin implements VenuePlugin {
     }
 
     getExtraTools(config: ExtraToolsConfig): ToolDefinition[] {
+        const tools: ToolDefinition[] = []
+
         const valiqUrl = config.secrets.VALIQ_API_URL
         const authUrl = config.secrets.VALIQ_AUTH_URL
         const clientId = config.secrets.VALIQ_OAUTH_CLIENT_ID
         const clientSecret = config.secrets.VALIQ_OAUTH_CLIENT_SECRET
         const userUuid = config.secrets.VALIQ_OAUTH_USER_UUID
 
-        if (!valiqUrl || !authUrl || !clientId || !clientSecret || !userUuid) {
-            return []
+        if (valiqUrl && authUrl && clientId && clientSecret && userUuid) {
+            const tokenProvider = createOAuthTokenProvider({
+                authUrl,
+                clientId,
+                clientSecret,
+                userUuid,
+                logger: config.runLogger,
+            })
+
+            const valiqClient = new ValiqClient({
+                apiUrl: valiqUrl,
+                tokenProvider,
+                logger: config.runLogger,
+            })
+            const research = new ValiqResearchAdapter(valiqClient, config.runLogger)
+            tools.push(createValiqResearchTool(research))
         }
 
-        const tokenProvider = createOAuthTokenProvider({
-            authUrl,
-            clientId,
-            clientSecret,
-            userUuid,
-            logger: config.runLogger,
-        })
+        const dataApiUrl = config.secrets.VALIQ_DATA_API_URL
+        const dataApiKey = config.secrets.VALIQ_DATA_API_KEY
 
-        const valiqClient = new ValiqClient({
-            apiUrl: valiqUrl,
-            tokenProvider,
-            logger: config.runLogger,
-        })
-        const research = new ValiqResearchAdapter(valiqClient, config.runLogger)
-        const data = new ValiqDataAdapter(valiqClient)
+        if (dataApiUrl && dataApiKey) {
+            const dataClient = new ValiqDataClient({
+                apiUrl: dataApiUrl,
+                apiKey: dataApiKey,
+                logger: config.runLogger,
+            })
+            const data = new ValiqDataAdapter(dataClient)
+            tools.push(createValiqDataTool(data))
+        }
 
-        return [
-            createValiqResearchTool(research),
-            createValiqDataTool(data),
-        ]
+        return tools
     }
 
     getEnvironment(): "paper" | "live" | undefined {
@@ -103,29 +105,18 @@ export class AlpacaPlugin implements VenuePlugin {
     }
 
     private resolveCredentials(
-        policy: Record<string, unknown>,
+        _policy: Record<string, unknown>,
         secrets: Record<string, string | null>
     ): AlpacaCredentials {
-        const brokerRef = String(policy.broker ?? "").trim()
-        const accountId = String(policy.accountId ?? "").trim()
-
-        if (!brokerRef) {
-            throw new Error("Alpaca policy broker reference is required")
-        }
-
-        if (!accountId) {
-            throw new Error("Alpaca policy accountId is required")
-        }
-
-        const prefix = resolveCredentialPrefix(brokerRef)
-        const apiKey = requireResolvedSecret(secrets, `ALPACA_${prefix}_API_KEY`, "ALPACA_API_KEY")
-        const secretKey = requireResolvedSecret(secrets, `ALPACA_${prefix}_SECRET_KEY`, "ALPACA_SECRET_KEY")
+        const apiKey = requireResolvedSecret(secrets, "ALPACA_PRIMARY_API_KEY", "ALPACA_API_KEY")
+        const secretKey = requireResolvedSecret(secrets, "ALPACA_PRIMARY_SECRET_KEY", "ALPACA_SECRET_KEY")
+        const accountId = secrets.ALPACA_ACCOUNT_ID ?? ""
 
         return {
             apiKey,
             secretKey,
             accountId,
-            baseUrl: secrets[`ALPACA_${prefix}_BASE_URL`] ?? secrets.ALPACA_BASE_URL ?? undefined,
+            baseUrl: secrets.ALPACA_PRIMARY_BASE_URL ?? secrets.ALPACA_BASE_URL ?? undefined,
         }
     }
 

@@ -340,7 +340,7 @@ export const testValiqConnection = action({
         const chat = await fetchJson(`${apiUrl}/chats`, {
             method: "POST",
             headers,
-            body: JSON.stringify({}),
+            body: JSON.stringify({ title: "Connection Test" }),
         })
         if (!chat.ok) {
             steps.push({ name: "Create Chat", ok: false, error: chat.error })

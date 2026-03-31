@@ -2,10 +2,7 @@ import { z } from "zod/v4"
 
 export const baseStrategyPolicySchema = z.object({
     dryRun: z.boolean().default(false),
-    balanceFloor: z.number().optional(),
-    maxLossPerTrade: z.number().optional(),
-    maxTotalExposure: z.number().optional(),
-})
+}).passthrough()
 
 export type BaseStrategyPolicy = z.infer<typeof baseStrategyPolicySchema>
 
@@ -21,21 +18,20 @@ export const strategyConfigSchema = z.object({
 export type StrategyConfig = z.infer<typeof strategyConfigSchema>
 
 export const alpacaOptionsPolicySchema = baseStrategyPolicySchema.extend({
-    broker: z.string().min(1),
-    accountId: z.string().min(1),
-    maxLossPerStructure: z.number().positive(),
-    maxConcurrentStructures: z.number().int().positive(),
-    allowedUnderlyings: z.array(z.string().min(1)).min(1),
+    maxLossPerPlay: z.number().positive(),
 })
 
 export type AlpacaOptionsPolicy = z.infer<typeof alpacaOptionsPolicySchema>
 
+export const polymarketMaxBetSchema = z.object({
+    mode: z.enum(["fixed", "percentage"]),
+    value: z.number().positive(),
+})
+
+export type PolymarketMaxBet = z.infer<typeof polymarketMaxBetSchema>
+
 export const polymarketPolicySchema = baseStrategyPolicySchema.extend({
-    credentialsRef: z.string().min(1),
-    maxPositionSize: z.number().positive(),
-    maxTotalExposure: z.number().positive(),
-    allowedCategories: z.array(z.string()).optional(),
-    minLiquidity: z.number().nonnegative().optional(),
+    maxBet: polymarketMaxBetSchema,
 })
 
 export type PolymarketPolicy = z.infer<typeof polymarketPolicySchema>
@@ -49,11 +45,7 @@ export const mt5TradingHoursSchema = z.object({
 export type MT5TradingHours = z.infer<typeof mt5TradingHoursSchema>
 
 export const mt5PolicySchema = baseStrategyPolicySchema.extend({
-    credentialsRef: z.string().min(1),
-    maxDailyLoss: z.number().positive(),
-    maxConcurrentPositions: z.number().int().positive(),
-    maxLeverage: z.number().positive(),
-    allowedInstruments: z.array(z.string().min(1)).min(1),
+    maxRiskPercent: z.number().positive().max(100),
     tradingHours: mt5TradingHoursSchema,
     emergencyFlattenThreshold: z.number().positive(),
 })

@@ -1,11 +1,10 @@
 import type { ToolDefinition } from "@valiq-trading/agent"
-import { createValiqDataTool, createValiqResearchTool, ValiqClient, ValiqDataAdapter, ValiqResearchAdapter, createOAuthTokenProvider } from "@valiq-trading/valiq"
+import { createValiqDataTool, createValiqResearchTool, ValiqClient, ValiqDataClient, ValiqDataAdapter, ValiqResearchAdapter, createOAuthTokenProvider } from "@valiq-trading/valiq"
 import {
     getCurrentTimeInTimezone,
     mt5PolicySchema,
     padTime,
     requireResolvedSecret,
-    resolveCredentialPrefix,
     type RiskValidator,
     type VenueAdapter,
 } from "@valiq-trading/core"
@@ -37,22 +36,13 @@ export class MT5Plugin implements VenuePlugin {
             "VALIQ_OAUTH_CLIENT_ID",
             "VALIQ_OAUTH_CLIENT_SECRET",
             "VALIQ_OAUTH_USER_UUID",
+            "VALIQ_DATA_API_URL",
+            "VALIQ_DATA_API_KEY",
         ]
     }
 
-    resolveAdditionalSecretKeys(policy: Record<string, unknown>): string[] {
-        const credentialsRef = String(policy.credentialsRef ?? "").trim()
-        if (!credentialsRef) {
-            return []
-        }
-
-        const prefix = resolveCredentialPrefix(credentialsRef)
-
-        return [
-            `MT5_${prefix}_LOGIN`,
-            `MT5_${prefix}_PASSWORD`,
-            `MT5_${prefix}_SERVER`,
-        ]
+    resolveAdditionalSecretKeys(_policy: Record<string, unknown>): string[] {
+        return []
     }
 
     async validateEnvironment(secrets: Record<string, string | null>): Promise<void> {
@@ -85,36 +75,46 @@ export class MT5Plugin implements VenuePlugin {
     }
 
     getExtraTools(config: ExtraToolsConfig): ToolDefinition[] {
+        const tools: ToolDefinition[] = []
+
         const valiqUrl = config.secrets.VALIQ_API_URL
         const authUrl = config.secrets.VALIQ_AUTH_URL
         const clientId = config.secrets.VALIQ_OAUTH_CLIENT_ID
         const clientSecret = config.secrets.VALIQ_OAUTH_CLIENT_SECRET
         const userUuid = config.secrets.VALIQ_OAUTH_USER_UUID
 
-        if (!valiqUrl || !authUrl || !clientId || !clientSecret || !userUuid) {
-            return []
+        if (valiqUrl && authUrl && clientId && clientSecret && userUuid) {
+            const tokenProvider = createOAuthTokenProvider({
+                authUrl,
+                clientId,
+                clientSecret,
+                userUuid,
+                logger: config.runLogger,
+            })
+
+            const valiqClient = new ValiqClient({
+                apiUrl: valiqUrl,
+                tokenProvider,
+                logger: config.runLogger,
+            })
+            const research = new ValiqResearchAdapter(valiqClient, config.runLogger)
+            tools.push(createValiqResearchTool(research))
         }
 
-        const tokenProvider = createOAuthTokenProvider({
-            authUrl,
-            clientId,
-            clientSecret,
-            userUuid,
-            logger: config.runLogger,
-        })
+        const dataApiUrl = config.secrets.VALIQ_DATA_API_URL
+        const dataApiKey = config.secrets.VALIQ_DATA_API_KEY
 
-        const valiqClient = new ValiqClient({
-            apiUrl: valiqUrl,
-            tokenProvider,
-            logger: config.runLogger,
-        })
-        const research = new ValiqResearchAdapter(valiqClient, config.runLogger)
-        const data = new ValiqDataAdapter(valiqClient)
+        if (dataApiUrl && dataApiKey) {
+            const dataClient = new ValiqDataClient({
+                apiUrl: dataApiUrl,
+                apiKey: dataApiKey,
+                logger: config.runLogger,
+            })
+            const data = new ValiqDataAdapter(dataClient)
+            tools.push(createValiqDataTool(data))
+        }
 
-        return [
-            createValiqResearchTool(research),
-            createValiqDataTool(data),
-        ]
+        return tools
     }
 
     async preRunHooks(config: PreRunHookConfig): Promise<PreRunHookResult> {
@@ -230,15 +230,13 @@ export class MT5Plugin implements VenuePlugin {
     }
 
     private resolveCredentials(
-        policy: Record<string, unknown>,
+        _policy: Record<string, unknown>,
         secrets: Record<string, string | null>
     ): { workerUrl: string; accessKey: string; credentials: MT5WorkerCredentials } {
-        const credentialsRef = String(policy.credentialsRef ?? "").trim()
-        const prefix = resolveCredentialPrefix(credentialsRef)
         const workerUrl = requireResolvedSecret(secrets, "MT5_WORKER_URL")
-        const login = requireResolvedSecret(secrets, `MT5_${prefix}_LOGIN`, "MT5_LOGIN")
-        const password = requireResolvedSecret(secrets, `MT5_${prefix}_PASSWORD`, "MT5_PASSWORD")
-        const server = requireResolvedSecret(secrets, `MT5_${prefix}_SERVER`, "MT5_SERVER")
+        const login = requireResolvedSecret(secrets, "MT5_PRIMARY_LOGIN", "MT5_LOGIN")
+        const password = requireResolvedSecret(secrets, "MT5_PRIMARY_PASSWORD", "MT5_PASSWORD")
+        const server = requireResolvedSecret(secrets, "MT5_PRIMARY_SERVER", "MT5_SERVER")
 
         return {
             workerUrl,

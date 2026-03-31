@@ -27,7 +27,7 @@ export class ValiqResearchAdapter {
     async createChat(): Promise<string> {
         const result = await this.client.request<ChatResponse>("/chats", {
             method: "POST",
-            body: JSON.stringify({}),
+            body: JSON.stringify({ title: "Trading Agent Research" }),
         })
         this.currentChatId = result.id
         this.logger?.info("ValiqResearch chat created", { chatId: result.id })

@@ -1,4 +1,4 @@
-import type { ValiqClient } from "./client"
+import type { ValiqDataClient } from "./client"
 import type {
     EquityOverview,
     EquityPriceResponse,
@@ -45,6 +45,8 @@ import type {
     MacroAnalysisParams,
     MacroRiskFreeRateResponse,
     MacroRiskFreeRateParams,
+    BreakingNewsResponse,
+    BreakingNewsParams,
 } from "./types"
 
 function buildQuery(params: object): string {
@@ -58,7 +60,7 @@ function buildQuery(params: object): string {
 }
 
 export class ValiqDataAdapter {
-    constructor(private client: ValiqClient) {}
+    constructor(private client: ValiqDataClient) {}
 
     async getEquityOverview(ticker: string): Promise<EquityOverview> {
         return this.client.request<EquityOverview>(`/equity/${encodeURIComponent(ticker)}`)
@@ -263,5 +265,10 @@ export class ValiqDataAdapter {
         return this.client.request<MacroRiskFreeRateResponse>(
             `/macro/${encodeURIComponent(region)}/rates/risk-free${query}`
         )
+    }
+
+    async getBreakingNews(params?: BreakingNewsParams): Promise<BreakingNewsResponse> {
+        const query = params ? buildQuery(params) : ""
+        return this.client.request<BreakingNewsResponse>(`/breaking-news${query}`)
     }
 }

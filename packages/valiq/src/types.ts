@@ -343,3 +343,37 @@ export interface OptionsChainParams {
 export interface OptionsScreeningParams {
     [key: string]: unknown
 }
+
+export interface BreakingNewsArticle {
+    time: string
+    title: string
+    description: string
+    publisher: string
+    url: string
+    sentiment_finbert: number
+    confidence_finbert: number
+}
+
+export interface BreakingNewsSummary {
+    window: string
+    total_count: number
+    avg_sentiment_finbert: number
+    by_source: Array<{
+        source: string
+        count: number
+        avg_sentiment_finbert: number
+    }>
+}
+
+export interface BreakingNewsResponse {
+    articles: BreakingNewsArticle[]
+    summary: BreakingNewsSummary
+}
+
+export type BreakingNewsWindow = "1h" | "6h" | "24h" | "prev_24h" | "7d"
+export type BreakingNewsSource = "fmp-general" | "fmp-forex" | "fmp-crypto"
+
+export interface BreakingNewsParams {
+    window?: BreakingNewsWindow
+    source?: BreakingNewsSource
+}

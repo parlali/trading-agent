@@ -67,6 +67,7 @@ interface TrackedStrategy {
     config: ScheduledStrategy
     running: boolean
     lastRun?: number
+    lastCronMinute?: string
     timer?: ReturnType<typeof setInterval>
 }
 
@@ -84,7 +85,7 @@ export class Scheduler {
     private inFlightRuns = new Map<string, Promise<void>>()
 
     constructor(config: SchedulerConfig) {
-        this.tickInterval = config.tickInterval ?? 60_000
+        this.tickInterval = config.tickInterval ?? 10_000
         this.logger = config.logger
     }
 
@@ -177,6 +178,7 @@ export class Scheduler {
         if (this.shuttingDown) return
 
         const now = new Date()
+        const minuteKey = `${now.getFullYear()}-${now.getMonth()}-${now.getDate()}-${now.getHours()}-${now.getMinutes()}`
 
         for (const [strategyId, tracked] of this.strategies) {
             if (tracked.config.scheduleType !== "cron") continue
@@ -184,6 +186,8 @@ export class Scheduler {
 
             try {
                 if (cronMatchesDate(tracked.config.cronExpression, now)) {
+                    if (tracked.lastCronMinute === minuteKey) continue
+                    tracked.lastCronMinute = minuteKey
                     this.triggerStrategy(strategyId)
                 }
             } catch (error) {

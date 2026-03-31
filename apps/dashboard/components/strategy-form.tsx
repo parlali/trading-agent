@@ -18,6 +18,7 @@ import {
     SelectTrigger,
     SelectValue,
 } from "@/components/ui/select"
+import { ScheduleBuilder } from "@/components/schedule-builder"
 import { VENUE_META, type VenueApp } from "@/lib/constants"
 import { toast } from "sonner"
 import { Loader2 } from "lucide-react"
@@ -40,27 +41,17 @@ type StrategyFormProps = {
 
 const ALPACA_POLICY_DEFAULTS: PolicyFields = {
     dryRun: true,
-    broker: "",
-    accountId: "",
-    maxLossPerStructure: 500,
-    maxConcurrentStructures: 3,
-    allowedUnderlyings: ["SPY"],
+    maxLossPerPlay: 500,
 }
 
 const POLYMARKET_POLICY_DEFAULTS: PolicyFields = {
     dryRun: true,
-    credentialsRef: "",
-    maxPositionSize: 100,
-    maxTotalExposure: 1000,
+    maxBet: { mode: "fixed", value: 100 },
 }
 
 const MT5_POLICY_DEFAULTS: PolicyFields = {
     dryRun: true,
-    credentialsRef: "",
-    maxDailyLoss: 500,
-    maxConcurrentPositions: 3,
-    maxLeverage: 10,
-    allowedInstruments: ["EURUSD"],
+    maxRiskPercent: 2,
     tradingHours: { start: "08:00", end: "16:00", timezone: "UTC" },
     emergencyFlattenThreshold: 1000,
 }
@@ -69,56 +60,6 @@ const POLICY_DEFAULTS: Record<VenueApp, PolicyFields> = {
     "alpaca-options": ALPACA_POLICY_DEFAULTS,
     "polymarket": POLYMARKET_POLICY_DEFAULTS,
     "mt5": MT5_POLICY_DEFAULTS,
-}
-
-type FieldDef = {
-    key: string
-    label: string
-    type: "text" | "number" | "boolean" | "array" | "object"
-    required?: boolean
-    placeholder?: string
-    description?: string
-}
-
-const BASE_FIELDS: FieldDef[] = [
-    { key: "dryRun", label: "Dry Run", type: "boolean", description: "Log orders without executing" },
-    { key: "balanceFloor", label: "Balance Floor", type: "number", placeholder: "0", description: "Minimum account balance" },
-    { key: "maxLossPerTrade", label: "Max Loss Per Trade", type: "number", placeholder: "0" },
-    { key: "maxTotalExposure", label: "Max Total Exposure", type: "number", placeholder: "0" },
-]
-
-const ALPACA_FIELDS: FieldDef[] = [
-    { key: "broker", label: "Broker", type: "text", required: true, placeholder: "alpaca-paper" },
-    { key: "accountId", label: "Account ID", type: "text", required: true },
-    { key: "maxLossPerStructure", label: "Max Loss Per Structure", type: "number", required: true },
-    { key: "maxConcurrentStructures", label: "Max Concurrent Structures", type: "number", required: true },
-    { key: "allowedUnderlyings", label: "Allowed Underlyings", type: "array", required: true, placeholder: "SPY, QQQ, IWM" },
-]
-
-const POLYMARKET_FIELDS: FieldDef[] = [
-    { key: "credentialsRef", label: "Credentials Ref", type: "text", required: true, placeholder: "polymarket-main" },
-    { key: "maxPositionSize", label: "Max Position Size", type: "number", required: true },
-    { key: "maxTotalExposure", label: "Max Total Exposure (USDC)", type: "number", required: true },
-    { key: "allowedCategories", label: "Allowed Categories", type: "array", placeholder: "politics, crypto, sports" },
-    { key: "minLiquidity", label: "Min Liquidity", type: "number", placeholder: "0" },
-]
-
-const MT5_FIELDS: FieldDef[] = [
-    { key: "credentialsRef", label: "Credentials Ref", type: "text", required: true, placeholder: "mt5-main" },
-    { key: "maxDailyLoss", label: "Max Daily Loss", type: "number", required: true },
-    { key: "maxConcurrentPositions", label: "Max Concurrent Positions", type: "number", required: true },
-    { key: "maxLeverage", label: "Max Leverage", type: "number", required: true },
-    { key: "allowedInstruments", label: "Allowed Instruments", type: "array", required: true, placeholder: "EURUSD, GBPUSD" },
-    { key: "tradingHours.start", label: "Trading Hours Start", type: "text", required: true, placeholder: "08:00" },
-    { key: "tradingHours.end", label: "Trading Hours End", type: "text", required: true, placeholder: "16:00" },
-    { key: "tradingHours.timezone", label: "Trading Hours Timezone", type: "text", required: true, placeholder: "UTC" },
-    { key: "emergencyFlattenThreshold", label: "Emergency Flatten Threshold", type: "number", required: true },
-]
-
-const VENUE_FIELDS: Record<VenueApp, FieldDef[]> = {
-    "alpaca-options": ALPACA_FIELDS,
-    "polymarket": POLYMARKET_FIELDS,
-    "mt5": MT5_FIELDS,
 }
 
 function getNestedValue(obj: PolicyFields, path: string): unknown {
@@ -152,103 +93,6 @@ function setNestedValue(obj: PolicyFields, path: string, value: unknown): Policy
     parent[leafKey] = value
 
     return result
-}
-
-function parseArrayValue(value: string): string[] {
-    return value
-        .split(",")
-        .map((s) => s.trim())
-        .filter((s) => s.length > 0)
-}
-
-function formatArrayValue(value: unknown): string {
-    if (Array.isArray(value)) return value.join(", ")
-    return ""
-}
-
-function PolicyField({
-    field,
-    value,
-    onChange,
-}: {
-    field: FieldDef
-    value: unknown
-    onChange: (value: unknown) => void
-}) {
-    if (field.type === "boolean") {
-        return (
-            <div className="flex items-center justify-between">
-                <div>
-                    <Label className="text-sm">{field.label}</Label>
-                    {field.description ? (
-                        <p className="text-xs text-muted-foreground mt-0.5">{field.description}</p>
-                    ) : null}
-                </div>
-                <Switch
-                    checked={value === true}
-                    onCheckedChange={(checked) => onChange(checked)}
-                />
-            </div>
-        )
-    }
-
-    if (field.type === "number") {
-        return (
-            <div className="space-y-1.5">
-                <Label className="text-sm">
-                    {field.label}
-                    {field.required ? <span className="text-signal-danger ml-0.5">*</span> : null}
-                </Label>
-                {field.description ? (
-                    <p className="text-xs text-muted-foreground">{field.description}</p>
-                ) : null}
-                <Input
-                    type="number"
-                    step="any"
-                    placeholder={field.placeholder}
-                    value={value !== undefined && value !== null ? String(value) : ""}
-                    onChange={(e) => {
-                        const v = e.target.value
-                        onChange(v === "" ? undefined : Number(v))
-                    }}
-                />
-            </div>
-        )
-    }
-
-    if (field.type === "array") {
-        return (
-            <div className="space-y-1.5">
-                <Label className="text-sm">
-                    {field.label}
-                    {field.required ? <span className="text-signal-danger ml-0.5">*</span> : null}
-                </Label>
-                <Input
-                    placeholder={field.placeholder}
-                    value={formatArrayValue(value)}
-                    onChange={(e) => onChange(parseArrayValue(e.target.value))}
-                />
-                <p className="text-xs text-muted-foreground">Comma-separated values</p>
-            </div>
-        )
-    }
-
-    return (
-        <div className="space-y-1.5">
-            <Label className="text-sm">
-                {field.label}
-                {field.required ? <span className="text-signal-danger ml-0.5">*</span> : null}
-            </Label>
-            {field.description ? (
-                <p className="text-xs text-muted-foreground">{field.description}</p>
-            ) : null}
-            <Input
-                placeholder={field.placeholder}
-                value={typeof value === "string" ? value : ""}
-                onChange={(e) => onChange(e.target.value)}
-            />
-        </div>
-    )
 }
 
 export function StrategyForm({ mode, initialData }: StrategyFormProps) {
@@ -324,8 +168,7 @@ export function StrategyForm({ mode, initialData }: StrategyFormProps) {
         }
     }
 
-    const venueFields = VENUE_FIELDS[app]
-    const allPolicyFields = [...BASE_FIELDS, ...venueFields]
+    const maxBet = (policy.maxBet ?? { mode: "fixed", value: 100 }) as { mode: string; value: number }
 
     return (
         <form onSubmit={handleSubmit} className="space-y-6">
@@ -369,18 +212,7 @@ export function StrategyForm({ mode, initialData }: StrategyFormProps) {
                         />
                     </div>
 
-                    <div className="space-y-1.5">
-                        <Label className="text-sm">
-                            Schedule (cron)<span className="text-signal-danger ml-0.5">*</span>
-                        </Label>
-                        <Input
-                            placeholder="e.g. 0 14 * * 1-5"
-                            value={schedule}
-                            onChange={(e) => setSchedule(e.target.value)}
-                            className="font-mono"
-                        />
-                        <p className="text-xs text-muted-foreground">Standard cron expression (minute hour day month weekday)</p>
-                    </div>
+                    <ScheduleBuilder value={schedule} onChange={setSchedule} />
 
                     <div className="flex items-center justify-between">
                         <div>
@@ -399,14 +231,142 @@ export function StrategyForm({ mode, initialData }: StrategyFormProps) {
                     <CardTitle className="text-base">Policy</CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-4">
-                    {allPolicyFields.map((field) => (
-                        <PolicyField
-                            key={field.key}
-                            field={field}
-                            value={getNestedValue(policy, field.key)}
-                            onChange={(v) => handlePolicyFieldChange(field.key, v)}
+                    <div className="flex items-center justify-between">
+                        <div>
+                            <Label className="text-sm">Dry Run</Label>
+                            <p className="text-xs text-muted-foreground mt-0.5">Log orders without executing</p>
+                        </div>
+                        <Switch
+                            checked={policy.dryRun === true}
+                            onCheckedChange={(checked) => handlePolicyFieldChange("dryRun", checked)}
                         />
-                    ))}
+                    </div>
+
+                    {app === "alpaca-options" ? (
+                        <div className="space-y-1.5">
+                            <Label className="text-sm">
+                                Max Loss Per Play ($)<span className="text-signal-danger ml-0.5">*</span>
+                            </Label>
+                            <Input
+                                type="number"
+                                step="any"
+                                placeholder="500"
+                                value={policy.maxLossPerPlay !== undefined ? String(policy.maxLossPerPlay) : ""}
+                                onChange={(e) => handlePolicyFieldChange(
+                                    "maxLossPerPlay",
+                                    e.target.value === "" ? undefined : Number(e.target.value)
+                                )}
+                            />
+                        </div>
+                    ) : null}
+
+                    {app === "polymarket" ? (
+                        <div className="space-y-1.5">
+                            <Label className="text-sm">
+                                Max Bet<span className="text-signal-danger ml-0.5">*</span>
+                            </Label>
+                            <div className="flex items-center gap-2">
+                                <Select
+                                    value={maxBet.mode}
+                                    onValueChange={(v) => handlePolicyFieldChange("maxBet", { ...maxBet, mode: v })}
+                                >
+                                    <SelectTrigger className="w-40">
+                                        <SelectValue />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        <SelectItem value="fixed">Fixed USD</SelectItem>
+                                        <SelectItem value="percentage">% of Account</SelectItem>
+                                    </SelectContent>
+                                </Select>
+                                <Input
+                                    type="number"
+                                    step="any"
+                                    min={0}
+                                    placeholder={maxBet.mode === "fixed" ? "100" : "5"}
+                                    value={maxBet.value !== undefined ? String(maxBet.value) : ""}
+                                    onChange={(e) => handlePolicyFieldChange(
+                                        "maxBet",
+                                        { ...maxBet, value: e.target.value === "" ? 0 : Number(e.target.value) }
+                                    )}
+                                    className="w-28"
+                                />
+                                <span className="text-sm text-muted-foreground">
+                                    {maxBet.mode === "fixed" ? "USD" : "%"}
+                                </span>
+                            </div>
+                        </div>
+                    ) : null}
+
+                    {app === "mt5" ? (
+                        <>
+                            <div className="space-y-1.5">
+                                <Label className="text-sm">
+                                    Max Risk Per Trade (%)<span className="text-signal-danger ml-0.5">*</span>
+                                </Label>
+                                <Input
+                                    type="number"
+                                    step="any"
+                                    min={0}
+                                    max={100}
+                                    placeholder="2"
+                                    value={policy.maxRiskPercent !== undefined ? String(policy.maxRiskPercent) : ""}
+                                    onChange={(e) => handlePolicyFieldChange(
+                                        "maxRiskPercent",
+                                        e.target.value === "" ? undefined : Number(e.target.value)
+                                    )}
+                                />
+                                <p className="text-xs text-muted-foreground">
+                                    Percentage of account balance risked per trade on stop loss
+                                </p>
+                            </div>
+
+                            <div className="space-y-1.5">
+                                <Label className="text-sm">
+                                    Trading Hours<span className="text-signal-danger ml-0.5">*</span>
+                                </Label>
+                                <div className="flex items-center gap-2">
+                                    <Input
+                                        placeholder="08:00"
+                                        value={getNestedValue(policy, "tradingHours.start") as string ?? ""}
+                                        onChange={(e) => handlePolicyFieldChange("tradingHours.start", e.target.value)}
+                                        className="w-24 font-mono"
+                                    />
+                                    <span className="text-muted-foreground">to</span>
+                                    <Input
+                                        placeholder="16:00"
+                                        value={getNestedValue(policy, "tradingHours.end") as string ?? ""}
+                                        onChange={(e) => handlePolicyFieldChange("tradingHours.end", e.target.value)}
+                                        className="w-24 font-mono"
+                                    />
+                                    <Input
+                                        placeholder="UTC"
+                                        value={getNestedValue(policy, "tradingHours.timezone") as string ?? ""}
+                                        onChange={(e) => handlePolicyFieldChange("tradingHours.timezone", e.target.value)}
+                                        className="w-28"
+                                    />
+                                </div>
+                            </div>
+
+                            <div className="space-y-1.5">
+                                <Label className="text-sm">
+                                    Emergency Flatten Threshold ($)<span className="text-signal-danger ml-0.5">*</span>
+                                </Label>
+                                <Input
+                                    type="number"
+                                    step="any"
+                                    placeholder="1000"
+                                    value={policy.emergencyFlattenThreshold !== undefined ? String(policy.emergencyFlattenThreshold) : ""}
+                                    onChange={(e) => handlePolicyFieldChange(
+                                        "emergencyFlattenThreshold",
+                                        e.target.value === "" ? undefined : Number(e.target.value)
+                                    )}
+                                />
+                                <p className="text-xs text-muted-foreground">
+                                    Auto-close all positions when unrealized loss exceeds this amount
+                                </p>
+                            </div>
+                        </>
+                    ) : null}
                 </CardContent>
             </Card>
 

@@ -5,9 +5,6 @@ export interface LLMClientConfig {
     apiKey: string
     model: string
     baseUrl?: string
-    maxTokens?: number
-    temperature?: number
-    timeoutMs?: number
 }
 
 export interface ChatMessage {
@@ -66,26 +63,17 @@ interface StreamChunk {
 }
 
 const DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
-const DEFAULT_MAX_TOKENS = 4096
-const DEFAULT_TEMPERATURE = 0.1
-const DEFAULT_TIMEOUT_MS = 120_000
 
 export class LLMClient {
     private apiKey: string
     private model: string
     private baseUrl: string
-    private maxTokens: number
-    private temperature: number
-    private timeoutMs: number
     private controller: AbortController | null = null
 
     constructor(config: LLMClientConfig) {
         this.apiKey = config.apiKey
         this.model = config.model
         this.baseUrl = config.baseUrl ?? DEFAULT_BASE_URL
-        this.maxTokens = config.maxTokens ?? DEFAULT_MAX_TOKENS
-        this.temperature = config.temperature ?? DEFAULT_TEMPERATURE
-        this.timeoutMs = config.timeoutMs ?? DEFAULT_TIMEOUT_MS
     }
 
     async chat(
@@ -114,14 +102,11 @@ export class LLMClient {
         logger?: Logger
     ): Promise<LLMResponse> {
         this.controller = new AbortController()
-        const timeoutId = setTimeout(() => this.controller?.abort(), this.timeoutMs)
 
         const body: Record<string, unknown> = {
             model: this.model,
             messages,
             stream: true,
-            temperature: this.temperature,
-            max_tokens: this.maxTokens,
         }
 
         if (tools && tools.length > 0) {
@@ -141,8 +126,6 @@ export class LLMClient {
                 signal: this.controller.signal,
             })
 
-            clearTimeout(timeoutId)
-
             if (!response.ok) {
                 const errorText = await response.text()
                 throw new Error(`OpenRouter API error: ${response.status} ${response.statusText} - ${errorText}`)
@@ -150,9 +133,8 @@ export class LLMClient {
 
             return this.processStream(response, logger)
         } catch (error) {
-            clearTimeout(timeoutId)
             if (error instanceof Error && error.name === "AbortError") {
-                throw new Error("LLM request cancelled or timed out")
+                throw new Error("LLM request cancelled")
             }
             throw error
         } finally {

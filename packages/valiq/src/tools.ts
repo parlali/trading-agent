@@ -2,6 +2,7 @@ import { z } from "zod"
 import type { ToolDefinition } from "@valiq-trading/agent"
 import type { ValiqDataAdapter } from "./data"
 import type { ValiqResearchAdapter } from "./research"
+import type { BreakingNewsParams } from "./types"
 
 const researchParamsSchema = z.object({
     question: z.string(),
@@ -40,6 +41,44 @@ export function createValiqResearchTool(
     }
 }
 
+const breakingNewsParamsSchema = z.object({
+    window: z.enum(["1h", "6h", "24h", "prev_24h", "7d"]).optional(),
+    source: z.enum(["fmp-general", "fmp-forex", "fmp-crypto"]).optional(),
+})
+
+export function createValiqBreakingNewsTool(
+    data: ValiqDataAdapter
+): ToolDefinition {
+    return {
+        name: "get_breaking_news",
+        description:
+            "Fetch the latest breaking news articles with sentiment analysis from Val-iQ. " +
+            "Returns up to 5 articles with FinBERT sentiment scores plus an aggregated summary. " +
+            "Supports time windows (1h, 6h, 24h, prev_24h, 7d) and source filtering (fmp-general, fmp-forex, fmp-crypto). " +
+            "Use this to assess current market-moving events and news sentiment.",
+        parameters: breakingNewsParamsSchema,
+        jsonSchema: {
+            type: "object",
+            properties: {
+                window: {
+                    type: "string",
+                    description: "Rolling time window for news retrieval",
+                    enum: ["1h", "6h", "24h", "prev_24h", "7d"],
+                },
+                source: {
+                    type: "string",
+                    description: "Filter by news source. When omitted, returns news from all sources.",
+                    enum: ["fmp-general", "fmp-forex", "fmp-crypto"],
+                },
+            },
+        },
+        handler: async (params) => {
+            const validated = params as z.infer<typeof breakingNewsParamsSchema>
+            return data.getBreakingNews(validated)
+        },
+    }
+}
+
 const dataEndpoints = [
     "getEquityOverview",
     "getEquityPrice",
@@ -70,6 +109,7 @@ const dataEndpoints = [
     "getMacroNews",
     "getMacroAnalysis",
     "getMacroRiskFreeRate",
+    "getBreakingNews",
 ] as const
 
 const dataParamsSchema = z.object({
@@ -88,7 +128,7 @@ export function createValiqDataTool(
             "Call Val-iQ's typed data endpoints for structured market data. " +
             "Available endpoints: equity overview/price/performance/financials/ratios/fundamentals/beta/news/sentiment/analyst ratings+targets, " +
             "options chain/IV/screening, asset screening, " +
-            "macro economy/growth/inflation/labor/stability/money-supply/energy/oil/gas/events/news/analysis/risk-free-rate. " +
+            "macro economy/growth/inflation/labor/stability/money-supply/energy/oil/gas/events/news/analysis/risk-free-rate, breaking-news. " +
             "Provide the endpoint name, ticker or region, and optional parameters.",
         parameters: dataParamsSchema,
         jsonSchema: {
@@ -192,6 +232,8 @@ async function routeDataRequest(
                 requireRegion(region),
                 params as { startDate: string; endDate: string }
             )
+        case "getBreakingNews":
+            return data.getBreakingNews(params as BreakingNewsParams | undefined)
         default:
             throw new Error(`Unknown Val-iQ data endpoint: ${endpoint}`)
     }
