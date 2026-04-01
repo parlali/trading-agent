@@ -29,6 +29,9 @@ interface TradeEventLoggerMethods {
 
 export interface ConvexOrderPersistenceConfig {
     url: string
+    machineAuth?: {
+        serviceToken: string
+    }
 }
 
 export interface TradingBackendClientConfig {
@@ -83,6 +86,7 @@ export interface ManualRunRequest {
 
 export interface TradingBackendClient extends TradeEventLoggerMethods {
     getStrategyConfigs(app: App): Promise<StoredStrategy[]>
+    getStrategyById(id: Id<"strategies">): Promise<StoredStrategy | null>
     createRun(strategyId: Id<"strategies">, app: App): Promise<Id<"strategy_runs">>
     updateRun(runId: Id<"strategy_runs">, status: StoredRun["status"], summary?: string, error?: string): Promise<void>
     syncPositions(strategyId: Id<"strategies">, app: App, positions: Position[]): Promise<void>
@@ -105,6 +109,8 @@ export interface TradingBackendClient extends TradeEventLoggerMethods {
     createAlert(args: { strategyId?: string; app?: App; severity: "critical" | "warning" | "info"; message: string }): Promise<void>
     triggerManualRun(strategyId: Id<"strategies">): Promise<Id<"manual_run_requests">>
     acknowledgeAlert(alertId: Id<"alerts">): Promise<void>
+    getStrategyOwnedInstruments(strategyId: Id<"strategies">): Promise<string[]>
+    getAllOwnedInstrumentsByApp(app: Exclude<App, "backend">): Promise<Array<{ instrument: string, strategyId: string }>>
 }
 
 export const createTradingBackendClient = (config: string | TradingBackendClientConfig): TradingBackendClient => {
@@ -126,10 +132,14 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
 
     return {
         async getStrategyConfigs(app: App): Promise<StoredStrategy[]> {
-            return await client.query(api.queries.getStrategyConfigs, { app } as never) as StoredStrategy[]
+            return await client.query(api.queries.getStrategyConfigs, { ...requireMachineAuth(), app } as never) as StoredStrategy[]
+        },
+        async getStrategyById(id: Id<"strategies">): Promise<StoredStrategy | null> {
+            return await client.query(api.queries.getStrategyById, { ...requireMachineAuth(), id } as never) as StoredStrategy | null
         },
         async createRun(strategyId: Id<"strategies">, app: App): Promise<Id<"strategy_runs">> {
             return await client.mutation(api.mutations.createRun, {
+                ...requireMachineAuth(),
                 strategyId,
                 app,
             } as never) as Id<"strategy_runs">
@@ -141,6 +151,7 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
             error?: string
         ): Promise<void> {
             await client.mutation(api.mutations.updateRun, {
+                ...requireMachineAuth(),
                 runId,
                 status,
                 summary,
@@ -162,6 +173,7 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
             }
 
             await client.mutation(api.mutations.logAgentMessage, {
+                ...requireMachineAuth(),
                 runId: runId as Id<"strategy_runs">,
                 strategyId: strategyId as Id<"strategies">,
                 sequence,
@@ -174,6 +186,7 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
         },
         async logIntent(runId: string, strategyId: string, intent: OrderIntent): Promise<void> {
             await client.mutation(api.mutations.logTradeEvent, {
+                ...requireMachineAuth(),
                 runId: runId as Id<"strategy_runs">,
                 strategyId: strategyId as Id<"strategies">,
                 eventType: "intent",
@@ -187,6 +200,7 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
             intent: OrderIntent
         ): Promise<void> {
             await client.mutation(api.mutations.logTradeEvent, {
+                ...requireMachineAuth(),
                 runId: runId as Id<"strategy_runs">,
                 strategyId: strategyId as Id<"strategies">,
                 eventType: result.allowed ? "validation" : "rejected",
@@ -209,6 +223,7 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
                             : "submission"
 
             await client.mutation(api.mutations.logTradeEvent, {
+                ...requireMachineAuth(),
                 runId: runId as Id<"strategy_runs">,
                 strategyId: strategyId as Id<"strategies">,
                 eventType,
@@ -218,6 +233,7 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
         async logFillUpdate(runId: string, strategyId: string, result: ExecutionResult): Promise<void> {
             const eventType = result.status === "filled" ? "filled" : "fill_update"
             await client.mutation(api.mutations.logTradeEvent, {
+                ...requireMachineAuth(),
                 runId: runId as Id<"strategy_runs">,
                 strategyId: strategyId as Id<"strategies">,
                 eventType,
@@ -226,6 +242,7 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
         },
         async syncPositions(strategyId: Id<"strategies">, app: App, positions: Position[]): Promise<void> {
             await client.mutation(api.mutations.syncPositions, {
+                ...requireMachineAuth(),
                 strategyId,
                 app: app as "alpaca-options" | "polymarket" | "mt5",
                 positions: positions.map((position) => ({
@@ -247,6 +264,7 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
         },
         async reportHeartbeat(app: App, status: "healthy" | "degraded" | "unhealthy", metadata?: Record<string, unknown>): Promise<void> {
             await client.mutation(api.mutations.reportHeartbeat, {
+                ...requireMachineAuth(),
                 app,
                 status,
                 metadata,
@@ -254,6 +272,7 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
         },
         async snapshotAccountState(app: App, venue: string, state: AccountState): Promise<void> {
             await client.mutation(api.mutations.snapshotAccountState, {
+                ...requireMachineAuth(),
                 app,
                 venue,
                 balance: state.balance,
@@ -265,16 +284,17 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
             } as never)
         },
         async getSystemState(): Promise<KillSwitchState> {
-            return await client.query(api.queries.getSystemState, {}) as KillSwitchState
+            return await client.query(api.queries.getSystemState, { ...requireMachineAuth() }) as KillSwitchState
         },
         async getManualRunRequests(app: Exclude<App, "backend">): Promise<ManualRunRequest[]> {
-            return await client.query(api.queries.getManualRunRequests, { app } as never) as ManualRunRequest[]
+            return await client.query(api.queries.getManualRunRequests, { ...requireMachineAuth(), app } as never) as ManualRunRequest[]
         },
         async clearManualRunRequest(requestId: Id<"manual_run_requests">): Promise<void> {
-            await client.mutation(api.mutations.clearManualRunRequest, { requestId } as never)
+            await client.mutation(api.mutations.clearManualRunRequest, { ...requireMachineAuth(), requestId } as never)
         },
         async createAlert(args: { strategyId?: string; app?: App; severity: "critical" | "warning" | "info"; message: string }): Promise<void> {
             await client.mutation(api.mutations.createAlert, {
+                ...requireMachineAuth(),
                 strategyId: args.strategyId as Id<"strategies"> | undefined,
                 app: args.app,
                 severity: args.severity,
@@ -287,6 +307,12 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
         async acknowledgeAlert(alertId: Id<"alerts">): Promise<void> {
             await client.mutation(api.mutations.acknowledgeAlert, { alertId } as never)
         },
+        async getStrategyOwnedInstruments(strategyId: Id<"strategies">): Promise<string[]> {
+            return await client.query(api.queries.getStrategyOwnedInstruments, { ...requireMachineAuth(), strategyId } as never) as string[]
+        },
+        async getAllOwnedInstrumentsByApp(app: Exclude<App, "backend">): Promise<Array<{ instrument: string, strategyId: string }>> {
+            return await client.query(api.queries.getAllOwnedInstrumentsByApp, { ...requireMachineAuth(), app } as never) as Array<{ instrument: string, strategyId: string }>
+        },
     }
 }
 
@@ -295,9 +321,20 @@ export const createConvexOrderPersistenceAdapter = (
 ): OrderPersistenceAdapter => {
     const client = new ConvexHttpClient(config.url)
 
+    const requireAdapterAuth = (): { serviceToken: string } => {
+        const serviceToken = config.machineAuth?.serviceToken?.trim()
+
+        if (!serviceToken) {
+            throw new Error("Order persistence adapter requires a backend service token")
+        }
+
+        return { serviceToken }
+    }
+
     return {
         async upsertOrder(snapshot: OrderSnapshot): Promise<void> {
             await client.mutation(api.mutations.upsertOrder, {
+                ...requireAdapterAuth(),
                 orderId: snapshot.orderId,
                 runId: snapshot.runId as Id<"strategy_runs">,
                 strategyId: snapshot.strategyId as Id<"strategies">,
@@ -318,6 +355,7 @@ export const createConvexOrderPersistenceAdapter = (
         },
         async logOrderTransition(transition: OrderTransition): Promise<void> {
             await client.mutation(api.mutations.logOrderTransition, {
+                ...requireAdapterAuth(),
                 orderId: transition.orderId,
                 runId: transition.runId as Id<"strategy_runs">,
                 strategyId: transition.strategyId as Id<"strategies">,
@@ -331,17 +369,19 @@ export const createConvexOrderPersistenceAdapter = (
             })
         },
         async getOrder(orderId: string): Promise<OrderSnapshot | null> {
-            const order = await client.query(api.queries.getOrderById, { orderId })
+            const order = await client.query(api.queries.getOrderById, { ...requireAdapterAuth(), orderId })
             return order as OrderSnapshot | null
         },
         async listActiveOrders(strategyId: string): Promise<OrderSnapshot[]> {
             const orders = await client.query(api.queries.getActiveOrders, {
+                ...requireAdapterAuth(),
                 strategyId: strategyId as Id<"strategies">,
             })
             return orders as OrderSnapshot[]
         },
         async createAlert(alert: OrderLifecycleAlert): Promise<void> {
             await client.mutation(api.mutations.createAlert, {
+                ...requireAdapterAuth(),
                 strategyId: alert.strategyId as Id<"strategies">,
                 severity: alert.severity,
                 message: alert.message,

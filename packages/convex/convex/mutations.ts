@@ -1,9 +1,15 @@
 import { mutation } from "./_generated/server"
 import { v } from "convex/values"
+import { requireUser, requireServiceToken } from "./lib/authGuards"
+import {
+    reconcileOrderInstrumentClaim,
+    replacePositionClaims,
+} from "./lib/instrumentClaims"
 
 // Create a new run record for a strategy, returns the run ID
 export const createRun = mutation({
     args: {
+        serviceToken: v.string(),
         strategyId: v.id("strategies"),
         app: v.union(
             v.literal("alpaca-options"),
@@ -12,6 +18,7 @@ export const createRun = mutation({
         ),
     },
     handler: async (ctx, args) => {
+        requireServiceToken(args.serviceToken)
         return await ctx.db.insert("strategy_runs", {
             strategyId: args.strategyId,
             app: args.app,
@@ -24,6 +31,7 @@ export const createRun = mutation({
 // Update run status (and optionally summary/error/endedAt)
 export const updateRun = mutation({
     args: {
+        serviceToken: v.string(),
         runId: v.id("strategy_runs"),
         status: v.union(
             v.literal("running"),
@@ -34,6 +42,7 @@ export const updateRun = mutation({
         error: v.optional(v.string()),
     },
     handler: async (ctx, args) => {
+        requireServiceToken(args.serviceToken)
         const patch: Record<string, unknown> = { status: args.status }
         if (args.summary !== undefined) patch.summary = args.summary
         if (args.error !== undefined) patch.error = args.error
@@ -47,6 +56,7 @@ export const updateRun = mutation({
 // Append a message to the agent reasoning trace
 export const logAgentMessage = mutation({
     args: {
+        serviceToken: v.string(),
         runId: v.id("strategy_runs"),
         strategyId: v.id("strategies"),
         sequence: v.number(),
@@ -62,6 +72,7 @@ export const logAgentMessage = mutation({
         toolOutput: v.optional(v.string()),
     },
     handler: async (ctx, args) => {
+        requireServiceToken(args.serviceToken)
         await ctx.db.insert("agent_logs", {
             runId: args.runId,
             strategyId: args.strategyId,
@@ -79,6 +90,7 @@ export const logAgentMessage = mutation({
 // Append a trade lifecycle event
 export const logTradeEvent = mutation({
     args: {
+        serviceToken: v.string(),
         runId: v.id("strategy_runs"),
         strategyId: v.id("strategies"),
         eventType: v.union(
@@ -93,6 +105,7 @@ export const logTradeEvent = mutation({
         payload: v.string(),
     },
     handler: async (ctx, args) => {
+        requireServiceToken(args.serviceToken)
         await ctx.db.insert("trade_events", {
             runId: args.runId,
             strategyId: args.strategyId,
@@ -105,6 +118,7 @@ export const logTradeEvent = mutation({
 
 export const upsertOrder = mutation({
     args: {
+        serviceToken: v.string(),
         orderId: v.string(),
         runId: v.id("strategy_runs"),
         strategyId: v.id("strategies"),
@@ -146,6 +160,12 @@ export const upsertOrder = mutation({
         }),
     },
     handler: async (ctx, args) => {
+        requireServiceToken(args.serviceToken)
+        const strategy = await ctx.db.get(args.strategyId)
+        if (!strategy) {
+            throw new Error(`Strategy not found: ${args.strategyId}`)
+        }
+
         const existing = await ctx.db
             .query("orders")
             .withIndex("by_order_id", (q) => q.eq("orderId", args.orderId))
@@ -172,15 +192,35 @@ export const upsertOrder = mutation({
 
         if (existing) {
             await ctx.db.patch(existing._id, payload)
+            await reconcileOrderInstrumentClaim(ctx, {
+                strategyId: args.strategyId,
+                app: strategy.app,
+                orderId: args.orderId,
+                instrument: args.instrument,
+                action: args.action,
+                status: args.status,
+                updatedAt: args.updatedAt,
+            })
             return existing._id
         }
 
-        return await ctx.db.insert("orders", payload)
+        const orderDocId = await ctx.db.insert("orders", payload)
+        await reconcileOrderInstrumentClaim(ctx, {
+            strategyId: args.strategyId,
+            app: strategy.app,
+            orderId: args.orderId,
+            instrument: args.instrument,
+            action: args.action,
+            status: args.status,
+            updatedAt: args.updatedAt,
+        })
+        return orderDocId
     },
 })
 
 export const logOrderTransition = mutation({
     args: {
+        serviceToken: v.string(),
         orderId: v.string(),
         runId: v.id("strategy_runs"),
         strategyId: v.id("strategies"),
@@ -218,6 +258,7 @@ export const logOrderTransition = mutation({
         timestamp: v.number(),
     },
     handler: async (ctx, args) => {
+        requireServiceToken(args.serviceToken)
         await ctx.db.insert("order_transitions", {
             orderId: args.orderId,
             runId: args.runId,
@@ -236,6 +277,7 @@ export const logOrderTransition = mutation({
 // Replace position snapshot for a strategy (delete old, insert new)
 export const syncPositions = mutation({
     args: {
+        serviceToken: v.string(),
         strategyId: v.id("strategies"),
         app: v.union(
             v.literal("alpaca-options"),
@@ -255,6 +297,7 @@ export const syncPositions = mutation({
         ),
     },
     handler: async (ctx, args) => {
+        requireServiceToken(args.serviceToken)
         const now = Date.now()
         await ctx.db.insert("position_syncs", {
             strategyId: args.strategyId,
@@ -277,6 +320,13 @@ export const syncPositions = mutation({
                 syncedAt: now,
             })
         }
+
+        await replacePositionClaims(ctx, {
+            strategyId: args.strategyId,
+            app: args.app,
+            instruments: args.positions.map((position) => position.instrument),
+            updatedAt: now,
+        })
     },
 })
 
@@ -285,6 +335,7 @@ export const triggerManualRun = mutation({
         strategyId: v.id("strategies"),
     },
     handler: async (ctx, args) => {
+        await requireUser(ctx)
         const strategy = await ctx.db.get(args.strategyId)
 
         if (!strategy) {
@@ -311,6 +362,7 @@ export const triggerManualRun = mutation({
 // Create a new alert
 export const createAlert = mutation({
     args: {
+        serviceToken: v.string(),
         strategyId: v.optional(v.id("strategies")),
         app: v.optional(
             v.union(
@@ -328,6 +380,7 @@ export const createAlert = mutation({
         message: v.string(),
     },
     handler: async (ctx, args) => {
+        requireServiceToken(args.serviceToken)
         await ctx.db.insert("alerts", {
             strategyId: args.strategyId,
             app: args.app,
@@ -344,6 +397,7 @@ export const acknowledgeAlert = mutation({
         alertId: v.id("alerts"),
     },
     handler: async (ctx, args) => {
+        await requireUser(ctx)
         await ctx.db.patch(args.alertId, {
             acknowledged: true,
         })
@@ -366,6 +420,7 @@ export const upsertStrategy = mutation({
         context: v.string(),
     },
     handler: async (ctx, args) => {
+        await requireUser(ctx)
         const now = Date.now()
         if (args.id) {
             await ctx.db.patch(args.id, {
@@ -396,6 +451,7 @@ export const upsertStrategy = mutation({
 export const disableStrategy = mutation({
     args: { strategyId: v.id("strategies") },
     handler: async (ctx, args) => {
+        await requireUser(ctx)
         await ctx.db.patch(args.strategyId, { enabled: false })
     },
 })
@@ -404,6 +460,7 @@ export const disableStrategy = mutation({
 export const deleteStrategy = mutation({
     args: { strategyId: v.id("strategies") },
     handler: async (ctx, args) => {
+        await requireUser(ctx)
         const strategy = await ctx.db.get(args.strategyId)
         if (!strategy) {
             throw new Error(`Strategy not found: ${args.strategyId}`)
@@ -427,6 +484,7 @@ export const deleteStrategy = mutation({
 // Report heartbeat from an app
 export const reportHeartbeat = mutation({
     args: {
+        serviceToken: v.string(),
         app: v.union(
             v.literal("alpaca-options"),
             v.literal("polymarket"),
@@ -441,6 +499,7 @@ export const reportHeartbeat = mutation({
         metadata: v.optional(v.any()),
     },
     handler: async (ctx, args) => {
+        requireServiceToken(args.serviceToken)
         const existing = await ctx.db
             .query("app_heartbeats")
             .withIndex("by_app", (q) => q.eq("app", args.app))
@@ -465,6 +524,7 @@ export const reportHeartbeat = mutation({
 // Snapshot account state from an app
 export const snapshotAccountState = mutation({
     args: {
+        serviceToken: v.string(),
         app: v.union(
             v.literal("alpaca-options"),
             v.literal("polymarket"),
@@ -480,6 +540,7 @@ export const snapshotAccountState = mutation({
         dayPnl: v.number(),
     },
     handler: async (ctx, args) => {
+        requireServiceToken(args.serviceToken)
         return await ctx.db.insert("account_snapshots", {
             app: args.app,
             venue: args.venue,
@@ -507,6 +568,7 @@ export const setKillSwitch = mutation({
         updatedBy: v.optional(v.string()),
     },
     handler: async (ctx, args) => {
+        await requireUser(ctx)
         const existing = await ctx.db
             .query("system_state")
             .withIndex("by_key", (q) => q.eq("key", "kill_switches"))
@@ -553,9 +615,11 @@ export const setKillSwitch = mutation({
 
 export const clearManualRunRequest = mutation({
     args: {
+        serviceToken: v.string(),
         requestId: v.id("manual_run_requests"),
     },
     handler: async (ctx, args) => {
+        requireServiceToken(args.serviceToken)
         await ctx.db.delete(args.requestId)
     },
 })

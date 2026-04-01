@@ -68,3 +68,24 @@ export class RiskEngine {
 export function createRiskEngine(validators: readonly RiskValidator[] = BASE_RISK_VALIDATORS): RiskEngine {
     return new RiskEngine(validators)
 }
+
+export function createInstrumentConflictValidator(
+    globallyClaimedInstruments: Map<string, string>
+): RiskValidator {
+    return (intent, _policy, _state, _positions) => {
+        const action = intent.metadata?.action
+        if (action !== "entry" && action !== undefined) {
+            return { allowed: true }
+        }
+
+        const owner = globallyClaimedInstruments.get(intent.instrument)
+        if (!owner) {
+            return { allowed: true }
+        }
+
+        return {
+            allowed: false,
+            reason: `Instrument conflict: ${intent.instrument} is already owned by strategy ${owner}`,
+        }
+    }
+}

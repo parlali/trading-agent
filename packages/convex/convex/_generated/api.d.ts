@@ -9,10 +9,15 @@
  */
 
 import type * as actions from "../actions.js";
+import type * as auth from "../auth.js";
 import type * as connectionTests from "../connectionTests.js";
+import type * as http from "../http.js";
+import type * as lib_authGuards from "../lib/authGuards.js";
 import type * as migrations_simplifyPolicy from "../migrations/simplifyPolicy.js";
 import type * as mutations from "../mutations.js";
 import type * as queries from "../queries.js";
+import type * as seedUserAction from "../seedUserAction.js";
+import type * as seedUserHelpers from "../seedUserHelpers.js";
 
 import type {
   ApiFromModules,
@@ -22,10 +27,15 @@ import type {
 
 declare const fullApi: ApiFromModules<{
   actions: typeof actions;
+  auth: typeof auth;
   connectionTests: typeof connectionTests;
+  http: typeof http;
+  "lib/authGuards": typeof lib_authGuards;
   "migrations/simplifyPolicy": typeof migrations_simplifyPolicy;
   mutations: typeof mutations;
   queries: typeof queries;
+  seedUserAction: typeof seedUserAction;
+  seedUserHelpers: typeof seedUserHelpers;
 }>;
 
 /**

@@ -11,7 +11,7 @@ import { ShieldAlert } from "lucide-react"
 import { toast } from "sonner"
 
 export default function KillSwitchesPage() {
-    const systemState = useQuery(api.queries.getSystemState)
+    const systemState = useQuery(api.queries.getSystemState, {})
     const setKillSwitch = useMutation(api.mutations.setKillSwitch)
 
     if (systemState === undefined) {

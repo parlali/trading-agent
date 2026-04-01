@@ -1,7 +1,10 @@
 import { defineSchema, defineTable } from "convex/server"
 import { v } from "convex/values"
+import { authTables } from "@convex-dev/auth/server"
 
 export default defineSchema({
+    ...authTables,
+
     strategies: defineTable({
         app: v.union(
             v.literal("alpaca-options"),
@@ -179,6 +182,26 @@ export default defineSchema({
     })
         .index("by_strategy", ["strategyId"])
         .index("by_strategy_synced_at", ["strategyId", "syncedAt"])
+        .index("by_app", ["app"]),
+
+    instrument_claims: defineTable({
+        strategyId: v.id("strategies"),
+        app: v.union(
+            v.literal("alpaca-options"),
+            v.literal("polymarket"),
+            v.literal("mt5")
+        ),
+        instrument: v.string(),
+        source: v.union(
+            v.literal("position"),
+            v.literal("order")
+        ),
+        sourceId: v.string(),
+        updatedAt: v.number(),
+    })
+        .index("by_strategy", ["strategyId"])
+        .index("by_strategy_source", ["strategyId", "source"])
+        .index("by_strategy_source_source_id", ["strategyId", "source", "sourceId"])
         .index("by_app", ["app"]),
 
     position_syncs: defineTable({

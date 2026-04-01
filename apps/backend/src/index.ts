@@ -23,9 +23,11 @@ import {
     ExecutionPipeline,
     Scheduler,
     createAccountSnapshotPersister,
+    createInstrumentConflictValidator,
     createKillSwitchChecker,
     createKillSwitchGuardedVenue as createRuntimeKillSwitchGuardedVenue,
     createLogger,
+    filterPositionsByOwnership,
     startHealthServer as startRuntimeHealthServer,
     validatePolicy,
     wireShutdown as wireRuntimeShutdown,
@@ -138,46 +140,15 @@ async function main(): Promise<void> {
     const scheduler = new Scheduler({ logger })
 
     const allApps: VenueApp[] = ["alpaca-options", "polymarket", "mt5"]
-    const activeApps: VenueApp[] = []
     let totalStrategies = 0
 
     for (const app of allApps) {
-        const plugin = plugins[app]
         const strategies = await backend.getStrategyConfigs(app)
         const activeStrategies = strategies.filter((s) => s.enabled)
         totalStrategies += activeStrategies.length
 
-        if (activeStrategies.length > 0) {
-            activeApps.push(app)
-        }
-
         for (const strategy of activeStrategies) {
-            const policy = validatePolicy(app, strategy.policy)
-            const additionalSecretKeys = plugin.resolveAdditionalSecretKeys?.(policy) ?? []
-            const additionalSecrets =
-                additionalSecretKeys.length > 0
-                    ? await backend.resolveSecrets(additionalSecretKeys)
-                    : {}
-            const strategySecrets = {
-                ...resolvedSecrets,
-                ...additionalSecrets,
-            }
-
-            syncStrategies[app] ??= []
-            syncStrategies[app].push({
-                strategy,
-                policy,
-                secrets: strategySecrets,
-            })
-
-            scheduler.register({
-                strategyId: strategy._id,
-                scheduleType: "cron",
-                cronExpression: strategy.schedule,
-                handler: async () => {
-                    await runStrategy(app, plugin, strategy, policy, strategySecrets)
-                },
-            })
+            await registerStrategyWithScheduler(scheduler, app, strategy)
         }
 
         logger.info(`Loaded ${activeStrategies.length} strategies for ${app}`)
@@ -290,6 +261,45 @@ function createKillSwitchGuardedVenue(
     )
 }
 
+async function registerStrategyWithScheduler(
+    scheduler: Scheduler,
+    app: VenueApp,
+    strategy: StoredStrategy
+): Promise<void> {
+    const plugin = plugins[app]
+    const policy = validatePolicy(app, strategy.policy)
+    const additionalSecretKeys = plugin.resolveAdditionalSecretKeys?.(policy) ?? []
+    const additionalSecrets =
+        additionalSecretKeys.length > 0
+            ? await backend.resolveSecrets(additionalSecretKeys)
+            : {}
+    const strategySecrets = {
+        ...resolvedSecrets,
+        ...additionalSecrets,
+    }
+
+    syncStrategies[app] ??= []
+    const alreadyTracked = syncStrategies[app].some(
+        (e) => e.strategy._id === strategy._id
+    )
+    if (!alreadyTracked) {
+        syncStrategies[app].push({
+            strategy,
+            policy,
+            secrets: strategySecrets,
+        })
+    }
+
+    scheduler.register({
+        strategyId: strategy._id,
+        scheduleType: "cron",
+        cronExpression: strategy.schedule,
+        handler: async () => {
+            await runStrategy(app, plugin, strategy, policy, strategySecrets)
+        },
+    })
+}
+
 async function runStrategy(
     app: VenueApp,
     plugin: VenuePlugin,
@@ -335,19 +345,43 @@ async function runStrategy(
         app,
     })
 
-    const orderPersistence = createConvexOrderPersistenceAdapter({ url: convexUrl })
+    const [ownedInstrumentsList, allOwnedInstruments] = await Promise.all([
+        backend.getStrategyOwnedInstruments(strategy._id),
+        backend.getAllOwnedInstrumentsByApp(app),
+    ])
+
+    const ownedInstruments = new Set(ownedInstrumentsList)
+    const conflictMap = new Map<string, string>()
+    for (const entry of allOwnedInstruments) {
+        if (entry.strategyId !== strategy._id) {
+            conflictMap.set(entry.instrument, entry.strategyId)
+        }
+    }
+
+    const pluginValidators = plugin.getRiskValidators()
+    const riskValidators = conflictMap.size > 0
+        ? [...pluginValidators, createInstrumentConflictValidator(conflictMap)]
+        : pluginValidators
+
+    const orderPersistence = createConvexOrderPersistenceAdapter({
+        url: convexUrl,
+        machineAuth: {
+            serviceToken: backendServiceToken,
+        },
+    })
     const guardedVenue = createKillSwitchGuardedVenue(venue, app, strategy._id)
 
     const pipeline = new ExecutionPipeline({
         venue: guardedVenue,
         venueName: plugin.venueName,
         policy,
-        riskValidators: plugin.getRiskValidators(),
+        riskValidators,
         logger: runLogger,
         tradeEventLogger: backend,
         orderPersistence,
         runId,
         strategyId: strategy._id,
+        ownedInstruments,
     })
 
     const tools = new ToolRegistry()
@@ -377,7 +411,8 @@ async function runStrategy(
             throw new Error("Cannot run strategy: OPENROUTER_API_KEY is not set in Convex environment variables")
         }
 
-        const positions = await venue.getPositions()
+        const allPositions = await venue.getPositions()
+        const positions = filterPositionsByOwnership(allPositions, ownedInstruments)
         const accountState = await venue.getAccountState()
 
         const result = await executeAgentRun(
@@ -402,7 +437,8 @@ async function runStrategy(
             }
         )
 
-        const syncedPositions = await venue.getPositions()
+        const allSyncedPositions = await venue.getPositions()
+        const syncedPositions = filterPositionsByOwnership(allSyncedPositions, ownedInstruments)
         await backend.syncPositions(strategy._id, app, syncedPositions)
 
         const finalAccountState = await venue.getAccountState()
@@ -511,6 +547,28 @@ async function pollManualRunRequests(scheduler: Scheduler): Promise<void> {
 
         for (const request of requests) {
             try {
+                const registered = scheduler.getRegisteredStrategies()
+                if (!registered.includes(request.strategyId)) {
+                    const strategy = await backend.getStrategyById(request.strategyId)
+                    if (!strategy) {
+                        logger.warn("Manual run request for deleted strategy", {
+                            strategyId: request.strategyId,
+                        })
+                        continue
+                    }
+                    if (!strategy.enabled) {
+                        logger.warn("Manual run request for disabled strategy", {
+                            strategyId: request.strategyId,
+                        })
+                        continue
+                    }
+                    logger.info("Hot-registering strategy for manual run", {
+                        strategyId: strategy._id,
+                        app,
+                        name: strategy.name,
+                    })
+                    await registerStrategyWithScheduler(scheduler, app, strategy)
+                }
                 await scheduler.triggerManual(request.strategyId)
             } finally {
                 await backend.clearManualRunRequest(request._id)
@@ -537,7 +595,10 @@ async function performStartupSync(): Promise<void> {
                 const accountState = await venue.getAccountState()
                 await accountSnapshotPersisters[app](accountState)
 
-                const positions = await venue.getPositions()
+                const ownedInstrumentsList = await backend.getStrategyOwnedInstruments(entry.strategy._id)
+                const ownedInstruments = new Set(ownedInstrumentsList)
+                const allPositions = await venue.getPositions()
+                const positions = filterPositionsByOwnership(allPositions, ownedInstruments)
                 await backend.syncPositions(entry.strategy._id, app, positions)
 
                 healthState.venues[app] = {
@@ -618,7 +679,10 @@ async function performPeriodicSync(): Promise<void> {
                 const accountState = await venue.getAccountState()
                 await accountSnapshotPersisters[app](accountState)
 
-                const positions = await venue.getPositions()
+                const ownedInstrumentsList = await backend.getStrategyOwnedInstruments(entry.strategy._id)
+                const ownedInstruments = new Set(ownedInstrumentsList)
+                const allPositions = await venue.getPositions()
+                const positions = filterPositionsByOwnership(allPositions, ownedInstruments)
                 await backend.syncPositions(entry.strategy._id, app, positions)
 
                 healthState.venues[app] = {

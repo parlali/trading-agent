@@ -1,5 +1,12 @@
 import { query } from "./_generated/server"
+import type { Doc } from "./_generated/dataModel"
 import { v } from "convex/values"
+import { requireUser, requireServiceToken, requireUserOrServiceToken } from "./lib/authGuards"
+import {
+    getLatestPositionsForStrategy,
+    getOwnedInstrumentsByApp,
+    getOwnedInstrumentsForStrategy,
+} from "./lib/instrumentClaims"
 
 const venueApps = [
     "alpaca-options",
@@ -7,31 +14,14 @@ const venueApps = [
     "mt5",
 ] as const
 
-type VenueApp = typeof venueApps[number]
-
-function getLatestSyncedAtByStrategy(
-    syncs: Array<{
-        strategyId: unknown
-        syncedAt: number
-    }>
-): Map<string, number> {
-    const latestSyncedAtByStrategy = new Map<string, number>()
-
-    for (const sync of syncs) {
-        const strategyId = String(sync.strategyId)
-        const currentLatest = latestSyncedAtByStrategy.get(strategyId) ?? 0
-
-        if (sync.syncedAt > currentLatest) {
-            latestSyncedAtByStrategy.set(strategyId, sync.syncedAt)
-        }
-    }
-
-    return latestSyncedAtByStrategy
+function isNonNullable<T>(value: T): value is NonNullable<T> {
+    return value !== null && value !== undefined
 }
 
 // Return all enabled strategies for a given app
 export const getStrategyConfigs = query({
     args: {
+        serviceToken: v.string(),
         app: v.union(
             v.literal("alpaca-options"),
             v.literal("polymarket"),
@@ -39,6 +29,7 @@ export const getStrategyConfigs = query({
         ),
     },
     handler: async (ctx, args) => {
+        requireServiceToken(args.serviceToken)
         return await ctx.db
             .query("strategies")
             .withIndex("by_app_enabled", (q) =>
@@ -50,8 +41,9 @@ export const getStrategyConfigs = query({
 
 // Return a single strategy config by ID
 export const getStrategyById = query({
-    args: { id: v.id("strategies") },
+    args: { serviceToken: v.optional(v.string()), id: v.id("strategies") },
     handler: async (ctx, args) => {
+        await requireUserOrServiceToken(ctx, args.serviceToken)
         return await ctx.db.get(args.id)
     },
 })
@@ -63,6 +55,7 @@ export const getRunHistory = query({
         limit: v.optional(v.number()),
     },
     handler: async (ctx, args) => {
+        await requireUser(ctx)
         const limit = args.limit ?? 20
         return await ctx.db
             .query("strategy_runs")
@@ -76,6 +69,7 @@ export const getRunHistory = query({
 export const getActiveRun = query({
     args: { strategyId: v.id("strategies") },
     handler: async (ctx, args) => {
+        await requireUser(ctx)
         return await ctx.db
             .query("strategy_runs")
             .withIndex("by_strategy_status", (q) =>
@@ -89,23 +83,8 @@ export const getActiveRun = query({
 export const getOpenPositions = query({
     args: { strategyId: v.id("strategies") },
     handler: async (ctx, args) => {
-        const latestSync = await ctx.db
-            .query("position_syncs")
-            .withIndex("by_strategy_synced_at", (q) => q.eq("strategyId", args.strategyId))
-            .order("desc")
-            .first()
-
-        if (!latestSync || latestSync.positionCount === 0) {
-            return []
-        }
-
-        const snapshots = await ctx.db
-            .query("positions")
-            .withIndex("by_strategy_synced_at", (q) => q.eq("strategyId", args.strategyId))
-            .collect()
-
-        const latestSyncedAt = latestSync.syncedAt
-        return snapshots.filter((position) => position.syncedAt === latestSyncedAt)
+        await requireUser(ctx)
+        return await getLatestPositionsForStrategy(ctx, args.strategyId)
     },
 })
 
@@ -113,6 +92,7 @@ export const getOpenPositions = query({
 export const getTradeEvents = query({
     args: { runId: v.id("strategy_runs") },
     handler: async (ctx, args) => {
+        await requireUser(ctx)
         return await ctx.db
             .query("trade_events")
             .withIndex("by_run", (q) => q.eq("runId", args.runId))
@@ -121,8 +101,9 @@ export const getTradeEvents = query({
 })
 
 export const getOrderById = query({
-    args: { orderId: v.string() },
+    args: { serviceToken: v.optional(v.string()), orderId: v.string() },
     handler: async (ctx, args) => {
+        await requireUserOrServiceToken(ctx, args.serviceToken)
         return await ctx.db
             .query("orders")
             .withIndex("by_order_id", (q) => q.eq("orderId", args.orderId))
@@ -131,8 +112,9 @@ export const getOrderById = query({
 })
 
 export const getActiveOrders = query({
-    args: { strategyId: v.id("strategies") },
+    args: { serviceToken: v.optional(v.string()), strategyId: v.id("strategies") },
     handler: async (ctx, args) => {
+        await requireUserOrServiceToken(ctx, args.serviceToken)
         const pending = await ctx.db
             .query("orders")
             .withIndex("by_strategy_status", (q) =>
@@ -154,6 +136,7 @@ export const getActiveOrders = query({
 export const getOrderTransitions = query({
     args: { orderId: v.string() },
     handler: async (ctx, args) => {
+        await requireUser(ctx)
         return await ctx.db
             .query("order_transitions")
             .withIndex("by_order_sequence", (q) => q.eq("orderId", args.orderId))
@@ -165,6 +148,7 @@ export const getOrderTransitions = query({
 export const getAgentLogs = query({
     args: { runId: v.id("strategy_runs") },
     handler: async (ctx, args) => {
+        await requireUser(ctx)
         return await ctx.db
             .query("agent_logs")
             .withIndex("by_run_sequence", (q) => q.eq("runId", args.runId))
@@ -174,8 +158,9 @@ export const getAgentLogs = query({
 
 // Return current kill switch state
 export const getSystemState = query({
-    args: {},
-    handler: async (ctx) => {
+    args: { serviceToken: v.optional(v.string()) },
+    handler: async (ctx, args) => {
+        await requireUserOrServiceToken(ctx, args.serviceToken)
         const state = await ctx.db
             .query("system_state")
             .withIndex("by_key", (q) => q.eq("key", "kill_switches"))
@@ -205,6 +190,7 @@ export const getSystemState = query({
 export const getAppHealth = query({
     args: {},
     handler: async (ctx) => {
+        await requireUser(ctx)
         return await ctx.db.query("app_heartbeats").collect()
     },
 })
@@ -213,24 +199,23 @@ export const getAppHealth = query({
 export const getAccountSnapshots = query({
     args: {},
     handler: async (ctx) => {
-        const allSnapshots = await ctx.db
-            .query("account_snapshots")
-            .order("desc")
-            .collect()
-
-        const latestByApp = new Map<string, typeof allSnapshots[number]>()
-        for (const snapshot of allSnapshots) {
-            if (!latestByApp.has(snapshot.app)) {
-                latestByApp.set(snapshot.app, snapshot)
-            }
-        }
-
-        return Array.from(latestByApp.values())
+        await requireUser(ctx)
+        const snapshots = await Promise.all(
+            venueApps.map((app) =>
+                ctx.db
+                    .query("account_snapshots")
+                    .withIndex("by_app_timestamp", (q) => q.eq("app", app))
+                    .order("desc")
+                    .first()
+            )
+        )
+        return snapshots.filter(isNonNullable)
     },
 })
 
 export const getManualRunRequests = query({
     args: {
+        serviceToken: v.string(),
         app: v.union(
             v.literal("alpaca-options"),
             v.literal("polymarket"),
@@ -238,6 +223,7 @@ export const getManualRunRequests = query({
         ),
     },
     handler: async (ctx, args) => {
+        requireServiceToken(args.serviceToken)
         return await ctx.db
             .query("manual_run_requests")
             .withIndex("by_app", (q) => q.eq("app", args.app))
@@ -249,15 +235,13 @@ export const getManualRunRequests = query({
 export const getDashboardOverview = query({
     args: {},
     handler: async (ctx) => {
+        await requireUser(ctx)
         const [
             systemState,
             appHealth,
             strategies,
             runs,
             alerts,
-            accountSnapshots,
-            positionSyncs,
-            positions,
         ] = await Promise.all([
             ctx.db
                 .query("system_state")
@@ -267,17 +251,25 @@ export const getDashboardOverview = query({
             ctx.db.query("strategies").collect(),
             ctx.db.query("strategy_runs").order("desc").take(50),
             ctx.db.query("alerts").order("desc").take(20),
-            ctx.db.query("account_snapshots").order("desc").collect(),
-            ctx.db.query("position_syncs").collect(),
-            ctx.db.query("positions").collect(),
         ])
 
-        const latestAccountByApp = new Map<string, typeof accountSnapshots[number]>()
-        for (const snapshot of accountSnapshots) {
-            if (!latestAccountByApp.has(snapshot.app)) {
-                latestAccountByApp.set(snapshot.app, snapshot)
-            }
-        }
+        const [accountSnapshots, openPositionsByStrategy] = await Promise.all([
+            Promise.all(
+                venueApps.map((app) =>
+                    ctx.db
+                        .query("account_snapshots")
+                        .withIndex("by_app_timestamp", (q) => q.eq("app", app))
+                        .order("desc")
+                        .first()
+                )
+            ),
+            Promise.all(
+                strategies.map(async (strategy) => {
+                    const positions = await getLatestPositionsForStrategy(ctx, strategy._id)
+                    return positions.map((position) => ({ ...position, strategy }))
+                })
+            ),
+        ])
 
         const latestRunByStrategy = new Map<string, typeof runs[number]>()
         for (const run of runs) {
@@ -286,9 +278,6 @@ export const getDashboardOverview = query({
                 latestRunByStrategy.set(strategyId, run)
             }
         }
-
-        const latestSyncedAtByStrategy = getLatestSyncedAtByStrategy(positionSyncs)
-        const strategiesById = new Map(strategies.map((strategy) => [String(strategy._id), strategy]))
 
         return {
             systemState: systemState ?? {
@@ -301,18 +290,11 @@ export const getDashboardOverview = query({
                 updatedAt: 0,
             },
             appHealth,
-            accountSnapshots: Array.from(latestAccountByApp.values()),
+            accountSnapshots: accountSnapshots.filter(isNonNullable),
             activeRuns: runs.filter((run) => run.status === "running"),
             recentRuns: runs.slice(0, 10),
             recentAlerts: alerts,
-            openPositions: positions
-                .filter((position) =>
-                    latestSyncedAtByStrategy.get(String(position.strategyId)) === position.syncedAt
-                )
-                .map((position) => ({
-                    ...position,
-                    strategy: strategiesById.get(String(position.strategyId)) ?? null,
-                })),
+            openPositions: openPositionsByStrategy.flat(),
             strategies: strategies.map((strategy) => ({
                 ...strategy,
                 latestRun: latestRunByStrategy.get(String(strategy._id)) ?? null,
@@ -348,38 +330,53 @@ export const getTradeHistory = query({
         limit: v.optional(v.number()),
     },
     handler: async (ctx, args) => {
+        await requireUser(ctx)
         const limit = args.limit ?? 100
-        const appStrategies = args.app
-            ? await ctx.db
+
+        let events: Doc<"trade_events">[]
+
+        if (args.runId) {
+            events = await ctx.db
+                .query("trade_events")
+                .withIndex("by_run", (q) => q.eq("runId", args.runId!))
+                .collect()
+        } else if (args.strategyId) {
+            events = await ctx.db
+                .query("trade_events")
+                .withIndex("by_strategy", (q) => q.eq("strategyId", args.strategyId!))
+                .collect()
+        } else if (args.app) {
+            const appStrategies = await ctx.db
                 .query("strategies")
                 .withIndex("by_app", (q) => q.eq("app", args.app!))
                 .collect()
-            : []
-
-        const allowedStrategyIds = args.app
-            ? new Set(appStrategies.map((strategy) => String(strategy._id)))
-            : null
-
-        const events = await ctx.db.query("trade_events").collect()
+            const perStrategy = await Promise.all(
+                appStrategies.map((strategy) =>
+                    ctx.db
+                        .query("trade_events")
+                        .withIndex("by_strategy", (q) => q.eq("strategyId", strategy._id))
+                        .collect()
+                )
+            )
+            events = perStrategy.flat()
+        } else {
+            events = await ctx.db
+                .query("trade_events")
+                .order("desc")
+                .take(limit)
+        }
 
         return events
             .filter((event) => {
                 if (args.strategyId && event.strategyId !== args.strategyId) {
                     return false
                 }
-
                 if (args.runId && event.runId !== args.runId) {
                     return false
                 }
-
                 if (args.eventTypes && !args.eventTypes.includes(event.eventType)) {
                     return false
                 }
-
-                if (allowedStrategyIds && !allowedStrategyIds.has(String(event.strategyId))) {
-                    return false
-                }
-
                 return true
             })
             .sort((left, right) => right.timestamp - left.timestamp)
@@ -396,6 +393,7 @@ export const getPnlSummary = query({
         ),
     },
     handler: async (ctx, args) => {
+        await requireUser(ctx)
         const durationMsByRange = {
             "24h": 24 * 60 * 60 * 1000,
             "7d": 7 * 24 * 60 * 60 * 1000,
@@ -403,15 +401,16 @@ export const getPnlSummary = query({
         } as const
         const end = Date.now()
         const start = end - durationMsByRange[args.timeRange]
-        const snapshots = await ctx.db.query("account_snapshots").collect()
-
-        const filteredSnapshots = snapshots
-            .filter((snapshot) => {
-                return venueApps.includes(snapshot.app as VenueApp) &&
-                    snapshot.timestamp >= start &&
-                    snapshot.timestamp <= end
-            })
-            .sort((left, right) => left.timestamp - right.timestamp)
+        const snapshotsByApp = await Promise.all(
+            venueApps.map((app) =>
+                ctx.db
+                    .query("account_snapshots")
+                    .withIndex("by_app_timestamp", (q) => q.eq("app", app).gte("timestamp", start))
+                    .order("asc")
+                    .collect()
+            )
+        )
+        const filteredSnapshots = snapshotsByApp.flat()
 
         const pointsByApp = new Map<string, typeof filteredSnapshots>()
         for (const snapshot of filteredSnapshots) {
@@ -466,6 +465,7 @@ export const getEquityTimeSeries = query({
         ),
     },
     handler: async (ctx, args) => {
+        await requireUser(ctx)
         const durationMsByRange = {
             "24h": 24 * 60 * 60 * 1000,
             "7d": 7 * 24 * 60 * 60 * 1000,
@@ -477,14 +477,18 @@ export const getEquityTimeSeries = query({
         const end = Date.now()
         const start = args.timeRange === "all" ? 0 : end - durationMsByRange[args.timeRange]
 
-        const snapshots = await ctx.db.query("account_snapshots").collect()
-
-        return snapshots
-            .filter((s) =>
-                venueApps.includes(s.app as VenueApp) &&
-                s.timestamp >= start &&
-                s.timestamp <= end
+        const snapshotsByApp = await Promise.all(
+            venueApps.map((app) =>
+                ctx.db
+                    .query("account_snapshots")
+                    .withIndex("by_app_timestamp", (q) => q.eq("app", app).gte("timestamp", start))
+                    .order("asc")
+                    .collect()
             )
+        )
+
+        return snapshotsByApp
+            .flat()
             .sort((a, b) => a.timestamp - b.timestamp)
             .map((s) => ({
                 app: s.app,
@@ -499,6 +503,30 @@ export const getEquityTimeSeries = query({
 export const getAllStrategies = query({
     args: {},
     handler: async (ctx) => {
+        await requireUser(ctx)
         return await ctx.db.query("strategies").collect()
+    },
+})
+
+export const getStrategyOwnedInstruments = query({
+    args: { serviceToken: v.string(), strategyId: v.id("strategies") },
+    handler: async (ctx, args) => {
+        requireServiceToken(args.serviceToken)
+        return await getOwnedInstrumentsForStrategy(ctx, args.strategyId)
+    },
+})
+
+export const getAllOwnedInstrumentsByApp = query({
+    args: {
+        serviceToken: v.string(),
+        app: v.union(
+            v.literal("alpaca-options"),
+            v.literal("polymarket"),
+            v.literal("mt5")
+        ),
+    },
+    handler: async (ctx, args) => {
+        requireServiceToken(args.serviceToken)
+        return await getOwnedInstrumentsByApp(ctx, args.app)
     },
 })

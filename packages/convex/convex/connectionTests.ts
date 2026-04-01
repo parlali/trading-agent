@@ -3,6 +3,7 @@
 import { action } from "./_generated/server"
 import { v } from "convex/values"
 import { createHmac } from "crypto"
+import { requireUser } from "./lib/authGuards"
 
 function env(key: string): string | null {
     return process.env[key]?.trim() || null
@@ -35,7 +36,8 @@ async function fetchJson(
 
 export const testBackendHealth = action({
     args: {},
-    handler: async () => {
+    handler: async (ctx) => {
+        await requireUser(ctx)
         const url = env("BACKEND_HEALTH_URL")
         if (!url) {
             return { ok: false, error: "BACKEND_HEALTH_URL not configured in Convex environment variables", steps: [] }
@@ -52,7 +54,8 @@ export const testBackendHealth = action({
 
 export const testMT5Connection = action({
     args: {},
-    handler: async () => {
+    handler: async (ctx) => {
+        await requireUser(ctx)
         const workerUrl = env("MT5_WORKER_URL")?.replace(/\/$/, "")
         const accessKey = env("MT5_WORKER_ACCESS_KEY")
 
@@ -114,7 +117,8 @@ export const testMT5Connection = action({
 
 export const testAlpacaConnection = action({
     args: {},
-    handler: async () => {
+    handler: async (ctx) => {
+        await requireUser(ctx)
         const apiKey = env("ALPACA_PRIMARY_API_KEY") ?? env("ALPACA_API_KEY")
         const secretKey = env("ALPACA_PRIMARY_SECRET_KEY") ?? env("ALPACA_SECRET_KEY")
         const rawBaseUrl = env("ALPACA_BASE_URL") ?? "https://paper-api.alpaca.markets"
@@ -166,7 +170,8 @@ export const testAlpacaConnection = action({
 
 export const testPolymarketConnection = action({
     args: {},
-    handler: async () => {
+    handler: async (ctx) => {
+        await requireUser(ctx)
         const privateKey = env("POLYMARKET_PRIVATE_KEY")
         const apiKey = env("POLYMARKET_API_KEY")
         const apiSecret = env("POLYMARKET_API_SECRET")
@@ -303,7 +308,8 @@ export const testValiqConnection = action({
     args: {
         prompt: v.string(),
     },
-    handler: async (_ctx, args) => {
+    handler: async (ctx, args) => {
+        await requireUser(ctx)
         const apiUrl = env("VALIQ_API_URL")?.replace(/\/+$/, "")
         const authUrl = env("VALIQ_AUTH_URL")?.replace(/\/+$/, "")
         const clientId = env("VALIQ_OAUTH_CLIENT_ID")

@@ -23,6 +23,7 @@ import {
     updateOrderSnapshotFromExecution,
 } from "./orders"
 import { BASE_RISK_VALIDATORS, type RiskValidator, validateIntent } from "./risk"
+import { filterPositionsByOwnership } from "./position-filter"
 import type { Logger } from "./logger"
 
 export interface VenueAdapter {
@@ -53,6 +54,7 @@ export interface ExecutionPipelineConfig {
     runId: string
     strategyId: string
     lifecycle?: OrderLifecycleConfig
+    ownedInstruments?: Set<string>
 }
 
 export interface ExecuteIntentResult {
@@ -130,6 +132,7 @@ export class ExecutionPipeline {
     private lifecycleManager: OrderLifecycleManager
     private runId: string
     private strategyId: string
+    private ownedInstruments: Set<string> | null
 
     constructor(config: ExecutionPipelineConfig) {
         this.venue = config.venue
@@ -140,6 +143,7 @@ export class ExecutionPipeline {
         this.tradeEventLogger = config.tradeEventLogger
         this.runId = config.runId
         this.strategyId = config.strategyId
+        this.ownedInstruments = config.ownedInstruments ?? null
         this.lifecycleManager = new OrderLifecycleManager(
             config.venue,
             config.logger,
@@ -148,7 +152,10 @@ export class ExecutionPipeline {
             config.tradeEventLogger,
             config.runId,
             config.strategyId,
-            config.venueName
+            config.venueName,
+            (previousSnapshot, currentSnapshot) => {
+                this.reconcileOwnedInstrumentsFromSnapshot(previousSnapshot, currentSnapshot)
+            }
         )
     }
 
@@ -200,6 +207,7 @@ export class ExecutionPipeline {
                 lifecycleContext.action,
                 lifecycleContext.metadata
             )
+            this.updateOwnedInstruments(lifecycleContext.action, finalIntent.instrument, mockResult)
             return { result: mockResult, validation, handle }
         }
 
@@ -213,6 +221,7 @@ export class ExecutionPipeline {
                 lifecycleContext.action,
                 lifecycleContext.metadata
             )
+            this.updateOwnedInstruments(lifecycleContext.action, finalIntent.instrument, result)
             return { result, validation, handle }
         } catch (error) {
             const errorMsg = error instanceof Error ? error.message : String(error)
@@ -323,7 +332,7 @@ export class ExecutionPipeline {
     }
 
     async closePosition(instrument: string, reason?: string): Promise<ExecuteIntentResult> {
-        const positions = await this.venue.getPositions()
+        const positions = await this.getPositions()
         const position = positions.find((item) => item.instrument === instrument)
         const closeSide = position?.side === "long" ? "sell" : "buy"
         const intent: OrderIntent = {
@@ -372,12 +381,14 @@ export class ExecutionPipeline {
             }
             await this.tradeEventLogger?.logSubmission(this.runId, this.strategyId, result, intent)
             const handle = await this.lifecycleManager.registerSubmittedOrder(intent, result, "close", { reason })
+            this.updateOwnedInstruments("close", instrument, result)
             return { result, validation: ALLOWED_VALIDATION, handle }
         }
 
         const result = await this.venue.closePosition(instrument)
         await this.tradeEventLogger?.logSubmission(this.runId, this.strategyId, result, intent)
         const handle = await this.lifecycleManager.registerSubmittedOrder(intent, result, "close", { reason })
+        this.updateOwnedInstruments("close", instrument, result)
         return { result, validation: ALLOWED_VALIDATION, handle }
     }
 
@@ -420,11 +431,63 @@ export class ExecutionPipeline {
     }
 
     async getPositions(): Promise<Position[]> {
-        return this.venue.getPositions()
+        const positions = await this.venue.getPositions()
+        if (this.ownedInstruments) {
+            return filterPositionsByOwnership(positions, this.ownedInstruments)
+        }
+        return positions
     }
 
     async getAccountState(): Promise<AccountState> {
         return this.venue.getAccountState()
+    }
+
+    private updateOwnedInstruments(action: string, instrument: string, result: ExecutionResult): void {
+        if (!this.ownedInstruments) {
+            return
+        }
+
+        if (action === "entry" || action === "adjustment") {
+            if (
+                result.status === "pending" ||
+                result.status === "partially_filled" ||
+                result.status === "filled"
+            ) {
+                this.ownedInstruments.add(instrument)
+            }
+        }
+    }
+
+    private reconcileOwnedInstrumentsFromSnapshot(
+        previousSnapshot: OrderSnapshot,
+        currentSnapshot: OrderSnapshot
+    ): void {
+        if (!this.ownedInstruments) {
+            return
+        }
+
+        if (currentSnapshot.action === "entry" || currentSnapshot.action === "adjustment") {
+            const isActive =
+                currentSnapshot.status === "pending" ||
+                currentSnapshot.status === "partially_filled" ||
+                currentSnapshot.status === "filled"
+
+            if (isActive) {
+                this.ownedInstruments.add(currentSnapshot.instrument)
+                return
+            }
+
+            const wasActive =
+                previousSnapshot.status === "pending" ||
+                previousSnapshot.status === "partially_filled" ||
+                previousSnapshot.status === "filled"
+
+            if (wasActive) {
+                this.ownedInstruments.delete(currentSnapshot.instrument)
+            }
+            return
+        }
+
     }
 }
 
@@ -446,6 +509,7 @@ export class OrderLifecycleManager {
     private runId: string
     private strategyId: string
     private venueName: string
+    private onSnapshotUpdate?: (previousSnapshot: OrderSnapshot, currentSnapshot: OrderSnapshot) => void
     private trackedOrders = new Map<string, TrackedOrderState>()
 
     constructor(
@@ -456,7 +520,8 @@ export class OrderLifecycleManager {
         tradeEventLogger?: TradeEventLogger,
         runId: string = "",
         strategyId: string = "",
-        venueName: string = "unknown"
+        venueName: string = "unknown",
+        onSnapshotUpdate?: (previousSnapshot: OrderSnapshot, currentSnapshot: OrderSnapshot) => void
     ) {
         this.venue = venue
         this.logger = logger
@@ -467,6 +532,7 @@ export class OrderLifecycleManager {
         this.runId = runId
         this.strategyId = strategyId
         this.venueName = venueName
+        this.onSnapshotUpdate = onSnapshotUpdate
     }
 
     async registerSubmittedOrder(
@@ -754,6 +820,7 @@ export class OrderLifecycleManager {
     ): Promise<OrderSnapshot> {
         const previousSnapshot = tracked.handle.snapshot
         const updatedSnapshot = updateOrderSnapshotFromExecution(previousSnapshot, result)
+        this.onSnapshotUpdate?.(previousSnapshot, updatedSnapshot)
         tracked.handle = {
             ...tracked.handle,
             snapshot: updatedSnapshot,

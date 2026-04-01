@@ -1,6 +1,6 @@
-import { mutation } from "../_generated/server"
+import { internalMutation } from "../_generated/server"
 
-export const simplifyPolicies = mutation({
+export const simplifyPolicies = internalMutation({
     args: {},
     handler: async (ctx) => {
         const strategies = await ctx.db.query("strategies").collect()

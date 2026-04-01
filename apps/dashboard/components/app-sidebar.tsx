@@ -2,11 +2,13 @@
 
 import { useState, useEffect } from "react"
 import Link from "next/link"
-import { usePathname } from "next/navigation"
+import { usePathname, useRouter } from "next/navigation"
 import { useTheme } from "next-themes"
+import { useAuthActions } from "@convex-dev/auth/react"
 import {
     Gauge,
     LayoutDashboard,
+    LogOut,
     Moon,
     Monitor,
     Plug,
@@ -101,7 +103,14 @@ function ThemeSegment({ theme, setTheme }: { theme: string | undefined, setTheme
 
 export function AppSidebar() {
     const pathname = usePathname()
+    const router = useRouter()
     const { theme, setTheme } = useTheme()
+    const { signOut } = useAuthActions()
+
+    async function handleSignOut() {
+        await signOut()
+        router.replace("/login")
+    }
 
     return (
         <Sidebar>
@@ -133,7 +142,15 @@ export function AppSidebar() {
                     </SidebarGroupContent>
                 </SidebarGroup>
             </SidebarContent>
-            <SidebarFooter className="px-4 pb-4">
+            <SidebarFooter className="px-4 pb-4 space-y-2">
+                <button
+                    type="button"
+                    onClick={handleSignOut}
+                    className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors cursor-pointer"
+                >
+                    <LogOut className="h-3.5 w-3.5" />
+                    <span>Sign out</span>
+                </button>
                 <ThemeSegment theme={theme} setTheme={setTheme} />
             </SidebarFooter>
         </Sidebar>

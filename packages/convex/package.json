@@ -23,8 +23,11 @@
         "deploy": "convex deploy"
     },
     "dependencies": {
+        "@auth/core": "^0.37.0",
+        "@convex-dev/auth": "^0.0.91",
         "@valiq-trading/core": "workspace:*",
         "convex": "^1.34.0",
+        "lucia": "^3.2.2",
         "viem": "^2.21.0"
     },
     "devDependencies": {

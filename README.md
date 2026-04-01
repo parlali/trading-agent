@@ -48,6 +48,18 @@ openssl rand -hex 32
 
 Use one generated value for `BACKEND_SERVICE_TOKEN` and a different one for `MT5_WORKER_ACCESS_KEY`.
 
+After auth is deployed, create the single dashboard user from the Convex dashboard Functions page by running the internal action `seedUserAction:seedUser` with:
+
+```json
+{
+    "email": "you@example.com",
+    "password": "your-plain-text-password",
+    "serviceToken": "your-backend-service-token"
+}
+```
+
+The password should be entered in plain text there. It is hashed automatically by the action before anything is stored.
+
 ### Development
 
 ```bash
