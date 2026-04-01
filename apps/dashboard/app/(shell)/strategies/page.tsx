@@ -3,7 +3,7 @@
 import { useQuery, useMutation } from "convex/react"
 import { api } from "@valiq-trading/convex"
 import Link from "next/link"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { useRouter } from "next/navigation"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
@@ -12,8 +12,98 @@ import { StatusDot } from "@/components/status-dot"
 import { EmptyState } from "@/components/empty-state"
 import { formatRelativeTime } from "@/lib/format"
 import { VENUE_APPS, VENUE_META, type VenueApp } from "@/lib/constants"
-import { Layers, Play, Plus } from "lucide-react"
+import { ChevronRight, Layers, Play, Plus } from "lucide-react"
 import { toast } from "sonner"
+
+function StrategyCard({ strategy, onRun }: {
+    strategy: {
+        _id: string
+        name: string
+        app: string
+        enabled: boolean
+        schedule: string
+        latestRun?: { status: string, startedAt: number } | null
+    }
+    onRun: () => void
+}) {
+    const router = useRouter()
+    const isRunning = strategy.latestRun?.status === "running"
+
+    return (
+        <div
+            role="button"
+            tabIndex={0}
+            onClick={() => router.push(`/strategies/${strategy._id}`)}
+            onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault()
+                    router.push(`/strategies/${strategy._id}`)
+                }
+            }}
+            className="flex items-center justify-between rounded-lg border border-border-subtle bg-card p-3 sm:p-4 transition-colors hover:bg-muted/50 hover:border-border cursor-pointer group"
+        >
+            <div className="flex items-center gap-2.5 sm:gap-3 min-w-0">
+                <StatusDot
+                    status={
+                        isRunning
+                            ? "running"
+                            : strategy.enabled
+                                ? "healthy"
+                                : "unhealthy"
+                    }
+                />
+                <div className="min-w-0">
+                    <p className="text-sm font-medium truncate">{strategy.name}</p>
+                    <div className="flex items-center gap-2 mt-1 flex-wrap">
+                        <code className="text-xs text-muted-foreground font-mono">
+                            {strategy.schedule}
+                        </code>
+                        {!strategy.enabled ? (
+                            <Badge variant="secondary" className="text-xs">disabled</Badge>
+                        ) : null}
+                    </div>
+                </div>
+            </div>
+            <div className="flex items-center gap-2 sm:gap-3 shrink-0 ml-2">
+                {strategy.latestRun ? (
+                    <div className="text-right hidden sm:block">
+                        <Badge
+                            variant={
+                                strategy.latestRun.status === "completed"
+                                    ? "default"
+                                    : strategy.latestRun.status === "failed"
+                                        ? "destructive"
+                                        : "secondary"
+                            }
+                            className="text-xs"
+                        >
+                            {strategy.latestRun.status}
+                        </Badge>
+                        <p className="text-xs text-muted-foreground mt-1">
+                            {formatRelativeTime(strategy.latestRun.startedAt)}
+                        </p>
+                    </div>
+                ) : (
+                    <span className="text-xs text-muted-foreground hidden sm:block">never run</span>
+                )}
+                <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={!strategy.enabled || isRunning}
+                    onClick={(e) => {
+                        e.stopPropagation()
+                        onRun()
+                    }}
+                    className="h-8"
+                >
+                    <Play className="h-3 w-3" />
+                    <span className="hidden sm:inline">Run</span>
+                </Button>
+                <ChevronRight className="h-4 w-4 text-muted-foreground/50 group-hover:text-muted-foreground transition-colors hidden sm:block" />
+            </div>
+        </div>
+    )
+}
 
 export default function StrategiesPage() {
     const overview = useQuery(api.queries.getDashboardOverview)
@@ -23,7 +113,7 @@ export default function StrategiesPage() {
         return (
             <div className="space-y-4">
                 {Array.from({ length: 3 }).map((_, i) => (
-                    <Skeleton key={i} className="h-24" />
+                    <Skeleton key={i} className="h-20" />
                 ))}
             </div>
         )
@@ -76,73 +166,15 @@ export default function StrategiesPage() {
                     </div>
                     <div className="space-y-2">
                         {strategies.map((strategy) => (
-                            <Card key={strategy._id}>
-                                <CardContent className="flex items-center justify-between py-4">
-                                    <div className="flex items-center gap-3 min-w-0">
-                                        <StatusDot
-                                            status={
-                                                strategy.latestRun?.status === "running"
-                                                    ? "running"
-                                                    : strategy.enabled
-                                                        ? "healthy"
-                                                        : "unhealthy"
-                                            }
-                                        />
-                                        <div className="min-w-0">
-                                            <Link
-                                                href={`/strategies/${strategy._id}`}
-                                                className="text-sm font-medium hover:underline"
-                                            >
-                                                {strategy.name}
-                                            </Link>
-                                            <div className="flex items-center gap-2 mt-1">
-                                                <code className="text-xs text-muted-foreground font-mono">
-                                                    {strategy.schedule}
-                                                </code>
-                                                {!strategy.enabled ? (
-                                                    <Badge variant="secondary" className="text-xs">disabled</Badge>
-                                                ) : null}
-                                            </div>
-                                        </div>
-                                    </div>
-                                    <div className="flex items-center gap-3 shrink-0">
-                                        {strategy.latestRun ? (
-                                            <div className="text-right">
-                                                <Badge
-                                                    variant={
-                                                        strategy.latestRun.status === "completed"
-                                                            ? "default"
-                                                            : strategy.latestRun.status === "failed"
-                                                                ? "destructive"
-                                                                : "secondary"
-                                                    }
-                                                    className="text-xs"
-                                                >
-                                                    {strategy.latestRun.status}
-                                                </Badge>
-                                                <p className="text-xs text-muted-foreground mt-1">
-                                                    {formatRelativeTime(strategy.latestRun.startedAt)}
-                                                </p>
-                                            </div>
-                                        ) : (
-                                            <span className="text-xs text-muted-foreground">never run</span>
-                                        )}
-                                        <Button
-                                            size="sm"
-                                            variant="outline"
-                                            disabled={!strategy.enabled || strategy.latestRun?.status === "running"}
-                                            onClick={() => {
-                                                triggerManualRun({ strategyId: strategy._id })
-                                                    .then(() => toast.success(`Manual run triggered for ${strategy.name}`))
-                                                    .catch(() => toast.error("Failed to trigger run"))
-                                            }}
-                                        >
-                                            <Play className="h-3 w-3 mr-1" />
-                                            Run
-                                        </Button>
-                                    </div>
-                                </CardContent>
-                            </Card>
+                            <StrategyCard
+                                key={strategy._id}
+                                strategy={strategy}
+                                onRun={() => {
+                                    triggerManualRun({ strategyId: strategy._id })
+                                        .then(() => toast.success(`Manual run triggered for ${strategy.name}`))
+                                        .catch(() => toast.error("Failed to trigger run"))
+                                }}
+                            />
                         ))}
                     </div>
                 </div>

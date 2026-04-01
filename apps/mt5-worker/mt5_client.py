@@ -312,7 +312,7 @@ class MT5Client:
             "magic": magic,
             "comment": comment,
             "type_time": mt5.ORDER_TIME_GTC,
-            "type_filling": mt5.ORDER_FILLING_IOC,
+            "type_filling": self._resolve_filling_mode(symbol),
         }
 
         if stop_loss is not None:
@@ -396,7 +396,7 @@ class MT5Client:
             "magic": pos.magic,
             "comment": "close",
             "type_time": mt5.ORDER_TIME_GTC,
-            "type_filling": mt5.ORDER_FILLING_IOC,
+            "type_filling": self._resolve_filling_mode(pos.symbol),
         }
 
         result = mt5.order_send(request)
@@ -442,10 +442,14 @@ class MT5Client:
         if info is None:
             return None
 
+        point = 10 ** (-info.digits) if info.digits > 0 else 1.0
+        pip_size = point * 10 if info.digits in (3, 5) else point
+
         return {
             "symbol": info.name,
             "digits": info.digits,
-            "pipSize": 10 ** (-info.digits) if info.digits > 0 else 1.0,
+            "point": point,
+            "pipSize": pip_size,
             "pipValue": float(info.trade_tick_value),
             "contractSize": float(info.trade_contract_size),
             "currency": info.currency_profit,
@@ -454,6 +458,7 @@ class MT5Client:
             "volumeMin": float(info.volume_min),
             "volumeMax": float(info.volume_max),
             "volumeStep": float(info.volume_step),
+            "fillingMode": info.filling_mode,
         }
 
     def get_symbol_info_batch(self, symbols: list[str]) -> list[dict[str, Any]]:
@@ -484,14 +489,35 @@ class MT5Client:
                 "timeDone": int(order.time_done) * 1000 if order.time_done else 0,
             }
 
-        # Check deal history if not in pending
         deals = mt5.history_deals_get(ticket=order_id)
+        if not deals:
+            epoch = datetime(2020, 1, 1, tzinfo=timezone.utc)
+            now = datetime.now(timezone.utc)
+            deals = mt5.history_deals_get(epoch, now, ticket=order_id)
+
         if deals and len(deals) > 0:
             deal = deals[0]
+            deal_type_map = {
+                mt5.DEAL_TYPE_BUY: "buy",
+                mt5.DEAL_TYPE_SELL: "sell",
+                mt5.DEAL_TYPE_BALANCE: "balance",
+                mt5.DEAL_TYPE_CREDIT: "credit",
+                mt5.DEAL_TYPE_CHARGE: "charge",
+                mt5.DEAL_TYPE_CORRECTION: "correction",
+                mt5.DEAL_TYPE_BONUS: "bonus",
+                mt5.DEAL_TYPE_COMMISSION: "commission",
+                mt5.DEAL_TYPE_COMMISSION_DAILY: "commission_daily",
+                mt5.DEAL_TYPE_COMMISSION_MONTHLY: "commission_monthly",
+                mt5.DEAL_TYPE_COMMISSION_AGENT_DAILY: "commission_agent_daily",
+                mt5.DEAL_TYPE_COMMISSION_AGENT_MONTHLY: "commission_agent_monthly",
+                mt5.DEAL_TYPE_INTEREST: "interest",
+                mt5.DEAL_TYPE_BUY_CANCELED: "buy_canceled",
+                mt5.DEAL_TYPE_SELL_CANCELED: "sell_canceled",
+            }
             return {
-                "ticket": int(deal.ticket),
+                "ticket": int(deal.order),
                 "symbol": deal.symbol,
-                "type": "buy" if deal.type == mt5.DEAL_TYPE_BUY else "sell",
+                "type": deal_type_map.get(deal.type, f"unknown_{deal.type}"),
                 "volume": float(deal.volume),
                 "price": float(deal.price),
                 "profit": float(deal.profit),
@@ -520,6 +546,26 @@ class MT5Client:
             return mt5.ORDER_TYPE_BUY_STOP_LIMIT if side == "buy" else mt5.ORDER_TYPE_SELL_STOP_LIMIT
         return mt5.ORDER_TYPE_BUY if side == "buy" else mt5.ORDER_TYPE_SELL
 
+    def _resolve_filling_mode(self, symbol: str) -> int:
+        """Pick a fill mode the broker supports for this symbol.
+
+        symbol_info().filling_mode is a bitmask:
+            bit 0 (1) = ORDER_FILLING_FOK
+            bit 1 (2) = ORDER_FILLING_IOC
+            bit 2 (4) = ORDER_FILLING_BOC (book-or-cancel)
+        We prefer IOC > FOK > RETURN as the fallback order.
+        """
+        info = mt5.symbol_info(symbol)
+        if info is None:
+            return mt5.ORDER_FILLING_IOC
+
+        mask = info.filling_mode
+        if mask & 2:
+            return mt5.ORDER_FILLING_IOC
+        if mask & 1:
+            return mt5.ORDER_FILLING_FOK
+        return mt5.ORDER_FILLING_RETURN
+
     def _map_order_result(self, result: Any) -> dict[str, Any]:
         retcode = int(result.retcode)
         return {
@@ -536,7 +582,14 @@ class MT5Client:
     @staticmethod
     def _retcode_description(retcode: int) -> str:
         descriptions: dict[int, str] = {
+            10004: "Requote",
+            10006: "Request rejected",
+            10007: "Request cancelled by trader",
+            10008: "Order placed",
             10009: "Request completed",
+            10010: "Request partially completed",
+            10011: "Request processing error",
+            10012: "Request cancelled by timeout",
             10013: "Invalid request",
             10014: "Invalid volume",
             10015: "Invalid price",
@@ -546,17 +599,29 @@ class MT5Client:
             10019: "Insufficient funds",
             10020: "Prices changed",
             10021: "No quotes",
-            10022: "Requote",
-            10023: "Order placed (pending)",
+            10022: "Invalid expiration",
+            10023: "Order state changed",
             10024: "Too many requests",
             10025: "No changes",
             10026: "Autotrading disabled",
             10027: "Protection triggered",
-            10028: "Close order prohibited",
+            10028: "Modification failed (locked)",
+            10029: "Order/position frozen",
             10030: "Invalid fill mode",
             10031: "Connection problem",
-            10033: "Only real mode allowed",
-            10034: "Too many orders",
+            10032: "Only real accounts allowed",
+            10033: "Pending orders limit reached",
+            10034: "Volume limit for orders/positions reached",
+            10035: "Invalid or prohibited order type",
+            10036: "Position already closed",
+            10038: "Close volume exceeds position volume",
+            10039: "Close order already exists for position",
+            10040: "Limit orders reached",
+            10041: "Pending volume limit reached",
+            10042: "Order prohibited (only long allowed)",
+            10043: "Order prohibited (only short allowed)",
+            10044: "Order prohibited (only close allowed)",
+            10045: "Position close not allowed by FIFO",
         }
         return descriptions.get(retcode, f"Unknown retcode {retcode}")
 
@@ -584,5 +649,8 @@ class MT5Client:
             4: "filled",
             5: "rejected",
             6: "expired",
+            7: "request_add",
+            8: "request_modify",
+            9: "request_cancel",
         }
         return mapping.get(state, f"unknown_{state}")

@@ -223,7 +223,7 @@ export class PolymarketClient {
     }
 
     async getOrderBook(tokenId: string): Promise<PolymarketOrderBook> {
-        return this.requestPublic<PolymarketOrderBook>(`/order-book?token_id=${tokenId}`)
+        return this.requestPublic<PolymarketOrderBook>(`/book?token_id=${tokenId}`)
     }
 
     async getMidpoint(tokenId: string): Promise<number> {
@@ -369,14 +369,14 @@ export class PolymarketClient {
     }
 
     async getOrder(orderId: string): Promise<PolymarketOpenOrder> {
-        return this.requestAuthenticated<PolymarketOpenOrder>("GET", `/order/${orderId}`)
+        return this.requestAuthenticated<PolymarketOpenOrder>("GET", `/data/order/${orderId}`)
     }
 
     async getOpenOrders(params?: {
         market?: string
         assetId?: string
     }): Promise<PolymarketOpenOrder[]> {
-        return this.requestAuthenticated<PolymarketOpenOrder[]>("GET", "/orders", undefined, {
+        return this.requestAuthenticated<PolymarketOpenOrder[]>("GET", "/data/orders", undefined, {
             market: params?.market,
             asset_id: params?.assetId,
         })
@@ -406,7 +406,7 @@ export class PolymarketClient {
         do {
             const response = await this.requestAuthenticated<
                 PolymarketTrade[] | PaginatedResponse<PolymarketTrade>
-            >("GET", "/trades", undefined, {
+            >("GET", "/data/trades", undefined, {
                 market: params?.market,
                 asset_id: params?.assetId,
                 before: params?.before,

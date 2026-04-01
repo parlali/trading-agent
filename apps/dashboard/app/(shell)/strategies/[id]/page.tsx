@@ -17,7 +17,7 @@ import { StatusDot } from "@/components/status-dot"
 import { EmptyState } from "@/components/empty-state"
 import { DeleteStrategyDialog } from "@/components/delete-strategy-dialog"
 import { formatRelativeTime, formatTimestamp } from "@/lib/format"
-import { History, Pencil, Trash2 } from "lucide-react"
+import { ArrowLeft, History, Pencil, Play, Trash2 } from "lucide-react"
 import { toast } from "sonner"
 
 export default function StrategyDetailPage({
@@ -35,6 +35,7 @@ export default function StrategyDetailPage({
         limit: 20,
     })
     const upsertStrategy = useMutation(api.mutations.upsertStrategy)
+    const triggerManualRun = useMutation(api.mutations.triggerManualRun)
     const [deleteOpen, setDeleteOpen] = useState(false)
 
     if (strategy === undefined || runs === undefined) {
@@ -54,6 +55,8 @@ export default function StrategyDetailPage({
         )
     }
 
+    const isRunning = runs.some((r) => r.status === "running")
+
     function handleToggleEnabled(checked: boolean) {
         upsertStrategy({
             id: strategy!._id,
@@ -68,32 +71,60 @@ export default function StrategyDetailPage({
             .catch(() => toast.error("Failed to update strategy"))
     }
 
+    function handleManualRun() {
+        triggerManualRun({ strategyId: strategy!._id })
+            .then(() => toast.success(`Manual run triggered for ${strategy!.name}`))
+            .catch(() => toast.error("Failed to trigger run"))
+    }
+
     return (
         <div className="space-y-6">
-            <div className="flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                    <h2 className="text-lg font-semibold">{strategy.name}</h2>
-                    <VenueBadge app={strategy.app} />
-                    <Badge variant={strategy.enabled ? "default" : "secondary"}>
-                        {strategy.enabled ? "enabled" : "disabled"}
-                    </Badge>
-                </div>
-                <div className="flex items-center gap-2">
-                    <Button variant="outline" size="sm" asChild>
-                        <Link href={`/strategies/${id}/edit`}>
-                            <Pencil className="h-3 w-3" />
-                            Edit
-                        </Link>
-                    </Button>
-                    <Button
-                        variant="outline"
-                        size="sm"
-                        className="text-signal-danger hover:text-signal-danger"
-                        onClick={() => setDeleteOpen(true)}
-                    >
-                        <Trash2 className="h-3 w-3" />
-                        Delete
-                    </Button>
+            <div className="space-y-4">
+                <Button
+                    variant="ghost"
+                    size="sm"
+                    asChild
+                    className="text-muted-foreground -ml-2"
+                >
+                    <Link href="/strategies">
+                        <ArrowLeft className="h-3.5 w-3.5" />
+                        Strategies
+                    </Link>
+                </Button>
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="flex items-center gap-3 min-w-0">
+                        <h2 className="text-lg font-semibold truncate">{strategy.name}</h2>
+                        <VenueBadge app={strategy.app} />
+                        <Badge variant={strategy.enabled ? "default" : "secondary"}>
+                            {strategy.enabled ? "enabled" : "disabled"}
+                        </Badge>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                        <Button
+                            variant="default"
+                            size="sm"
+                            disabled={!strategy.enabled || isRunning}
+                            onClick={handleManualRun}
+                        >
+                            <Play className="h-3 w-3" />
+                            {isRunning ? "Running..." : "Run Now"}
+                        </Button>
+                        <Button variant="outline" size="sm" asChild>
+                            <Link href={`/strategies/${id}/edit`}>
+                                <Pencil className="h-3 w-3" />
+                                <span className="hidden sm:inline">Edit</span>
+                            </Link>
+                        </Button>
+                        <Button
+                            variant="outline"
+                            size="sm"
+                            className="text-signal-danger hover:text-signal-danger"
+                            onClick={() => setDeleteOpen(true)}
+                        >
+                            <Trash2 className="h-3 w-3" />
+                            <span className="hidden sm:inline">Delete</span>
+                        </Button>
+                    </div>
                 </div>
             </div>
 
@@ -149,29 +180,30 @@ export default function StrategyDetailPage({
                     ) : (
                         <div className="space-y-2">
                             {runs.map((run) => (
-                                <div
+                                <Link
                                     key={run._id}
-                                    className="flex items-center justify-between rounded-lg border border-border-subtle p-3"
+                                    href={`/runs/${run._id}`}
+                                    className="flex items-center justify-between rounded-lg border border-border-subtle p-3 transition-colors hover:bg-muted/50 hover:border-border group"
                                 >
-                                    <div className="flex items-center gap-3 min-w-0">
+                                    <div className="flex items-center gap-2.5 sm:gap-3 min-w-0">
                                         <StatusDot status={run.status} />
                                         <div className="min-w-0">
                                             <p className="text-sm font-medium">
                                                 {formatTimestamp(run.startedAt)}
                                             </p>
                                             {run.summary ? (
-                                                <p className="text-xs text-muted-foreground truncate max-w-[300px]">
+                                                <p className="text-xs text-muted-foreground truncate max-w-[200px] sm:max-w-[300px]">
                                                     {run.summary}
                                                 </p>
                                             ) : null}
                                             {run.error ? (
-                                                <p className="text-xs text-signal-danger truncate max-w-[300px]">
+                                                <p className="text-xs text-signal-danger truncate max-w-[200px] sm:max-w-[300px]">
                                                     {run.error}
                                                 </p>
                                             ) : null}
                                         </div>
                                     </div>
-                                    <div className="flex items-center gap-3 shrink-0">
+                                    <div className="flex items-center gap-2 sm:gap-3 shrink-0 ml-2">
                                         <Badge
                                             variant={
                                                 run.status === "completed"
@@ -185,12 +217,12 @@ export default function StrategyDetailPage({
                                             {run.status}
                                         </Badge>
                                         {run.endedAt ? (
-                                            <span className="text-xs text-muted-foreground tabular-nums font-mono">
+                                            <span className="text-xs text-muted-foreground tabular-nums font-mono hidden sm:inline">
                                                 {Math.round((run.endedAt - run.startedAt) / 1000)}s
                                             </span>
                                         ) : null}
                                     </div>
-                                </div>
+                                </Link>
                             ))}
                         </div>
                     )}

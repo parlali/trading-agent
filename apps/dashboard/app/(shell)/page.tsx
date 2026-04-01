@@ -2,15 +2,19 @@
 
 import { useQuery } from "convex/react"
 import { api } from "@valiq-trading/convex"
+import Link from "next/link"
 import {
     CheckCircle2,
+    ChevronRight,
     Layers,
+    Plus,
     Server,
     ShieldAlert,
     XCircle,
 } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
 import { VenueBadge } from "@/components/venue-badge"
 import { StatusDot } from "@/components/status-dot"
@@ -73,8 +77,8 @@ function DeploymentRow({
             : heartbeat.status
 
     return (
-        <div className="flex items-center justify-between rounded-lg border border-border-subtle p-4">
-            <div className="flex items-center gap-3">
+        <div className="flex items-center justify-between rounded-lg border border-border-subtle p-3 sm:p-4">
+            <div className="flex items-center gap-2.5 sm:gap-3 min-w-0">
                 {effectiveStatus === "healthy" ? (
                     <CheckCircle2 className="h-4 w-4 text-signal-healthy shrink-0" />
                 ) : effectiveStatus === "stale" ? (
@@ -82,12 +86,12 @@ function DeploymentRow({
                 ) : (
                     <XCircle className="h-4 w-4 text-signal-danger shrink-0" />
                 )}
-                <div>
-                    <p className="text-sm font-medium">{label}</p>
-                    <p className="text-xs text-muted-foreground">{description}</p>
+                <div className="min-w-0">
+                    <p className="text-sm font-medium truncate">{label}</p>
+                    <p className="text-xs text-muted-foreground hidden sm:block">{description}</p>
                 </div>
             </div>
-            <div className="text-right shrink-0">
+            <div className="text-right shrink-0 ml-2">
                 {hasHeartbeat ? (
                     <>
                         <Badge
@@ -116,6 +120,68 @@ function DeploymentRow({
     )
 }
 
+function StrategyRow({ strategy }: {
+    strategy: {
+        _id: string
+        name: string
+        app: string
+        enabled: boolean
+        latestRun?: { status: string, startedAt: number } | null
+    }
+}) {
+    return (
+        <Link
+            href={`/strategies/${strategy._id}`}
+            className="flex items-center justify-between rounded-lg border border-border-subtle p-3 transition-colors hover:bg-muted/50 hover:border-border group"
+        >
+            <div className="flex items-center gap-2.5 sm:gap-3 min-w-0">
+                <StatusDot
+                    status={
+                        strategy.latestRun?.status === "running"
+                            ? "running"
+                            : strategy.enabled
+                                ? "healthy"
+                                : "unhealthy"
+                    }
+                />
+                <div className="min-w-0">
+                    <p className="text-sm font-medium truncate">{strategy.name}</p>
+                    <div className="flex items-center gap-2 mt-0.5">
+                        <VenueBadge app={strategy.app} />
+                        {!strategy.enabled ? (
+                            <Badge variant="secondary" className="text-xs">disabled</Badge>
+                        ) : null}
+                    </div>
+                </div>
+            </div>
+            <div className="flex items-center gap-2 shrink-0 ml-2">
+                {strategy.latestRun ? (
+                    <div className="text-right">
+                        <Badge
+                            variant={
+                                strategy.latestRun.status === "completed"
+                                    ? "default"
+                                    : strategy.latestRun.status === "failed"
+                                        ? "destructive"
+                                        : "secondary"
+                            }
+                            className="text-xs"
+                        >
+                            {strategy.latestRun.status}
+                        </Badge>
+                        <p className="text-xs text-muted-foreground mt-1">
+                            {formatRelativeTime(strategy.latestRun.startedAt)}
+                        </p>
+                    </div>
+                ) : (
+                    <span className="text-xs text-muted-foreground">never run</span>
+                )}
+                <ChevronRight className="h-4 w-4 text-muted-foreground/50 group-hover:text-muted-foreground transition-colors" />
+            </div>
+        </Link>
+    )
+}
+
 export default function OverviewPage() {
     const data = useQuery(api.queries.getDashboardOverview)
 
@@ -141,7 +207,7 @@ export default function OverviewPage() {
         <div className="space-y-6">
             {isGlobalKilled ? (
                 <div className="flex items-center gap-2 rounded-lg border border-signal-danger/30 bg-signal-danger/10 px-4 py-3">
-                    <ShieldAlert className="h-4 w-4 text-signal-danger" />
+                    <ShieldAlert className="h-4 w-4 text-signal-danger shrink-0" />
                     <span className="text-sm font-medium text-signal-danger">
                         Global kill switch is active -- all trading is halted
                     </span>
@@ -160,7 +226,7 @@ export default function OverviewPage() {
                         </span>
                     </div>
                 </CardHeader>
-                <CardContent className="space-y-3">
+                <CardContent className="space-y-2 sm:space-y-3">
                     <DeploymentRow
                         label="Backend"
                         description="Strategy scheduler and execution runtime"
@@ -197,9 +263,17 @@ export default function OverviewPage() {
                             <Layers className="h-4 w-4" />
                             Strategies
                         </CardTitle>
-                        <span className="text-xs text-muted-foreground">
-                            {enabledCount} enabled / {strategyCount} total
-                        </span>
+                        <div className="flex items-center gap-3">
+                            <span className="text-xs text-muted-foreground">
+                                {enabledCount} enabled / {strategyCount} total
+                            </span>
+                            <Button size="xs" variant="outline" asChild>
+                                <Link href="/strategies/new">
+                                    <Plus className="h-3 w-3" />
+                                    <span className="hidden sm:inline">New</span>
+                                </Link>
+                            </Button>
+                        </div>
                     </div>
                 </CardHeader>
                 <CardContent>
@@ -210,52 +284,7 @@ export default function OverviewPage() {
                     ) : (
                         <div className="space-y-2">
                             {data.strategies.map((strategy) => (
-                                <div
-                                    key={strategy._id}
-                                    className="flex items-center justify-between rounded-lg border border-border-subtle p-3"
-                                >
-                                    <div className="flex items-center gap-3 min-w-0">
-                                        <StatusDot
-                                            status={
-                                                strategy.latestRun?.status === "running"
-                                                    ? "running"
-                                                    : strategy.enabled
-                                                        ? "healthy"
-                                                        : "unhealthy"
-                                            }
-                                        />
-                                        <div className="min-w-0">
-                                            <p className="text-sm font-medium truncate">{strategy.name}</p>
-                                            <div className="flex items-center gap-2 mt-0.5">
-                                                <VenueBadge app={strategy.app} />
-                                                {!strategy.enabled ? (
-                                                    <Badge variant="secondary" className="text-xs">disabled</Badge>
-                                                ) : null}
-                                            </div>
-                                        </div>
-                                    </div>
-                                    {strategy.latestRun ? (
-                                        <div className="text-right shrink-0">
-                                            <Badge
-                                                variant={
-                                                    strategy.latestRun.status === "completed"
-                                                        ? "default"
-                                                        : strategy.latestRun.status === "failed"
-                                                            ? "destructive"
-                                                            : "secondary"
-                                                }
-                                                className="text-xs"
-                                            >
-                                                {strategy.latestRun.status}
-                                            </Badge>
-                                            <p className="text-xs text-muted-foreground mt-1">
-                                                {formatRelativeTime(strategy.latestRun.startedAt)}
-                                            </p>
-                                        </div>
-                                    ) : (
-                                        <span className="text-xs text-muted-foreground">never run</span>
-                                    )}
-                                </div>
+                                <StrategyRow key={strategy._id} strategy={strategy} />
                             ))}
                         </div>
                     )}

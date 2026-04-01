@@ -2,7 +2,7 @@
 
 import { useQuery } from "convex/react"
 import { api } from "@valiq-trading/convex"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Card, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Skeleton } from "@/components/ui/skeleton"
 import { VenueBadge } from "@/components/venue-badge"
@@ -10,6 +10,46 @@ import { PnlText } from "@/components/pnl-text"
 import { EmptyState } from "@/components/empty-state"
 import { formatCurrency } from "@/lib/format"
 import { Activity } from "lucide-react"
+
+function PositionCard({ pos }: {
+    pos: {
+        app: string
+        instrument: string
+        side: string
+        quantity: number
+        entryPrice: number
+        currentPrice?: number | null
+        unrealizedPnl?: number | null
+        strategy?: { name: string } | null
+    }
+}) {
+    return (
+        <div className="rounded-lg border border-border-subtle p-3 space-y-2">
+            <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2 min-w-0">
+                    <span className="text-sm font-medium font-mono truncate">{pos.instrument}</span>
+                    <Badge
+                        variant={pos.side === "long" ? "default" : "destructive"}
+                        className="text-xs shrink-0"
+                    >
+                        {pos.side}
+                    </Badge>
+                </div>
+                <PnlText value={pos.unrealizedPnl ?? 0} className="text-sm font-medium shrink-0" />
+            </div>
+            <div className="flex items-center justify-between text-xs text-muted-foreground">
+                <div className="flex items-center gap-2">
+                    <VenueBadge app={pos.app} />
+                    <span className="truncate max-w-[100px]">{pos.strategy?.name ?? "Unknown"}</span>
+                </div>
+                <div className="flex items-center gap-3 font-mono tabular-nums shrink-0">
+                    <span>qty {pos.quantity}</span>
+                    <span>{formatCurrency(pos.entryPrice)}</span>
+                </div>
+            </div>
+        </div>
+    )
+}
 
 export default function PositionsPage() {
     const overview = useQuery(api.queries.getDashboardOverview)
@@ -47,7 +87,13 @@ export default function PositionsPage() {
                 </div>
             </div>
 
-            <Card>
+            <div className="space-y-2 sm:hidden">
+                {positions.map((pos, i) => (
+                    <PositionCard key={i} pos={pos} />
+                ))}
+            </div>
+
+            <Card className="hidden sm:block">
                 <CardContent className="pt-6">
                     <div className="overflow-x-auto">
                         <table className="w-full text-sm">

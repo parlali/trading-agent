@@ -76,11 +76,9 @@ export class AlpacaClient {
 
         const payload: Record<string, unknown> = {
             order_class: "mleg",
-            side: intent.side,
             type: mapOrderType(intent.orderType),
             time_in_force: intent.timeInForce,
             qty: intent.quantity,
-            symbol: intent.instrument,
             legs: intent.legs.map((leg) => ({
                 symbol: leg.instrument,
                 ratio_qty: leg.quantity,
@@ -131,9 +129,6 @@ export class AlpacaClient {
         }
         if (changes.timeInForce !== undefined) {
             payload.time_in_force = changes.timeInForce
-        }
-        if (changes.orderType !== undefined) {
-            payload.type = mapOrderType(changes.orderType)
         }
 
         if (Object.keys(payload).length === 0) {

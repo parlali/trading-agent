@@ -3,7 +3,6 @@
 import { internalAction } from "./_generated/server"
 import { internal } from "./_generated/api"
 import { v } from "convex/values"
-import { requireServiceToken } from "./lib/authGuards"
 import { Scrypt } from "lucia"
 import type { Id } from "./_generated/dataModel"
 
@@ -15,11 +14,8 @@ export const seedUser = internalAction({
     args: {
         email: v.string(),
         password: v.string(),
-        serviceToken: v.string(),
     },
     handler: async (ctx, args): Promise<SeedUserResult> => {
-        requireServiceToken(args.serviceToken)
-
         const existing = await ctx.runQuery(
             internal.seedUserHelpers.findUserByEmail,
             { email: args.email }

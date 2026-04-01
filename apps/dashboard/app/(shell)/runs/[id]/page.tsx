@@ -4,14 +4,16 @@ import { use } from "react"
 import { useQuery } from "convex/react"
 import { api } from "@valiq-trading/convex"
 import type { Id } from "@valiq-trading/convex"
+import Link from "next/link"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
 import { VenueBadge } from "@/components/venue-badge"
 import { StatusDot } from "@/components/status-dot"
 import { EmptyState } from "@/components/empty-state"
 import { formatTimestamp } from "@/lib/format"
-import { MessageSquare, ArrowRightLeft } from "lucide-react"
+import { ArrowLeft, ArrowRightLeft, MessageSquare } from "lucide-react"
 
 export default function RunDetailPage({
     params,
@@ -40,32 +42,45 @@ export default function RunDetailPage({
 
     return (
         <div className="space-y-6">
-            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
-                <h2 className="text-lg font-semibold">
-                    {strategy?.name ?? "Run Detail"}
-                </h2>
-                {run ? (
-                    <>
-                        <VenueBadge app={run.app} />
-                        <Badge
-                            variant={
-                                run.status === "completed"
-                                    ? "default"
-                                    : run.status === "failed"
-                                        ? "destructive"
-                                        : "secondary"
-                            }
-                        >
-                            {run.status}
-                        </Badge>
-                        <span className="text-sm text-muted-foreground">
-                            {formatTimestamp(run.startedAt)}
-                            {run.endedAt
-                                ? ` (${Math.round((run.endedAt - run.startedAt) / 1000)}s)`
-                                : ""}
-                        </span>
-                    </>
-                ) : null}
+            <div className="space-y-3">
+                <Button
+                    variant="ghost"
+                    size="sm"
+                    asChild
+                    className="text-muted-foreground -ml-2"
+                >
+                    <Link href={strategy ? `/strategies/${strategy._id}` : "/runs"}>
+                        <ArrowLeft className="h-3.5 w-3.5" />
+                        {strategy ? strategy.name : "Runs"}
+                    </Link>
+                </Button>
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
+                    <h2 className="text-lg font-semibold">
+                        {strategy?.name ?? "Run Detail"}
+                    </h2>
+                    {run ? (
+                        <div className="flex items-center gap-2 flex-wrap">
+                            <VenueBadge app={run.app} />
+                            <Badge
+                                variant={
+                                    run.status === "completed"
+                                        ? "default"
+                                        : run.status === "failed"
+                                            ? "destructive"
+                                            : "secondary"
+                                }
+                            >
+                                {run.status}
+                            </Badge>
+                            <span className="text-sm text-muted-foreground">
+                                {formatTimestamp(run.startedAt)}
+                                {run.endedAt
+                                    ? ` (${Math.round((run.endedAt - run.startedAt) / 1000)}s)`
+                                    : ""}
+                            </span>
+                        </div>
+                    ) : null}
+                </div>
             </div>
 
             {run?.summary ? (
@@ -85,7 +100,7 @@ export default function RunDetailPage({
                         <CardTitle className="text-base text-signal-danger">Error</CardTitle>
                     </CardHeader>
                     <CardContent>
-                        <pre className="text-sm text-signal-danger font-mono whitespace-pre-wrap">
+                        <pre className="text-sm text-signal-danger font-mono whitespace-pre-wrap break-words">
                             {run.error}
                         </pre>
                     </CardContent>
@@ -107,13 +122,13 @@ export default function RunDetailPage({
                             description="No reasoning trace recorded for this run"
                         />
                     ) : (
-                        <div className="space-y-3 max-h-[600px] overflow-y-auto">
+                        <div className="space-y-3 max-h-[60vh] sm:max-h-[600px] overflow-y-auto">
                             {agentLogs.map((log) => (
                                 <div
                                     key={log._id}
                                     className="rounded-md border border-border-subtle p-3"
                                 >
-                                    <div className="flex items-center gap-2 mb-2">
+                                    <div className="flex items-center gap-2 mb-2 flex-wrap">
                                         <Badge variant="outline" className="text-xs">
                                             {log.role}
                                         </Badge>
@@ -126,7 +141,7 @@ export default function RunDetailPage({
                                             #{log.sequence}
                                         </span>
                                     </div>
-                                    <pre className="text-xs whitespace-pre-wrap font-mono bg-muted/50 rounded p-2 max-h-[200px] overflow-auto">
+                                    <pre className="text-xs whitespace-pre-wrap break-words font-mono bg-muted/50 rounded p-2 max-h-[200px] overflow-auto">
                                         {log.content}
                                     </pre>
                                     {log.toolInput ? (
@@ -134,7 +149,7 @@ export default function RunDetailPage({
                                             <summary className="text-xs text-muted-foreground cursor-pointer">
                                                 Tool Input
                                             </summary>
-                                            <pre className="text-xs font-mono mt-1 bg-muted/50 rounded p-2 overflow-auto">
+                                            <pre className="text-xs font-mono mt-1 bg-muted/50 rounded p-2 overflow-auto break-words whitespace-pre-wrap">
                                                 {log.toolInput}
                                             </pre>
                                         </details>
@@ -144,7 +159,7 @@ export default function RunDetailPage({
                                             <summary className="text-xs text-muted-foreground cursor-pointer">
                                                 Tool Output
                                             </summary>
-                                            <pre className="text-xs font-mono mt-1 bg-muted/50 rounded p-2 overflow-auto max-h-[200px]">
+                                            <pre className="text-xs font-mono mt-1 bg-muted/50 rounded p-2 overflow-auto max-h-[200px] break-words whitespace-pre-wrap">
                                                 {log.toolOutput}
                                             </pre>
                                         </details>
@@ -178,7 +193,7 @@ export default function RunDetailPage({
                                 return (
                                     <div
                                         key={event._id}
-                                        className="flex items-start gap-3 rounded-md border border-border-subtle p-3"
+                                        className="flex flex-col gap-2 sm:flex-row sm:items-start sm:gap-3 rounded-md border border-border-subtle p-3"
                                     >
                                         <Badge
                                             variant={
@@ -188,7 +203,7 @@ export default function RunDetailPage({
                                                         ? "destructive"
                                                         : "secondary"
                                             }
-                                            className="text-xs shrink-0"
+                                            className="text-xs shrink-0 w-fit"
                                         >
                                             {event.eventType}
                                         </Badge>
@@ -197,7 +212,7 @@ export default function RunDetailPage({
                                                 {formatTimestamp(event.timestamp)}
                                             </p>
                                             {payload ? (
-                                                <pre className="text-xs font-mono mt-1 bg-muted/50 rounded p-2 overflow-auto max-h-[150px]">
+                                                <pre className="text-xs font-mono mt-1 bg-muted/50 rounded p-2 overflow-auto max-h-[150px] break-words whitespace-pre-wrap">
                                                     {JSON.stringify(payload, null, 2)}
                                                 </pre>
                                             ) : null}

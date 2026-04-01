@@ -19,7 +19,7 @@ export class AlpacaOptionsVenueAdapter implements VenueAdapter {
     async getPositions(): Promise<Position[]> {
         const rawPositions = await this.client.getPositions()
         const optionPositions = rawPositions.filter((position) => {
-            return position.asset_class === undefined || position.asset_class === "option"
+            return position.asset_class === undefined || position.asset_class === "us_option"
         })
 
         const grouped = groupIronCondorPositions(optionPositions)

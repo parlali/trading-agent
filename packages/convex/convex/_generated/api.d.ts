@@ -13,6 +13,7 @@ import type * as auth from "../auth.js";
 import type * as connectionTests from "../connectionTests.js";
 import type * as http from "../http.js";
 import type * as lib_authGuards from "../lib/authGuards.js";
+import type * as lib_instrumentClaims from "../lib/instrumentClaims.js";
 import type * as migrations_simplifyPolicy from "../migrations/simplifyPolicy.js";
 import type * as mutations from "../mutations.js";
 import type * as queries from "../queries.js";
@@ -31,6 +32,7 @@ declare const fullApi: ApiFromModules<{
   connectionTests: typeof connectionTests;
   http: typeof http;
   "lib/authGuards": typeof lib_authGuards;
+  "lib/instrumentClaims": typeof lib_instrumentClaims;
   "migrations/simplifyPolicy": typeof migrations_simplifyPolicy;
   mutations: typeof mutations;
   queries: typeof queries;

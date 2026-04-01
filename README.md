@@ -53,8 +53,7 @@ After auth is deployed, create the single dashboard user from the Convex dashboa
 ```json
 {
     "email": "you@example.com",
-    "password": "your-plain-text-password",
-    "serviceToken": "your-backend-service-token"
+    "password": "your-plain-text-password"
 }
 ```
 

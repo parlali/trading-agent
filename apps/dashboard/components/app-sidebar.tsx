@@ -28,7 +28,6 @@ import {
     SidebarMenu,
     SidebarMenuButton,
     SidebarMenuItem,
-    SidebarSeparator,
     useSidebar,
 } from "@/components/ui/sidebar"
 
@@ -114,13 +113,12 @@ export function AppSidebar() {
 
     return (
         <Sidebar>
-            <SidebarHeader className="px-4 py-4">
+            <SidebarHeader className="px-4 py-4 border-b border-sidebar-border">
                 <Link href="/" className="flex items-center gap-2">
                     <Gauge className="h-5 w-5 text-primary" />
                     <span className="font-display text-sm font-semibold">Control Plane</span>
                 </Link>
             </SidebarHeader>
-            <SidebarSeparator className="mx-4" />
             <SidebarContent>
                 <SidebarGroup>
                     <SidebarGroupContent>

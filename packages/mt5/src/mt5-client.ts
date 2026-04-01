@@ -69,6 +69,7 @@ export interface MT5OrderResult {
 export interface MT5SymbolInfo {
     symbol: string
     digits: number
+    point: number
     pipSize: number
     pipValue: number
     contractSize: number
@@ -78,6 +79,7 @@ export interface MT5SymbolInfo {
     volumeMin: number
     volumeMax: number
     volumeStep: number
+    fillingMode: number
 }
 
 export class MT5Client {
