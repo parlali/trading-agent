@@ -18,6 +18,8 @@ export {
     createWaitForOrderUpdateTool,
     createWebSearchTool,
     createWebFetchTool,
+    createMT5ProposeOrderTool,
+    createMT5ProposeAdjustmentTool,
 } from "./tools"
 export type { WebSearchProvider, SearchResult } from "./tools"
 export { DuckDuckGoSearchProvider } from "./web-search-provider"

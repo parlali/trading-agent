@@ -5,6 +5,8 @@ import {
     createGetOrderStatusTool,
     createGetPositionsTool,
     createModifyOrderTool,
+    createMT5ProposeAdjustmentTool,
+    createMT5ProposeOrderTool,
     createProposeAdjustmentTool,
     createProposeCloseTool,
     createProposeOrderTool,
@@ -21,12 +23,14 @@ import {
     createKillSwitchGuardedVenue as createRuntimeKillSwitchGuardedVenue,
     filterPositionsByOwnership,
     getNextCronFireMs,
+    mt5PolicySchema,
     parseSummaryMetadata,
     stripMetadataBlock,
     validatePolicy,
     type Scheduler,
     type VenueAdapter,
 } from "@valiq-trading/core"
+import { MT5VenueAdapter } from "@valiq-trading/mt5"
 import type { RunTrigger } from "@valiq-trading/convex"
 import type { VenueApp, VenuePlugin } from "./types"
 
@@ -210,8 +214,16 @@ export async function runStrategy(
 
     tools.register(createGetPositionsTool(pipeline))
     tools.register(createGetAccountTool(pipeline))
-    tools.register(createProposeOrderTool(pipeline))
-    tools.register(createProposeAdjustmentTool(pipeline))
+
+    if (app === "mt5" && venue instanceof MT5VenueAdapter) {
+        const mt5Policy = mt5PolicySchema.parse(policy)
+        tools.register(createMT5ProposeOrderTool(pipeline, venue, mt5Policy))
+        tools.register(createMT5ProposeAdjustmentTool(pipeline, venue, mt5Policy))
+    } else {
+        tools.register(createProposeOrderTool(pipeline))
+        tools.register(createProposeAdjustmentTool(pipeline))
+    }
+
     tools.register(createProposeCloseTool(pipeline))
     tools.register(createGetOrderStatusTool(pipeline))
     tools.register(createCancelOrderTool(pipeline))

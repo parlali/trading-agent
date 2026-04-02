@@ -46,6 +46,7 @@ export type MT5TradingHours = z.infer<typeof mt5TradingHoursSchema>
 
 export const mt5PolicySchema = baseStrategyPolicySchema.extend({
     maxRiskPercent: z.number().positive().max(100),
+    minRiskReward: z.number().positive().default(0.5),
     tradingHours: mt5TradingHoursSchema,
     emergencyFlattenThreshold: z.number().positive(),
 })
@@ -82,6 +83,7 @@ export const POLYMARKET_POLICY_DEFAULTS: PolymarketPolicy = {
 export const MT5_POLICY_DEFAULTS: MT5Policy = {
     dryRun: true,
     maxRiskPercent: 2,
+    minRiskReward: 0.5,
     tradingHours: { start: "08:00", end: "16:00", timezone: "UTC" },
     emergencyFlattenThreshold: 1000,
 }

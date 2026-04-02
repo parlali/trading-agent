@@ -136,13 +136,35 @@ function buildPolicySection(context: StrategyRunContext): string {
         ([key, value]) => `- ${key}: ${JSON.stringify(value)}`
     )
 
-    return [
+    const lines = [
         "## Policy Constraints",
         "",
         "The following constraints are enforced automatically by the risk engine. Orders violating these will be rejected.",
         "",
         ...policyLines,
-    ].join("\n")
+    ]
+
+    if (context.app === "mt5") {
+        const maxRisk = context.policy.maxRiskPercent ?? 2
+        const minRR = context.policy.minRiskReward ?? 0.5
+
+        lines.push(
+            "",
+            "## MT5 Order Requirements",
+            "",
+            "When proposing orders, you MUST provide:",
+            "- stopLoss: absolute price level for your stop-loss (always required)",
+            "- EITHER takeProfit (absolute price) OR riskRewardRatio (e.g. 2.0), not both",
+            "",
+            `You must NEVER specify lot size / quantity. The system calculates position size automatically so that hitting your stop-loss loses exactly ${maxRisk}% of the account balance.`,
+            "",
+            `If takeProfit is given as an absolute price, the implied risk-reward ratio must be >= ${minRR}. Orders below this threshold will be rejected.`,
+            "",
+            "If an order is rejected (invalid params, insufficient RR, or broker error), the rejection is returned to you. Adjust your parameters and retry if appropriate.",
+        )
+    }
+
+    return lines.join("\n")
 }
 
 function buildToolsSection(

@@ -445,12 +445,16 @@ class MT5Client:
         point = 10 ** (-info.digits) if info.digits > 0 else 1.0
         pip_size = point * 10 if info.digits in (3, 5) else point
 
+        tick = mt5.symbol_info_tick(symbol)
+        bid = float(tick.bid) if tick else 0.0
+        ask = float(tick.ask) if tick else 0.0
+
         return {
             "symbol": info.name,
             "digits": info.digits,
             "point": point,
             "pipSize": pip_size,
-            "pipValue": float(info.trade_tick_value),
+            "tickValue": float(info.trade_tick_value),
             "contractSize": float(info.trade_contract_size),
             "currency": info.currency_profit,
             "description": info.description,
@@ -459,6 +463,8 @@ class MT5Client:
             "volumeMax": float(info.volume_max),
             "volumeStep": float(info.volume_step),
             "fillingMode": info.filling_mode,
+            "bid": bid,
+            "ask": ask,
         }
 
     def get_symbol_info_batch(self, symbols: list[str]) -> list[dict[str, Any]]:

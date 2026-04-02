@@ -9,10 +9,69 @@ import {
 } from "@valiq-trading/core"
 
 export const mt5RiskValidators: readonly RiskValidator[] = [
+    slTpRequiredValidator,
+    minRiskRewardValidator,
     maxRiskPercentValidator,
     tradingHoursValidator,
     emergencyFlattenValidator,
 ]
+
+function slTpRequiredValidator(
+    intent: OrderIntent,
+    _rawPolicy: Record<string, unknown>,
+    _state: AccountState,
+    _positions: Position[]
+) {
+    if (isCloseAction(intent)) {
+        return { allowed: true }
+    }
+
+    const sl = intent.metadata?.stopLoss as number | undefined
+    const tp = intent.metadata?.takeProfit as number | undefined
+
+    if (sl === undefined || sl === null) {
+        return {
+            allowed: false,
+            reason: "MT5 orders require a stopLoss. Provide stopLoss with your order.",
+        }
+    }
+
+    if (tp === undefined || tp === null) {
+        return {
+            allowed: false,
+            reason: "MT5 orders require a takeProfit. Provide takeProfit (or riskRewardRatio) with your order.",
+        }
+    }
+
+    return { allowed: true }
+}
+
+function minRiskRewardValidator(
+    intent: OrderIntent,
+    rawPolicy: Record<string, unknown>,
+    _state: AccountState,
+    _positions: Position[]
+) {
+    if (isCloseAction(intent)) {
+        return { allowed: true }
+    }
+
+    const policy = mt5PolicySchema.parse(rawPolicy)
+    const impliedRR = intent.metadata?.impliedRR as number | undefined
+
+    if (impliedRR === undefined) {
+        return { allowed: true }
+    }
+
+    if (impliedRR < policy.minRiskReward) {
+        return {
+            allowed: false,
+            reason: `Risk-reward ratio ${impliedRR.toFixed(2)} is below minimum ${policy.minRiskReward}. Widen your TP or tighten your SL.`,
+        }
+    }
+
+    return { allowed: true }
+}
 
 function maxRiskPercentValidator(
     intent: OrderIntent,
@@ -30,21 +89,15 @@ function maxRiskPercentValidator(
         return { allowed: true }
     }
 
-    let riskAmount: number
-
-    if (intent.stopPrice && intent.limitPrice) {
-        riskAmount = Math.abs(intent.limitPrice - intent.stopPrice) * intent.quantity
-    } else {
-        const price = intent.limitPrice ?? intent.stopPrice ?? 0
-        riskAmount = price * intent.quantity
+    const riskPercent = intent.metadata?.riskPercent as number | undefined
+    if (riskPercent === undefined) {
+        return { allowed: true }
     }
-
-    const riskPercent = (riskAmount / state.balance) * 100
 
     if (riskPercent > policy.maxRiskPercent) {
         return {
             allowed: false,
-            reason: `Risk ${riskPercent.toFixed(1)}% of account ($${riskAmount.toFixed(2)}) exceeds max ${policy.maxRiskPercent}%`,
+            reason: `Risk ${riskPercent.toFixed(1)}% exceeds max ${policy.maxRiskPercent}%`,
         }
     }
 

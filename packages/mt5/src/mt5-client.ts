@@ -71,7 +71,7 @@ export interface MT5SymbolInfo {
     digits: number
     point: number
     pipSize: number
-    pipValue: number
+    tickValue: number
     contractSize: number
     currency: string
     description: string
@@ -80,6 +80,8 @@ export interface MT5SymbolInfo {
     volumeMax: number
     volumeStep: number
     fillingMode: number
+    bid: number
+    ask: number
 }
 
 export class MT5Client {
