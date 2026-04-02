@@ -1,5 +1,6 @@
 export {
     createRun,
+    recoverRunningRuns,
     updateRun,
     recordRunCallback,
     logAgentMessage,

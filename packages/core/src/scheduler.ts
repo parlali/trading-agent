@@ -297,20 +297,17 @@ export class Scheduler {
         if (tracked.running) {
             const elapsed = tracked.lastRun ? Date.now() - tracked.lastRun : 0
             if (elapsed > this.staleRunTimeoutMs) {
-                this.logger.error("Force-resetting stale run", {
+                this.logger.error("Strategy exceeded stale run timeout and remains locked", {
                     strategyId,
                     elapsedMs: elapsed,
                     timeoutMs: this.staleRunTimeoutMs,
                 })
-                tracked.running = false
-                this.inFlightRuns.delete(strategyId)
-            } else {
-                this.logger.warn("Skipping -- strategy already running", {
-                    strategyId,
-                    elapsedMs: elapsed,
-                })
-                return
             }
+            this.logger.warn("Skipping -- strategy already running", {
+                strategyId,
+                elapsedMs: elapsed,
+            })
+            return
         }
 
         tracked.running = true

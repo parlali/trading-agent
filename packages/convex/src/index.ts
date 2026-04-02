@@ -93,6 +93,7 @@ export interface TradingBackendClient extends TradeEventLoggerMethods {
     getStrategyConfigs(app: App): Promise<StoredStrategy[]>
     getStrategyById(id: Id<"strategies">): Promise<StoredStrategy | null>
     getLastCompletedRunSummary(strategyId: Id<"strategies">): Promise<{ summary: string; endedAt: number } | null>
+    recoverRunningRuns(): Promise<number>
     createRun(strategyId: Id<"strategies">, app: App, trigger?: RunTrigger): Promise<Id<"strategy_runs">>
     updateRun(runId: Id<"strategy_runs">, status: StoredRun["status"], summary?: string, error?: string): Promise<void>
     recordRunCallback(runId: Id<"strategy_runs">, callbackRequestedMinutes: number, callbackFiresAt: number): Promise<void>
@@ -146,6 +147,13 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
         },
         async getLastCompletedRunSummary(strategyId: Id<"strategies">): Promise<{ summary: string; endedAt: number } | null> {
             return await client.query(api.queries.getLastCompletedRunSummary, { ...requireMachineAuth(), strategyId } as never) as { summary: string; endedAt: number } | null
+        },
+        async recoverRunningRuns(): Promise<number> {
+            const result = await client.mutation(api.mutations.recoverRunningRuns, {
+                ...requireMachineAuth(),
+            } as never) as { recovered: number }
+
+            return result.recovered
         },
         async createRun(strategyId: Id<"strategies">, app: App, trigger?: RunTrigger): Promise<Id<"strategy_runs">> {
             return await client.mutation(api.mutations.createRun, {

@@ -22,6 +22,19 @@ export const createRun = mutation({
     },
     handler: async (ctx, args) => {
         requireServiceToken(args.serviceToken)
+        const activeRun = await ctx.db
+            .query("strategy_runs")
+            .withIndex("by_strategy_status", (q) =>
+                q.eq("strategyId", args.strategyId).eq("status", "running")
+            )
+            .first()
+
+        if (activeRun) {
+            throw new Error(
+                `Strategy ${args.strategyId} already has an active run (${activeRun._id})`
+            )
+        }
+
         return await ctx.db.insert("strategy_runs", {
             strategyId: args.strategyId,
             app: args.app,
@@ -29,6 +42,33 @@ export const createRun = mutation({
             trigger: args.trigger ?? "cron",
             startedAt: Date.now(),
         })
+    },
+})
+
+export const recoverRunningRuns = mutation({
+    args: {
+        serviceToken: v.string(),
+    },
+    handler: async (ctx, args) => {
+        requireServiceToken(args.serviceToken)
+
+        const runningRuns = (await ctx.db.query("strategy_runs").collect()).filter(
+            (run) => run.status === "running"
+        )
+
+        const endedAt = Date.now()
+
+        for (const run of runningRuns) {
+            await ctx.db.patch(run._id, {
+                status: "failed",
+                error: "Recovered on backend startup after an interrupted run",
+                endedAt,
+            })
+        }
+
+        return {
+            recovered: runningRuns.length,
+        }
     },
 })
 

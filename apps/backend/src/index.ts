@@ -28,6 +28,13 @@ declare const process: {
 
 async function main(): Promise<void> {
     await resolveAllSecrets()
+    const recoveredRuns = await backend.recoverRunningRuns()
+
+    if (recoveredRuns > 0) {
+        logger.warn("Recovered interrupted runs on backend startup", {
+            recoveredRuns,
+        })
+    }
 
     const scheduler = new Scheduler({ logger })
 
