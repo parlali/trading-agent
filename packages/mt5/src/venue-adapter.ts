@@ -10,6 +10,9 @@ import type { AccountState, ExecutionResult, OrderIntent, Position, VenueAdapter
 import { MT5Client, type MT5Position, type MT5WorkerCredentials } from "./mt5-client"
 
 export class MT5VenueAdapter implements VenueAdapter {
+    private lastConnectedAt = 0
+    private readonly CONNECTION_TTL = 60_000
+
     constructor(
         private readonly client: MT5Client,
         private readonly credentials: MT5WorkerCredentials
@@ -20,10 +23,14 @@ export class MT5VenueAdapter implements VenueAdapter {
      * Called lazily before the first broker operation in a run.
      */
     async ensureConnected(): Promise<void> {
+        if (Date.now() - this.lastConnectedAt < this.CONNECTION_TTL) {
+            return
+        }
         const health = await this.client.getHealth()
         if (!health.connected || health.login !== this.credentials.login) {
             await this.client.connect(this.credentials)
         }
+        this.lastConnectedAt = Date.now()
     }
 
     async getPositions(): Promise<Position[]> {

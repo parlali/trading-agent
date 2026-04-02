@@ -1,5 +1,9 @@
 import type { ChatMessage, ToolCall } from "./llm-client"
 
+const MAX_TOOL_RESULT_LENGTH = 8000
+const MAX_MESSAGES_BEFORE_TRIM = 40
+const TRIM_KEEP_RECENT = 20
+
 export class ConversationManager {
     private messages: ChatMessage[] = []
     private sequence = 0
@@ -24,9 +28,13 @@ export class ConversationManager {
     }
 
     addToolResult(toolCallId: string, name: string, content: string): void {
+        const truncated = content.length > MAX_TOOL_RESULT_LENGTH
+            ? content.slice(0, MAX_TOOL_RESULT_LENGTH) + `\n...[truncated from ${content.length} chars]`
+            : content
+
         this.messages.push({
             role: "tool",
-            content,
+            content: truncated,
             tool_call_id: toolCallId,
             name,
         })
@@ -34,7 +42,15 @@ export class ConversationManager {
     }
 
     getMessages(): ChatMessage[] {
-        return [...this.messages]
+        if (this.messages.length <= MAX_MESSAGES_BEFORE_TRIM) {
+            return [...this.messages]
+        }
+
+        const systemMessages = this.messages.filter((m) => m.role === "system")
+        const nonSystem = this.messages.filter((m) => m.role !== "system")
+        const recent = nonSystem.slice(-TRIM_KEEP_RECENT)
+
+        return [...systemMessages, ...recent]
     }
 
     getSequence(): number {

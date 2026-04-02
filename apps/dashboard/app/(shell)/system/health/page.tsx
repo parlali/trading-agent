@@ -6,21 +6,18 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Skeleton } from "@/components/ui/skeleton"
 import { StatusDot } from "@/components/status-dot"
+import { StatusBadge } from "@/components/status-badge"
+import { PageSkeleton } from "@/components/page-skeleton"
 import { EmptyState } from "@/components/empty-state"
 import { formatRelativeTime } from "@/lib/format"
+import { isHeartbeatStale } from "@/lib/heartbeat"
 import { Heart } from "lucide-react"
 
 export default function HealthPage() {
     const health = useQuery(api.queries.getAppHealth)
 
     if (health === undefined) {
-        return (
-            <div className="space-y-3">
-                {Array.from({ length: 4 }).map((_, i) => (
-                    <Skeleton key={i} className="h-20" />
-                ))}
-            </div>
-        )
+        return <PageSkeleton count={4} height="h-20" />
     }
 
     if (health.length === 0) {
@@ -33,13 +30,10 @@ export default function HealthPage() {
         )
     }
 
-    const now = Date.now()
-    const STALE_THRESHOLD_MS = 2 * 60 * 1000
-
     return (
         <div className="space-y-3">
             {health.map((hb) => {
-                const isStale = now - hb.lastHeartbeat > STALE_THRESHOLD_MS
+                const isStale = isHeartbeatStale(hb.lastHeartbeat)
                 const effectiveStatus = isStale ? "unhealthy" : hb.status
 
                 return (
@@ -58,18 +52,11 @@ export default function HealthPage() {
                                 {isStale ? (
                                     <Badge variant="destructive" className="text-xs">stale</Badge>
                                 ) : null}
-                                <Badge
-                                    variant={
-                                        effectiveStatus === "healthy"
-                                            ? "default"
-                                            : effectiveStatus === "degraded"
-                                                ? "secondary"
-                                                : "destructive"
-                                    }
-                                    className="text-xs"
-                                >
-                                    {effectiveStatus}
-                                </Badge>
+                                <StatusBadge
+                                    status={effectiveStatus}
+                                    category="health"
+                                    fallback="destructive"
+                                />
                             </div>
                         </CardContent>
                         {hb.metadata ? (

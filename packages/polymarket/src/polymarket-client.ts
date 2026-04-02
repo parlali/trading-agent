@@ -155,7 +155,6 @@ export class PolymarketClient {
     private readonly apiPassphrase: string
     private readonly host: string
     private readonly chainId: number
-    private readonly signatureType = 0
 
     // Per-token metadata caches (TTL: 5 minutes)
     private tickSizeCache = new Map<string, { value: string; fetchedAt: number }>()
@@ -361,6 +360,10 @@ export class PolymarketClient {
             orderBody
         )
 
+        if (!response) {
+            throw new Error("Polymarket order returned empty response")
+        }
+
         if (!response.success) {
             throw new Error(`Polymarket order failed: ${response.errorMsg}`)
         }
@@ -369,17 +372,22 @@ export class PolymarketClient {
     }
 
     async getOrder(orderId: string): Promise<PolymarketOpenOrder> {
-        return this.requestAuthenticated<PolymarketOpenOrder>("GET", `/data/order/${orderId}`)
+        const response = await this.requestAuthenticated<PolymarketOpenOrder>("GET", `/data/order/${orderId}`)
+        if (!response) {
+            throw new Error(`Order ${orderId} not found`)
+        }
+        return response
     }
 
     async getOpenOrders(params?: {
         market?: string
         assetId?: string
     }): Promise<PolymarketOpenOrder[]> {
-        return this.requestAuthenticated<PolymarketOpenOrder[]>("GET", "/data/orders", undefined, {
+        const response = await this.requestAuthenticated<PolymarketOpenOrder[]>("GET", "/data/orders", undefined, {
             market: params?.market,
             asset_id: params?.assetId,
         })
+        return Array.isArray(response) ? response : []
     }
 
     async cancelOrder(orderId: string): Promise<void> {
@@ -417,9 +425,11 @@ export class PolymarketClient {
             if (Array.isArray(response)) {
                 allTrades.push(...response)
                 cursor = undefined
-            } else {
+            } else if (response && "data" in response && Array.isArray(response.data)) {
                 allTrades.push(...response.data)
                 cursor = response.next_cursor === "LTE=" ? undefined : response.next_cursor
+            } else {
+                cursor = undefined
             }
         } while (cursor)
 
@@ -428,31 +438,58 @@ export class PolymarketClient {
 
     /** Get USDC balance (converted from raw 6-decimal integer to USD) */
     async getBalance(): Promise<number> {
-        const resp = await this.requestAuthenticated<{ balance: string }>(
+        const proxy = await this.requestAuthenticated<{ balance: string }>(
             "GET",
             "/balance-allowance",
             undefined,
             {
                 asset_type: "COLLATERAL",
-                signature_type: this.signatureType,
+                signature_type: 1,
             }
         )
-        return Number(resp.balance) / AMOUNT_MULTIPLIER
+        if (proxy?.balance && Number(proxy.balance) > 0) {
+            return Number(proxy.balance) / AMOUNT_MULTIPLIER
+        }
+        const eoa = await this.requestAuthenticated<{ balance: string }>(
+            "GET",
+            "/balance-allowance",
+            undefined,
+            {
+                asset_type: "COLLATERAL",
+                signature_type: 0,
+            }
+        )
+        if (!eoa?.balance) return 0
+        return Number(eoa.balance) / AMOUNT_MULTIPLIER
     }
 
     /** Get conditional token balance for a specific token (converted from raw 6-decimal integer) */
     async getTokenBalance(tokenId: string): Promise<number> {
-        const resp = await this.requestAuthenticated<{ balance: string }>(
+        const proxy = await this.requestAuthenticated<{ balance: string }>(
             "GET",
             "/balance-allowance",
             undefined,
             {
                 asset_type: "CONDITIONAL",
                 token_id: tokenId,
-                signature_type: this.signatureType,
+                signature_type: 1,
             }
         )
-        return Number(resp.balance) / AMOUNT_MULTIPLIER
+        if (proxy?.balance && Number(proxy.balance) > 0) {
+            return Number(proxy.balance) / AMOUNT_MULTIPLIER
+        }
+        const eoa = await this.requestAuthenticated<{ balance: string }>(
+            "GET",
+            "/balance-allowance",
+            undefined,
+            {
+                asset_type: "CONDITIONAL",
+                token_id: tokenId,
+                signature_type: 0,
+            }
+        )
+        if (!eoa?.balance) return 0
+        return Number(eoa.balance) / AMOUNT_MULTIPLIER
     }
 
     // -----------------------------------------------------------------------
@@ -479,7 +516,7 @@ export class PolymarketClient {
         path: string,
         body?: unknown,
         query?: Record<string, string | number | boolean | undefined>
-    ): Promise<T> {
+    ): Promise<T | undefined> {
         return retryWithBackoff(async () => {
             const bodyString = body ? JSON.stringify(body) : ""
             const headers = this.buildL2Headers(method, path, bodyString)
@@ -505,7 +542,7 @@ export class PolymarketClient {
             }
 
             if (response.status === 204) {
-                return {} as T
+                return undefined
             }
 
             return (await response.json()) as T

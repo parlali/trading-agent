@@ -8,7 +8,8 @@
         "packages/*"
     ],
     "scripts": {
-        "dev": "bun --watch apps/backend/src/index.ts",
+        "dev": "turbo dev --filter=@valiq-trading/backend --filter=dashboard",
+        "dev:backend": "bun --watch apps/backend/src/index.ts",
         "dev:dashboard": "cd apps/dashboard && bun run dev",
         "build": "turbo build",
         "lint": "turbo lint",
@@ -20,6 +21,7 @@
     "devDependencies": {
         "@types/node": "^25.5.0",
         "turbo": "^2.8.20",
-        "typescript": "^6.0.2"
+        "typescript": "^6.0.2",
+        "vitest": "^4.1.2"
     }
 }

@@ -1,4 +1,5 @@
 import type { OrderAction, OrderStatus } from "@valiq-trading/core"
+import { isActiveEntryOrderStatus } from "@valiq-trading/core"
 import type { Id, Doc } from "../_generated/dataModel"
 import type { MutationCtx, QueryCtx } from "../_generated/server"
 
@@ -11,7 +12,7 @@ type MutationDbCtx = {
 }
 
 type VenueApp = Doc<"strategies">["app"]
-type ClaimSource = "position" | "order"
+type ClaimSource = Doc<"instrument_claims">["source"]
 
 const POSITION_CLAIM_SOURCE: ClaimSource = "position"
 const ORDER_CLAIM_SOURCE: ClaimSource = "order"
@@ -30,10 +31,6 @@ function compareStrategiesForBootstrap(left: Doc<"strategies">, right: Doc<"stra
 
 function isEntryLikeAction(action: OrderAction): boolean {
     return action === "entry" || action === "adjustment"
-}
-
-function isActiveEntryOrderStatus(status: OrderStatus): boolean {
-    return status === "pending" || status === "partially_filled"
 }
 
 async function getClaimBySource(

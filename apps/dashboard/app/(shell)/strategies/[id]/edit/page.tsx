@@ -1,9 +1,7 @@
 "use client"
 
 import { use } from "react"
-import { useQuery } from "convex/react"
-import { api } from "@valiq-trading/convex"
-import type { Id } from "@valiq-trading/convex"
+import { useStrategy } from "@/hooks/use-strategy"
 import { Skeleton } from "@/components/ui/skeleton"
 import { StrategyForm } from "@/components/strategy-form"
 import type { VenueApp } from "@/lib/constants"
@@ -14,11 +12,9 @@ export default function EditStrategyPage({
     params: Promise<{ id: string }>
 }) {
     const { id } = use(params)
-    const strategy = useQuery(api.queries.getStrategyById, {
-        id: id as Id<"strategies">,
-    })
+    const { data: strategy, isLoading, notFound } = useStrategy(id)
 
-    if (strategy === undefined) {
+    if (isLoading) {
         return (
             <div className="max-w-2xl space-y-6">
                 <Skeleton className="h-8 w-48" />
@@ -27,7 +23,7 @@ export default function EditStrategyPage({
         )
     }
 
-    if (strategy === null) {
+    if (notFound || !strategy) {
         return (
             <div className="flex items-center justify-center py-12">
                 <p className="text-sm text-muted-foreground">Strategy not found</p>

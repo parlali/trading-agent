@@ -4,6 +4,7 @@ import { use, useState } from "react"
 import { useQuery, useMutation } from "convex/react"
 import { api } from "@valiq-trading/convex"
 import type { Id } from "@valiq-trading/convex"
+import { useStrategy } from "@/hooks/use-strategy"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -27,9 +28,7 @@ export default function StrategyDetailPage({
 }) {
     const { id } = use(params)
     const router = useRouter()
-    const strategy = useQuery(api.queries.getStrategyById, {
-        id: id as Id<"strategies">,
-    })
+    const { data: strategy, isLoading, notFound } = useStrategy(id)
     const runs = useQuery(api.queries.getRunHistory, {
         strategyId: id as Id<"strategies">,
         limit: 20,
@@ -38,7 +37,7 @@ export default function StrategyDetailPage({
     const triggerManualRun = useMutation(api.mutations.triggerManualRun)
     const [deleteOpen, setDeleteOpen] = useState(false)
 
-    if (strategy === undefined || runs === undefined) {
+    if (isLoading || runs === undefined) {
         return (
             <div className="space-y-6">
                 <Skeleton className="h-8 w-48" />
@@ -47,7 +46,7 @@ export default function StrategyDetailPage({
         )
     }
 
-    if (strategy === null) {
+    if (notFound || !strategy) {
         return (
             <div className="flex items-center justify-center py-12">
                 <p className="text-sm text-muted-foreground">Strategy not found</p>
@@ -92,14 +91,14 @@ export default function StrategyDetailPage({
                     </Link>
                 </Button>
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                    <div className="flex items-center gap-3 min-w-0">
+                    <div className="flex items-center gap-2 min-w-0 flex-wrap">
                         <h2 className="text-lg font-semibold truncate">{strategy.name}</h2>
                         <VenueBadge app={strategy.app} />
                         <Badge variant={strategy.enabled ? "default" : "secondary"}>
                             {strategy.enabled ? "enabled" : "disabled"}
                         </Badge>
                     </div>
-                    <div className="flex items-center gap-2 shrink-0">
+                    <div className="flex items-center gap-2 shrink-0 flex-wrap">
                         <Button
                             variant="default"
                             size="sm"
@@ -147,7 +146,7 @@ export default function StrategyDetailPage({
                         </div>
                         <div>
                             <p className="text-xs text-muted-foreground mb-1">Policy</p>
-                            <pre className="text-xs font-mono bg-muted rounded-md p-3 overflow-auto max-h-[300px]">
+                            <pre className="text-xs font-mono bg-muted rounded-md p-3 overflow-auto max-h-[300px] max-w-full">
                                 {JSON.stringify(strategy.policy, null, 2)}
                             </pre>
                         </div>
@@ -159,7 +158,7 @@ export default function StrategyDetailPage({
                         <CardTitle className="text-base">Context</CardTitle>
                     </CardHeader>
                     <CardContent>
-                        <pre className="text-sm whitespace-pre-wrap bg-muted rounded-md p-3 overflow-auto max-h-[400px]">
+                        <pre className="text-sm whitespace-pre-wrap break-words bg-muted rounded-md p-3 overflow-auto max-h-[400px] max-w-full">
                             {strategy.context || "(empty)"}
                         </pre>
                     </CardContent>
@@ -192,12 +191,12 @@ export default function StrategyDetailPage({
                                                 {formatTimestamp(run.startedAt)}
                                             </p>
                                             {run.summary ? (
-                                                <p className="text-xs text-muted-foreground truncate max-w-[200px] sm:max-w-[300px]">
+                                                <p className="text-xs text-muted-foreground truncate max-w-[140px] sm:max-w-[300px]">
                                                     {run.summary}
                                                 </p>
                                             ) : null}
                                             {run.error ? (
-                                                <p className="text-xs text-signal-danger truncate max-w-[200px] sm:max-w-[300px]">
+                                                <p className="text-xs text-signal-danger truncate max-w-[140px] sm:max-w-[300px]">
                                                     {run.error}
                                                 </p>
                                             ) : null}

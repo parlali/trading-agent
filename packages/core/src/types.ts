@@ -1,6 +1,24 @@
 import type { OrderAction, OrderStatus } from "./orders"
 
-export type App = "alpaca-options" | "polymarket" | "mt5" | "backend"
+export const VENUE_APPS = ["alpaca-options", "polymarket", "mt5"] as const
+export type VenueApp = typeof VENUE_APPS[number]
+
+export const APPS = [...VENUE_APPS, "backend"] as const
+export type App = typeof APPS[number]
+
+export const SEVERITY_LEVELS = ["critical", "warning", "info"] as const
+export type Severity = typeof SEVERITY_LEVELS[number]
+
+export const EVENT_TYPES = [
+    "intent",
+    "validation",
+    "submission",
+    "fill_update",
+    "filled",
+    "rejected",
+    "cancelled",
+] as const
+export type EventType = typeof EVENT_TYPES[number]
 
 export interface OrderIntent {
     instrument: string
@@ -58,6 +76,11 @@ export interface StrategyRunContext {
     accountState: AccountState
     policy: Record<string, unknown>
     context: string
+    schedule?: string
+    previousRunSummary?: {
+        summary: string
+        endedAt: number
+    }
 }
 
 export interface ValidationResult {

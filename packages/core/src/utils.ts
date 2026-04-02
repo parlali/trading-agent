@@ -6,13 +6,6 @@ export function now(): number {
     return Date.now()
 }
 
-export function formatCurrency(amount: number, currency = "USD"): string {
-    return new Intl.NumberFormat("en-US", {
-        style: "currency",
-        currency,
-    }).format(amount)
-}
-
 export async function retryWithBackoff<T>(
     fn: () => Promise<T>,
     maxRetries = 3,

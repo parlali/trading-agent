@@ -3,8 +3,20 @@ import {
     Coins,
     BarChart3,
 } from "lucide-react"
+import type { VenueApp, Severity } from "@valiq-trading/core"
+import { VENUE_APPS } from "@valiq-trading/core"
 
-export const VENUE_META = {
+export type { VenueApp } from "@valiq-trading/core"
+export { VENUE_APPS } from "@valiq-trading/core"
+
+export const VENUE_META: Record<VenueApp, {
+    label: string
+    shortLabel: string
+    description: string
+    icon: typeof TrendingUp
+    color: string
+    chartColor: string
+}> = {
     "alpaca-options": {
         label: "Alpaca Options",
         shortLabel: "Alpaca",
@@ -31,9 +43,7 @@ export const VENUE_META = {
     },
 } as const
 
-export type VenueApp = keyof typeof VENUE_META
-
-export const VENUE_APPS: VenueApp[] = ["alpaca-options", "polymarket", "mt5"]
+export const STALE_THRESHOLD_MS = 2 * 60 * 1000
 
 export const STATUS_COLORS = {
     healthy: "text-signal-healthy",
@@ -44,7 +54,7 @@ export const STATUS_COLORS = {
     failed: "text-signal-danger",
 } as const
 
-export const SEVERITY_COLORS = {
+export const SEVERITY_COLORS: Record<Severity, string> = {
     critical: "text-signal-danger bg-signal-danger/10",
     warning: "text-signal-warning bg-signal-warning/10",
     info: "text-muted-foreground bg-muted",

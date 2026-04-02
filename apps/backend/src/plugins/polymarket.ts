@@ -17,7 +17,7 @@ export class PolymarketPlugin implements VenuePlugin {
             "POLYMARKET_HOST",
             "POLYMARKET_CHAIN_ID",
             "VALIQ_DATA_API_URL",
-            "VALIQ_DATA_API_KEY",
+            "VALIQ_DATA_API",
         ]
     }
 
@@ -47,9 +47,17 @@ export class PolymarketPlugin implements VenuePlugin {
 
     getExtraTools(config: ExtraToolsConfig): ToolDefinition[] {
         const dataApiUrl = config.secrets.VALIQ_DATA_API_URL
-        const dataApiKey = config.secrets.VALIQ_DATA_API_KEY
+        const dataApiKey = config.secrets.VALIQ_DATA_API
 
         if (!dataApiUrl || !dataApiKey) {
+            const missing = [
+                !dataApiUrl ? "VALIQ_DATA_API_URL" : null,
+                !dataApiKey ? "VALIQ_DATA_API" : null,
+            ].filter(Boolean)
+            config.runLogger.warn(
+                "Valiq tools NOT registered: missing secrets",
+                { missing }
+            )
             return []
         }
 

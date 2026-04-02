@@ -13,12 +13,13 @@ import {
     ResponsiveContainer,
     Legend,
 } from "recharts"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Card, CardContent } from "@/components/ui/card"
 import { Skeleton } from "@/components/ui/skeleton"
 import { PnlText } from "@/components/pnl-text"
-import { formatCurrency, formatCompactCurrency } from "@/lib/format"
+import { StatCard } from "@/components/stat-card"
+import { FilterBar } from "@/components/filter-bar"
+import { formatCurrency, formatCompactCurrency, formatTimestamp } from "@/lib/format"
 import { VENUE_META, VENUE_APPS, type VenueApp } from "@/lib/constants"
-import { cn } from "@/lib/utils"
 
 type TimeRange = "24h" | "7d" | "30d" | "90d" | "all"
 
@@ -103,72 +104,48 @@ export default function EquityPage() {
                         Combined equity across all venue accounts
                     </p>
                 </div>
-                <div className="flex rounded-md border border-border bg-muted/50 p-0.5">
-                    {TIME_RANGES.map(({ value, label }) => (
-                        <button
-                            key={value}
-                            type="button"
-                            onClick={() => setTimeRange(value)}
-                            className={cn(
-                                "rounded-sm px-3 py-1 text-xs font-medium transition-colors",
-                                timeRange === value
-                                    ? "bg-background text-foreground shadow-sm"
-                                    : "text-muted-foreground hover:text-foreground",
-                            )}
-                        >
-                            {label}
-                        </button>
-                    ))}
-                </div>
+                <FilterBar
+                    items={TIME_RANGES.map((r) => r.value)}
+                    selected={timeRange}
+                    onSelect={setTimeRange}
+                    getLabel={(v) => TIME_RANGES.find((r) => r.value === v)!.label}
+                    variant="tabs"
+                />
             </div>
 
             {pnlSummary ? (
-                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-                    <Card>
-                        <CardHeader className="pb-2">
-                            <CardTitle className="text-sm font-medium text-muted-foreground">
-                                Total Equity
-                            </CardTitle>
-                        </CardHeader>
-                        <CardContent>
-                            <p className="text-2xl font-semibold tabular-nums font-mono">
-                                {formatCurrency(pnlSummary.aggregate.latestNetLiq)}
-                            </p>
-                        </CardContent>
-                    </Card>
-                    <Card>
-                        <CardHeader className="pb-2">
-                            <CardTitle className="text-sm font-medium text-muted-foreground">
-                                Period Change
-                            </CardTitle>
-                        </CardHeader>
-                        <CardContent>
-                            <PnlText
-                                value={pnlSummary.aggregate.periodChange}
-                                className="text-2xl font-semibold"
-                            />
-                        </CardContent>
-                    </Card>
+                <div className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">
+                    <StatCard
+                        label="Total Equity"
+                        value={pnlSummary.aggregate.latestNetLiq}
+                        format="currency"
+                        size="2xl"
+                    />
+                    <StatCard
+                        label="Period Change"
+                        value={pnlSummary.aggregate.periodChange}
+                        format="pnl"
+                        size="2xl"
+                    />
                     {pnlSummary.apps
                         .filter((a) => a.latest !== null)
                         .map((appData) => {
                             const meta = VENUE_META[appData.app as VenueApp]
                             return (
-                                <Card key={appData.app}>
-                                    <CardHeader className="pb-2">
-                                        <CardTitle className="text-sm font-medium text-muted-foreground">
-                                            {meta?.shortLabel ?? appData.app}
-                                        </CardTitle>
-                                    </CardHeader>
-                                    <CardContent>
-                                        <p className="text-lg font-semibold tabular-nums font-mono">
-                                            {formatCurrency(
-                                                (appData.latest?.balance ?? 0) + (appData.latest?.openPnl ?? 0),
-                                            )}
-                                        </p>
-                                        <PnlText value={appData.change} className="text-xs" />
-                                    </CardContent>
-                                </Card>
+                                <StatCard
+                                    key={appData.app}
+                                    label={meta?.shortLabel ?? appData.app}
+                                    value={(appData.latest?.balance ?? 0) + (appData.latest?.openPnl ?? 0)}
+                                    format="currency"
+                                    size="lg"
+                                >
+                                    <p className="text-lg font-semibold tabular-nums font-mono">
+                                        {formatCurrency(
+                                            (appData.latest?.balance ?? 0) + (appData.latest?.openPnl ?? 0),
+                                        )}
+                                    </p>
+                                    <PnlText value={appData.change} className="text-xs" />
+                                </StatCard>
                             )
                         })}
                 </div>
@@ -203,7 +180,7 @@ export default function EquityPage() {
                                         borderRadius: "var(--radius)",
                                         fontSize: "12px",
                                     }}
-                                    labelFormatter={(ts) => new Date(ts).toLocaleString()}
+                                    labelFormatter={(ts) => formatTimestamp(ts)}
                                     formatter={(value: number) => [formatCurrency(value)]}
                                 />
                                 <Legend />

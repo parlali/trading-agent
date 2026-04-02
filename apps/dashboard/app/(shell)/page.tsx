@@ -1,7 +1,7 @@
 "use client"
 
-import { useQuery } from "convex/react"
-import { api } from "@valiq-trading/convex"
+import { useDashboardOverview } from "@/hooks/use-dashboard-overview"
+import { isHeartbeatStale } from "@/lib/heartbeat"
 import Link from "next/link"
 import {
     CheckCircle2,
@@ -18,14 +18,9 @@ import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
 import { VenueBadge } from "@/components/venue-badge"
 import { StatusDot } from "@/components/status-dot"
+import { StatusBadge } from "@/components/status-badge"
 import { formatRelativeTime } from "@/lib/format"
 import { VENUE_META, type VenueApp } from "@/lib/constants"
-
-const STALE_THRESHOLD_MS = 2 * 60 * 1000
-
-function isHeartbeatStale(lastHeartbeat: number): boolean {
-    return Date.now() - lastHeartbeat > STALE_THRESHOLD_MS
-}
 
 function OverviewSkeleton() {
     return (
@@ -94,18 +89,13 @@ function DeploymentRow({
             <div className="text-right shrink-0 ml-2">
                 {hasHeartbeat ? (
                     <>
-                        <Badge
-                            variant={
-                                effectiveStatus === "healthy"
-                                    ? "default"
-                                    : effectiveStatus === "stale"
-                                        ? "secondary"
-                                        : "destructive"
-                            }
-                            className="text-xs"
+                        <StatusBadge
+                            status={effectiveStatus}
+                            category="health"
+                            fallback="destructive"
                         >
                             {stale ? "stale" : heartbeat.status}
-                        </Badge>
+                        </StatusBadge>
                         <p className="text-xs text-muted-foreground mt-1">
                             {formatRelativeTime(heartbeat.lastHeartbeat)}
                         </p>
@@ -157,18 +147,10 @@ function StrategyRow({ strategy }: {
             <div className="flex items-center gap-2 shrink-0 ml-2">
                 {strategy.latestRun ? (
                     <div className="text-right">
-                        <Badge
-                            variant={
-                                strategy.latestRun.status === "completed"
-                                    ? "default"
-                                    : strategy.latestRun.status === "failed"
-                                        ? "destructive"
-                                        : "secondary"
-                            }
-                            className="text-xs"
-                        >
-                            {strategy.latestRun.status}
-                        </Badge>
+                        <StatusBadge
+                            status={strategy.latestRun.status}
+                            category="run"
+                        />
                         <p className="text-xs text-muted-foreground mt-1">
                             {formatRelativeTime(strategy.latestRun.startedAt)}
                         </p>
@@ -183,9 +165,9 @@ function StrategyRow({ strategy }: {
 }
 
 export default function OverviewPage() {
-    const data = useQuery(api.queries.getDashboardOverview)
+    const { data, isLoading } = useDashboardOverview()
 
-    if (data === undefined) return <OverviewSkeleton />
+    if (isLoading || !data) return <OverviewSkeleton />
 
     const isGlobalKilled = data.systemState.globalKillSwitch
     const killSwitches = data.systemState.appKillSwitches ?? {}
@@ -258,14 +240,14 @@ export default function OverviewPage() {
 
             <Card>
                 <CardHeader>
-                    <div className="flex items-center justify-between">
+                    <div className="flex items-center justify-between gap-2 flex-wrap">
                         <CardTitle className="text-base flex items-center gap-2">
                             <Layers className="h-4 w-4" />
                             Strategies
                         </CardTitle>
-                        <div className="flex items-center gap-3">
+                        <div className="flex items-center gap-2 sm:gap-3">
                             <span className="text-xs text-muted-foreground">
-                                {enabledCount} enabled / {strategyCount} total
+                                {enabledCount}/{strategyCount}
                             </span>
                             <Button size="xs" variant="outline" asChild>
                                 <Link href="/strategies/new">

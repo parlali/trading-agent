@@ -1,8 +1,8 @@
 import type { ToolDefinition } from "@valiq-trading/agent"
-import type { Logger, RiskValidator, VenueAdapter } from "@valiq-trading/core"
+import type { Logger, RiskValidator, VenueAdapter, VenueApp } from "@valiq-trading/core"
 import type { App } from "@valiq-trading/core"
 
-export type VenueApp = "alpaca-options" | "polymarket" | "mt5"
+export type { VenueApp } from "@valiq-trading/core"
 
 export interface VenuePlugin {
     readonly app: VenueApp

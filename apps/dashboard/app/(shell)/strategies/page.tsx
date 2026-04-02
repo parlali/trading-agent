@@ -1,7 +1,8 @@
 "use client"
 
-import { useQuery, useMutation } from "convex/react"
+import { useMutation } from "convex/react"
 import { api } from "@valiq-trading/convex"
+import { useDashboardOverview } from "@/hooks/use-dashboard-overview"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { Badge } from "@/components/ui/badge"
@@ -9,6 +10,8 @@ import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
 import { VenueBadge } from "@/components/venue-badge"
 import { StatusDot } from "@/components/status-dot"
+import { StatusBadge } from "@/components/status-badge"
+import { PageSkeleton } from "@/components/page-skeleton"
 import { EmptyState } from "@/components/empty-state"
 import { formatRelativeTime } from "@/lib/format"
 import { VENUE_APPS, VENUE_META, type VenueApp } from "@/lib/constants"
@@ -67,18 +70,10 @@ function StrategyCard({ strategy, onRun }: {
             <div className="flex items-center gap-2 sm:gap-3 shrink-0 ml-2">
                 {strategy.latestRun ? (
                     <div className="text-right hidden sm:block">
-                        <Badge
-                            variant={
-                                strategy.latestRun.status === "completed"
-                                    ? "default"
-                                    : strategy.latestRun.status === "failed"
-                                        ? "destructive"
-                                        : "secondary"
-                            }
-                            className="text-xs"
-                        >
-                            {strategy.latestRun.status}
-                        </Badge>
+                        <StatusBadge
+                            status={strategy.latestRun.status}
+                            category="run"
+                        />
                         <p className="text-xs text-muted-foreground mt-1">
                             {formatRelativeTime(strategy.latestRun.startedAt)}
                         </p>
@@ -106,17 +101,11 @@ function StrategyCard({ strategy, onRun }: {
 }
 
 export default function StrategiesPage() {
-    const overview = useQuery(api.queries.getDashboardOverview)
+    const { data: overview, isLoading } = useDashboardOverview()
     const triggerManualRun = useMutation(api.mutations.triggerManualRun)
 
-    if (overview === undefined) {
-        return (
-            <div className="space-y-4">
-                {Array.from({ length: 3 }).map((_, i) => (
-                    <Skeleton key={i} className="h-20" />
-                ))}
-            </div>
-        )
+    if (isLoading || !overview) {
+        return <PageSkeleton count={3} height="h-20" spacing="space-y-4" />
     }
 
     const groupedByVenue = VENUE_APPS.map((app) => ({

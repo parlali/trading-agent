@@ -11,6 +11,7 @@ export interface AgentRuntimeConfig {
     logger: Logger
     maxIterations?: number
     maxConsecutiveErrors?: number
+    runTimeoutMs?: number
     agentLogger?: AgentMessageLogger
     cleanup?: Array<() => Promise<void>>
 }
@@ -37,6 +38,8 @@ export interface AgentRunResult {
 
 const DEFAULT_MAX_ITERATIONS = 25
 const DEFAULT_MAX_CONSECUTIVE_ERRORS = 5
+const DEFAULT_RUN_TIMEOUT_MS = 10 * 60 * 1000
+const TOOL_TIMEOUT_MS = 120_000
 
 export async function executeAgentRun(
     context: StrategyRunContext,
@@ -48,6 +51,7 @@ export async function executeAgentRun(
         logger,
         maxIterations = DEFAULT_MAX_ITERATIONS,
         maxConsecutiveErrors = DEFAULT_MAX_CONSECUTIVE_ERRORS,
+        runTimeoutMs = DEFAULT_RUN_TIMEOUT_MS,
         agentLogger,
     } = config
 
@@ -59,23 +63,24 @@ export async function executeAgentRun(
         reasoningTokens: 0,
         cost: 0,
     }
+    const runStartedAt = Date.now()
 
     const systemPrompt = buildSystemPrompt(context, tools.getDescriptions())
     conversation.addSystemMessage(systemPrompt)
 
-    await agentLogger?.log(
+    void agentLogger?.log(
         context.runId, context.strategyId,
         conversation.getSequence(), "system", systemPrompt
     )
 
-    conversation.addUserMessage(
-        "Begin your analysis. Check current market conditions and positions, then decide on actions."
-    )
+    const userMessage = "Your positions and account state are already in the system prompt. Begin with the research steps defined in your strategy context, then decide on actions."
 
-    await agentLogger?.log(
+    conversation.addUserMessage(userMessage)
+
+    void agentLogger?.log(
         context.runId, context.strategyId,
         conversation.getSequence(), "user",
-        "Begin your analysis. Check current market conditions and positions, then decide on actions."
+        userMessage
     )
 
     let consecutiveErrors = 0
@@ -85,6 +90,24 @@ export async function executeAgentRun(
 
     try {
         while (iteration < maxIterations) {
+            const elapsed = Date.now() - runStartedAt
+            if (elapsed > runTimeoutMs) {
+                logger.error("Agent run timed out", {
+                    runId: context.runId,
+                    elapsedMs: elapsed,
+                    timeoutMs: runTimeoutMs,
+                    iterations: iteration,
+                })
+                client.cancel()
+                const lastContent = conversation.getLastAssistantContent()
+                return {
+                    summary: lastContent ?? "Agent run timed out before producing a summary.",
+                    error: `Run timed out after ${Math.round(elapsed / 1000)}s (limit: ${Math.round(runTimeoutMs / 1000)}s)`,
+                    iterations: iteration,
+                    usage: aggregatedUsage,
+                }
+            }
+
             iteration++
             logger.info("Agent iteration", { iteration, maxIterations, runId: context.runId })
 
@@ -125,11 +148,17 @@ export async function executeAgentRun(
             if (response.toolCalls.length > 0) {
                 conversation.addAssistantMessage(response.content, response.toolCalls)
 
-                await agentLogger?.log(
+                void agentLogger?.log(
                     context.runId, context.strategyId,
                     conversation.getSequence(), "assistant",
                     response.content ?? "",
                 )
+
+                    const valid: Array<{
+                    toolCall: typeof response.toolCalls[number]
+                    toolDef: ReturnType<typeof tools.get> & {}
+                    parsedArgs: unknown
+                }> = []
 
                 for (const toolCall of response.toolCalls) {
                     const toolName = toolCall.function.name
@@ -139,7 +168,7 @@ export async function executeAgentRun(
                         const errorResult = JSON.stringify({ error: `Unknown tool: ${toolName}` })
                         conversation.addToolResult(toolCall.id, toolName, errorResult)
                         logger.warn("Agent called unknown tool", { toolName })
-                        await agentLogger?.log(
+                        void agentLogger?.log(
                             context.runId, context.strategyId,
                             conversation.getSequence(), "tool",
                             errorResult, toolName, toolCall.function.arguments
@@ -154,7 +183,7 @@ export async function executeAgentRun(
                         const errorResult = JSON.stringify({ error: "Invalid JSON arguments" })
                         conversation.addToolResult(toolCall.id, toolName, errorResult)
                         logger.warn("Failed to parse tool arguments", { toolName, raw: toolCall.function.arguments })
-                        await agentLogger?.log(
+                        void agentLogger?.log(
                             context.runId, context.strategyId,
                             conversation.getSequence(), "tool",
                             errorResult, toolName, toolCall.function.arguments
@@ -167,7 +196,7 @@ export async function executeAgentRun(
                         const errorResult = JSON.stringify({ error: "Parameter validation failed", details: validation.error })
                         conversation.addToolResult(toolCall.id, toolName, errorResult)
                         logger.warn("Tool parameter validation failed", { toolName, error: validation.error })
-                        await agentLogger?.log(
+                        void agentLogger?.log(
                             context.runId, context.strategyId,
                             conversation.getSequence(), "tool",
                             errorResult, toolName, toolCall.function.arguments
@@ -175,30 +204,61 @@ export async function executeAgentRun(
                         continue
                     }
 
-                    let toolResult: string
-                    try {
-                        logger.info("Executing tool", { toolName, runId: context.runId })
-                        const result = await toolDef.handler(validation.data)
-                        toolResult = typeof result === "string" ? result : JSON.stringify(result)
-                    } catch (error) {
-                        const errorMsg = error instanceof Error ? error.message : String(error)
-                        toolResult = JSON.stringify({ error: `Tool execution failed: ${errorMsg}` })
-                        logger.error("Tool execution error", { toolName, error: errorMsg })
-                    }
+                    valid.push({ toolCall, toolDef, parsedArgs: validation.data })
+                }
 
-                    conversation.addToolResult(toolCall.id, toolName, toolResult)
-                    await agentLogger?.log(
-                        context.runId, context.strategyId,
-                        conversation.getSequence(), "tool",
-                        toolResult, toolName, toolCall.function.arguments, toolResult
+                if (valid.length > 0) {
+                    logger.info("Executing tools in parallel", {
+                        tools: valid.map(v => v.toolCall.function.name),
+                        count: valid.length,
+                        runId: context.runId,
+                    })
+
+                    const remainingMs = runTimeoutMs - (Date.now() - runStartedAt)
+                    const toolTimeoutMs = Math.max(Math.min(remainingMs, TOOL_TIMEOUT_MS), 5000)
+
+                    const results = await Promise.allSettled(
+                        valid.map(({ toolDef, parsedArgs }) =>
+                            Promise.race([
+                                toolDef.handler(parsedArgs),
+                                new Promise<never>((_, reject) =>
+                                    setTimeout(() => reject(new Error(`Tool timed out after ${Math.round(toolTimeoutMs / 1000)}s`)), toolTimeoutMs)
+                                ),
+                            ])
+                        )
                     )
+
+                    for (let i = 0; i < valid.length; i++) {
+                        const entry = valid[i]!
+                        const { toolCall } = entry
+                        const toolName = toolCall.function.name
+                        const result = results[i]!
+
+                        let toolResult: string
+                        if (result.status === "fulfilled") {
+                            const val = (result as PromiseFulfilledResult<unknown>).value
+                            toolResult = typeof val === "string" ? val : JSON.stringify(val)
+                        } else {
+                            const reason = (result as PromiseRejectedResult).reason
+                            const errorMsg = reason instanceof Error ? reason.message : String(reason)
+                            toolResult = JSON.stringify({ error: `Tool execution failed: ${errorMsg}` })
+                            logger.error("Tool execution error", { toolName, error: errorMsg })
+                        }
+
+                        conversation.addToolResult(toolCall.id, toolName, toolResult)
+                        void agentLogger?.log(
+                            context.runId, context.strategyId,
+                            conversation.getSequence(), "tool",
+                            toolResult, toolName, toolCall.function.arguments, toolResult
+                        )
+                    }
                 }
 
                 continue
             }
 
             if (response.content) {
-                await agentLogger?.log(
+                void agentLogger?.log(
                     context.runId, context.strategyId,
                     conversation.getSequence(), "assistant",
                     response.content

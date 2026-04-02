@@ -5,6 +5,8 @@ export interface LLMClientConfig {
     apiKey: string
     model: string
     baseUrl?: string
+    requestTimeoutMs?: number
+    streamStallTimeoutMs?: number
 }
 
 export interface ChatMessage {
@@ -63,17 +65,23 @@ interface StreamChunk {
 }
 
 const DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
+const DEFAULT_REQUEST_TIMEOUT_MS = 5 * 60 * 1000
+const DEFAULT_STREAM_STALL_TIMEOUT_MS = 60 * 1000
 
 export class LLMClient {
     private apiKey: string
     private model: string
     private baseUrl: string
     private controller: AbortController | null = null
+    private requestTimeoutMs: number
+    private streamStallTimeoutMs: number
 
     constructor(config: LLMClientConfig) {
         this.apiKey = config.apiKey
         this.model = config.model
         this.baseUrl = config.baseUrl ?? DEFAULT_BASE_URL
+        this.requestTimeoutMs = config.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS
+        this.streamStallTimeoutMs = config.streamStallTimeoutMs ?? DEFAULT_STREAM_STALL_TIMEOUT_MS
     }
 
     async chat(
@@ -102,6 +110,11 @@ export class LLMClient {
         logger?: Logger
     ): Promise<LLMResponse> {
         this.controller = new AbortController()
+        const signal = this.controller.signal
+
+        const requestTimer = setTimeout(() => {
+            this.controller?.abort()
+        }, this.requestTimeoutMs)
 
         const body: Record<string, unknown> = {
             model: this.model,
@@ -123,7 +136,7 @@ export class LLMClient {
                     "X-Title": "Val-iQ Trading Agent",
                 },
                 body: JSON.stringify(body),
-                signal: this.controller.signal,
+                signal,
             })
 
             if (!response.ok) {
@@ -131,13 +144,14 @@ export class LLMClient {
                 throw new Error(`OpenRouter API error: ${response.status} ${response.statusText} - ${errorText}`)
             }
 
-            return this.processStream(response, logger)
+            return await this.processStream(response, logger)
         } catch (error) {
             if (error instanceof Error && error.name === "AbortError") {
-                throw new Error("LLM request cancelled")
+                throw new Error("LLM request timed out or was cancelled")
             }
             throw error
         } finally {
+            clearTimeout(requestTimer)
             this.controller = null
         }
     }
@@ -162,7 +176,16 @@ export class LLMClient {
 
         try {
             while (true) {
-                const { done, value } = await reader.read()
+                const readResult = await Promise.race([
+                    reader.read(),
+                    new Promise<never>((_, reject) =>
+                        setTimeout(
+                            () => reject(new Error("Stream stalled: no data received within timeout")),
+                            this.streamStallTimeoutMs
+                        )
+                    ),
+                ])
+                const { done, value } = readResult
                 if (done) break
 
                 buffer += decoder.decode(value, { stream: true })

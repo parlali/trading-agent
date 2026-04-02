@@ -4,7 +4,7 @@ import { useQuery, useMutation } from "convex/react"
 import { api } from "@valiq-trading/convex"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Switch } from "@/components/ui/switch"
-import { Skeleton } from "@/components/ui/skeleton"
+import { PageSkeleton } from "@/components/page-skeleton"
 import { VENUE_META, VENUE_APPS, type VenueApp } from "@/lib/constants"
 import { formatRelativeTime } from "@/lib/format"
 import { ShieldAlert } from "lucide-react"
@@ -15,13 +15,7 @@ export default function KillSwitchesPage() {
     const setKillSwitch = useMutation(api.mutations.setKillSwitch)
 
     if (systemState === undefined) {
-        return (
-            <div className="space-y-4">
-                {Array.from({ length: 4 }).map((_, i) => (
-                    <Skeleton key={i} className="h-20" />
-                ))}
-            </div>
-        )
+        return <PageSkeleton count={4} height="h-20" spacing="space-y-4" />
     }
 
     const handleToggle = (scope: "alpaca-options" | "polymarket" | "mt5" | "global", enabled: boolean) => {
@@ -34,10 +28,10 @@ export default function KillSwitchesPage() {
         <div className="space-y-6">
             <Card className={systemState.globalKillSwitch ? "border-signal-danger/30" : ""}>
                 <CardHeader>
-                    <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-3">
-                            <ShieldAlert className={`h-5 w-5 ${systemState.globalKillSwitch ? "text-signal-danger" : "text-muted-foreground"}`} />
-                            <div>
+                    <div className="flex items-center justify-between gap-3">
+                        <div className="flex items-center gap-3 min-w-0">
+                            <ShieldAlert className={`h-5 w-5 shrink-0 ${systemState.globalKillSwitch ? "text-signal-danger" : "text-muted-foreground"}`} />
+                            <div className="min-w-0">
                                 <CardTitle className="text-base">Global Kill Switch</CardTitle>
                                 <CardDescription>
                                     Halt all trading across every venue
@@ -45,6 +39,7 @@ export default function KillSwitchesPage() {
                             </div>
                         </div>
                         <Switch
+                            className="shrink-0"
                             checked={systemState.globalKillSwitch}
                             onCheckedChange={(checked) => handleToggle("global", checked)}
                         />
@@ -68,15 +63,16 @@ export default function KillSwitchesPage() {
 
                     return (
                         <Card key={app} className={isKilled ? "border-signal-danger/30" : ""}>
-                            <CardContent className="flex items-center justify-between py-4">
-                                <div className="flex items-center gap-3">
-                                    <meta.icon className={`h-4 w-4 ${isKilled ? "text-signal-danger" : "text-muted-foreground"}`} />
-                                    <div>
+                            <CardContent className="flex items-center justify-between gap-3 py-4">
+                                <div className="flex items-center gap-3 min-w-0">
+                                    <meta.icon className={`h-4 w-4 shrink-0 ${isKilled ? "text-signal-danger" : "text-muted-foreground"}`} />
+                                    <div className="min-w-0">
                                         <p className="text-sm font-medium">{meta.label}</p>
-                                        <p className="text-xs text-muted-foreground">{meta.description}</p>
+                                        <p className="text-xs text-muted-foreground hidden sm:block">{meta.description}</p>
                                     </div>
                                 </div>
                                 <Switch
+                                    className="shrink-0"
                                     checked={isKilled}
                                     onCheckedChange={(checked) => handleToggle(app, checked)}
                                 />

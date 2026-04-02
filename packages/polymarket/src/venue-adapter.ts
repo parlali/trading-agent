@@ -2,39 +2,52 @@ import type { AccountState, ExecutionResult, OrderIntent, Position, VenueAdapter
 import type { PolymarketClient, PolymarketOpenOrder, PolymarketTrade } from "./polymarket-client"
 
 export class PolymarketVenueAdapter implements VenueAdapter {
+    private positionsCache: { positions: Position[]; fetchedAt: number } | null = null
+    private readonly POSITIONS_CACHE_TTL = 5000
+
     constructor(private readonly client: PolymarketClient) {}
 
     async getPositions(): Promise<Position[]> {
-        // Discover positions from recent trades and open orders
+        if (
+            this.positionsCache &&
+            Date.now() - this.positionsCache.fetchedAt < this.POSITIONS_CACHE_TTL
+        ) {
+            return this.positionsCache.positions
+        }
+
         const [trades, openOrders] = await Promise.all([
             this.client.getTrades(),
             this.client.getOpenOrders(),
         ])
 
-        // Collect unique token IDs from trades and orders
         const tokenIds = new Set<string>()
         for (const trade of trades) tokenIds.add(trade.asset_id)
         for (const order of openOrders) tokenIds.add(order.asset_id)
 
+        const tokenArray = Array.from(tokenIds)
+        const results = await Promise.all(
+            tokenArray.map(async (tokenId) => {
+                const balance = await this.client.getTokenBalance(tokenId)
+                if (balance <= 0) return null
+
+                let midPrice: number
+                try {
+                    midPrice = await this.client.getMidpoint(tokenId)
+                } catch {
+                    midPrice = 0
+                }
+
+                return { tokenId, balance, midPrice }
+            })
+        )
+
         const positions: Position[] = []
 
-        for (const tokenId of tokenIds) {
-            const balance = await this.client.getTokenBalance(tokenId)
-            if (balance <= 0) continue
-
-            let midPrice: number
-            try {
-                midPrice = await this.client.getMidpoint(tokenId)
-            } catch {
-                // Market may have resolved or be unavailable
-                midPrice = 0
-            }
-
+        for (const result of results.filter(Boolean)) {
+            const { tokenId, balance, midPrice } = result!
             const tokenTrades = trades.filter((t) => t.asset_id === tokenId)
             const avgEntryPrice = calculateAvgEntryPrice(tokenTrades)
             const unrealizedPnl = midPrice > 0 ? (midPrice - avgEntryPrice) * balance : 0
-
-            // Derive market and outcome from the most recent trade
             const latestTrade = tokenTrades[0]
 
             positions.push({
@@ -52,6 +65,7 @@ export class PolymarketVenueAdapter implements VenueAdapter {
             })
         }
 
+        this.positionsCache = { positions, fetchedAt: Date.now() }
         return positions
     }
 

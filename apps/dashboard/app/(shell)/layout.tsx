@@ -11,6 +11,7 @@ const pageNames: Record<string, string> = {
     "/test": "Connection Tests",
     "/strategies": "Strategies",
     "/strategies/new": "New Strategy",
+    "/schedule": "Schedule",
     "/system/kill-switches": "Kill Switches",
     "/system/health": "System Health",
     "/system/alerts": "Alerts",
@@ -53,7 +54,7 @@ export default function ShellLayout({
                             <span className="text-sm font-medium text-muted-foreground">{pageTitle}</span>
                         ) : null}
                     </header>
-                    <main className="flex-1 overflow-auto p-3 md:p-6">
+                    <main className="flex-1 min-w-0 overflow-auto p-3 md:p-6">
                         {children}
                     </main>
                 </SidebarInset>

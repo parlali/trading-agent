@@ -1,13 +1,15 @@
 "use client"
 
 import { use } from "react"
-import { useQuery } from "convex/react"
-import { api } from "@valiq-trading/convex"
+import { useDashboardOverview } from "@/hooks/use-dashboard-overview"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Skeleton } from "@/components/ui/skeleton"
 import { StatusDot } from "@/components/status-dot"
 import { PnlText } from "@/components/pnl-text"
+import { StatCard } from "@/components/stat-card"
+import { StatusBadge } from "@/components/status-badge"
+import { PageSkeleton } from "@/components/page-skeleton"
 import { EmptyState } from "@/components/empty-state"
 import { formatCurrency, formatRelativeTime } from "@/lib/format"
 import { VENUE_META, type VenueApp } from "@/lib/constants"
@@ -20,17 +22,13 @@ export default function VenuePage({
 }) {
     const { app } = use(params)
     const meta = VENUE_META[app as VenueApp]
-    const overview = useQuery(api.queries.getDashboardOverview)
+    const { data: overview, isLoading } = useDashboardOverview()
 
-    if (overview === undefined) {
+    if (isLoading || !overview) {
         return (
             <div className="space-y-6">
                 <Skeleton className="h-8 w-48" />
-                <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-                    {Array.from({ length: 3 }).map((_, i) => (
-                        <Skeleton key={i} className="h-32" />
-                    ))}
-                </div>
+                <PageSkeleton count={3} height="h-32" />
             </div>
         )
     }
@@ -68,43 +66,11 @@ export default function VenuePage({
             ) : null}
 
             {snapshot ? (
-                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-                    <Card>
-                        <CardHeader className="pb-2">
-                            <CardTitle className="text-sm font-medium text-muted-foreground">Balance</CardTitle>
-                        </CardHeader>
-                        <CardContent>
-                            <p className="text-xl font-semibold tabular-nums font-mono">
-                                {formatCurrency(snapshot.balance)}
-                            </p>
-                        </CardContent>
-                    </Card>
-                    <Card>
-                        <CardHeader className="pb-2">
-                            <CardTitle className="text-sm font-medium text-muted-foreground">Buying Power</CardTitle>
-                        </CardHeader>
-                        <CardContent>
-                            <p className="text-xl font-semibold tabular-nums font-mono">
-                                {formatCurrency(snapshot.buyingPower)}
-                            </p>
-                        </CardContent>
-                    </Card>
-                    <Card>
-                        <CardHeader className="pb-2">
-                            <CardTitle className="text-sm font-medium text-muted-foreground">Open P&L</CardTitle>
-                        </CardHeader>
-                        <CardContent>
-                            <PnlText value={snapshot.openPnl} className="text-xl font-semibold" />
-                        </CardContent>
-                    </Card>
-                    <Card>
-                        <CardHeader className="pb-2">
-                            <CardTitle className="text-sm font-medium text-muted-foreground">Day P&L</CardTitle>
-                        </CardHeader>
-                        <CardContent>
-                            <PnlText value={snapshot.dayPnl} className="text-xl font-semibold" />
-                        </CardContent>
-                    </Card>
+                <div className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">
+                    <StatCard label="Balance" value={snapshot.balance} format="currency" />
+                    <StatCard label="Buying Power" value={snapshot.buyingPower} format="currency" />
+                    <StatCard label="Open P&L" value={snapshot.openPnl} format="pnl" />
+                    <StatCard label="Day P&L" value={snapshot.dayPnl} format="pnl" />
                 </div>
             ) : (
                 <Card>
@@ -146,18 +112,10 @@ export default function VenuePage({
                                         </div>
                                         {strategy.latestRun ? (
                                             <div className="text-right">
-                                                <Badge
-                                                    variant={
-                                                        strategy.latestRun.status === "completed"
-                                                            ? "default"
-                                                            : strategy.latestRun.status === "failed"
-                                                                ? "destructive"
-                                                                : "secondary"
-                                                    }
-                                                    className="text-xs"
-                                                >
-                                                    {strategy.latestRun.status}
-                                                </Badge>
+                                                <StatusBadge
+                                                    status={strategy.latestRun.status}
+                                                    category="run"
+                                                />
                                                 <p className="text-xs text-muted-foreground mt-1">
                                                     {formatRelativeTime(strategy.latestRun.startedAt)}
                                                 </p>

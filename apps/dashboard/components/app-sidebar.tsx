@@ -6,6 +6,7 @@ import { usePathname, useRouter } from "next/navigation"
 import { useTheme } from "next-themes"
 import { useAuthActions } from "@convex-dev/auth/react"
 import {
+    Calendar,
     Gauge,
     LayoutDashboard,
     LogOut,
@@ -35,6 +36,7 @@ const mainItems = [
     { label: "Overview", href: "/", icon: LayoutDashboard },
     { label: "Test", href: "/test", icon: Plug },
     { label: "Strategies", href: "/strategies", icon: Settings2 },
+    { label: "Schedule", href: "/schedule", icon: Calendar },
 ]
 
 const systemItems = [

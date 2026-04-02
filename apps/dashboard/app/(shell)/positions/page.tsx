@@ -1,10 +1,9 @@
 "use client"
 
-import { useQuery } from "convex/react"
-import { api } from "@valiq-trading/convex"
+import { useDashboardOverview } from "@/hooks/use-dashboard-overview"
 import { Card, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
-import { Skeleton } from "@/components/ui/skeleton"
+import { PageSkeleton } from "@/components/page-skeleton"
 import { VenueBadge } from "@/components/venue-badge"
 import { PnlText } from "@/components/pnl-text"
 import { EmptyState } from "@/components/empty-state"
@@ -52,10 +51,10 @@ function PositionCard({ pos }: {
 }
 
 export default function PositionsPage() {
-    const overview = useQuery(api.queries.getDashboardOverview)
+    const { data: overview, isLoading } = useDashboardOverview()
 
-    if (overview === undefined) {
-        return <Skeleton className="h-64" />
+    if (isLoading || !overview) {
+        return <PageSkeleton count={1} height="h-64" />
     }
 
     const positions = overview.openPositions

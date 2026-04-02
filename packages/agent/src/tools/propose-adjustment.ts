@@ -34,8 +34,10 @@ export function createProposeAdjustmentTool(pipeline: ExecutionPipeline): ToolDe
         },
         handler: async (params) => {
             const validated = params as z.infer<typeof adjustmentParamsSchema>
-            const positions = await pipeline.getPositions()
-            const account = await pipeline.getAccountState()
+            const [positions, account] = await Promise.all([
+                pipeline.getPositions(),
+                pipeline.getAccountState(),
+            ])
 
             const intent: OrderIntent = {
                 instrument: validated.instrument,

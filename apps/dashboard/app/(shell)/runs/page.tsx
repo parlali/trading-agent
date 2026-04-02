@@ -1,28 +1,23 @@
 "use client"
 
-import { useQuery } from "convex/react"
-import { api } from "@valiq-trading/convex"
+import { useDashboardOverview } from "@/hooks/use-dashboard-overview"
 import Link from "next/link"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Skeleton } from "@/components/ui/skeleton"
 import { VenueBadge } from "@/components/venue-badge"
 import { StatusDot } from "@/components/status-dot"
+import { StatusBadge } from "@/components/status-badge"
+import { PageSkeleton } from "@/components/page-skeleton"
 import { EmptyState } from "@/components/empty-state"
 import { formatTimestamp, formatRelativeTime } from "@/lib/format"
 import { ChevronRight, History } from "lucide-react"
 
 export default function RunsPage() {
-    const overview = useQuery(api.queries.getDashboardOverview)
+    const { data: overview, isLoading } = useDashboardOverview()
 
-    if (overview === undefined) {
-        return (
-            <div className="space-y-3">
-                {Array.from({ length: 5 }).map((_, i) => (
-                    <Skeleton key={i} className="h-16" />
-                ))}
-            </div>
-        )
+    if (isLoading || !overview) {
+        return <PageSkeleton count={5} />
     }
 
     const allRuns = overview.recentRuns
@@ -117,18 +112,10 @@ export default function RunsPage() {
                                     </div>
                                     <div className="flex items-center gap-2 shrink-0 ml-2">
                                         <div className="text-right">
-                                            <Badge
-                                                variant={
-                                                    run.status === "completed"
-                                                        ? "default"
-                                                        : run.status === "failed"
-                                                            ? "destructive"
-                                                            : "secondary"
-                                                }
-                                                className="text-xs"
-                                            >
-                                                {run.status}
-                                            </Badge>
+                                            <StatusBadge
+                                                status={run.status}
+                                                category="run"
+                                            />
                                             <p className="text-xs text-muted-foreground mt-1 hidden sm:block">
                                                 {formatTimestamp(run.startedAt)}
                                             </p>

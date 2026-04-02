@@ -20,6 +20,7 @@ import {
 } from "@/components/ui/select"
 import { ScheduleBuilder } from "@/components/schedule-builder"
 import { VENUE_META, type VenueApp } from "@/lib/constants"
+import { POLICY_DEFAULTS } from "@valiq-trading/core"
 import { toast } from "sonner"
 import { Loader2 } from "lucide-react"
 
@@ -37,29 +38,6 @@ type StrategyFormData = {
 type StrategyFormProps = {
     mode: "create" | "edit"
     initialData?: StrategyFormData & { id: Id<"strategies"> }
-}
-
-const ALPACA_POLICY_DEFAULTS: PolicyFields = {
-    dryRun: true,
-    maxLossPerPlay: 500,
-}
-
-const POLYMARKET_POLICY_DEFAULTS: PolicyFields = {
-    dryRun: true,
-    maxBet: { mode: "fixed", value: 100 },
-}
-
-const MT5_POLICY_DEFAULTS: PolicyFields = {
-    dryRun: true,
-    maxRiskPercent: 2,
-    tradingHours: { start: "08:00", end: "16:00", timezone: "UTC" },
-    emergencyFlattenThreshold: 1000,
-}
-
-const POLICY_DEFAULTS: Record<VenueApp, PolicyFields> = {
-    "alpaca-options": ALPACA_POLICY_DEFAULTS,
-    "polymarket": POLYMARKET_POLICY_DEFAULTS,
-    "mt5": MT5_POLICY_DEFAULTS,
 }
 
 function getNestedValue(obj: PolicyFields, path: string): unknown {
@@ -265,12 +243,12 @@ export function StrategyForm({ mode, initialData }: StrategyFormProps) {
                             <Label className="text-sm">
                                 Max Bet<span className="text-signal-danger ml-0.5">*</span>
                             </Label>
-                            <div className="flex items-center gap-2">
+                            <div className="flex items-center gap-2 flex-wrap">
                                 <Select
                                     value={maxBet.mode}
                                     onValueChange={(v) => handlePolicyFieldChange("maxBet", { ...maxBet, mode: v })}
                                 >
-                                    <SelectTrigger className="w-40">
+                                    <SelectTrigger className="w-full sm:w-40">
                                         <SelectValue />
                                     </SelectTrigger>
                                     <SelectContent>
@@ -278,21 +256,23 @@ export function StrategyForm({ mode, initialData }: StrategyFormProps) {
                                         <SelectItem value="percentage">% of Account</SelectItem>
                                     </SelectContent>
                                 </Select>
-                                <Input
-                                    type="number"
-                                    step="any"
-                                    min={0}
-                                    placeholder={maxBet.mode === "fixed" ? "100" : "5"}
-                                    value={maxBet.value !== undefined ? String(maxBet.value) : ""}
-                                    onChange={(e) => handlePolicyFieldChange(
-                                        "maxBet",
-                                        { ...maxBet, value: e.target.value === "" ? 0 : Number(e.target.value) }
-                                    )}
-                                    className="w-28"
-                                />
-                                <span className="text-sm text-muted-foreground">
-                                    {maxBet.mode === "fixed" ? "USD" : "%"}
-                                </span>
+                                <div className="flex items-center gap-2">
+                                    <Input
+                                        type="number"
+                                        step="any"
+                                        min={0}
+                                        placeholder={maxBet.mode === "fixed" ? "100" : "5"}
+                                        value={maxBet.value !== undefined ? String(maxBet.value) : ""}
+                                        onChange={(e) => handlePolicyFieldChange(
+                                            "maxBet",
+                                            { ...maxBet, value: e.target.value === "" ? 0 : Number(e.target.value) }
+                                        )}
+                                        className="w-28"
+                                    />
+                                    <span className="text-sm text-muted-foreground">
+                                        {maxBet.mode === "fixed" ? "USD" : "%"}
+                                    </span>
+                                </div>
                             </div>
                         </div>
                     ) : null}
@@ -324,25 +304,25 @@ export function StrategyForm({ mode, initialData }: StrategyFormProps) {
                                 <Label className="text-sm">
                                     Trading Hours<span className="text-signal-danger ml-0.5">*</span>
                                 </Label>
-                                <div className="flex items-center gap-2">
+                                <div className="flex items-center gap-2 flex-wrap">
                                     <Input
                                         placeholder="08:00"
                                         value={getNestedValue(policy, "tradingHours.start") as string ?? ""}
                                         onChange={(e) => handlePolicyFieldChange("tradingHours.start", e.target.value)}
-                                        className="w-24 font-mono"
+                                        className="w-20 sm:w-24 font-mono"
                                     />
                                     <span className="text-muted-foreground">to</span>
                                     <Input
                                         placeholder="16:00"
                                         value={getNestedValue(policy, "tradingHours.end") as string ?? ""}
                                         onChange={(e) => handlePolicyFieldChange("tradingHours.end", e.target.value)}
-                                        className="w-24 font-mono"
+                                        className="w-20 sm:w-24 font-mono"
                                     />
                                     <Input
                                         placeholder="UTC"
                                         value={getNestedValue(policy, "tradingHours.timezone") as string ?? ""}
                                         onChange={(e) => handlePolicyFieldChange("tradingHours.timezone", e.target.value)}
-                                        className="w-28"
+                                        className="w-24 sm:w-28"
                                     />
                                 </div>
                             </div>

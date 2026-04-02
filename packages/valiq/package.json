@@ -7,7 +7,9 @@
     "license": "UNLICENSED",
     "scripts": {
         "build": "tsc --noEmit",
-        "lint": "tsc --noEmit"
+        "lint": "tsc --noEmit",
+        "test": "vitest run",
+        "test:watch": "vitest"
     },
     "dependencies": {
         "@valiq-trading/core": "workspace:*",

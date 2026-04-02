@@ -1,16 +1,22 @@
 import { defineSchema, defineTable } from "convex/server"
 import { v } from "convex/values"
 import { authTables } from "@convex-dev/auth/server"
+import {
+    venueAppV,
+    appV,
+    orderStatusV,
+    orderActionV,
+    orderTransitionTypeV,
+    severityV,
+    eventTypeV,
+    claimSourceV,
+} from "./lib/validators"
 
 export default defineSchema({
     ...authTables,
 
     strategies: defineTable({
-        app: v.union(
-            v.literal("alpaca-options"),
-            v.literal("polymarket"),
-            v.literal("mt5")
-        ),
+        app: venueAppV,
         name: v.string(),
         enabled: v.boolean(),
         schedule: v.string(), // cron expression
@@ -24,20 +30,23 @@ export default defineSchema({
 
     strategy_runs: defineTable({
         strategyId: v.id("strategies"),
-        app: v.union(
-            v.literal("alpaca-options"),
-            v.literal("polymarket"),
-            v.literal("mt5")
-        ),
+        app: venueAppV,
         status: v.union(
             v.literal("running"),
             v.literal("completed"),
             v.literal("failed")
         ),
+        trigger: v.optional(v.union(
+            v.literal("cron"),
+            v.literal("manual"),
+            v.literal("callback")
+        )),
         startedAt: v.number(),
         endedAt: v.optional(v.number()),
         summary: v.optional(v.string()),
         error: v.optional(v.string()),
+        callbackRequestedMinutes: v.optional(v.number()),
+        callbackFiresAt: v.optional(v.number()),
     })
         .index("by_strategy", ["strategyId"])
         .index("by_strategy_status", ["strategyId", "status"]),
@@ -64,15 +73,7 @@ export default defineSchema({
     trade_events: defineTable({
         runId: v.id("strategy_runs"),
         strategyId: v.id("strategies"),
-        eventType: v.union(
-            v.literal("intent"),
-            v.literal("validation"),
-            v.literal("submission"),
-            v.literal("fill_update"),
-            v.literal("filled"),
-            v.literal("rejected"),
-            v.literal("cancelled")
-        ),
+        eventType: eventTypeV,
         payload: v.string(), // JSON stringified event data
         timestamp: v.number(),
     })
@@ -85,22 +86,8 @@ export default defineSchema({
         strategyId: v.id("strategies"),
         venue: v.string(),
         instrument: v.string(),
-        status: v.union(
-            v.literal("pending"),
-            v.literal("partially_filled"),
-            v.literal("filled"),
-            v.literal("rejected"),
-            v.literal("cancelled"),
-            v.literal("expired"),
-            v.literal("timed_out")
-        ),
-        action: v.union(
-            v.literal("entry"),
-            v.literal("adjustment"),
-            v.literal("close"),
-            v.literal("modify"),
-            v.literal("cancel")
-        ),
+        status: orderStatusV,
+        action: orderActionV,
         quantity: v.number(),
         filledQuantity: v.number(),
         remainingQuantity: v.number(),
@@ -129,34 +116,9 @@ export default defineSchema({
         runId: v.id("strategy_runs"),
         strategyId: v.id("strategies"),
         sequence: v.number(),
-        type: v.union(
-            v.literal("submission"),
-            v.literal("status_change"),
-            v.literal("modify_attempt"),
-            v.literal("cancel_attempt"),
-            v.literal("timeout_decision"),
-            v.literal("terminal")
-        ),
-        status: v.union(
-            v.literal("pending"),
-            v.literal("partially_filled"),
-            v.literal("filled"),
-            v.literal("rejected"),
-            v.literal("cancelled"),
-            v.literal("expired"),
-            v.literal("timed_out")
-        ),
-        previousStatus: v.optional(
-            v.union(
-                v.literal("pending"),
-                v.literal("partially_filled"),
-                v.literal("filled"),
-                v.literal("rejected"),
-                v.literal("cancelled"),
-                v.literal("expired"),
-                v.literal("timed_out")
-            )
-        ),
+        type: orderTransitionTypeV,
+        status: orderStatusV,
+        previousStatus: v.optional(orderStatusV),
         reason: v.optional(v.string()),
         details: v.optional(v.any()),
         timestamp: v.number(),
@@ -166,11 +128,7 @@ export default defineSchema({
 
     positions: defineTable({
         strategyId: v.id("strategies"),
-        app: v.union(
-            v.literal("alpaca-options"),
-            v.literal("polymarket"),
-            v.literal("mt5")
-        ),
+        app: venueAppV,
         instrument: v.string(),
         side: v.union(v.literal("long"), v.literal("short")),
         quantity: v.number(),
@@ -186,16 +144,9 @@ export default defineSchema({
 
     instrument_claims: defineTable({
         strategyId: v.id("strategies"),
-        app: v.union(
-            v.literal("alpaca-options"),
-            v.literal("polymarket"),
-            v.literal("mt5")
-        ),
+        app: venueAppV,
         instrument: v.string(),
-        source: v.union(
-            v.literal("position"),
-            v.literal("order")
-        ),
+        source: claimSourceV,
         sourceId: v.string(),
         updatedAt: v.number(),
     })
@@ -206,11 +157,7 @@ export default defineSchema({
 
     position_syncs: defineTable({
         strategyId: v.id("strategies"),
-        app: v.union(
-            v.literal("alpaca-options"),
-            v.literal("polymarket"),
-            v.literal("mt5")
-        ),
+        app: venueAppV,
         syncedAt: v.number(),
         positionCount: v.number(),
     })
@@ -219,19 +166,8 @@ export default defineSchema({
 
     alerts: defineTable({
         strategyId: v.optional(v.id("strategies")),
-        app: v.optional(
-            v.union(
-                v.literal("alpaca-options"),
-                v.literal("polymarket"),
-                v.literal("mt5"),
-                v.literal("backend")
-            )
-        ),
-        severity: v.union(
-            v.literal("critical"),
-            v.literal("warning"),
-            v.literal("info")
-        ),
+        app: v.optional(appV),
+        severity: severityV,
         message: v.string(),
         acknowledged: v.boolean(),
         timestamp: v.number(),
@@ -252,12 +188,7 @@ export default defineSchema({
     }).index("by_key", ["key"]),
 
     app_heartbeats: defineTable({
-        app: v.union(
-            v.literal("alpaca-options"),
-            v.literal("polymarket"),
-            v.literal("mt5"),
-            v.literal("backend")
-        ),
+        app: appV,
         status: v.union(
             v.literal("healthy"),
             v.literal("degraded"),
@@ -268,12 +199,7 @@ export default defineSchema({
     }).index("by_app", ["app"]),
 
     account_snapshots: defineTable({
-        app: v.union(
-            v.literal("alpaca-options"),
-            v.literal("polymarket"),
-            v.literal("mt5"),
-            v.literal("backend")
-        ),
+        app: appV,
         venue: v.string(),
         balance: v.number(),
         buyingPower: v.number(),
@@ -288,11 +214,7 @@ export default defineSchema({
 
     manual_run_requests: defineTable({
         strategyId: v.id("strategies"),
-        app: v.union(
-            v.literal("alpaca-options"),
-            v.literal("polymarket"),
-            v.literal("mt5")
-        ),
+        app: venueAppV,
         requestedAt: v.number(),
     })
         .index("by_app", ["app"])

@@ -53,6 +53,19 @@ export function cronMatchesDate(expression: string, date: Date): boolean {
     )
 }
 
+export function getNextCronFireMs(expression: string, from: Date = new Date()): number | null {
+    const base = new Date(from)
+    base.setSeconds(0, 0)
+    const maxMinutes = 24 * 60 * 7
+    for (let i = 1; i <= maxMinutes; i++) {
+        const candidate = new Date(base.getTime() + i * 60_000)
+        if (cronMatchesDate(expression, candidate)) {
+            return i * 60_000
+        }
+    }
+    return null
+}
+
 export type ScheduleType = "cron" | "interval" | "oneshot"
 
 export interface ScheduledStrategy {
@@ -67,12 +80,17 @@ interface TrackedStrategy {
     config: ScheduledStrategy
     running: boolean
     lastRun?: number
+    lastOneshotAt?: number
     lastCronMinute?: string
-    timer?: ReturnType<typeof setInterval>
+    timer?: ReturnType<typeof setTimeout> | ReturnType<typeof setInterval>
 }
+
+const DEFAULT_STALE_RUN_TIMEOUT_MS = 15 * 60 * 1000
+const MIN_ONESHOT_GAP_MS = 5 * 60 * 1000
 
 export interface SchedulerConfig {
     tickInterval?: number
+    staleRunTimeoutMs?: number
     logger: Logger
 }
 
@@ -80,12 +98,14 @@ export class Scheduler {
     private strategies = new Map<string, TrackedStrategy>()
     private cronTicker: ReturnType<typeof setInterval> | null = null
     private tickInterval: number
+    private staleRunTimeoutMs: number
     private logger: Logger
     private shuttingDown = false
     private inFlightRuns = new Map<string, Promise<void>>()
 
     constructor(config: SchedulerConfig) {
         this.tickInterval = config.tickInterval ?? 10_000
+        this.staleRunTimeoutMs = config.staleRunTimeoutMs ?? DEFAULT_STALE_RUN_TIMEOUT_MS
         this.logger = config.logger
     }
 
@@ -174,6 +194,71 @@ export class Scheduler {
         return this.strategies.get(strategyId)?.running ?? false
     }
 
+    scheduleOneshot(parentStrategyId: string, delayMs: number, handler: () => Promise<void>): void {
+        const callbackId = `${parentStrategyId}:callback:${Date.now()}`
+
+        const staleCallbacks = Array.from(this.strategies.keys()).filter(
+            (id) => id.startsWith(`${parentStrategyId}:callback:`)
+        )
+        for (const id of staleCallbacks) {
+            this.unregister(id)
+        }
+
+        const guardedHandler = async () => {
+            const parent = this.strategies.get(parentStrategyId)
+            if (parent?.running) {
+                this.logger.info("Oneshot skipped -- parent strategy already running", {
+                    callbackId,
+                    parentStrategyId,
+                })
+                return
+            }
+            if (parent?.lastOneshotAt) {
+                const gap = Date.now() - parent.lastOneshotAt
+                if (gap < MIN_ONESHOT_GAP_MS) {
+                    this.logger.warn("Oneshot suppressed -- too soon after last oneshot run", {
+                        callbackId,
+                        parentStrategyId,
+                        gapMs: gap,
+                        minGapMs: MIN_ONESHOT_GAP_MS,
+                    })
+                    return
+                }
+            }
+            if (parent) {
+                parent.running = true
+                parent.lastRun = Date.now()
+                parent.lastOneshotAt = Date.now()
+            }
+            try {
+                await handler()
+            } finally {
+                if (parent) {
+                    parent.running = false
+                }
+            }
+        }
+
+        this.register({
+            strategyId: callbackId,
+            scheduleType: "oneshot",
+            handler: guardedHandler,
+        })
+
+        const tracked = this.strategies.get(callbackId)
+        if (tracked) {
+            tracked.timer = setTimeout(() => {
+                this.triggerStrategy(callbackId)
+            }, delayMs)
+        }
+
+        this.logger.info("Oneshot scheduled", {
+            callbackId,
+            parentStrategyId,
+            delayMs,
+        })
+    }
+
     private tick(): void {
         if (this.shuttingDown) return
 
@@ -210,8 +295,22 @@ export class Scheduler {
         }
 
         if (tracked.running) {
-            this.logger.info("Skipping -- strategy already running", { strategyId })
-            return
+            const elapsed = tracked.lastRun ? Date.now() - tracked.lastRun : 0
+            if (elapsed > this.staleRunTimeoutMs) {
+                this.logger.error("Force-resetting stale run", {
+                    strategyId,
+                    elapsedMs: elapsed,
+                    timeoutMs: this.staleRunTimeoutMs,
+                })
+                tracked.running = false
+                this.inFlightRuns.delete(strategyId)
+            } else {
+                this.logger.warn("Skipping -- strategy already running", {
+                    strategyId,
+                    elapsedMs: elapsed,
+                })
+                return
+            }
         }
 
         tracked.running = true

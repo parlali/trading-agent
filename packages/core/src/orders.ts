@@ -1,4 +1,4 @@
-import type { OrderIntent, ExecutionResult } from "./types"
+import type { OrderIntent, ExecutionResult, Severity } from "./types"
 
 export const ORDER_STATUSES = [
     "pending",
@@ -116,7 +116,7 @@ export interface OrderLifecycleAlert {
     strategyId: string
     runId: string
     orderId: string
-    severity: "critical" | "warning" | "info"
+    severity: Severity
     message: string
     metadata?: Record<string, unknown>
 }
@@ -136,6 +136,10 @@ export interface ResumeTrackedOrderInput {
 
 export const isTerminalOrderStatus = (status: OrderStatus): boolean => {
     return TERMINAL_ORDER_STATUSES.includes(status)
+}
+
+export const isActiveEntryOrderStatus = (status: OrderStatus): boolean => {
+    return ACTIVE_ORDER_STATUSES.includes(status)
 }
 
 export const createOrderSnapshot = (

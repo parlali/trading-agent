@@ -54,16 +54,21 @@ export interface StoredStrategy {
     updatedAt?: number
 }
 
+export type RunTrigger = "cron" | "manual" | "callback"
+
 export interface StoredRun {
     _id: Id<"strategy_runs">
     _creationTime: number
     strategyId: Id<"strategies">
     app: App
     status: "running" | "completed" | "failed"
+    trigger?: RunTrigger
     startedAt: number
     endedAt?: number
     summary?: string
     error?: string
+    callbackRequestedMinutes?: number
+    callbackFiresAt?: number
 }
 
 export interface KillSwitchState {
@@ -87,8 +92,10 @@ export interface ManualRunRequest {
 export interface TradingBackendClient extends TradeEventLoggerMethods {
     getStrategyConfigs(app: App): Promise<StoredStrategy[]>
     getStrategyById(id: Id<"strategies">): Promise<StoredStrategy | null>
-    createRun(strategyId: Id<"strategies">, app: App): Promise<Id<"strategy_runs">>
+    getLastCompletedRunSummary(strategyId: Id<"strategies">): Promise<{ summary: string; endedAt: number } | null>
+    createRun(strategyId: Id<"strategies">, app: App, trigger?: RunTrigger): Promise<Id<"strategy_runs">>
     updateRun(runId: Id<"strategy_runs">, status: StoredRun["status"], summary?: string, error?: string): Promise<void>
+    recordRunCallback(runId: Id<"strategy_runs">, callbackRequestedMinutes: number, callbackFiresAt: number): Promise<void>
     syncPositions(strategyId: Id<"strategies">, app: App, positions: Position[]): Promise<void>
     log(
         runId: string,
@@ -137,12 +144,28 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
         async getStrategyById(id: Id<"strategies">): Promise<StoredStrategy | null> {
             return await client.query(api.queries.getStrategyById, { ...requireMachineAuth(), id } as never) as StoredStrategy | null
         },
-        async createRun(strategyId: Id<"strategies">, app: App): Promise<Id<"strategy_runs">> {
+        async getLastCompletedRunSummary(strategyId: Id<"strategies">): Promise<{ summary: string; endedAt: number } | null> {
+            return await client.query(api.queries.getLastCompletedRunSummary, { ...requireMachineAuth(), strategyId } as never) as { summary: string; endedAt: number } | null
+        },
+        async createRun(strategyId: Id<"strategies">, app: App, trigger?: RunTrigger): Promise<Id<"strategy_runs">> {
             return await client.mutation(api.mutations.createRun, {
                 ...requireMachineAuth(),
                 strategyId,
                 app,
+                trigger,
             } as never) as Id<"strategy_runs">
+        },
+        async recordRunCallback(
+            runId: Id<"strategy_runs">,
+            callbackRequestedMinutes: number,
+            callbackFiresAt: number
+        ): Promise<void> {
+            await client.mutation(api.mutations.recordRunCallback, {
+                ...requireMachineAuth(),
+                runId,
+                callbackRequestedMinutes,
+                callbackFiresAt,
+            } as never)
         },
         async updateRun(
             runId: Id<"strategy_runs">,

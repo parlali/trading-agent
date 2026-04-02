@@ -114,25 +114,40 @@ export function wireShutdown(config: {
     process.on("SIGTERM", shutdown)
 }
 
+const KILL_SWITCH_CACHE_TTL = 5000
+
 export function createKillSwitchChecker(config: {
     appName: string
     backend: { getSystemState(): Promise<{ globalKillSwitch: boolean; appKillSwitches: Record<string, boolean> }> }
     logger: { warn(msg: string, meta?: Record<string, unknown>): void; error(msg: string, meta?: Record<string, unknown>): void }
 }): (context: string) => Promise<boolean> {
+    let cachedResult: boolean | null = null
+    let cachedAt = 0
+
     return async (context: string): Promise<boolean> => {
+        if (cachedResult !== null && Date.now() - cachedAt < KILL_SWITCH_CACHE_TTL) {
+            return cachedResult
+        }
+
         try {
             const state = await config.backend.getSystemState()
 
             if (state.globalKillSwitch) {
                 config.logger.warn("Global kill switch is active", { context })
+                cachedResult = true
+                cachedAt = Date.now()
                 return true
             }
 
             if (state.appKillSwitches[config.appName.replace(/-/g, "_")]) {
                 config.logger.warn("App kill switch is active", { context, app: config.appName })
+                cachedResult = true
+                cachedAt = Date.now()
                 return true
             }
 
+            cachedResult = false
+            cachedAt = Date.now()
             return false
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error)

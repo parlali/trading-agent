@@ -69,6 +69,29 @@ export function validateStrategyConfig(raw: unknown): StrategyConfig {
     return config
 }
 
+export const ALPACA_OPTIONS_POLICY_DEFAULTS: AlpacaOptionsPolicy = {
+    dryRun: true,
+    maxLossPerPlay: 500,
+}
+
+export const POLYMARKET_POLICY_DEFAULTS: PolymarketPolicy = {
+    dryRun: true,
+    maxBet: { mode: "fixed", value: 100 },
+}
+
+export const MT5_POLICY_DEFAULTS: MT5Policy = {
+    dryRun: true,
+    maxRiskPercent: 2,
+    tradingHours: { start: "08:00", end: "16:00", timezone: "UTC" },
+    emergencyFlattenThreshold: 1000,
+}
+
+export const POLICY_DEFAULTS: Record<string, Record<string, unknown>> = {
+    "alpaca-options": ALPACA_OPTIONS_POLICY_DEFAULTS,
+    "polymarket": POLYMARKET_POLICY_DEFAULTS,
+    "mt5": MT5_POLICY_DEFAULTS,
+}
+
 export function validatePolicy(app: string, rawPolicy: unknown): Record<string, unknown> {
     const schema = policySchemas[app]
     if (!schema) {

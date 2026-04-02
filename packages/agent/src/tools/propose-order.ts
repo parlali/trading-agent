@@ -56,8 +56,10 @@ export function createProposeOrderTool(pipeline: ExecutionPipeline): ToolDefinit
         },
         handler: async (params) => {
             const validated = params as z.infer<typeof orderParamsSchema>
-            const positions = await pipeline.getPositions()
-            const account = await pipeline.getAccountState()
+            const [positions, account] = await Promise.all([
+                pipeline.getPositions(),
+                pipeline.getAccountState(),
+            ])
 
             const intent: OrderIntent = {
                 instrument: validated.instrument,

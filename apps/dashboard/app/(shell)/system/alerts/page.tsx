@@ -1,12 +1,13 @@
 "use client"
 
-import { useQuery, useMutation } from "convex/react"
+import { useMutation } from "convex/react"
 import { api } from "@valiq-trading/convex"
+import { useDashboardOverview } from "@/hooks/use-dashboard-overview"
 import type { Id } from "@valiq-trading/convex"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Skeleton } from "@/components/ui/skeleton"
+import { PageSkeleton } from "@/components/page-skeleton"
 import { EmptyState } from "@/components/empty-state"
 import { formatTimestamp } from "@/lib/format"
 import { SEVERITY_COLORS } from "@/lib/constants"
@@ -14,17 +15,11 @@ import { AlertTriangle, Check } from "lucide-react"
 import { toast } from "sonner"
 
 export default function AlertsPage() {
-    const overview = useQuery(api.queries.getDashboardOverview)
+    const { data: overview, isLoading } = useDashboardOverview()
     const acknowledgeAlert = useMutation(api.mutations.acknowledgeAlert)
 
-    if (overview === undefined) {
-        return (
-            <div className="space-y-3">
-                {Array.from({ length: 5 }).map((_, i) => (
-                    <Skeleton key={i} className="h-16" />
-                ))}
-            </div>
-        )
+    if (isLoading || !overview) {
+        return <PageSkeleton count={5} />
     }
 
     const alerts = overview.recentAlerts
