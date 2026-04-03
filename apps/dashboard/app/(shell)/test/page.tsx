@@ -221,7 +221,7 @@ export default function TestPage() {
 
                 <TestCard
                     title={VENUE_META.polymarket.label}
-                    description="Public API reachability and authenticated balance check"
+                    description="Public API reachability, authenticated balance, and open bets"
                     icon={Coins}
                     onRun={() => testPolymarket()}
                 />

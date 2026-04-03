@@ -20,6 +20,9 @@ export {
     createWebFetchTool,
     createMT5ProposeOrderTool,
     createMT5ProposeAdjustmentTool,
+    createPolymarketProposeOrderTool,
+    createPolymarketProposeAdjustmentTool,
+    withCallBudget,
 } from "./tools"
 export type { WebSearchProvider, SearchResult } from "./tools"
 export { DuckDuckGoSearchProvider } from "./web-search-provider"

@@ -72,6 +72,7 @@ export interface StrategyRunContext {
     strategyId: string
     app: App
     timestamp: number
+    trigger: "cron" | "manual" | "callback"
     positions: Position[]
     accountState: AccountState
     policy: Record<string, unknown>

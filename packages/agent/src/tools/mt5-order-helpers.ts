@@ -163,6 +163,7 @@ export async function prepareMT5Order(
             riskPercent: lotResult.riskPercent,
             impliedRR: impliedRR,
             reason: params.reason,
+            estimatedPrice: entryPrice,
         },
     }
 

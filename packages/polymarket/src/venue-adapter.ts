@@ -7,6 +7,10 @@ export class PolymarketVenueAdapter implements VenueAdapter {
 
     constructor(private readonly client: PolymarketClient) {}
 
+    async getPrice(tokenId: string, side: "buy" | "sell"): Promise<number> {
+        return this.client.getPrice(tokenId, side)
+    }
+
     async getPositions(): Promise<Position[]> {
         if (
             this.positionsCache &&

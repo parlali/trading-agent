@@ -25,7 +25,7 @@ export function buildSystemPrompt(
     sections.push(buildPositionsSnapshot(context))
     sections.push(buildPolicySection(context))
     sections.push(buildToolsSection(toolDescriptions))
-    sections.push(buildRulesSection(context.schedule))
+    sections.push(buildRulesSection(context.schedule, context.trigger))
 
     return sections.join("\n\n")
 }
@@ -185,10 +185,10 @@ function buildToolsSection(
     ].join("\n")
 }
 
-function buildRulesSection(schedule?: string): string {
+function buildRulesSection(schedule?: string, trigger?: string): string {
     const scheduleInfo = schedule ? ` Your normal cron schedule is \`${schedule}\`.` : ""
 
-    return [
+    const rules = [
         "## Operating Rules",
         "",
         "1. Your current positions and account state are already provided above. Do NOT call get_positions or get_account at the start -- that data is already in this prompt. Only call them later if you need a refresh after placing an order.",
@@ -214,5 +214,22 @@ function buildRulesSection(schedule?: string): string {
         "   - 10-15 minutes: developing situations worth watching closely",
         "   - Omit the block entirely if the normal cron schedule is sufficient",
         "   - Valid range: 2-240 minutes. Minimum 5-minute gap between oneshot-triggered runs is enforced",
-    ].join("\n")
+    ]
+
+    if (trigger === "callback") {
+        rules.push(
+            "",
+            "## CALLBACK RUN -- HARD CONSTRAINTS",
+            "",
+            "This is a CALLBACK run, not a scheduled cron run. You requested this callback to manage positions or react to a known event.",
+            "",
+            "- Do NOT redo full market research. The previous run already gathered that context and handed it off to you above.",
+            "- Focus on: checking positions, evaluating if your thesis still holds, adjusting or closing positions, and monitoring fills.",
+            "- Use research tools (web_search, web_fetch, query_valiq_research, query_valiq_data) only if something specific changed that invalidates your previous analysis.",
+            "- Research tool call budgets are halved for callback runs. Use them wisely.",
+            "- If nothing has changed and no action is needed, write a brief summary and exit. Do not burn tokens re-analyzing a static situation.",
+        )
+    }
+
+    return rules.join("\n")
 }

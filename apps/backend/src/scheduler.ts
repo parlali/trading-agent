@@ -7,6 +7,8 @@ import {
     createModifyOrderTool,
     createMT5ProposeAdjustmentTool,
     createMT5ProposeOrderTool,
+    createPolymarketProposeAdjustmentTool,
+    createPolymarketProposeOrderTool,
     createProposeAdjustmentTool,
     createProposeCloseTool,
     createProposeOrderTool,
@@ -14,6 +16,7 @@ import {
     createWebFetchTool,
     createWebSearchTool,
     executeAgentRun,
+    withCallBudget,
 } from "@valiq-trading/agent"
 import { createConvexOrderPersistenceAdapter } from "@valiq-trading/convex"
 import type { StoredStrategy } from "@valiq-trading/convex"
@@ -31,6 +34,7 @@ import {
     type VenueAdapter,
 } from "@valiq-trading/core"
 import { MT5VenueAdapter } from "@valiq-trading/mt5"
+import { PolymarketVenueAdapter } from "@valiq-trading/polymarket"
 import type { RunTrigger } from "@valiq-trading/convex"
 import type { VenueApp, VenuePlugin } from "./types"
 
@@ -208,8 +212,10 @@ export async function runStrategy(
         secrets: strategySecrets,
         runLogger,
     })
+    const isCallback = trigger === "callback"
     for (const tool of extraTools) {
-        tools.register(tool)
+        const budgeted = isCallback ? withCallBudget(tool, 2) : tool
+        tools.register(budgeted)
     }
 
     tools.register(createGetPositionsTool(pipeline))
@@ -219,6 +225,9 @@ export async function runStrategy(
         const mt5Policy = mt5PolicySchema.parse(policy)
         tools.register(createMT5ProposeOrderTool(pipeline, venue, mt5Policy))
         tools.register(createMT5ProposeAdjustmentTool(pipeline, venue, mt5Policy))
+    } else if (app === "polymarket" && venue instanceof PolymarketVenueAdapter) {
+        tools.register(createPolymarketProposeOrderTool(pipeline, venue))
+        tools.register(createPolymarketProposeAdjustmentTool(pipeline, venue))
     } else {
         tools.register(createProposeOrderTool(pipeline))
         tools.register(createProposeAdjustmentTool(pipeline))
@@ -229,20 +238,32 @@ export async function runStrategy(
     tools.register(createCancelOrderTool(pipeline))
     tools.register(createModifyOrderTool(pipeline))
     tools.register(createWaitForOrderUpdateTool(pipeline))
-    tools.register(createWebSearchTool(searchProvider))
-    tools.register(createWebFetchTool())
+    if (app === "polymarket") {
+        const searchBudget = isCallback ? 2 : 5
+        const fetchBudget = isCallback ? 1 : 3
+        tools.register(withCallBudget(createWebSearchTool(searchProvider), searchBudget))
+        tools.register(withCallBudget(createWebFetchTool(), fetchBudget))
+    }
 
     try {
         if (!resolvedSecrets.OPENROUTER_API_KEY) {
             throw new Error("Cannot run strategy: OPENROUTER_API_KEY is not set in Convex environment variables")
         }
 
+        const isDryRun = Boolean(policy.dryRun)
+
         const [allPositions, accountState, previousRunSummary] = await Promise.all([
-            venue.getPositions(),
+            isDryRun ? backend.getLatestPositions(strategy._id) : venue.getPositions(),
             venue.getAccountState(),
             backend.getLastCompletedRunSummary(strategy._id),
         ])
-        const positions = filterPositionsByOwnership(allPositions, ownedInstruments)
+        const positions = isDryRun
+            ? allPositions
+            : filterPositionsByOwnership(allPositions, ownedInstruments)
+
+        if (isDryRun) {
+            pipeline.seedDryRunPositions(positions)
+        }
 
         const result = await executeAgentRun(
             {
@@ -250,6 +271,7 @@ export async function runStrategy(
                 strategyId: strategy._id,
                 app,
                 timestamp: Date.now(),
+                trigger,
                 positions,
                 accountState,
                 policy,
@@ -265,14 +287,16 @@ export async function runStrategy(
                 tools,
                 logger: runLogger,
                 agentLogger: backend,
+                killSwitchChecker: () => checkKillSwitch(app, `mid-run:${strategy._id}`),
             }
         )
 
-        const [allSyncedPositions, finalAccountState] = await Promise.all([
-            venue.getPositions(),
+        const [syncedPositions, finalAccountState] = await Promise.all([
+            isDryRun
+                ? Promise.resolve(pipeline.getDryRunPositions())
+                : venue.getPositions().then((all) => filterPositionsByOwnership(all, ownedInstruments)),
             venue.getAccountState(),
         ])
-        const syncedPositions = filterPositionsByOwnership(allSyncedPositions, ownedInstruments)
         await Promise.all([
             backend.syncPositions(strategy._id, app, syncedPositions),
             accountSnapshotPersisters[app](finalAccountState),
@@ -293,7 +317,15 @@ export async function runStrategy(
             : result.summary
 
         if (result.error) {
-            await backend.updateRun(runId, "failed", cleanSummary, result.error)
+            await Promise.all([
+                backend.updateRun(runId, "failed", cleanSummary, result.error),
+                backend.createAlert({
+                    strategyId: strategy._id,
+                    app,
+                    severity: "warning",
+                    message: `Agent run failed: ${result.error}`,
+                }),
+            ])
             updateHealth("failed", cleanSummary, result.error)
             return
         }
@@ -327,7 +359,15 @@ export async function runStrategy(
         }
     } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
-        await backend.updateRun(runId, "failed", undefined, message)
+        await Promise.all([
+            backend.updateRun(runId, "failed", undefined, message),
+            backend.createAlert({
+                strategyId: strategy._id,
+                app,
+                severity: "critical",
+                message: `Strategy run crashed: ${message}`,
+            }),
+        ])
         updateHealth("failed", undefined, message)
 
         try {

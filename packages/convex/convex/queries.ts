@@ -14,7 +14,7 @@ export {
     getTradeHistory,
 } from "./lib/queries/orders"
 
-export { getOpenPositions } from "./lib/queries/positions"
+export { getOpenPositions, getStrategyPositions } from "./lib/queries/positions"
 
 export {
     getRunHistory,

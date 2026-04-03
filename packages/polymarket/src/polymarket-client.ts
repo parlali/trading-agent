@@ -55,7 +55,13 @@ export interface PolymarketCredentials {
     host?: string
     /** Chain ID. 137 for Polygon mainnet, 80002 for Amoy testnet */
     chainId?: number
+    /** Signature type for order signing and authenticated account queries */
+    signatureType?: PolymarketSignatureType
+    /** Polymarket profile or funder address for proxy wallet setups */
+    funderAddress?: string
 }
+
+export type PolymarketSignatureType = 0 | 1 | 2
 
 export interface PolymarketMarket {
     conditionId: string
@@ -126,6 +132,11 @@ export interface PolymarketTrade {
     trader_side: string
 }
 
+export interface PolymarketBalanceAllowance {
+    balance: string
+    allowances?: Record<string, string>
+}
+
 export interface CreateOrderParams {
     tokenId: string
     side: "buy" | "sell"
@@ -155,6 +166,8 @@ export class PolymarketClient {
     private readonly apiPassphrase: string
     private readonly host: string
     private readonly chainId: number
+    private readonly signatureType: PolymarketSignatureType
+    private readonly funderAddress: `0x${string}`
 
     // Per-token metadata caches (TTL: 5 minutes)
     private tickSizeCache = new Map<string, { value: string; fetchedAt: number }>()
@@ -173,10 +186,29 @@ export class PolymarketClient {
         this.apiPassphrase = credentials.apiPassphrase
         this.host = (credentials.host ?? DEFAULT_HOST).replace(/\/+$/, "")
         this.chainId = credentials.chainId ?? DEFAULT_CHAIN_ID
+        this.signatureType = credentials.signatureType ?? 0
+
+        const normalizedFunder = credentials.funderAddress?.trim()
+        if (this.signatureType !== 0 && !normalizedFunder) {
+            throw new Error("Polymarket funderAddress is required when signatureType is 1 or 2")
+        }
+        if (normalizedFunder && !normalizedFunder.startsWith("0x")) {
+            throw new Error("Polymarket funderAddress must be a 0x-prefixed address")
+        }
+
+        this.funderAddress = (normalizedFunder ?? this.address) as `0x${string}`
     }
 
     getAddress(): string {
         return this.address
+    }
+
+    getFunderAddress(): string {
+        return this.funderAddress
+    }
+
+    getSignatureType(): PolymarketSignatureType {
+        return this.signatureType
     }
 
     // -----------------------------------------------------------------------
@@ -278,7 +310,7 @@ export class PolymarketClient {
         }
 
         const resp = await this.requestPublic<{ fee_rate_bps: string }>(
-            `/fee-rate?token_id=${tokenId}&sig_type=0`
+            `/fee-rate?token_id=${tokenId}&sig_type=${this.signatureType}`
         )
         const value = Number(resp.fee_rate_bps)
         this.feeRateCache.set(tokenId, { value, fetchedAt: Date.now() })
@@ -293,6 +325,7 @@ export class PolymarketClient {
         const tickSize = await this.getTickSize(params.tokenId)
         const negRisk = params.negRisk ?? await this.getNegRisk(params.tokenId)
         const feeRateBps = await this.getFeeRateBps(params.tokenId)
+        const maker = this.funderAddress
 
         const price = roundToTickSize(params.price, tickSize)
         const { makerAmount, takerAmount } = calculateOrderAmounts(
@@ -309,7 +342,7 @@ export class PolymarketClient {
 
         const orderMessage = {
             salt,
-            maker: this.address,
+            maker,
             signer: this.address,
             taker: ZERO_ADDRESS,
             tokenId: BigInt(params.tokenId),
@@ -319,7 +352,7 @@ export class PolymarketClient {
             nonce: 0n,
             feeRateBps: BigInt(feeRateBps),
             side: sideEnum,
-            signatureType: 0,
+            signatureType: this.signatureType,
         }
 
         const signature = await this.account.signTypedData({
@@ -337,7 +370,7 @@ export class PolymarketClient {
         const orderBody = {
             order: {
                 salt: salt.toString(),
-                maker: this.address,
+                maker,
                 signer: this.address,
                 taker: ZERO_ADDRESS,
                 tokenId: params.tokenId,
@@ -347,10 +380,10 @@ export class PolymarketClient {
                 nonce: "0",
                 feeRateBps: String(feeRateBps),
                 side: sideEnum,
-                signatureType: 0,
+                signatureType: this.signatureType,
                 signature,
             },
-            owner: this.address,
+            owner: maker,
             orderType: params.orderType,
         }
 
@@ -438,58 +471,38 @@ export class PolymarketClient {
 
     /** Get USDC balance (converted from raw 6-decimal integer to USD) */
     async getBalance(): Promise<number> {
-        const proxy = await this.requestAuthenticated<{ balance: string }>(
-            "GET",
-            "/balance-allowance",
-            undefined,
-            {
-                asset_type: "COLLATERAL",
-                signature_type: 1,
-            }
-        )
-        if (proxy?.balance && Number(proxy.balance) > 0) {
-            return Number(proxy.balance) / AMOUNT_MULTIPLIER
-        }
-        const eoa = await this.requestAuthenticated<{ balance: string }>(
-            "GET",
-            "/balance-allowance",
-            undefined,
-            {
-                asset_type: "COLLATERAL",
-                signature_type: 0,
-            }
-        )
-        if (!eoa?.balance) return 0
-        return Number(eoa.balance) / AMOUNT_MULTIPLIER
+        const balance = await this.getBalanceAllowance({
+            assetType: "COLLATERAL",
+        })
+        if (!balance?.balance) return 0
+        return Number(balance.balance) / AMOUNT_MULTIPLIER
     }
 
     /** Get conditional token balance for a specific token (converted from raw 6-decimal integer) */
     async getTokenBalance(tokenId: string): Promise<number> {
-        const proxy = await this.requestAuthenticated<{ balance: string }>(
+        const balance = await this.getBalanceAllowance({
+            assetType: "CONDITIONAL",
+            tokenId,
+        })
+        if (!balance?.balance) return 0
+        return Number(balance.balance) / AMOUNT_MULTIPLIER
+    }
+
+    async getBalanceAllowance(params: {
+        assetType: "COLLATERAL" | "CONDITIONAL"
+        signatureType?: PolymarketSignatureType
+        tokenId?: string
+    }): Promise<PolymarketBalanceAllowance | undefined> {
+        return this.requestAuthenticated<PolymarketBalanceAllowance>(
             "GET",
             "/balance-allowance",
             undefined,
             {
-                asset_type: "CONDITIONAL",
-                token_id: tokenId,
-                signature_type: 1,
+                asset_type: params.assetType,
+                token_id: params.tokenId,
+                signature_type: params.signatureType ?? this.signatureType,
             }
         )
-        if (proxy?.balance && Number(proxy.balance) > 0) {
-            return Number(proxy.balance) / AMOUNT_MULTIPLIER
-        }
-        const eoa = await this.requestAuthenticated<{ balance: string }>(
-            "GET",
-            "/balance-allowance",
-            undefined,
-            {
-                asset_type: "CONDITIONAL",
-                token_id: tokenId,
-                signature_type: 0,
-            }
-        )
-        if (!eoa?.balance) return 0
-        return Number(eoa.balance) / AMOUNT_MULTIPLIER
     }
 
     // -----------------------------------------------------------------------

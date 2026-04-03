@@ -79,6 +79,8 @@ export class ExecutionPipeline {
     private runId: string
     private strategyId: string
     private ownedInstruments: Set<string> | null
+    private dryRun: boolean
+    private dryRunPositionBook: Map<string, Position>
 
     constructor(config: ExecutionPipelineConfig) {
         this.venue = config.venue
@@ -90,6 +92,8 @@ export class ExecutionPipeline {
         this.runId = config.runId
         this.strategyId = config.strategyId
         this.ownedInstruments = config.ownedInstruments ?? null
+        this.dryRun = Boolean(config.policy.dryRun)
+        this.dryRunPositionBook = new Map()
         this.lifecycleManager = new OrderLifecycleManager(
             config.venue,
             config.logger,
@@ -143,7 +147,7 @@ export class ExecutionPipeline {
                 orderId: `dry-run-${Date.now()}`,
                 status: "filled",
                 filledQuantity: finalIntent.quantity,
-                fillPrice: finalIntent.limitPrice ?? 0,
+                fillPrice: finalIntent.limitPrice ?? (finalIntent.metadata?.estimatedPrice as number) ?? 0,
                 timestamp: Date.now(),
             }
             void this.tradeEventLogger?.logSubmission(this.runId, this.strategyId, mockResult, finalIntent)
@@ -154,6 +158,13 @@ export class ExecutionPipeline {
                 lifecycleContext.metadata
             )
             this.updateOwnedInstruments(lifecycleContext.action, finalIntent.instrument, mockResult)
+            this.netDryRunPosition(
+                finalIntent.instrument,
+                finalIntent.side,
+                finalIntent.quantity,
+                mockResult.fillPrice ?? 0,
+                lifecycleContext.action
+            )
             return { result: mockResult, validation, handle }
         }
 
@@ -328,6 +339,7 @@ export class ExecutionPipeline {
             void this.tradeEventLogger?.logSubmission(this.runId, this.strategyId, result, intent)
             const handle = await this.lifecycleManager.registerSubmittedOrder(intent, result, "close", { reason })
             this.updateOwnedInstruments("close", instrument, result)
+            this.dryRunPositionBook.delete(instrument)
             return { result, validation: ALLOWED_VALIDATION, handle }
         }
 
@@ -377,6 +389,9 @@ export class ExecutionPipeline {
     }
 
     async getPositions(): Promise<Position[]> {
+        if (this.dryRun) {
+            return Array.from(this.dryRunPositionBook.values())
+        }
         const positions = await this.venue.getPositions()
         if (this.ownedInstruments) {
             return filterPositionsByOwnership(positions, this.ownedInstruments)
@@ -384,8 +399,65 @@ export class ExecutionPipeline {
         return positions
     }
 
+    seedDryRunPositions(positions: Position[]): void {
+        this.dryRunPositionBook.clear()
+        for (const position of positions) {
+            this.dryRunPositionBook.set(position.instrument, position)
+        }
+    }
+
+    getDryRunPositions(): Position[] {
+        return Array.from(this.dryRunPositionBook.values())
+    }
+
     async getAccountState(): Promise<AccountState> {
         return this.venue.getAccountState()
+    }
+
+    private netDryRunPosition(
+        instrument: string,
+        side: "buy" | "sell",
+        quantity: number,
+        fillPrice: number,
+        action: string
+    ): void {
+        if (action === "close") {
+            this.dryRunPositionBook.delete(instrument)
+            return
+        }
+        if (action !== "entry" && action !== "adjustment") {
+            return
+        }
+        const positionSide = side === "buy" ? "long" : "short"
+        const existing = this.dryRunPositionBook.get(instrument)
+        if (!existing) {
+            this.dryRunPositionBook.set(instrument, {
+                instrument,
+                side: positionSide,
+                quantity,
+                entryPrice: fillPrice,
+            })
+            return
+        }
+        if (existing.side === positionSide) {
+            const totalQty = existing.quantity + quantity
+            const avgEntry = (existing.quantity * existing.entryPrice + quantity * fillPrice) / totalQty
+            this.dryRunPositionBook.set(instrument, {
+                ...existing,
+                quantity: totalQty,
+                entryPrice: avgEntry,
+            })
+        } else {
+            const netQty = existing.quantity - quantity
+            if (netQty <= 0) {
+                this.dryRunPositionBook.delete(instrument)
+            } else {
+                this.dryRunPositionBook.set(instrument, {
+                    ...existing,
+                    quantity: netQty,
+                })
+            }
+        }
     }
 
     private updateOwnedInstruments(action: string, instrument: string, result: ExecutionResult): void {

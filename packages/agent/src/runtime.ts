@@ -14,6 +14,7 @@ export interface AgentRuntimeConfig {
     runTimeoutMs?: number
     agentLogger?: AgentMessageLogger
     cleanup?: Array<() => Promise<void>>
+    killSwitchChecker?: () => Promise<boolean>
 }
 
 export interface AgentMessageLogger {
@@ -105,6 +106,31 @@ export async function executeAgentRun(
                     error: `Run timed out after ${Math.round(elapsed / 1000)}s (limit: ${Math.round(runTimeoutMs / 1000)}s)`,
                     iterations: iteration,
                     usage: aggregatedUsage,
+                }
+            }
+
+            if (config.killSwitchChecker) {
+                try {
+                    const killed = await config.killSwitchChecker()
+                    if (killed) {
+                        logger.warn("Kill switch activated mid-run -- stopping agent", {
+                            runId: context.runId,
+                            iteration,
+                        })
+                        client.cancel()
+                        const lastContent = conversation.getLastAssistantContent()
+                        return {
+                            summary: lastContent ?? "Agent stopped: kill switch activated.",
+                            error: "Kill switch activated during run",
+                            iterations: iteration,
+                            usage: aggregatedUsage,
+                        }
+                    }
+                } catch (error) {
+                    logger.warn("Kill switch check failed, continuing run", {
+                        runId: context.runId,
+                        error: error instanceof Error ? error.message : String(error),
+                    })
                 }
             }
 

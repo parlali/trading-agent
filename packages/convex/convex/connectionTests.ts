@@ -34,6 +34,59 @@ async function fetchJson(
     }
 }
 
+function normalizeBase64(value: string): string {
+    return value.replace(/-/g, "+").replace(/_/g, "/").replace(/[^A-Za-z0-9+/=]/g, "")
+}
+
+function toUrlSafeBase64(value: string): string {
+    return value.replace(/\+/g, "-").replace(/\//g, "_")
+}
+
+function buildPolymarketAuthHeaders(params: {
+    address: string
+    apiKey: string
+    apiSecret: string
+    apiPassphrase: string
+    method: string
+    path: string
+    body?: string
+}): Record<string, string> {
+    const timestamp = Math.floor(Date.now() / 1000).toString()
+    const message = `${timestamp}${params.method}${params.path}${params.body ?? ""}`
+    const hmacKey = Buffer.from(normalizeBase64(params.apiSecret), "base64")
+    const signature = toUrlSafeBase64(
+        createHmac("sha256", hmacKey).update(message).digest("base64")
+    )
+
+    return {
+        "Content-Type": "application/json",
+        POLY_ADDRESS: params.address,
+        POLY_SIGNATURE: signature,
+        POLY_TIMESTAMP: timestamp,
+        POLY_API_KEY: params.apiKey,
+        POLY_PASSPHRASE: params.apiPassphrase,
+    }
+}
+
+async function fetchPolymarketAuthenticatedJson(
+    host: string,
+    headers: Record<string, string>,
+    path: string,
+    query?: Record<string, string | number | undefined>
+): Promise<{ ok: boolean; status: number; data?: unknown; error?: string }> {
+    const searchParams = new URLSearchParams()
+
+    for (const [key, value] of Object.entries(query ?? {})) {
+        if (value !== undefined) {
+            searchParams.set(key, String(value))
+        }
+    }
+
+    const url = `${host}${path}${searchParams.toString() ? `?${searchParams.toString()}` : ""}`
+
+    return fetchJson(url, { headers })
+}
+
 export const testBackendHealth = action({
     args: {},
     handler: async (ctx) => {
@@ -212,32 +265,24 @@ export const testPolymarketConnection = action({
             return { ok: false, steps }
         }
 
-        const method = "GET"
-        const path = "/balance-allowance"
-        const timestamp = Math.floor(Date.now() / 1000).toString()
-        const message = timestamp + method + path
-        const normalizedSecret = apiSecret.replace(/-/g, "+").replace(/_/g, "/").replace(/[^A-Za-z0-9+/=]/g, "")
-        const hmacKey = Buffer.from(normalizedSecret, "base64")
-        const signature = createHmac("sha256", hmacKey)
-            .update(message)
-            .digest("base64")
-            .replace(/\+/g, "-")
-            .replace(/\//g, "_")
-
-        const authHeaders: Record<string, string> = {
-            "Content-Type": "application/json",
-            POLY_ADDRESS: address,
-            POLY_SIGNATURE: signature,
-            POLY_TIMESTAMP: timestamp,
-            POLY_API_KEY: apiKey,
-            POLY_PASSPHRASE: apiPassphrase,
-        }
-
         const USDC_DECIMALS = 1_000_000
+        const authHeaders = buildPolymarketAuthHeaders({
+            address,
+            apiKey,
+            apiSecret,
+            apiPassphrase,
+            method: "GET",
+            path: "/balance-allowance",
+        })
 
-        const balanceEoa = await fetchJson(
-            `${host}${path}?asset_type=COLLATERAL&signature_type=0`,
-            { headers: authHeaders }
+        const balanceEoa = await fetchPolymarketAuthenticatedJson(
+            host,
+            authHeaders,
+            "/balance-allowance",
+            {
+                asset_type: "COLLATERAL",
+                signature_type: 0,
+            }
         )
         if (!balanceEoa.ok) {
             steps.push({ name: "Balance", ok: false, error: balanceEoa.error })
@@ -247,14 +292,53 @@ export const testPolymarketConnection = action({
         const eoaRaw = Number(eoaData?.balance ?? "0")
         steps.push({ name: "Balance (EOA, type=0)", ok: true, data: { ...eoaData, balanceUsd: eoaRaw / USDC_DECIMALS } })
 
-        const balanceProxy = await fetchJson(
-            `${host}${path}?asset_type=COLLATERAL&signature_type=1`,
-            { headers: authHeaders }
+        const balanceProxy = await fetchPolymarketAuthenticatedJson(
+            host,
+            authHeaders,
+            "/balance-allowance",
+            {
+                asset_type: "COLLATERAL",
+                signature_type: 1,
+            }
         )
         if (balanceProxy.ok) {
             const proxyData = balanceProxy.data as { balance?: string; allowances?: Record<string, string> } | undefined
             const proxyRaw = Number(proxyData?.balance ?? "0")
-            steps.push({ name: "Balance (Proxy, type=1)", ok: true, data: { ...proxyData, balanceUsd: proxyRaw / USDC_DECIMALS } })
+            steps.push({
+                name: "Balance (Proxy, type=1)",
+                ok: true,
+                data: { ...proxyData, balanceUsd: proxyRaw / USDC_DECIMALS },
+            })
+        }
+
+        const openOrders = await fetchPolymarketAuthenticatedJson(
+            host,
+            buildPolymarketAuthHeaders({
+                address,
+                apiKey,
+                apiSecret,
+                apiPassphrase,
+                method: "GET",
+                path: "/data/orders",
+            }),
+            "/data/orders"
+        )
+        if (openOrders.ok) {
+            const orders = Array.isArray(openOrders.data) ? openOrders.data : []
+            steps.push({
+                name: "Open Bets",
+                ok: true,
+                data: {
+                    count: orders.length,
+                    orders,
+                },
+            })
+        } else {
+            steps.push({
+                name: "Open Bets",
+                ok: false,
+                error: openOrders.error,
+            })
         }
 
         return { ok: steps.every((s) => s.ok), steps }

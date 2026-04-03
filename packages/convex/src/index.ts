@@ -119,6 +119,7 @@ export interface TradingBackendClient extends TradeEventLoggerMethods {
     acknowledgeAlert(alertId: Id<"alerts">): Promise<void>
     getStrategyOwnedInstruments(strategyId: Id<"strategies">): Promise<string[]>
     getAllOwnedInstrumentsByApp(app: Exclude<App, "backend">): Promise<Array<{ instrument: string, strategyId: string }>>
+    getLatestPositions(strategyId: Id<"strategies">): Promise<Position[]>
 }
 
 export const createTradingBackendClient = (config: string | TradingBackendClientConfig): TradingBackendClient => {
@@ -343,6 +344,29 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
         },
         async getAllOwnedInstrumentsByApp(app: Exclude<App, "backend">): Promise<Array<{ instrument: string, strategyId: string }>> {
             return await client.query(api.queries.getAllOwnedInstrumentsByApp, { ...requireMachineAuth(), app } as never) as Array<{ instrument: string, strategyId: string }>
+        },
+        async getLatestPositions(strategyId: Id<"strategies">): Promise<Position[]> {
+            const docs = await client.query(api.queries.getStrategyPositions, {
+                ...requireMachineAuth(),
+                strategyId,
+            } as never) as Array<{
+                instrument: string
+                side: "long" | "short"
+                quantity: number
+                entryPrice: number
+                currentPrice?: number
+                unrealizedPnl?: number
+                metadata?: string
+            }>
+            return docs.map((doc) => ({
+                instrument: doc.instrument,
+                side: doc.side,
+                quantity: doc.quantity,
+                entryPrice: doc.entryPrice,
+                currentPrice: doc.currentPrice,
+                unrealizedPnl: doc.unrealizedPnl,
+                metadata: doc.metadata ? JSON.parse(doc.metadata) as Record<string, unknown> : undefined,
+            }))
         },
     }
 }
