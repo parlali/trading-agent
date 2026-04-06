@@ -22,7 +22,7 @@ import { ScheduleBuilder } from "@/components/schedule-builder"
 import { VENUE_META, type VenueApp } from "@/lib/constants"
 import { POLICY_DEFAULTS } from "@valiq-trading/core"
 import { toast } from "sonner"
-import { Loader2 } from "lucide-react"
+import { Loader2, Plus, X } from "lucide-react"
 
 type PolicyFields = Record<string, unknown>
 
@@ -344,6 +344,112 @@ export function StrategyForm({ mode, initialData }: StrategyFormProps) {
                                 <p className="text-xs text-muted-foreground">
                                     Auto-close all positions when unrealized loss exceeds this amount
                                 </p>
+                            </div>
+
+                            <div className="space-y-1.5">
+                                <Label className="text-sm">Min Risk/Reward Ratio</Label>
+                                <Input
+                                    type="number"
+                                    step="any"
+                                    min={0}
+                                    placeholder="0.5"
+                                    value={policy.minRiskReward !== undefined ? String(policy.minRiskReward) : ""}
+                                    onChange={(e) => handlePolicyFieldChange(
+                                        "minRiskReward",
+                                        e.target.value === "" ? undefined : Number(e.target.value)
+                                    )}
+                                />
+                                <p className="text-xs text-muted-foreground">
+                                    Minimum reward-to-risk ratio required to enter a trade
+                                </p>
+                            </div>
+
+                            <div className="space-y-1.5">
+                                <Label className="text-sm">Market Regions by Instrument</Label>
+                                <p className="text-xs text-muted-foreground">
+                                    Map instruments to market regions for holiday detection (e.g. US, GB, EU)
+                                </p>
+                                <div className="space-y-2">
+                                    {Object.entries(
+                                        (policy.marketRegionsByInstrument ?? {}) as Record<string, string[]>
+                                    ).map(([instrument, regions], index) => (
+                                        <div key={index} className="flex items-center gap-2">
+                                            <Input
+                                                placeholder="XAUUSD"
+                                                value={instrument}
+                                                onChange={(e) => {
+                                                    const entries = Object.entries(
+                                                        (policy.marketRegionsByInstrument ?? {}) as Record<string, string[]>
+                                                    )
+                                                    entries[index] = [e.target.value, entries[index][1]]
+                                                    const record: Record<string, string[]> = {}
+                                                    for (const [k, v] of entries) {
+                                                        record[k] = v
+                                                    }
+                                                    handlePolicyFieldChange("marketRegionsByInstrument", record)
+                                                }}
+                                                className="w-28 font-mono uppercase"
+                                            />
+                                            <Input
+                                                placeholder="US, GB"
+                                                value={Array.isArray(regions) ? regions.join(", ") : ""}
+                                                onChange={(e) => {
+                                                    const entries = Object.entries(
+                                                        (policy.marketRegionsByInstrument ?? {}) as Record<string, string[]>
+                                                    )
+                                                    entries[index] = [
+                                                        entries[index][0],
+                                                        e.target.value.split(",").map((s) => s.trim().toUpperCase()).filter(Boolean),
+                                                    ]
+                                                    const record: Record<string, string[]> = {}
+                                                    for (const [k, v] of entries) {
+                                                        record[k] = v
+                                                    }
+                                                    handlePolicyFieldChange("marketRegionsByInstrument", record)
+                                                }}
+                                                className="flex-1 font-mono"
+                                            />
+                                            <Button
+                                                type="button"
+                                                variant="ghost"
+                                                size="icon"
+                                                className="h-8 w-8 shrink-0"
+                                                onClick={() => {
+                                                    const entries = Object.entries(
+                                                        (policy.marketRegionsByInstrument ?? {}) as Record<string, string[]>
+                                                    )
+                                                    entries.splice(index, 1)
+                                                    if (entries.length === 0) {
+                                                        handlePolicyFieldChange("marketRegionsByInstrument", undefined)
+                                                    } else {
+                                                        const record: Record<string, string[]> = {}
+                                                        for (const [k, v] of entries) {
+                                                            record[k] = v
+                                                        }
+                                                        handlePolicyFieldChange("marketRegionsByInstrument", record)
+                                                    }
+                                                }}
+                                            >
+                                                <X className="h-4 w-4" />
+                                            </Button>
+                                        </div>
+                                    ))}
+                                    <Button
+                                        type="button"
+                                        variant="outline"
+                                        size="sm"
+                                        onClick={() => {
+                                            const current = {
+                                                ...((policy.marketRegionsByInstrument ?? {}) as Record<string, string[]>),
+                                            }
+                                            current[""] = []
+                                            handlePolicyFieldChange("marketRegionsByInstrument", current)
+                                        }}
+                                    >
+                                        <Plus className="h-4 w-4 mr-1" />
+                                        Add Instrument
+                                    </Button>
+                                </div>
                             </div>
                         </>
                     ) : null}
