@@ -16,7 +16,8 @@
         "build": "tsc --noEmit"
     },
     "dependencies": {
+        "@valiq-trading/convex": "workspace:*",
         "@valiq-trading/core": "workspace:*",
-        "@valiq-trading/convex": "workspace:*"
+        "date-holidays": "^3.26.12"
     }
 }

@@ -77,6 +77,7 @@ export interface StrategyRunContext {
     accountState: AccountState
     policy: Record<string, unknown>
     context: string
+    runtimeContextLines?: string[]
     schedule?: string
     previousRunSummary?: {
         summary: string

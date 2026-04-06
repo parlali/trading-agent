@@ -2,7 +2,11 @@ export { createGetPositionsTool } from "./get-positions"
 export { createGetAccountTool } from "./get-account"
 export { createProposeOrderTool } from "./propose-order"
 export { createProposeAdjustmentTool } from "./propose-adjustment"
-export { createProposeCloseTool } from "./propose-close"
+export {
+    createProposeCloseTool,
+    createPolymarketProposeCloseTool,
+    createMT5ProposeCloseTool,
+} from "./propose-close"
 export { createGetOrderStatusTool } from "./get-order-status"
 export { createCancelOrderTool } from "./cancel-order"
 export { createModifyOrderTool } from "./modify-order"

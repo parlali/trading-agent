@@ -57,6 +57,10 @@ export interface ExecuteIntentResult {
     handle?: TrackedOrderHandle
 }
 
+export interface ClosePositionOptions {
+    estimatedPrice?: number
+}
+
 export interface OrderLifecycleConfig {
     pollInterval?: number
     timeout?: number
@@ -288,7 +292,11 @@ export class ExecutionPipeline {
         return result
     }
 
-    async closePosition(instrument: string, reason?: string): Promise<ExecuteIntentResult> {
+    async closePosition(
+        instrument: string,
+        reason?: string,
+        options: ClosePositionOptions = {}
+    ): Promise<ExecuteIntentResult> {
         const positions = await this.getPositions()
         const position = positions.find((item) => item.instrument === instrument)
         const closeSide = position?.side === "long" ? "sell" : "buy"
@@ -301,6 +309,7 @@ export class ExecutionPipeline {
             metadata: {
                 action: "close",
                 reason,
+                estimatedPrice: options.estimatedPrice,
             },
         }
 
@@ -333,7 +342,10 @@ export class ExecutionPipeline {
                 orderId: `dry-run-close-${Date.now()}`,
                 status: "filled",
                 filledQuantity: position.quantity,
-                fillPrice: position.currentPrice ?? position.entryPrice,
+                fillPrice:
+                    (intent.metadata?.estimatedPrice as number | undefined) ??
+                    position.currentPrice ??
+                    position.entryPrice,
                 timestamp: Date.now(),
             }
             void this.tradeEventLogger?.logSubmission(this.runId, this.strategyId, result, intent)

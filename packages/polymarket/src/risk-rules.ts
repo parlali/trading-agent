@@ -49,7 +49,7 @@ function maxBetValidator(
 }
 
 const PRICE_LOWER_BOUND = 0.02
-const PRICE_UPPER_BOUND = 0.98
+const PRICE_UPPER_BOUND = 0.82
 
 function priceBoundsValidator(
     intent: OrderIntent

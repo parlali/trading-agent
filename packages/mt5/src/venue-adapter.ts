@@ -8,6 +8,7 @@
 
 import type { AccountState, ExecutionResult, OrderIntent, Position, VenueAdapter } from "@valiq-trading/core"
 import { MT5Client, type MT5Position, type MT5SymbolInfo, type MT5WorkerCredentials } from "./mt5-client"
+import { toMT5MarketSnapshot, type MT5MarketSnapshot } from "./market-context"
 
 export class MT5VenueAdapter implements VenueAdapter {
     private lastConnectedAt = 0
@@ -165,6 +166,16 @@ export class MT5VenueAdapter implements VenueAdapter {
         await this.ensureConnected()
         const results = await this.client.getSymbolInfo([symbol])
         return results.length > 0 ? (results[0] ?? null) : null
+    }
+
+    async getMarketSnapshot(symbols: string[]): Promise<MT5MarketSnapshot[]> {
+        if (symbols.length === 0) {
+            return []
+        }
+
+        await this.ensureConnected()
+        const results = await this.client.getSymbolInfo(symbols)
+        return results.map(toMT5MarketSnapshot)
     }
 
     /**

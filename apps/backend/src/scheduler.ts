@@ -4,9 +4,11 @@ import {
     createGetAccountTool,
     createGetOrderStatusTool,
     createGetPositionsTool,
+    createMT5ProposeCloseTool,
     createModifyOrderTool,
     createMT5ProposeAdjustmentTool,
     createMT5ProposeOrderTool,
+    createPolymarketProposeCloseTool,
     createPolymarketProposeAdjustmentTool,
     createPolymarketProposeOrderTool,
     createProposeAdjustmentTool,
@@ -141,6 +143,7 @@ export async function runStrategy(
     }
 
     const venue = plugin.createVenueAdapter(policy, strategySecrets)
+    let runtimeContextLines: string[] | undefined
 
     if (plugin.preRunHooks) {
         const hookResult = await plugin.preRunHooks({
@@ -158,6 +161,8 @@ export async function runStrategy(
             })
             return
         }
+
+        runtimeContextLines = hookResult.runtimeContextLines
     }
 
     const runId = await backend.createRun(strategy._id, app, trigger)
@@ -225,15 +230,17 @@ export async function runStrategy(
         const mt5Policy = mt5PolicySchema.parse(policy)
         tools.register(createMT5ProposeOrderTool(pipeline, venue, mt5Policy))
         tools.register(createMT5ProposeAdjustmentTool(pipeline, venue, mt5Policy))
+        tools.register(createMT5ProposeCloseTool(pipeline, venue))
     } else if (app === "polymarket" && venue instanceof PolymarketVenueAdapter) {
         tools.register(createPolymarketProposeOrderTool(pipeline, venue))
         tools.register(createPolymarketProposeAdjustmentTool(pipeline, venue))
+        tools.register(createPolymarketProposeCloseTool(pipeline, venue))
     } else {
         tools.register(createProposeOrderTool(pipeline))
         tools.register(createProposeAdjustmentTool(pipeline))
+        tools.register(createProposeCloseTool(pipeline))
     }
 
-    tools.register(createProposeCloseTool(pipeline))
     tools.register(createGetOrderStatusTool(pipeline))
     tools.register(createCancelOrderTool(pipeline))
     tools.register(createModifyOrderTool(pipeline))
@@ -276,6 +283,7 @@ export async function runStrategy(
                 accountState,
                 policy,
                 context: strategy.context,
+                runtimeContextLines,
                 schedule: strategy.schedule,
                 previousRunSummary: previousRunSummary ?? undefined,
             },

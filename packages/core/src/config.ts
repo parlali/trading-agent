@@ -44,11 +44,19 @@ export const mt5TradingHoursSchema = z.object({
 
 export type MT5TradingHours = z.infer<typeof mt5TradingHoursSchema>
 
+export const mt5MarketRegionsByInstrumentSchema = z.record(
+    z.string().trim().min(1),
+    z.array(z.string().trim().min(1)).min(1)
+)
+
+export type MT5MarketRegionsByInstrument = z.infer<typeof mt5MarketRegionsByInstrumentSchema>
+
 export const mt5PolicySchema = baseStrategyPolicySchema.extend({
     maxRiskPercent: z.number().positive().max(100),
     minRiskReward: z.number().positive().default(0.5),
     tradingHours: mt5TradingHoursSchema,
     emergencyFlattenThreshold: z.number().positive(),
+    marketRegionsByInstrument: mt5MarketRegionsByInstrumentSchema.optional(),
 })
 
 export type MT5Policy = z.infer<typeof mt5PolicySchema>

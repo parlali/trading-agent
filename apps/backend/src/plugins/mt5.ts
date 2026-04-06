@@ -5,10 +5,19 @@ import {
     mt5PolicySchema,
     padTime,
     requireResolvedSecret,
+    type MT5Policy,
     type RiskValidator,
     type VenueAdapter,
 } from "@valiq-trading/core"
-import { MT5Client, type MT5WorkerCredentials, mt5RiskValidators, MT5VenueAdapter } from "@valiq-trading/mt5"
+import {
+    createMT5SpreadContextLine,
+    HolidayGuard,
+    MT5Client,
+    type MT5WorkerCredentials,
+    mt5RiskValidators,
+    MT5VenueAdapter,
+    resolveMT5InstrumentRegions,
+} from "@valiq-trading/mt5"
 import type {
     VenuePlugin,
     ExtraToolsConfig,
@@ -20,6 +29,7 @@ import type {
 export class MT5Plugin implements VenuePlugin {
     readonly app = "mt5"
     readonly venueName = "mt5"
+    private readonly holidayGuard = new HolidayGuard()
 
     resolveSecretKeys(): string[] {
         return [
@@ -119,52 +129,88 @@ export class MT5Plugin implements VenuePlugin {
 
     async preRunHooks(config: PreRunHookConfig): Promise<PreRunHookResult> {
         const mt5Venue = config.venue as MT5VenueAdapter
+        const parsedPolicy = mt5PolicySchema.parse(config.policy)
 
         const emergencyFlattened = await this.checkEmergencyFlatten(
-            mt5Venue, config.policy, config.strategyId, config
+            mt5Venue, parsedPolicy, config.strategyId, config
         )
         if (emergencyFlattened) {
             return { skip: true, reason: "Emergency flatten executed" }
         }
 
         const eodFlattened = await this.checkEndOfDayFlatten(
-            mt5Venue, config.policy, config.strategyId, config
+            mt5Venue, parsedPolicy, config.strategyId, config
         )
         if (eodFlattened) {
             return { skip: true, reason: "End-of-day flatten executed" }
         }
 
-        return { skip: false }
+        const instrumentRegions = resolveMT5InstrumentRegions(parsedPolicy)
+        try {
+            const holidayCheck = this.holidayGuard.checkInstrumentRegions(instrumentRegions)
+            if (holidayCheck.isHoliday) {
+                config.logger.warn("Market holiday guard skipped MT5 run", {
+                    strategyId: config.strategyId,
+                    reason: holidayCheck.reason,
+                    instrumentRegions,
+                })
+
+                return {
+                    skip: true,
+                    reason: `Market holiday: ${holidayCheck.reason}`,
+                }
+            }
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error)
+            config.logger.warn("Holiday guard failed for MT5 run", {
+                strategyId: config.strategyId,
+                instrumentRegions,
+                error: message,
+            })
+
+            return {
+                skip: true,
+                reason: `Holiday guard failed: ${message}`,
+            }
+        }
+
+        const runtimeContextLines = await this.buildRuntimeContextLines(
+            mt5Venue,
+            instrumentRegions,
+            config
+        )
+
+        return { skip: false, runtimeContextLines }
     }
 
     async postRunHooks(config: PostRunHookConfig): Promise<void> {
         const mt5Venue = config.venue as MT5VenueAdapter
+        const parsedPolicy = mt5PolicySchema.parse(config.policy)
         await this.checkEmergencyFlatten(
-            mt5Venue, config.policy, config.strategyId, config
+            mt5Venue, parsedPolicy, config.strategyId, config
         )
     }
 
     private async checkEmergencyFlatten(
         venue: MT5VenueAdapter,
-        policy: Record<string, unknown>,
+        policy: MT5Policy,
         strategyId: string,
         config: { logger: PreRunHookConfig["logger"]; createAlert: PreRunHookConfig["createAlert"] }
     ): Promise<boolean> {
-        const parsedPolicy = mt5PolicySchema.parse(policy)
         const accountState = await venue.getAccountState()
 
-        if (accountState.openPnl < 0 && Math.abs(accountState.openPnl) >= parsedPolicy.emergencyFlattenThreshold) {
+        if (accountState.openPnl < 0 && Math.abs(accountState.openPnl) >= policy.emergencyFlattenThreshold) {
             config.logger.error("Emergency flatten triggered", {
                 strategyId,
                 openPnl: accountState.openPnl,
-                threshold: parsedPolicy.emergencyFlattenThreshold,
+                threshold: policy.emergencyFlattenThreshold,
             })
 
             await config.createAlert({
                 strategyId,
                 app: this.app,
                 severity: "critical",
-                message: `Emergency flatten triggered: unrealized loss ${Math.abs(accountState.openPnl).toFixed(2)} exceeds threshold ${parsedPolicy.emergencyFlattenThreshold}`,
+                message: `Emergency flatten triggered: unrealized loss ${Math.abs(accountState.openPnl).toFixed(2)} exceeds threshold ${policy.emergencyFlattenThreshold}`,
             })
 
             const result = await venue.closeAllPositions()
@@ -184,12 +230,11 @@ export class MT5Plugin implements VenuePlugin {
 
     private async checkEndOfDayFlatten(
         venue: MT5VenueAdapter,
-        policy: Record<string, unknown>,
+        policy: MT5Policy,
         strategyId: string,
         config: { logger: PreRunHookConfig["logger"]; createAlert: PreRunHookConfig["createAlert"] }
     ): Promise<boolean> {
-        const parsedPolicy = mt5PolicySchema.parse(policy)
-        const { end, timezone } = parsedPolicy.tradingHours
+        const { end, timezone } = policy.tradingHours
 
         const now = getCurrentTimeInTimezone(timezone)
         const [endHour, endMinute] = end.split(":").map(Number) as [number, number]
@@ -227,6 +272,57 @@ export class MT5Plugin implements VenuePlugin {
         config.logger.info("End-of-day flatten completed", { closed: result.closed })
 
         return true
+    }
+
+    private async buildRuntimeContextLines(
+        venue: MT5VenueAdapter,
+        instrumentRegions: Record<string, string[]>,
+        config: { logger: PreRunHookConfig["logger"]; strategyId: string }
+    ): Promise<string[] | undefined> {
+        const instruments = Object.keys(instrumentRegions)
+        if (instruments.length === 0) {
+            return undefined
+        }
+
+        try {
+            const snapshots = await venue.getMarketSnapshot(instruments)
+            const received = new Set(snapshots.map((snapshot) => snapshot.instrument))
+            const missing = instruments.filter((instrument) => !received.has(instrument))
+
+            if (missing.length > 0) {
+                config.logger.warn("MT5 spread data is incomplete for this run", {
+                    strategyId: config.strategyId,
+                    requested: instruments,
+                    received: [...received],
+                    missing,
+                })
+
+                return [
+                    `Spread data unavailable for: ${missing.join(", ")}. Sit out unless a later run provides complete liquidity context.`,
+                ]
+            }
+
+            const spreadContextLine = createMT5SpreadContextLine(snapshots)
+            if (!spreadContextLine) {
+                return undefined
+            }
+
+            config.logger.info("Collected MT5 spread context", {
+                strategyId: config.strategyId,
+                spreadContextLine,
+            })
+
+            return [spreadContextLine]
+        } catch (error) {
+            config.logger.warn("Failed to collect MT5 spread context", {
+                strategyId: config.strategyId,
+                error: error instanceof Error ? error.message : String(error),
+            })
+
+            return [
+                "Spread data unavailable for this run. Trade only if an open position requires active management.",
+            ]
+        }
     }
 
     private resolveCredentials(

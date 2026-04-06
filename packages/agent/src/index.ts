@@ -12,6 +12,8 @@ export {
     createProposeOrderTool,
     createProposeAdjustmentTool,
     createProposeCloseTool,
+    createPolymarketProposeCloseTool,
+    createMT5ProposeCloseTool,
     createGetOrderStatusTool,
     createCancelOrderTool,
     createModifyOrderTool,

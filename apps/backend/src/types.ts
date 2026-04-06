@@ -43,6 +43,7 @@ export interface PreRunHookConfig {
 export interface PreRunHookResult {
     skip: boolean
     reason?: string
+    runtimeContextLines?: string[]
 }
 
 export interface PostRunHookConfig {

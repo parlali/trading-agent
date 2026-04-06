@@ -21,6 +21,9 @@ export function buildSystemPrompt(
     if (context.previousRunSummary) {
         sections.push(buildPreviousRunSection(context.previousRunSummary, context.timestamp))
     }
+    if (context.runtimeContextLines && context.runtimeContextLines.length > 0) {
+        sections.push(buildRuntimeContextSection(context.runtimeContextLines))
+    }
     sections.push(buildAccountSnapshot(context))
     sections.push(buildPositionsSnapshot(context))
     sections.push(buildPolicySection(context))
@@ -92,6 +95,14 @@ function buildPreviousRunSection(
         cleanSummary,
         "",
         "---",
+    ].join("\n")
+}
+
+function buildRuntimeContextSection(runtimeContextLines: string[]): string {
+    return [
+        "## Runtime Context",
+        "",
+        ...runtimeContextLines,
     ].join("\n")
 }
 
