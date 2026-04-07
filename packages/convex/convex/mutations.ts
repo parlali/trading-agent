@@ -17,6 +17,7 @@ export {
     stopRun,
     deleteRun,
     deleteAllRuns,
+    replaceAllStrategies,
 } from "./lib/mutations/strategies"
 
 export { syncPositions } from "./lib/mutations/positions"

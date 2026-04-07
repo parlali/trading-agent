@@ -4,15 +4,26 @@ import type { Id } from "../../_generated/dataModel"
 import { v } from "convex/values"
 import { requireUser, requireServiceToken } from "../authGuards"
 
+const venueAppArg = v.union(
+    v.literal("alpaca-options"),
+    v.literal("polymarket"),
+    v.literal("mt5"),
+    v.literal("binance-futures")
+)
+
+const strategyImportArg = v.object({
+    app: venueAppArg,
+    name: v.string(),
+    enabled: v.boolean(),
+    schedule: v.string(),
+    policy: v.any(),
+    context: v.string(),
+})
+
 export const upsertStrategy = mutation({
     args: {
         id: v.optional(v.id("strategies")),
-        app: v.union(
-            v.literal("alpaca-options"),
-            v.literal("polymarket"),
-            v.literal("mt5"),
-            v.literal("binance-futures")
-        ),
+        app: venueAppArg,
         name: v.string(),
         enabled: v.boolean(),
         schedule: v.string(),
@@ -75,7 +86,7 @@ export const deleteStrategy = mutation({
             throw new Error("Cannot delete a strategy with an active run")
         }
 
-        await ctx.db.delete(args.strategyId)
+        await cascadeDeleteStrategy(ctx, args.strategyId)
     },
 })
 
@@ -111,33 +122,165 @@ export const triggerManualRun = mutation({
 async function cascadeDeleteRun(
     ctx: { db: DatabaseWriter },
     runId: Id<"strategy_runs">
-): Promise<void> {
+): Promise<{
+    agentLogs: number
+    tradeEvents: number
+    orders: number
+    orderTransitions: number
+}> {
+    let agentLogs = 0
+    let tradeEvents = 0
+    let orders = 0
+    let orderTransitions = 0
+
     const logs = await ctx.db
         .query("agent_logs")
         .withIndex("by_run", (q) => q.eq("runId", runId))
         .collect()
-    for (const log of logs) await ctx.db.delete(log._id)
+    for (const log of logs) {
+        await ctx.db.delete(log._id)
+        agentLogs++
+    }
 
     const events = await ctx.db
         .query("trade_events")
         .withIndex("by_run", (q) => q.eq("runId", runId))
         .collect()
-    for (const event of events) await ctx.db.delete(event._id)
+    for (const event of events) {
+        await ctx.db.delete(event._id)
+        tradeEvents++
+    }
 
-    const orders = await ctx.db
+    const runOrders = await ctx.db
         .query("orders")
         .withIndex("by_run", (q) => q.eq("runId", runId))
         .collect()
-    for (const order of orders) {
+    for (const order of runOrders) {
         const transitions = await ctx.db
             .query("order_transitions")
             .withIndex("by_order_sequence", (q) => q.eq("orderId", order.orderId))
             .collect()
-        for (const t of transitions) await ctx.db.delete(t._id)
+        for (const t of transitions) {
+            await ctx.db.delete(t._id)
+            orderTransitions++
+        }
         await ctx.db.delete(order._id)
+        orders++
     }
 
     await ctx.db.delete(runId)
+
+    return {
+        agentLogs,
+        tradeEvents,
+        orders,
+        orderTransitions,
+    }
+}
+
+async function cascadeDeleteStrategy(
+    ctx: { db: DatabaseWriter },
+    strategyId: Id<"strategies">
+): Promise<{
+    runs: number
+    agentLogs: number
+    tradeEvents: number
+    orders: number
+    orderTransitions: number
+    positions: number
+    instrumentClaims: number
+    positionSyncs: number
+    manualRunRequests: number
+    alerts: number
+}> {
+    let runs = 0
+    let agentLogs = 0
+    let tradeEvents = 0
+    let orders = 0
+    let orderTransitions = 0
+    let positions = 0
+    let instrumentClaims = 0
+    let positionSyncs = 0
+    let manualRunRequests = 0
+    let alerts = 0
+
+    const strategyRuns = await ctx.db
+        .query("strategy_runs")
+        .withIndex("by_strategy", (q) => q.eq("strategyId", strategyId))
+        .collect()
+
+    for (const run of strategyRuns) {
+        const deleted = await cascadeDeleteRun(ctx, run._id)
+        runs++
+        agentLogs += deleted.agentLogs
+        tradeEvents += deleted.tradeEvents
+        orders += deleted.orders
+        orderTransitions += deleted.orderTransitions
+    }
+
+    const strategyPositions = await ctx.db
+        .query("positions")
+        .withIndex("by_strategy", (q) => q.eq("strategyId", strategyId))
+        .collect()
+
+    for (const position of strategyPositions) {
+        await ctx.db.delete(position._id)
+        positions++
+    }
+
+    const strategyClaims = await ctx.db
+        .query("instrument_claims")
+        .withIndex("by_strategy", (q) => q.eq("strategyId", strategyId))
+        .collect()
+
+    for (const claim of strategyClaims) {
+        await ctx.db.delete(claim._id)
+        instrumentClaims++
+    }
+
+    const strategySyncs = await ctx.db
+        .query("position_syncs")
+        .withIndex("by_strategy_synced_at", (q) => q.eq("strategyId", strategyId))
+        .collect()
+
+    for (const sync of strategySyncs) {
+        await ctx.db.delete(sync._id)
+        positionSyncs++
+    }
+
+    const strategyManualRunRequests = await ctx.db
+        .query("manual_run_requests")
+        .withIndex("by_strategy", (q) => q.eq("strategyId", strategyId))
+        .collect()
+
+    for (const request of strategyManualRunRequests) {
+        await ctx.db.delete(request._id)
+        manualRunRequests++
+    }
+
+    const strategyAlerts = (await ctx.db.query("alerts").collect()).filter(
+        (alert) => alert.strategyId === strategyId
+    )
+
+    for (const alert of strategyAlerts) {
+        await ctx.db.delete(alert._id)
+        alerts++
+    }
+
+    await ctx.db.delete(strategyId)
+
+    return {
+        runs,
+        agentLogs,
+        tradeEvents,
+        orders,
+        orderTransitions,
+        positions,
+        instrumentClaims,
+        positionSyncs,
+        manualRunRequests,
+        alerts,
+    }
 }
 
 export const stopRun = mutation({
@@ -187,5 +330,99 @@ export const deleteAllRuns = mutation({
         }
 
         return { deleted: runs.length }
+    },
+})
+
+export const replaceAllStrategies = mutation({
+    args: {
+        serviceToken: v.string(),
+        strategies: v.array(strategyImportArg),
+    },
+    handler: async (ctx, args) => {
+        requireServiceToken(args.serviceToken)
+
+        const deleted = {
+            strategies: 0,
+            runs: 0,
+            agentLogs: 0,
+            tradeEvents: 0,
+            orders: 0,
+            orderTransitions: 0,
+            positions: 0,
+            instrumentClaims: 0,
+            positionSyncs: 0,
+            manualRunRequests: 0,
+            alerts: 0,
+        }
+
+        const runs = await ctx.db.query("strategy_runs").collect()
+
+        for (const run of runs) {
+            const result = await cascadeDeleteRun(ctx, run._id)
+            deleted.runs++
+            deleted.agentLogs += result.agentLogs
+            deleted.tradeEvents += result.tradeEvents
+            deleted.orders += result.orders
+            deleted.orderTransitions += result.orderTransitions
+        }
+
+        const positions = await ctx.db.query("positions").collect()
+
+        for (const position of positions) {
+            await ctx.db.delete(position._id)
+            deleted.positions++
+        }
+
+        const instrumentClaims = await ctx.db.query("instrument_claims").collect()
+
+        for (const claim of instrumentClaims) {
+            await ctx.db.delete(claim._id)
+            deleted.instrumentClaims++
+        }
+
+        const positionSyncs = await ctx.db.query("position_syncs").collect()
+
+        for (const sync of positionSyncs) {
+            await ctx.db.delete(sync._id)
+            deleted.positionSyncs++
+        }
+
+        const manualRunRequests = await ctx.db.query("manual_run_requests").collect()
+
+        for (const request of manualRunRequests) {
+            await ctx.db.delete(request._id)
+            deleted.manualRunRequests++
+        }
+
+        const alerts = (await ctx.db.query("alerts").collect()).filter(
+            (alert) => alert.strategyId !== undefined
+        )
+
+        for (const alert of alerts) {
+            await ctx.db.delete(alert._id)
+            deleted.alerts++
+        }
+
+        const existingStrategies = await ctx.db.query("strategies").collect()
+
+        for (const strategy of existingStrategies) {
+            await ctx.db.delete(strategy._id)
+            deleted.strategies++
+        }
+
+        const now = Date.now()
+
+        for (const strategy of args.strategies) {
+            await ctx.db.insert("strategies", {
+                ...strategy,
+                createdAt: now,
+                updatedAt: now,
+            })
+        }
+
+        return {
+            importedStrategies: args.strategies.length,
+            deleted,
+        }
     },
 })

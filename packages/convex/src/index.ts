@@ -11,6 +11,7 @@ import type {
     OrderSnapshot,
     OrderTransition,
     Position,
+    StrategyConfig,
     TradeEventLogger,
     ValidationResult,
 } from "@valiq-trading/core"
@@ -89,6 +90,23 @@ export interface ManualRunRequest {
     requestedAt: number
 }
 
+export interface ReplaceAllStrategiesResult {
+    importedStrategies: number
+    deleted: {
+        strategies: number
+        runs: number
+        agentLogs: number
+        tradeEvents: number
+        orders: number
+        orderTransitions: number
+        positions: number
+        instrumentClaims: number
+        positionSyncs: number
+        manualRunRequests: number
+        alerts: number
+    }
+}
+
 export interface TradingBackendClient extends TradeEventLoggerMethods {
     getStrategyConfigs(app: App): Promise<StoredStrategy[]>
     getStrategyById(id: Id<"strategies">): Promise<StoredStrategy | null>
@@ -120,6 +138,7 @@ export interface TradingBackendClient extends TradeEventLoggerMethods {
     getStrategyOwnedInstruments(strategyId: Id<"strategies">): Promise<string[]>
     getAllOwnedInstrumentsByApp(app: Exclude<App, "backend">): Promise<Array<{ instrument: string, strategyId: string }>>
     getLatestPositions(strategyId: Id<"strategies">): Promise<Position[]>
+    replaceAllStrategies(strategies: StrategyConfig[]): Promise<ReplaceAllStrategiesResult>
 }
 
 export const createTradingBackendClient = (config: string | TradingBackendClientConfig): TradingBackendClient => {
@@ -367,6 +386,12 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
                 unrealizedPnl: doc.unrealizedPnl,
                 metadata: doc.metadata ? JSON.parse(doc.metadata) as Record<string, unknown> : undefined,
             }))
+        },
+        async replaceAllStrategies(strategies: StrategyConfig[]): Promise<ReplaceAllStrategiesResult> {
+            return await client.mutation(api.mutations.replaceAllStrategies, {
+                ...requireMachineAuth(),
+                strategies,
+            } as never) as ReplaceAllStrategiesResult
         },
     }
 }

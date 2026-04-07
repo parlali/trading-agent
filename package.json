@@ -11,6 +11,7 @@
         "dev": "turbo dev --filter=@valiq-trading/backend --filter=dashboard",
         "dev:backend": "bun --watch apps/backend/src/index.ts",
         "dev:dashboard": "cd apps/dashboard && bun run dev",
+        "strategies:reset-import": "bun --cwd apps/backend run strategies:reset-import",
         "build": "turbo build",
         "lint": "turbo lint",
         "deploy:convex": "cd packages/convex && bunx convex deploy --prod",
