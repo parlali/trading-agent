@@ -12,7 +12,8 @@ export const getStrategyConfigs = query({
         app: v.union(
             v.literal("alpaca-options"),
             v.literal("polymarket"),
-            v.literal("mt5")
+            v.literal("mt5"),
+            v.literal("binance-futures")
         ),
     },
     handler: async (ctx, args) => {
@@ -56,7 +57,8 @@ export const getAllOwnedInstrumentsByApp = query({
         app: v.union(
             v.literal("alpaca-options"),
             v.literal("polymarket"),
-            v.literal("mt5")
+            v.literal("mt5"),
+            v.literal("binance-futures")
         ),
     },
     handler: async (ctx, args) => {

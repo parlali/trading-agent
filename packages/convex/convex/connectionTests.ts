@@ -345,6 +345,131 @@ export const testPolymarketConnection = action({
     },
 })
 
+function buildBinanceSignature(secret: string, query: string): string {
+    return createHmac("sha256", secret).update(query).digest("hex")
+}
+
+function buildBinanceSignedUrl(
+    baseUrl: string,
+    path: string,
+    params: Record<string, string | number | boolean | undefined>,
+    secret: string
+): string {
+    const searchParams = new URLSearchParams()
+
+    for (const [key, value] of Object.entries(params)) {
+        if (value !== undefined) {
+            searchParams.set(key, String(value))
+        }
+    }
+
+    const query = searchParams.toString()
+    const signature = buildBinanceSignature(secret, query)
+    return `${baseUrl}${path}?${query}&signature=${signature}`
+}
+
+export const testBinanceConnection = action({
+    args: {},
+    handler: async (ctx) => {
+        await requireUser(ctx)
+
+        const apiKey = env("BINANCE_API_KEY")
+        const apiSecret = env("BINANCE_API_SECRET")
+        const baseUrl = (env("BINANCE_BASE_URL") ?? "https://fapi.binance.com").replace(/\/+$/, "")
+        const steps: Array<{ name: string; ok: boolean; data?: unknown; error?: string }> = []
+
+        const ping = await fetchJson(`${baseUrl}/fapi/v1/ping`)
+        if (!ping.ok) {
+            steps.push({ name: "Public API", ok: false, error: ping.error })
+            return { ok: false, steps }
+        }
+        steps.push({ name: "Public API", ok: true, data: { reachable: true } })
+
+        if (!apiKey || !apiSecret) {
+            steps.push({
+                name: "Credentials",
+                ok: false,
+                error: "BINANCE_API_KEY and BINANCE_API_SECRET must be configured in Convex environment variables",
+            })
+            return { ok: false, steps }
+        }
+
+        const timestamp = Date.now()
+        const recvWindow = 5000
+
+        const accountUrl = buildBinanceSignedUrl(
+            baseUrl,
+            "/fapi/v2/account",
+            { timestamp, recvWindow },
+            apiSecret
+        )
+        const account = await fetchJson(accountUrl, {
+            headers: {
+                "X-MBX-APIKEY": apiKey,
+                "Content-Type": "application/json",
+            },
+        })
+        if (!account.ok) {
+            steps.push({ name: "Account", ok: false, error: account.error })
+            return { ok: false, steps }
+        }
+
+        const accountData = account.data as {
+            availableBalance?: string
+            totalWalletBalance?: string
+            totalUnrealizedProfit?: string
+        }
+        steps.push({
+            name: "Account",
+            ok: true,
+            data: {
+                availableBalance: Number(accountData.availableBalance ?? "0"),
+                totalWalletBalance: Number(accountData.totalWalletBalance ?? "0"),
+                totalUnrealizedProfit: Number(accountData.totalUnrealizedProfit ?? "0"),
+            },
+        })
+
+        const positionsUrl = buildBinanceSignedUrl(
+            baseUrl,
+            "/fapi/v2/positionRisk",
+            { timestamp: Date.now(), recvWindow },
+            apiSecret
+        )
+        const positions = await fetchJson(positionsUrl, {
+            headers: {
+                "X-MBX-APIKEY": apiKey,
+                "Content-Type": "application/json",
+            },
+        })
+        if (!positions.ok) {
+            steps.push({ name: "Positions", ok: false, error: positions.error })
+            return { ok: false, steps }
+        }
+
+        const positionRows = (positions.data as Array<{ symbol?: string; positionAmt?: string }> | undefined) ?? []
+        const openPositions = positionRows.filter((entry) => Math.abs(Number(entry.positionAmt ?? "0")) > 0)
+        steps.push({
+            name: "Positions",
+            ok: true,
+            data: {
+                total: positionRows.length,
+                open: openPositions.length,
+                symbols: openPositions.map((entry) => entry.symbol).filter(Boolean),
+            },
+        })
+
+        const marketData = await fetchJson(`${baseUrl}/fapi/v1/premiumIndex?symbol=BTCUSDT`)
+        steps.push({
+            name: "Market Data",
+            ok: marketData.ok,
+            data: marketData.ok ? marketData.data : undefined,
+            error: marketData.ok ? undefined : marketData.error,
+        })
+
+        return { ok: steps.every((step) => step.ok), steps }
+    },
+})
+
 async function acquireValiqToken(
     authUrl: string,
     clientId: string,

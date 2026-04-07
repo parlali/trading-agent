@@ -2,6 +2,7 @@ import {
     TrendingUp,
     Coins,
     BarChart3,
+    CandlestickChart,
 } from "lucide-react"
 import type { VenueApp, Severity } from "@valiq-trading/core"
 import { VENUE_APPS } from "@valiq-trading/core"
@@ -40,6 +41,14 @@ export const VENUE_META: Record<VenueApp, {
         icon: BarChart3,
         color: "var(--chart-3)",
         chartColor: "hsl(45, 60%, 55%)",
+    },
+    "binance-futures": {
+        label: "Binance Futures",
+        shortLabel: "Binance",
+        description: "USDT-M perpetual futures on BTC and ETH",
+        icon: CandlestickChart,
+        color: "var(--chart-4)",
+        chartColor: "hsl(28, 75%, 52%)",
     },
 } as const
 

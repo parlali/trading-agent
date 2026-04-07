@@ -6,7 +6,7 @@ Private trading monorepo. LLM agents execute strategies across multiple venues w
 
 | App | Description | Venue |
 |---|---|---|
-| `apps/backend` | Single TypeScript runtime for all venue strategies | Alpaca, Polymarket, MT5 |
+| `apps/backend` | Single TypeScript runtime for all venue strategies | Alpaca, Polymarket, MT5, Binance Futures |
 | `apps/mt5-worker` | Lightweight Python worker that exposes MT5 broker operations over HTTP | MetaTrader 5 |
 
 ## Packages
@@ -20,6 +20,7 @@ Private trading monorepo. LLM agents execute strategies across multiple venues w
 | `packages/alpaca-options` | Alpaca venue client, adapter, and risk rules |
 | `packages/polymarket` | Polymarket venue client, adapter, and risk rules |
 | `packages/mt5` | MT5 venue client, adapter, and risk rules |
+| `packages/binance` | Binance Futures client, adapter, and risk rules |
 
 ## Setup
 
@@ -39,6 +40,8 @@ Configure these secrets before starting the backend:
 - `CONVEX_URL` in the backend runtime
 - `BACKEND_SERVICE_TOKEN` in both Convex env vars and the backend runtime
 - `MT5_WORKER_ACCESS_KEY` in both Convex env vars and the MT5 worker runtime
+- `BINANCE_API_KEY` and `BINANCE_API_SECRET` in Convex env vars for Binance Futures
+- `BINANCE_BASE_URL` in Convex env vars only when you want a non-default endpoint (`https://fapi.binance.com` for production, `https://testnet.binancefuture.com` for testnet)
 
 Generate machine credentials with a high-entropy random value, for example:
 

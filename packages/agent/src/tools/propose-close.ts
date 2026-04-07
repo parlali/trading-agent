@@ -1,6 +1,7 @@
 import { z } from "zod"
 import type { ExecutionPipeline, Position } from "@valiq-trading/core"
 import type { MT5VenueAdapter } from "@valiq-trading/mt5"
+import type { BinanceVenueAdapter } from "@valiq-trading/binance"
 import type { ToolDefinition } from "../tool-registry"
 import {
     resolveEstimatedPrice as resolvePolymarketEstimatedPrice,
@@ -95,6 +96,17 @@ export function createMT5ProposeCloseTool(
             }
 
             return closeSide === "buy" ? symbolInfo.ask : symbolInfo.bid
+        },
+    })
+}
+
+export function createBinanceProposeCloseTool(
+    pipeline: ExecutionPipeline,
+    venue: BinanceVenueAdapter
+): ToolDefinition {
+    return createProposeCloseTool(pipeline, {
+        resolveEstimatedPrice: async ({ instrument }) => {
+            return await venue.getCurrentMarkPrice(instrument)
         },
     })
 }

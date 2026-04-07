@@ -10,7 +10,8 @@ export const upsertStrategy = mutation({
         app: v.union(
             v.literal("alpaca-options"),
             v.literal("polymarket"),
-            v.literal("mt5")
+            v.literal("mt5"),
+            v.literal("binance-futures")
         ),
         name: v.string(),
         enabled: v.boolean(),

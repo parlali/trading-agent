@@ -1,5 +1,8 @@
 import {
     ToolRegistry,
+    createBinanceProposeAdjustmentTool,
+    createBinanceProposeCloseTool,
+    createBinanceProposeOrderTool,
     createCancelOrderTool,
     createGetAccountTool,
     createGetOrderStatusTool,
@@ -26,6 +29,7 @@ import {
     ExecutionPipeline,
     createInstrumentConflictValidator,
     createKillSwitchGuardedVenue as createRuntimeKillSwitchGuardedVenue,
+    binancePolicySchema,
     filterPositionsByOwnership,
     getNextCronFireMs,
     mt5PolicySchema,
@@ -35,6 +39,7 @@ import {
     type Scheduler,
     type VenueAdapter,
 } from "@valiq-trading/core"
+import { BinanceVenueAdapter } from "@valiq-trading/binance"
 import { MT5VenueAdapter } from "@valiq-trading/mt5"
 import { PolymarketVenueAdapter } from "@valiq-trading/polymarket"
 import type { RunTrigger } from "@valiq-trading/convex"
@@ -231,6 +236,11 @@ export async function runStrategy(
         tools.register(createMT5ProposeOrderTool(pipeline, venue, mt5Policy))
         tools.register(createMT5ProposeAdjustmentTool(pipeline, venue, mt5Policy))
         tools.register(createMT5ProposeCloseTool(pipeline, venue))
+    } else if (app === "binance-futures" && venue instanceof BinanceVenueAdapter) {
+        const binancePolicy = binancePolicySchema.parse(policy)
+        tools.register(createBinanceProposeOrderTool(pipeline, venue, binancePolicy))
+        tools.register(createBinanceProposeAdjustmentTool(pipeline, venue, { dryRun: binancePolicy.dryRun }))
+        tools.register(createBinanceProposeCloseTool(pipeline, venue))
     } else if (app === "polymarket" && venue instanceof PolymarketVenueAdapter) {
         tools.register(createPolymarketProposeOrderTool(pipeline, venue))
         tools.register(createPolymarketProposeAdjustmentTool(pipeline, venue))

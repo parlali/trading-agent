@@ -17,6 +17,7 @@
       "dependencies": {
         "@valiq-trading/agent": "workspace:*",
         "@valiq-trading/alpaca-options": "workspace:*",
+        "@valiq-trading/binance": "workspace:*",
         "@valiq-trading/convex": "workspace:*",
         "@valiq-trading/core": "workspace:*",
         "@valiq-trading/mt5": "workspace:*",
@@ -61,6 +62,7 @@
       "name": "@valiq-trading/agent",
       "version": "1.0.0",
       "dependencies": {
+        "@valiq-trading/binance": "workspace:*",
         "@valiq-trading/core": "workspace:*",
         "@valiq-trading/mt5": "workspace:*",
         "zod": "^4.3.6",
@@ -74,6 +76,13 @@
         "@valiq-trading/convex": "workspace:*",
         "@valiq-trading/core": "workspace:*",
         "@valiq-trading/valiq": "workspace:*",
+      },
+    },
+    "packages/binance": {
+      "name": "@valiq-trading/binance",
+      "version": "1.0.0",
+      "dependencies": {
+        "@valiq-trading/core": "workspace:*",
       },
     },
     "packages/convex": {
@@ -557,6 +566,8 @@
     "@valiq-trading/alpaca-options": ["@valiq-trading/alpaca-options@workspace:packages/alpaca-options"],
 
     "@valiq-trading/backend": ["@valiq-trading/backend@workspace:apps/backend"],
+
+    "@valiq-trading/binance": ["@valiq-trading/binance@workspace:packages/binance"],
 
     "@valiq-trading/convex": ["@valiq-trading/convex@workspace:packages/convex"],
 

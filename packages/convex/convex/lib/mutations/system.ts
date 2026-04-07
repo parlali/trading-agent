@@ -11,6 +11,7 @@ export const createAlert = mutation({
                 v.literal("alpaca-options"),
                 v.literal("polymarket"),
                 v.literal("mt5"),
+                v.literal("binance-futures"),
                 v.literal("backend")
             )
         ),
@@ -53,6 +54,7 @@ export const reportHeartbeat = mutation({
             v.literal("alpaca-options"),
             v.literal("polymarket"),
             v.literal("mt5"),
+            v.literal("binance-futures"),
             v.literal("backend")
         ),
         status: v.union(
@@ -92,6 +94,7 @@ export const snapshotAccountState = mutation({
             v.literal("alpaca-options"),
             v.literal("polymarket"),
             v.literal("mt5"),
+            v.literal("binance-futures"),
             v.literal("backend")
         ),
         venue: v.string(),
@@ -124,7 +127,8 @@ export const setKillSwitch = mutation({
             v.literal("global"),
             v.literal("alpaca-options"),
             v.literal("polymarket"),
-            v.literal("mt5")
+            v.literal("mt5"),
+            v.literal("binance-futures")
         ),
         enabled: v.boolean(),
         updatedBy: v.optional(v.string()),
@@ -146,6 +150,7 @@ export const setKillSwitch = mutation({
                     alpaca_options: args.scope === "alpaca-options" ? args.enabled : false,
                     polymarket: args.scope === "polymarket" ? args.enabled : false,
                     mt5: args.scope === "mt5" ? args.enabled : false,
+                    binance_futures: args.scope === "binance-futures" ? args.enabled : false,
                 },
                 updatedAt: now,
                 updatedBy: args.updatedBy,
@@ -160,7 +165,7 @@ export const setKillSwitch = mutation({
                 updatedBy: args.updatedBy,
             })
         } else {
-            const killSwitchKey = args.scope === "alpaca-options" ? "alpaca_options" : args.scope
+            const killSwitchKey = args.scope.replace(/-/g, "_") as keyof typeof existing.appKillSwitches
             await ctx.db.patch(existing._id, {
                 appKillSwitches: {
                     ...existing.appKillSwitches,

@@ -62,6 +62,7 @@ export const getDashboardOverview = query({
                     alpaca_options: false,
                     polymarket: false,
                     mt5: false,
+                    binance_futures: false,
                 },
                 updatedAt: 0,
             },

@@ -12,6 +12,7 @@ import {
 import { AlpacaPlugin } from "./plugins/alpaca"
 import { PolymarketPlugin } from "./plugins/polymarket"
 import { MT5Plugin } from "./plugins/mt5"
+import { BinancePlugin } from "./plugins/binance"
 import type { HealthState, VenueApp, VenuePlugin } from "./types"
 
 export const APP_NAME: App = "backend"
@@ -63,6 +64,7 @@ export const plugins: Record<VenueApp, VenuePlugin> = {
     "alpaca-options": new AlpacaPlugin(),
     "polymarket": new PolymarketPlugin(),
     "mt5": new MT5Plugin(),
+    "binance-futures": new BinancePlugin(),
 }
 
 export let resolvedSecrets: Record<string, string | null> = {}
@@ -111,6 +113,11 @@ export const killSwitchCheckers = {
         backend,
         logger,
     }),
+    "binance-futures": createKillSwitchChecker({
+        appName: "binance-futures",
+        backend,
+        logger,
+    }),
 } as const
 
 export const accountSnapshotPersisters = {
@@ -132,6 +139,12 @@ export const accountSnapshotPersisters = {
         backend,
         logger,
     }),
+    "binance-futures": createAccountSnapshotPersister({
+        appName: "binance-futures",
+        venueName: "binance-futures",
+        backend,
+        logger,
+    }),
 } as const
 
 export interface SyncStrategyEntry {
@@ -142,4 +155,4 @@ export interface SyncStrategyEntry {
 
 export const syncStrategies: Partial<Record<VenueApp, SyncStrategyEntry[]>> = {}
 
-export const ALL_APPS: VenueApp[] = ["alpaca-options", "polymarket", "mt5"]
+export const ALL_APPS: VenueApp[] = ["alpaca-options", "polymarket", "mt5", "binance-futures"]

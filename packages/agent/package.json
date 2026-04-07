@@ -12,6 +12,7 @@
     "dependencies": {
         "@valiq-trading/core": "workspace:*",
         "@valiq-trading/mt5": "workspace:*",
+        "@valiq-trading/binance": "workspace:*",
         "zod": "^4.3.6"
     }
 }

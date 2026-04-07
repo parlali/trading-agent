@@ -18,7 +18,7 @@ export default function KillSwitchesPage() {
         return <PageSkeleton count={4} height="h-20" spacing="space-y-4" />
     }
 
-    const handleToggle = (scope: "alpaca-options" | "polymarket" | "mt5" | "global", enabled: boolean) => {
+    const handleToggle = (scope: VenueApp | "global", enabled: boolean) => {
         setKillSwitch({ scope, enabled, updatedBy: "dashboard" })
             .then(() => toast.success(`Kill switch ${enabled ? "activated" : "deactivated"}`))
             .catch(() => toast.error("Failed to update kill switch"))

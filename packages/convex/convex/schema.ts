@@ -182,6 +182,7 @@ export default defineSchema({
             alpaca_options: v.boolean(),
             polymarket: v.boolean(),
             mt5: v.boolean(),
+            binance_futures: v.boolean(),
         }),
         updatedAt: v.number(),
         updatedBy: v.optional(v.string()),

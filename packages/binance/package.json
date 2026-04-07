@@ -1,0 +1,21 @@
+{
+    "name": "@valiq-trading/binance",
+    "version": "1.0.0",
+    "type": "module",
+    "private": true,
+    "main": "src/lib.ts",
+    "types": "src/lib.ts",
+    "license": "UNLICENSED",
+    "exports": {
+        ".": {
+            "import": "./src/lib.ts",
+            "types": "./src/lib.ts"
+        }
+    },
+    "scripts": {
+        "build": "tsc --noEmit"
+    },
+    "dependencies": {
+        "@valiq-trading/core": "workspace:*"
+    }
+}

@@ -1,6 +1,6 @@
 import type { OrderAction, OrderStatus } from "./orders"
 
-export const VENUE_APPS = ["alpaca-options", "polymarket", "mt5"] as const
+export const VENUE_APPS = ["alpaca-options", "polymarket", "mt5", "binance-futures"] as const
 export type VenueApp = typeof VENUE_APPS[number]
 
 export const APPS = [...VENUE_APPS, "backend"] as const

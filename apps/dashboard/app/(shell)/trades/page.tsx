@@ -16,7 +16,7 @@ import { List } from "lucide-react"
 export default function TradesPage() {
     const [selectedApp, setSelectedApp] = useState<string | null>(null)
     const trades = useQuery(api.queries.getTradeHistory, {
-        app: selectedApp as "alpaca-options" | "polymarket" | "mt5" | undefined,
+        app: selectedApp as VenueApp | undefined,
         limit: 100,
     })
     const allStrategies = useQuery(api.queries.getAllStrategies)

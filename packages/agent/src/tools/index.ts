@@ -6,6 +6,7 @@ export {
     createProposeCloseTool,
     createPolymarketProposeCloseTool,
     createMT5ProposeCloseTool,
+    createBinanceProposeCloseTool,
 } from "./propose-close"
 export { createGetOrderStatusTool } from "./get-order-status"
 export { createCancelOrderTool } from "./cancel-order"
@@ -18,4 +19,6 @@ export { createMT5ProposeOrderTool } from "./propose-order-mt5"
 export { createMT5ProposeAdjustmentTool } from "./propose-adjustment-mt5"
 export { createPolymarketProposeOrderTool } from "./propose-order-polymarket"
 export { createPolymarketProposeAdjustmentTool } from "./propose-adjustment-polymarket"
+export { createBinanceProposeOrderTool } from "./propose-order-binance"
+export { createBinanceProposeAdjustmentTool } from "./propose-adjustment-binance"
 export { withCallBudget } from "./with-call-budget"

@@ -18,6 +18,7 @@ export const getSystemState = query({
                     alpaca_options: false,
                     polymarket: false,
                     mt5: false,
+                    binance_futures: false,
                 },
                 updatedAt: 0,
             }
@@ -45,7 +46,8 @@ export const getManualRunRequests = query({
         app: v.union(
             v.literal("alpaca-options"),
             v.literal("polymarket"),
-            v.literal("mt5")
+            v.literal("mt5"),
+            v.literal("binance-futures")
         ),
     },
     handler: async (ctx, args) => {

@@ -14,6 +14,7 @@ export {
     createProposeCloseTool,
     createPolymarketProposeCloseTool,
     createMT5ProposeCloseTool,
+    createBinanceProposeCloseTool,
     createGetOrderStatusTool,
     createCancelOrderTool,
     createModifyOrderTool,
@@ -24,6 +25,8 @@ export {
     createMT5ProposeAdjustmentTool,
     createPolymarketProposeOrderTool,
     createPolymarketProposeAdjustmentTool,
+    createBinanceProposeOrderTool,
+    createBinanceProposeAdjustmentTool,
     withCallBudget,
 } from "./tools"
 export type { WebSearchProvider, SearchResult } from "./tools"
