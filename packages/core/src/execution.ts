@@ -19,6 +19,12 @@ import { filterPositionsByOwnership } from "./position-filter"
 import type { Logger } from "./logger"
 import { getIntentAction, hasIntentChanges, createSyntheticIntent } from "./intent"
 import { OrderLifecycleManager } from "./order-tracker"
+import {
+    createExecutionErrorDetail,
+    formatExecutionError,
+    getErrorMessage,
+    getExecutionErrorDetail,
+} from "./utils"
 
 export interface VenueAdapter {
     getPositions(): Promise<Position[]>
@@ -26,8 +32,9 @@ export interface VenueAdapter {
     submitOrder(intent: OrderIntent): Promise<ExecutionResult>
     cancelOrder(orderId: string): Promise<ExecutionResult>
     modifyOrder(orderId: string, changes: Partial<OrderIntent>): Promise<ExecutionResult>
-    closePosition(instrument: string): Promise<ExecutionResult>
+    closePosition(instrument: string, preparedIntent?: OrderIntent): Promise<ExecutionResult>
     getOrderStatus(orderId: string): Promise<ExecutionResult>
+    buildCloseIntent?(instrument: string): Promise<OrderIntent>
 }
 
 export interface TradeEventLogger {
@@ -119,31 +126,35 @@ export class ExecutionPipeline {
         positions: Position[],
         lifecycleContext: OrderLifecycleContext = { action: getIntentAction(intent) }
     ): Promise<ExecuteIntentResult> {
-        this.logger.info("Order intent received", { intent, action: lifecycleContext.action })
-        void this.tradeEventLogger?.logIntent(this.runId, this.strategyId, intent)
+        const intentWithLifecycleMetadata = withLifecycleAction(intent, lifecycleContext)
+
+        this.logger.info("Order intent received", { intent: intentWithLifecycleMetadata, action: lifecycleContext.action })
+        void this.tradeEventLogger?.logIntent(this.runId, this.strategyId, intentWithLifecycleMetadata)
 
         const validation = validateIntent(
-            intent,
+            intentWithLifecycleMetadata,
             this.policy,
             accountState,
             positions,
             this.riskValidators
         )
-        void this.tradeEventLogger?.logValidation(this.runId, this.strategyId, validation, intent)
+        void this.tradeEventLogger?.logValidation(this.runId, this.strategyId, validation, intentWithLifecycleMetadata)
 
         if (!validation.allowed) {
-            this.logger.warn("Order rejected by risk engine", { reason: validation.reason, intent })
+            this.logger.warn("Order rejected by risk engine", { reason: validation.reason, intent: intentWithLifecycleMetadata })
+            const errorDetail = createExecutionErrorDetail("risk_engine", validation.reason ?? "Order rejected by risk engine")
             const rejectedResult: ExecutionResult = {
                 orderId: "",
                 status: "rejected",
                 filledQuantity: 0,
                 timestamp: Date.now(),
-                error: validation.reason,
+                error: formatExecutionError(errorDetail),
+                errorDetail,
             }
             return { result: rejectedResult, validation }
         }
 
-        const finalIntent = validation.adjustedIntent ?? intent
+        const finalIntent = validation.adjustedIntent ?? intentWithLifecycleMetadata
 
         if (this.policy.dryRun) {
             this.logger.info("Dry run -- order simulated", { intent: finalIntent })
@@ -185,7 +196,8 @@ export class ExecutionPipeline {
             this.updateOwnedInstruments(lifecycleContext.action, finalIntent.instrument, result)
             return { result, validation, handle }
         } catch (error) {
-            const errorMsg = error instanceof Error ? error.message : String(error)
+            const errorDetail = getExecutionErrorDetail(error) ?? createExecutionErrorDetail("internal", getErrorMessage(error))
+            const errorMsg = formatExecutionError(errorDetail)
             this.logger.error("Order submission failed", { error: errorMsg, intent: finalIntent })
             const failedResult: ExecutionResult = {
                 orderId: "",
@@ -193,6 +205,7 @@ export class ExecutionPipeline {
                 filledQuantity: 0,
                 timestamp: Date.now(),
                 error: errorMsg,
+                errorDetail,
             }
             void this.tradeEventLogger?.logSubmission(this.runId, this.strategyId, failedResult, finalIntent)
             return { result: failedResult, validation }
@@ -223,7 +236,12 @@ export class ExecutionPipeline {
         }
 
         await this.lifecycleManager.recordCancelAttempt(orderId, reason)
-        const result = await this.venue.cancelOrder(orderId)
+        let result: ExecutionResult
+        try {
+            result = await this.venue.cancelOrder(orderId)
+        } catch (error) {
+            result = createRejectedExecutionResultFromUnknownError(orderId, error)
+        }
         void this.tradeEventLogger?.logSubmission(this.runId, this.strategyId, result, intent)
         await this.lifecycleManager.captureVenueUpdate(orderId, result, "cancel_attempt", reason)
         return result
@@ -259,6 +277,7 @@ export class ExecutionPipeline {
                 reason: "At least one order modification must be provided",
             }
             void this.tradeEventLogger?.logValidation(this.runId, this.strategyId, validation, intent)
+            const errorDetail = createExecutionErrorDetail("pre_validation", validation.reason)
 
             return {
                 orderId,
@@ -266,7 +285,8 @@ export class ExecutionPipeline {
                 filledQuantity: existing?.filledQuantity ?? 0,
                 fillPrice: existing?.avgFillPrice,
                 timestamp: Date.now(),
-                error: validation.reason,
+                error: formatExecutionError(errorDetail),
+                errorDetail,
             }
         }
 
@@ -280,16 +300,28 @@ export class ExecutionPipeline {
                 filledQuantity: existing?.filledQuantity ?? 0,
                 fillPrice: existing?.avgFillPrice,
                 timestamp: Date.now(),
+                intentUpdates: changes,
             }
             void this.tradeEventLogger?.logSubmission(this.runId, this.strategyId, result, intent)
             await this.lifecycleManager.captureVenueUpdate(orderId, result, "modify_attempt", reason)
             return result
         }
 
-        const result = await this.venue.modifyOrder(orderId, changes)
-        void this.tradeEventLogger?.logSubmission(this.runId, this.strategyId, result, intent)
-        await this.lifecycleManager.captureVenueUpdate(orderId, result, "modify_attempt", reason)
-        return result
+        let result: ExecutionResult
+        try {
+            result = await this.venue.modifyOrder(orderId, changes)
+        } catch (error) {
+            result = createRejectedExecutionResultFromUnknownError(orderId, error, existing?.filledQuantity ?? 0, existing?.avgFillPrice)
+        }
+        const resultWithIntentUpdates: ExecutionResult = {
+            ...result,
+            intentUpdates: shouldPersistModifyIntentUpdates(result)
+                ? mergeExecutionIntentUpdates(changes, result.intentUpdates)
+                : undefined,
+        }
+        void this.tradeEventLogger?.logSubmission(this.runId, this.strategyId, resultWithIntentUpdates, intent)
+        await this.lifecycleManager.captureVenueUpdate(orderId, resultWithIntentUpdates, "modify_attempt", reason)
+        return resultWithIntentUpdates
     }
 
     async closePosition(
@@ -300,7 +332,7 @@ export class ExecutionPipeline {
         const positions = await this.getPositions()
         const position = positions.find((item) => item.instrument === instrument)
         const closeSide = position?.side === "long" ? "sell" : "buy"
-        const intent: OrderIntent = {
+        let intent: OrderIntent = {
             instrument,
             side: closeSide,
             quantity: position?.quantity ?? 0,
@@ -313,6 +345,19 @@ export class ExecutionPipeline {
             },
         }
 
+        if (position && this.venue.buildCloseIntent) {
+            const venueIntent = await this.venue.buildCloseIntent(instrument)
+            intent = {
+                ...venueIntent,
+                metadata: {
+                    ...venueIntent.metadata,
+                    action: "close",
+                    reason,
+                    estimatedPrice: options.estimatedPrice ?? venueIntent.metadata?.estimatedPrice,
+                },
+            }
+        }
+
         this.logger.info("Closing position", { instrument, reason })
         void this.tradeEventLogger?.logIntent(this.runId, this.strategyId, intent)
 
@@ -322,6 +367,7 @@ export class ExecutionPipeline {
                 reason: `No open position found for ${instrument}`,
             }
             void this.tradeEventLogger?.logValidation(this.runId, this.strategyId, validation, intent)
+            const errorDetail = createExecutionErrorDetail("pre_validation", validation.reason)
 
             return {
                 result: {
@@ -329,7 +375,8 @@ export class ExecutionPipeline {
                     status: "rejected",
                     filledQuantity: 0,
                     timestamp: Date.now(),
-                    error: validation.reason,
+                    error: formatExecutionError(errorDetail),
+                    errorDetail,
                 },
                 validation,
             }
@@ -355,7 +402,12 @@ export class ExecutionPipeline {
             return { result, validation: ALLOWED_VALIDATION, handle }
         }
 
-        const result = await this.venue.closePosition(instrument)
+        let result: ExecutionResult
+        try {
+            result = await this.venue.closePosition(instrument, intent)
+        } catch (error) {
+            result = createRejectedExecutionResultFromUnknownError("", error)
+        }
         void this.tradeEventLogger?.logSubmission(this.runId, this.strategyId, result, intent)
         const handle = await this.lifecycleManager.registerSubmittedOrder(intent, result, "close", { reason })
         this.updateOwnedInstruments("close", instrument, result)
@@ -518,4 +570,62 @@ export class ExecutionPipeline {
         }
 
     }
+}
+
+function createRejectedExecutionResultFromUnknownError(
+    orderId: string,
+    error: unknown,
+    filledQuantity: number = 0,
+    fillPrice?: number
+): ExecutionResult {
+    const errorDetail = getExecutionErrorDetail(error) ?? createExecutionErrorDetail("internal", getErrorMessage(error))
+
+    return {
+        orderId,
+        status: "rejected",
+        filledQuantity,
+        fillPrice,
+        timestamp: Date.now(),
+        error: formatExecutionError(errorDetail),
+        errorDetail,
+    }
+}
+
+function withLifecycleAction(intent: OrderIntent, lifecycleContext: OrderLifecycleContext): OrderIntent {
+    if (!lifecycleContext.action || intent.metadata?.action) {
+        return intent
+    }
+
+    return {
+        ...intent,
+        metadata: {
+            ...intent.metadata,
+            action: lifecycleContext.action,
+            ...lifecycleContext.metadata,
+        },
+    }
+}
+
+function mergeExecutionIntentUpdates(
+    requestedChanges: Partial<OrderIntent>,
+    venueUpdates: Partial<OrderIntent> | undefined
+): Partial<OrderIntent> {
+    return {
+        ...requestedChanges,
+        ...venueUpdates,
+        metadata: requestedChanges.metadata || venueUpdates?.metadata
+            ? {
+                ...requestedChanges.metadata,
+                ...venueUpdates?.metadata,
+            }
+            : undefined,
+    }
+}
+
+function shouldPersistModifyIntentUpdates(result: ExecutionResult): boolean {
+    return (
+        result.status === "pending" ||
+        result.status === "partially_filled" ||
+        result.status === "filled"
+    )
 }

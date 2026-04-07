@@ -34,14 +34,25 @@ export function validateIntent(
     positions: Position[],
     validators: readonly RiskValidator[] = BASE_RISK_VALIDATORS
 ): ValidationResult {
+    let currentIntent = intent
+
     for (const validator of validators) {
-        const result = validator(intent, policy, state, positions)
+        const result = validator(currentIntent, policy, state, positions)
         if (!result.allowed) {
             return result
         }
+
+        if (result.adjustedIntent) {
+            currentIntent = result.adjustedIntent
+        }
     }
 
-    return { allowed: true }
+    return currentIntent === intent
+        ? { allowed: true }
+        : {
+            allowed: true,
+            adjustedIntent: currentIntent,
+        }
 }
 
 export class RiskEngine {

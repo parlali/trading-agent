@@ -27,6 +27,7 @@ import { createConvexOrderPersistenceAdapter } from "@valiq-trading/convex"
 import type { StoredStrategy } from "@valiq-trading/convex"
 import {
     ExecutionPipeline,
+    isTerminalOrderStatus,
     createInstrumentConflictValidator,
     createKillSwitchGuardedVenue as createRuntimeKillSwitchGuardedVenue,
     binancePolicySchema,
@@ -36,7 +37,10 @@ import {
     parseSummaryMetadata,
     stripMetadataBlock,
     validatePolicy,
+    type PendingOrderContext,
+    type Logger,
     type Scheduler,
+    type OrderSnapshot,
     type VenueAdapter,
 } from "@valiq-trading/core"
 import { BinanceVenueAdapter } from "@valiq-trading/binance"
@@ -85,6 +89,96 @@ function createKillSwitchGuardedVenue(
         strategyId,
         killSwitchCheckers[app]
     )
+}
+
+function mergeRuntimeContextLines(
+    existing: string[] | undefined,
+    additional: string[]
+): string[] | undefined {
+    if (additional.length === 0) {
+        return existing
+    }
+
+    return [...(existing ?? []), ...additional]
+}
+
+function buildPendingOrderContext(snapshot: OrderSnapshot): PendingOrderContext {
+    return {
+        orderId: snapshot.orderId,
+        instrument: snapshot.instrument,
+        action: snapshot.action,
+        status: snapshot.status,
+        quantity: snapshot.quantity,
+        filledQuantity: snapshot.filledQuantity,
+        remainingQuantity: snapshot.remainingQuantity,
+        submittedAt: snapshot.submittedAt,
+        updatedAt: snapshot.updatedAt,
+        limitPrice: snapshot.intent.limitPrice,
+        avgFillPrice: snapshot.avgFillPrice,
+        recommendedAction: getPendingOrderRecommendedAction(snapshot),
+    }
+}
+
+function getPendingOrderRecommendedAction(snapshot: OrderSnapshot): string {
+    if (snapshot.status === "partially_filled") {
+        return "Review the remaining quantity immediately. Decide whether to keep working the remainder, improve the price, or cancel the rest."
+    }
+
+    if (snapshot.polling.timedOutAt) {
+        return "Refresh this order first. The prior run handed it off after its wait window expired while the venue order was still live."
+    }
+
+    return "Refresh the working order, then either keep waiting, improve the limit price, or cancel if the thesis or session conditions changed."
+}
+
+async function reconcilePendingOrdersForRun(
+    pipeline: ExecutionPipeline,
+    strategyId: string,
+    orderPersistence: ReturnType<typeof createConvexOrderPersistenceAdapter>,
+    runLogger: Logger
+): Promise<{ pendingOrders: PendingOrderContext[]; runtimeContextLines: string[] }> {
+    const persistedActiveOrders = await orderPersistence.listActiveOrders(strategyId)
+    if (persistedActiveOrders.length === 0) {
+        return {
+            pendingOrders: [],
+            runtimeContextLines: [],
+        }
+    }
+
+    const pendingOrders: PendingOrderContext[] = []
+    const runtimeContextLines: string[] = []
+
+    for (const persistedOrder of persistedActiveOrders) {
+        try {
+            await pipeline.getOrderStatus(persistedOrder.orderId)
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error)
+            runLogger.warn("Failed to refresh persisted active order before run", {
+                orderId: persistedOrder.orderId,
+                error: message,
+            })
+            runtimeContextLines.push(
+                `Active order refresh failed at run start for ${persistedOrder.orderId}. Do not trust the stored snapshot without a successful venue refresh.`
+            )
+            continue
+        }
+
+        const refreshedSnapshot = await pipeline.getOrderSnapshot(persistedOrder.orderId)
+        if (!refreshedSnapshot || isTerminalOrderStatus(refreshedSnapshot.status)) {
+            continue
+        }
+
+        pendingOrders.push(buildPendingOrderContext(refreshedSnapshot))
+    }
+
+    if (pendingOrders.length > 0) {
+        await pipeline.resumeOpenOrders(() => ({ decision: "wait" }))
+    }
+
+    return {
+        pendingOrders,
+        runtimeContextLines,
+    }
 }
 
 export async function registerStrategyWithScheduler(
@@ -236,6 +330,9 @@ export async function runStrategy(
         tools.register(createMT5ProposeOrderTool(pipeline, venue, mt5Policy))
         tools.register(createMT5ProposeAdjustmentTool(pipeline, venue, mt5Policy))
         tools.register(createMT5ProposeCloseTool(pipeline, venue))
+    } else if (app === "alpaca-options") {
+        tools.register(createProposeOrderTool(pipeline, { mode: "alpaca-options" }))
+        tools.register(createProposeCloseTool(pipeline))
     } else if (app === "binance-futures" && venue instanceof BinanceVenueAdapter) {
         const binancePolicy = binancePolicySchema.parse(policy)
         tools.register(createBinanceProposeOrderTool(pipeline, venue, binancePolicy))
@@ -253,7 +350,10 @@ export async function runStrategy(
 
     tools.register(createGetOrderStatusTool(pipeline))
     tools.register(createCancelOrderTool(pipeline))
-    tools.register(createModifyOrderTool(pipeline))
+    tools.register(createModifyOrderTool(
+        pipeline,
+        app === "alpaca-options" ? { mode: "alpaca-options" } : undefined
+    ))
     tools.register(createWaitForOrderUpdateTool(pipeline))
     if (app === "polymarket") {
         const searchBudget = isCallback ? 2 : 5
@@ -268,6 +368,13 @@ export async function runStrategy(
         }
 
         const isDryRun = Boolean(policy.dryRun)
+        const { pendingOrders, runtimeContextLines: pendingOrderRuntimeContext } = await reconcilePendingOrdersForRun(
+            pipeline,
+            strategy._id,
+            orderPersistence,
+            runLogger
+        )
+        runtimeContextLines = mergeRuntimeContextLines(runtimeContextLines, pendingOrderRuntimeContext)
 
         const [allPositions, accountState, previousRunSummary] = await Promise.all([
             isDryRun ? backend.getLatestPositions(strategy._id) : venue.getPositions(),
@@ -295,6 +402,7 @@ export async function runStrategy(
                 context: strategy.context,
                 runtimeContextLines,
                 schedule: strategy.schedule,
+                pendingOrders,
                 previousRunSummary: previousRunSummary ?? undefined,
             },
             {

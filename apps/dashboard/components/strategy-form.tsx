@@ -20,7 +20,7 @@ import {
 } from "@/components/ui/select"
 import { ScheduleBuilder } from "@/components/schedule-builder"
 import { VENUE_META, type VenueApp } from "@/lib/constants"
-import { POLICY_DEFAULTS } from "@valiq-trading/core"
+import { POLICY_DEFAULTS, STRATEGY_CONTEXT_DEFAULTS } from "@valiq-trading/core"
 import { toast } from "sonner"
 import { Loader2, Plus, X } from "lucide-react"
 
@@ -85,12 +85,13 @@ export function StrategyForm({ mode, initialData }: StrategyFormProps) {
     const [policy, setPolicy] = useState<PolicyFields>(
         initialData?.policy ?? POLICY_DEFAULTS["alpaca-options"]
     )
-    const [context, setContext] = useState(initialData?.context ?? "")
+    const [context, setContext] = useState(initialData?.context ?? STRATEGY_CONTEXT_DEFAULTS["alpaca-options"])
 
     function handleVenueChange(newApp: VenueApp) {
         setApp(newApp)
         if (mode === "create") {
             setPolicy(POLICY_DEFAULTS[newApp])
+            setContext(STRATEGY_CONTEXT_DEFAULTS[newApp])
         }
     }
 

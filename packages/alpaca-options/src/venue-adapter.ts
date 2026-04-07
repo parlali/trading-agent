@@ -1,6 +1,14 @@
-import type { AccountState, ExecutionResult, OrderIntent, Position, VenueAdapter } from "@valiq-trading/core"
+import {
+    createExecutionErrorDetail,
+    formatExecutionError,
+    type AccountState,
+    type ExecutionResult,
+    type OrderIntent,
+    type Position,
+    type VenueAdapter,
+} from "@valiq-trading/core"
 import { AlpacaClient, type AlpacaPositionResponse } from "./alpaca-client"
-import { parseOptionContractSymbol } from "./risk-rules"
+import { buildIronCondorInstrument, parseOptionContractSymbol } from "./risk-rules"
 
 interface PositionGroup {
     instrument: string
@@ -60,25 +68,32 @@ export class AlpacaOptionsVenueAdapter implements VenueAdapter {
         return await this.client.replaceOrder(orderId, changes)
     }
 
-    async closePosition(instrument: string): Promise<ExecutionResult> {
+    async buildCloseIntent(instrument: string): Promise<OrderIntent> {
         const rawPositions = await this.client.getPositions()
         const group = resolveGroupForClose(rawPositions, instrument)
 
         if (!group) {
-            throw new Error(`No Alpaca options structure found for ${instrument}`)
+            const errorDetail = createExecutionErrorDetail("pre_validation", `No Alpaca options structure found for ${instrument}`, {
+                code: "POSITION_NOT_FOUND",
+                retryable: false,
+                details: {
+                    instrument,
+                },
+            })
+            throw new Error(formatExecutionError(errorDetail))
         }
 
-        const closeIntent: OrderIntent = {
+        return {
             instrument: group.instrument,
             side: "buy",
             quantity: group.quantity,
-            orderType: group.currentPrice ? "limit" : "market",
-            limitPrice: group.currentPrice ? roundPrice(group.currentPrice) : undefined,
+            orderType: "limit",
+            limitPrice: roundPrice(group.currentPrice ?? group.entryPrice),
             timeInForce: "day",
             legs: group.positions.map((position) => ({
                 instrument: position.symbol,
-                side: position.side === "long" ? "sell" : "buy",
-                quantity: Math.abs(toNumber(position.qty)),
+                side: position.side === "long" ? "sell_to_close" : "buy_to_close",
+                quantity: 1,
             })),
             metadata: {
                 action: "close",
@@ -86,7 +101,10 @@ export class AlpacaOptionsVenueAdapter implements VenueAdapter {
                 expiration: group.expiration,
             },
         }
+    }
 
+    async closePosition(instrument: string, preparedIntent?: OrderIntent): Promise<ExecutionResult> {
+        const closeIntent = preparedIntent ?? await this.buildCloseIntent(instrument)
         return await this.client.createOrder(closeIntent)
     }
 
@@ -129,7 +147,7 @@ function groupIronCondorPositions(positions: AlpacaPositionResponse[]): Position
         const unrealizedPnl = groupedPositions.reduce((sum, position) => sum + toNumber(position.unrealized_pl), 0)
 
         results.push({
-            instrument: `IC:${underlying}:${expiration}:${quantity}`,
+            instrument: buildIronCondorInstrument(underlying ?? "UNKNOWN", expiration ?? "", quantity),
             underlying: underlying ?? "UNKNOWN",
             expiration: expiration ?? "",
             quantity,

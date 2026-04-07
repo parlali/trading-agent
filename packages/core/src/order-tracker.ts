@@ -5,8 +5,9 @@ import type {
 import {
     ACTIVE_ORDER_STATUSES,
     createOrderSnapshot,
-    createTimedOutExecutionResult,
     isTerminalOrderStatus,
+    pauseOrderPollingForHandoff,
+    restartOrderPollingWindow,
     updateOrderSnapshotFromExecution,
     type OrderAction,
     type OrderLifecycleAlert,
@@ -158,29 +159,38 @@ export class OrderLifecycleManager {
         }
 
         const snapshots = await this.orderPersistence.listActiveOrders(this.strategyId)
+        const resumedSnapshots: OrderSnapshot[] = []
 
         for (const snapshot of snapshots) {
             if (!ACTIVE_ORDER_STATUSES.includes(snapshot.status)) {
                 continue
             }
 
+            const resumedSnapshot = restartOrderPollingWindow(snapshot)
+            const existingTracked = this.trackedOrders.get(resumedSnapshot.orderId)
+            if (existingTracked?.timer) {
+                clearTimeout(existingTracked.timer)
+            }
+
             const tracked: TrackedOrderState = {
                 handle: {
-                    orderId: snapshot.orderId,
-                    action: snapshot.action,
-                    snapshot,
+                    orderId: resumedSnapshot.orderId,
+                    action: resumedSnapshot.action,
+                    snapshot: resumedSnapshot,
                 },
                 timer: null,
                 updateResolvers: [],
                 listener: onUpdate,
-                transitionSequence: 0,
+                transitionSequence: existingTracked?.transitionSequence ?? 0,
             }
 
-            this.trackedOrders.set(snapshot.orderId, tracked)
-            this.schedulePoll(snapshot.orderId)
+            this.trackedOrders.set(resumedSnapshot.orderId, tracked)
+            this.persistSnapshot(resumedSnapshot)
+            this.schedulePoll(resumedSnapshot.orderId)
+            resumedSnapshots.push(resumedSnapshot)
         }
 
-        return snapshots
+        return resumedSnapshots
     }
 
     getTrackedSnapshot(orderId: string): OrderSnapshot | null {
@@ -286,29 +296,48 @@ export class OrderLifecycleManager {
             const elapsed = Date.now() - tracked.handle.snapshot.polling.startedAt
 
             if (elapsed > tracked.handle.snapshot.polling.timeoutMs) {
-                const timedOutResult = createTimedOutExecutionResult(tracked.handle.snapshot)
+                const timeoutReason = "Order wait budget expired for this run; carrying active venue order forward to the next run"
+                const previousSnapshot = tracked.handle.snapshot
+                const latestVenueResult = await this.fetchOrderStatusOnTimeout(tracked.handle.orderId)
+
+                if (latestVenueResult && isTerminalOrderStatus(latestVenueResult.status)) {
+                    await this.applyExecutionResult(tracked, latestVenueResult, "terminal", timeoutReason)
+                    return
+                }
+
+                const refreshedSnapshot = latestVenueResult
+                    ? updateOrderSnapshotFromExecution(previousSnapshot, latestVenueResult)
+                    : previousSnapshot
+                const handoffSnapshot = pauseOrderPollingForHandoff(refreshedSnapshot, timeoutReason)
+
+                tracked.handle = {
+                    ...tracked.handle,
+                    snapshot: handoffSnapshot,
+                }
+                this.persistSnapshot(handoffSnapshot)
                 this.persistTransition(tracked, {
-                    orderId,
-                    strategyId: tracked.handle.snapshot.strategyId,
-                    runId: tracked.handle.snapshot.runId,
+                    orderId: handoffSnapshot.orderId,
+                    strategyId: handoffSnapshot.strategyId,
+                    runId: handoffSnapshot.runId,
                     sequence: 0,
                     type: "timeout_decision",
-                    status: "timed_out",
-                    previousStatus: tracked.handle.snapshot.status,
-                    timestamp: timedOutResult.timestamp,
-                    reason: timedOutResult.error,
+                    status: handoffSnapshot.status,
+                    previousStatus: previousSnapshot.status,
+                    timestamp: handoffSnapshot.updatedAt,
+                    reason: timeoutReason,
                 })
-                await this.applyExecutionResult(tracked, timedOutResult, "terminal", timedOutResult.error)
                 this.createAlert({
-                    strategyId: tracked.handle.snapshot.strategyId,
-                    runId: tracked.handle.snapshot.runId,
-                    orderId,
+                    strategyId: handoffSnapshot.strategyId,
+                    runId: handoffSnapshot.runId,
+                    orderId: handoffSnapshot.orderId,
                     severity: "warning",
-                    message: `Order ${orderId} timed out while waiting for a terminal venue status`,
+                    message: `Order ${handoffSnapshot.orderId} remained live after this run's wait window and will be resumed next run`,
                     metadata: {
-                        instrument: tracked.handle.snapshot.instrument,
+                        instrument: handoffSnapshot.instrument,
                     },
                 })
+                this.resolvePendingWaiters(tracked, handoffSnapshot)
+                this.stopTracking(orderId)
                 return
             }
 
@@ -479,5 +508,18 @@ export class OrderLifecycleManager {
 
     private createAlert(alert: OrderLifecycleAlert): void {
         void this.orderPersistence?.createAlert?.(alert)
+    }
+
+    private async fetchOrderStatusOnTimeout(orderId: string): Promise<ExecutionResult | null> {
+        try {
+            return await this.venue.getOrderStatus(orderId)
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error)
+            this.logger.warn("Failed to refresh order status at timeout boundary", {
+                orderId,
+                error: message,
+            })
+            return null
+        }
     }
 }

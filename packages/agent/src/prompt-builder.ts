@@ -21,6 +21,9 @@ export function buildSystemPrompt(
     if (context.previousRunSummary) {
         sections.push(buildPreviousRunSection(context.previousRunSummary, context.timestamp))
     }
+    if (context.pendingOrders && context.pendingOrders.length > 0) {
+        sections.push(buildPendingOrdersSection(context))
+    }
     if (context.runtimeContextLines && context.runtimeContextLines.length > 0) {
         sections.push(buildRuntimeContextSection(context.runtimeContextLines))
     }
@@ -69,6 +72,32 @@ function buildStrategyContext(context: StrategyRunContext): string {
         "## Strategy Context",
         "",
         context.context,
+    ].join("\n")
+}
+
+function buildPendingOrdersSection(context: StrategyRunContext): string {
+    const pendingOrders = context.pendingOrders ?? []
+    const lines = pendingOrders.map((order) => {
+        const ageMinutes = Math.max(Math.round((context.timestamp - order.submittedAt) / 60000), 0)
+        const submittedAt = formatTimestamp(order.submittedAt)
+        const limitPrice = order.limitPrice !== undefined ? ` | Limit: ${order.limitPrice}` : ""
+        const avgFillPrice = order.avgFillPrice !== undefined ? ` | Avg Fill: ${order.avgFillPrice}` : ""
+
+        return [
+            `- ${order.orderId}`,
+            `  Structure/Instrument: ${order.instrument}`,
+            `  Status: ${order.status} | Action: ${order.action} | Filled: ${order.filledQuantity}/${order.quantity} | Remaining: ${order.remainingQuantity}${limitPrice}${avgFillPrice}`,
+            `  Submitted: ${submittedAt} (${ageMinutes} minutes ago)`,
+            `  Recommended Next Action: ${order.recommendedAction}`,
+        ].join("\n")
+    })
+
+    return [
+        "## Pending Orders To Resume",
+        "",
+        "These were refreshed from the live venue at run start. Treat them as current working orders that may need supervision before considering any new entry.",
+        "",
+        ...lines,
     ].join("\n")
 }
 
@@ -193,9 +222,33 @@ function buildPolicySection(context: StrategyRunContext): string {
             "",
             "If an order is rejected, revise parameters and retry only with materially different inputs.",
         )
+    } else if (context.app === "alpaca-options") {
+        lines.push(
+            "",
+            "## Alpaca Iron Condor Order Requirements",
+            "",
+            "Use `propose_order` only for new 4-leg iron condor entries.",
+            "- Top-level instrument format: `IC:UNDERLYING:YYYY-MM-DD:QUANTITY`",
+            "- Each leg instrument must be a valid OCC option symbol",
+            "- Entry leg sides must be exactly two `sell_to_open` shorts and two `buy_to_open` wings",
+            "- Use quantity as the number of full structures and leg quantity `1` for each leg",
+            "- Supported order type: `limit` only",
+            "- Supported time in force: `day` only",
+            "- `limitPrice` is the net credit for the full structure, not a per-leg price",
+            "",
+            "Lifecycle expectations:",
+            "- Use `modify_order` only to improve or reduce the limit price on a still-working entry order",
+            "- Use `get_order_status` and `wait_for_order_update` to supervise working orders",
+            "- Use `propose_close` to close an already-filled iron condor structure",
+            "- Do not submit single-leg options, partial structures, stop orders, or duplicate replacement entries",
+        )
     }
 
     return lines.join("\n")
+}
+
+function formatTimestamp(timestampMs: number): string {
+    return new Date(timestampMs).toISOString().replace(".000Z", "Z")
 }
 
 function buildToolsSection(

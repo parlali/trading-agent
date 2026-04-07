@@ -20,9 +20,32 @@ export const EVENT_TYPES = [
 ] as const
 export type EventType = typeof EVENT_TYPES[number]
 
+export const ORDER_SIDES = ["buy", "sell"] as const
+export type OrderSide = typeof ORDER_SIDES[number]
+
+export const EXECUTION_ERROR_SOURCES = [
+    "risk_engine",
+    "pre_validation",
+    "venue",
+    "network",
+    "timeout",
+    "internal",
+] as const
+export type ExecutionErrorSource = typeof EXECUTION_ERROR_SOURCES[number]
+
+export const ORDER_LEG_SIDES = [
+    "buy",
+    "sell",
+    "buy_to_open",
+    "sell_to_open",
+    "buy_to_close",
+    "sell_to_close",
+] as const
+export type OrderLegSide = typeof ORDER_LEG_SIDES[number]
+
 export interface OrderIntent {
     instrument: string
-    side: "buy" | "sell"
+    side: OrderSide
     quantity: number
     orderType: "market" | "limit" | "stop" | "stop_limit"
     limitPrice?: number
@@ -34,7 +57,7 @@ export interface OrderIntent {
 
 export interface OrderLeg {
     instrument: string
-    side: "buy" | "sell"
+    side: OrderLegSide
     quantity: number
     limitPrice?: number
 }
@@ -46,6 +69,16 @@ export interface ExecutionResult {
     fillPrice?: number
     timestamp: number
     error?: string
+    errorDetail?: ExecutionErrorDetail
+    intentUpdates?: Partial<OrderIntent>
+}
+
+export interface ExecutionErrorDetail {
+    source: ExecutionErrorSource
+    message: string
+    code?: string
+    retryable?: boolean
+    details?: Record<string, unknown>
 }
 
 export interface Position {
@@ -79,10 +112,26 @@ export interface StrategyRunContext {
     context: string
     runtimeContextLines?: string[]
     schedule?: string
+    pendingOrders?: PendingOrderContext[]
     previousRunSummary?: {
         summary: string
         endedAt: number
     }
+}
+
+export interface PendingOrderContext {
+    orderId: string
+    instrument: string
+    action: OrderAction
+    status: OrderStatus
+    quantity: number
+    filledQuantity: number
+    remainingQuantity: number
+    submittedAt: number
+    updatedAt: number
+    limitPrice?: number
+    avgFillPrice?: number
+    recommendedAction: string
 }
 
 export interface ValidationResult {

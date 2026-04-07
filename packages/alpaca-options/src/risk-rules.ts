@@ -1,7 +1,10 @@
 import {
     alpacaOptionsPolicySchema,
+    getIntentAction,
     type AccountState,
     type OrderIntent,
+    type OrderLeg,
+    type OrderLegSide,
     type Position,
     type RiskValidator,
 } from "@valiq-trading/core"
@@ -13,11 +16,31 @@ interface ParsedOptionContract {
     strike: number
 }
 
+interface NormalizedOptionLeg extends ParsedOptionContract {
+    instrument: string
+    quantity: number
+    side: OrderLegSide
+    direction: "buy" | "sell"
+    positionEffect: "open" | "close"
+}
+
+const SUPPORTED_ALPACA_ORDER_TYPE = "limit"
+const SUPPORTED_ALPACA_TIME_IN_FORCE = "day"
+
 export const alpacaRiskValidators: readonly RiskValidator[] = [
+    ironCondorStructureValidator,
     maxLossPerPlayValidator,
     expiryValidationValidator,
     spreadWidthValidationValidator,
 ]
+
+export function buildIronCondorInstrument(
+    underlying: string,
+    expiration: string,
+    quantity: number
+): string {
+    return `IC:${underlying.toUpperCase()}:${expiration}:${quantity}`
+}
 
 export function parseOptionContractSymbol(symbol: string): ParsedOptionContract | null {
     const normalized = symbol.trim().toUpperCase()
@@ -44,6 +67,160 @@ export function parseOptionContractSymbol(symbol: string): ParsedOptionContract 
         expiration: `${year}-${month}-${day}`,
         optionType: typePart === "C" ? "call" : "put",
         strike: Number(strikePart) / 1000,
+    }
+}
+
+function ironCondorStructureValidator(intent: OrderIntent) {
+    const action = getIntentAction(intent)
+
+    if (action === "adjustment") {
+        return {
+            allowed: false,
+            reason: "Alpaca options adjustments are not supported for this strategy path. Use modify_order for working entries or propose_close for filled structures.",
+        }
+    }
+
+    if (!intent.legs || intent.legs.length === 0) {
+        return {
+            allowed: false,
+            reason: "Alpaca options orders must be submitted as exactly 4 option legs",
+        }
+    }
+
+    if (intent.legs.length !== 4) {
+        return {
+            allowed: false,
+            reason: "Alpaca iron condor orders must contain exactly 4 legs",
+        }
+    }
+
+    if (!Number.isInteger(intent.quantity) || intent.quantity <= 0) {
+        return {
+            allowed: false,
+            reason: "Alpaca iron condor orders require a positive integer structure quantity",
+        }
+    }
+
+    if (intent.orderType !== SUPPORTED_ALPACA_ORDER_TYPE) {
+        return {
+            allowed: false,
+            reason: "Alpaca iron condor orders only support limit pricing",
+        }
+    }
+
+    if (intent.timeInForce !== SUPPORTED_ALPACA_TIME_IN_FORCE) {
+        return {
+            allowed: false,
+            reason: "Alpaca iron condor orders only support day time in force",
+        }
+    }
+
+    if (intent.stopPrice !== undefined) {
+        return {
+            allowed: false,
+            reason: "Alpaca iron condor orders do not support stop prices",
+        }
+    }
+
+    if (intent.limitPrice === undefined || intent.limitPrice <= 0) {
+        return {
+            allowed: false,
+            reason: "Alpaca iron condor orders require a positive net credit/debit limit price",
+        }
+    }
+
+    if (intent.legs.some((leg) => leg.limitPrice !== undefined)) {
+        return {
+            allowed: false,
+            reason: "Per-leg limit prices are not supported for Alpaca iron condor orders",
+        }
+    }
+
+    const normalizedLegs = normalizeOptionLegs(intent)
+    if (!Array.isArray(normalizedLegs)) {
+        return normalizedLegs
+    }
+
+    const expirations = new Set(normalizedLegs.map((leg) => leg.expiration))
+    if (expirations.size !== 1) {
+        return {
+            allowed: false,
+            reason: "All legs in an Alpaca options structure must share the same expiration",
+        }
+    }
+
+    const underlyings = new Set(normalizedLegs.map((leg) => leg.underlying))
+    if (underlyings.size !== 1) {
+        return {
+            allowed: false,
+            reason: "All legs in an Alpaca iron condor must share the same underlying",
+        }
+    }
+
+    const calls = normalizedLegs.filter((leg) => leg.optionType === "call")
+    const puts = normalizedLegs.filter((leg) => leg.optionType === "put")
+    const buys = normalizedLegs.filter((leg) => leg.direction === "buy")
+    const sells = normalizedLegs.filter((leg) => leg.direction === "sell")
+
+    if (calls.length !== 2 || puts.length !== 2 || buys.length !== 2 || sells.length !== 2) {
+        return {
+            allowed: false,
+            reason: "Alpaca iron condor entries must have 2 calls, 2 puts, 2 buys, and 2 sells",
+        }
+    }
+
+    const expectedEffect = action === "close" ? "close" : "open"
+    if (normalizedLegs.some((leg) => leg.positionEffect !== expectedEffect)) {
+        return {
+            allowed: false,
+            reason: action === "close"
+                ? "Closing a structure requires buy_to_close/sell_to_close legs"
+                : "Opening a structure requires buy_to_open/sell_to_open legs",
+        }
+    }
+
+    if (!isIronCondorGeometry(calls, puts)) {
+        return {
+            allowed: false,
+            reason: "Leg strikes do not form a valid iron condor geometry",
+        }
+    }
+
+    if (!hasSupportedLegRatios(intent, normalizedLegs)) {
+        return {
+            allowed: false,
+            reason: "Each Alpaca iron condor leg must use a 1-lot ratio matching the top-level structure quantity",
+        }
+    }
+
+    const expiration = normalizedLegs[0]?.expiration ?? ""
+    const underlying = normalizedLegs[0]?.underlying ?? intent.instrument
+    const spreadWidth = calculateNormalizedStructureWidth(normalizedLegs)
+
+    return {
+        allowed: true,
+        adjustedIntent: {
+            ...intent,
+            instrument: buildIronCondorInstrument(underlying, expiration, intent.quantity),
+            side: action === "close" ? "buy" : "sell",
+            orderType: SUPPORTED_ALPACA_ORDER_TYPE,
+            timeInForce: SUPPORTED_ALPACA_TIME_IN_FORCE,
+            stopPrice: undefined,
+            legs: normalizedLegs.map<OrderLeg>((leg) => ({
+                instrument: leg.instrument,
+                side: leg.side,
+                quantity: 1,
+            })),
+            metadata: {
+                ...intent.metadata,
+                action,
+                structureType: "iron_condor",
+                underlying,
+                expiration,
+                expectedExpiration: expiration,
+                spreadWidth,
+            },
+        },
     }
 }
 
@@ -150,23 +327,14 @@ function getIntentExpirations(intent: OrderIntent): string[] {
 }
 
 function calculateStructureWidth(intent: OrderIntent): number | null {
-    const parsedLegs = (intent.legs ?? [])
-        .map((leg) => parseOptionContractSymbol(leg.instrument))
-        .filter((value): value is ParsedOptionContract => Boolean(value))
+    const normalizedLegs = normalizeOptionLegs(intent)
 
-    if (parsedLegs.length < 4) {
+    if (!Array.isArray(normalizedLegs) || normalizedLegs.length < 4) {
         const metadataWidth = intent.metadata?.spreadWidth
         return typeof metadataWidth === "number" ? metadataWidth : null
     }
 
-    const callStrikes = parsedLegs.filter((leg) => leg.optionType === "call").map((leg) => leg.strike).sort((left, right) => left - right)
-    const putStrikes = parsedLegs.filter((leg) => leg.optionType === "put").map((leg) => leg.strike).sort((left, right) => left - right)
-
-    const callWidth = callStrikes.length >= 2 ? callStrikes[callStrikes.length - 1]! - callStrikes[0]! : 0
-    const putWidth = putStrikes.length >= 2 ? putStrikes[putStrikes.length - 1]! - putStrikes[0]! : 0
-    const width = Math.max(callWidth, putWidth)
-
-    return width > 0 ? width : null
+    return calculateNormalizedStructureWidth(normalizedLegs)
 }
 
 function estimateStructureMaxLoss(intent: OrderIntent): number | null {
@@ -195,4 +363,103 @@ function diffDays(expiration: string): number | null {
 
     const difference = expirationAt.getTime() - Date.now()
     return Math.round(difference / 86_400_000)
+}
+
+function normalizeOptionLegs(intent: OrderIntent): NormalizedOptionLeg[] | { allowed: false; reason: string } {
+    const action = getIntentAction(intent)
+    const normalizedLegs: NormalizedOptionLeg[] = []
+
+    for (const leg of intent.legs ?? []) {
+        const parsed = parseOptionContractSymbol(leg.instrument)
+        if (!parsed) {
+            return {
+                allowed: false,
+                reason: `Invalid OCC option symbol: ${leg.instrument}`,
+            }
+        }
+
+        const normalizedSide = normalizeLegSide(leg.side, action)
+        if (!normalizedSide) {
+            return {
+                allowed: false,
+                reason: `Unsupported Alpaca leg side ${leg.side} for ${action} orders`,
+            }
+        }
+
+        normalizedLegs.push({
+            ...parsed,
+            instrument: leg.instrument,
+            quantity: leg.quantity,
+            side: normalizedSide,
+            direction: normalizedSide.startsWith("buy") ? "buy" : "sell",
+            positionEffect: normalizedSide.endsWith("_close") ? "close" : "open",
+        })
+    }
+
+    return normalizedLegs
+}
+
+function normalizeLegSide(
+    side: OrderLegSide,
+    action: ReturnType<typeof getIntentAction>
+): OrderLegSide | null {
+    if (
+        side === "buy_to_open" ||
+        side === "sell_to_open" ||
+        side === "buy_to_close" ||
+        side === "sell_to_close"
+    ) {
+        return side
+    }
+
+    if (side === "buy") {
+        return action === "close" ? "buy_to_close" : "buy_to_open"
+    }
+
+    if (side === "sell") {
+        return action === "close" ? "sell_to_close" : "sell_to_open"
+    }
+
+    return null
+}
+
+function hasSupportedLegRatios(intent: OrderIntent, legs: NormalizedOptionLeg[]): boolean {
+    return legs.every((leg) => Number.isInteger(leg.quantity) && (leg.quantity === 1 || leg.quantity === intent.quantity))
+}
+
+function isIronCondorGeometry(
+    calls: NormalizedOptionLeg[],
+    puts: NormalizedOptionLeg[]
+): boolean {
+    const shortCall = calls.find((leg) => leg.direction === "sell")
+    const longCall = calls.find((leg) => leg.direction === "buy")
+    const shortPut = puts.find((leg) => leg.direction === "sell")
+    const longPut = puts.find((leg) => leg.direction === "buy")
+
+    if (!shortCall || !longCall || !shortPut || !longPut) {
+        return false
+    }
+
+    return (
+        longPut.strike < shortPut.strike &&
+        shortPut.strike < shortCall.strike &&
+        shortCall.strike < longCall.strike
+    )
+}
+
+function calculateNormalizedStructureWidth(legs: NormalizedOptionLeg[]): number | null {
+    const callStrikes = legs
+        .filter((leg) => leg.optionType === "call")
+        .map((leg) => leg.strike)
+        .sort((left, right) => left - right)
+    const putStrikes = legs
+        .filter((leg) => leg.optionType === "put")
+        .map((leg) => leg.strike)
+        .sort((left, right) => left - right)
+
+    const callWidth = callStrikes.length >= 2 ? callStrikes[callStrikes.length - 1]! - callStrikes[0]! : 0
+    const putWidth = putStrikes.length >= 2 ? putStrikes[putStrikes.length - 1]! - putStrikes[0]! : 0
+    const width = Math.max(callWidth, putWidth)
+
+    return width > 0 ? width : null
 }

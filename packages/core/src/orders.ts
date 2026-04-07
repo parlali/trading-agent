@@ -1,4 +1,5 @@
 import type { OrderIntent, ExecutionResult, Severity } from "./types"
+import { createExecutionErrorDetail, formatExecutionError } from "./utils"
 
 export const ORDER_STATUSES = [
     "pending",
@@ -191,14 +192,18 @@ export const updateOrderSnapshotFromExecution = (
     now?: number
 ): OrderSnapshot => {
     const timestamp = now ?? result.timestamp ?? Date.now()
+    const nextIntent = mergeOrderIntent(snapshot.intent, result.intentUpdates)
+    const nextQuantity = nextIntent.quantity
     const filledQuantity = result.filledQuantity ?? snapshot.filledQuantity
 
     return {
         ...snapshot,
+        quantity: nextQuantity,
         status: result.status,
         filledQuantity,
-        remainingQuantity: Math.max(snapshot.quantity - filledQuantity, 0),
+        remainingQuantity: Math.max(nextQuantity - filledQuantity, 0),
         avgFillPrice: result.fillPrice ?? snapshot.avgFillPrice,
+        intent: nextIntent,
         updatedAt: timestamp,
         polling: {
             ...snapshot.polling,
@@ -213,12 +218,81 @@ export const updateOrderSnapshotFromExecution = (
 }
 
 export const createTimedOutExecutionResult = (snapshot: OrderSnapshot, now: number = Date.now()): ExecutionResult => {
+    const errorDetail = createExecutionErrorDetail(
+        "timeout",
+        "Order tracking timed out before reaching a terminal venue status",
+        {
+            code: "ORDER_TIMEOUT",
+            retryable: true,
+            details: {
+                orderId: snapshot.orderId,
+                timeoutMs: snapshot.polling.timeoutMs,
+            },
+        }
+    )
+
     return {
         orderId: snapshot.orderId,
         status: "timed_out",
         filledQuantity: snapshot.filledQuantity,
         fillPrice: snapshot.avgFillPrice,
         timestamp: now,
-        error: "Order tracking timed out before reaching a terminal venue status",
+        error: formatExecutionError(errorDetail),
+        errorDetail,
+    }
+}
+
+export const restartOrderPollingWindow = (
+    snapshot: OrderSnapshot,
+    now: number = Date.now()
+): OrderSnapshot => {
+    return {
+        ...snapshot,
+        updatedAt: now,
+        polling: {
+            ...snapshot.polling,
+            startedAt: now,
+            lastCheckedAt: now,
+            nextCheckAt: now + snapshot.polling.pollIntervalMs,
+            timedOutAt: undefined,
+        },
+    }
+}
+
+export const pauseOrderPollingForHandoff = (
+    snapshot: OrderSnapshot,
+    reason: string,
+    now: number = Date.now()
+): OrderSnapshot => {
+    return {
+        ...snapshot,
+        updatedAt: now,
+        polling: {
+            ...snapshot.polling,
+            lastCheckedAt: now,
+            nextCheckAt: undefined,
+            timedOutAt: now,
+            lastError: reason,
+        },
+    }
+}
+
+function mergeOrderIntent(
+    intent: OrderIntent,
+    updates?: Partial<OrderIntent>
+): OrderIntent {
+    if (!updates) {
+        return intent
+    }
+
+    return {
+        ...intent,
+        ...updates,
+        metadata: updates.metadata
+            ? {
+                ...intent.metadata,
+                ...updates.metadata,
+            }
+            : intent.metadata,
     }
 }
