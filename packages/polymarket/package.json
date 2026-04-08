@@ -17,8 +17,6 @@
     },
     "dependencies": {
         "@valiq-trading/core": "workspace:*",
-        "@valiq-trading/agent": "workspace:*",
-        "@valiq-trading/convex": "workspace:*",
         "viem": "^2.21.0"
     }
 }

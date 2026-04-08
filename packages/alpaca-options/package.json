@@ -16,9 +16,6 @@
         "build": "tsc --noEmit"
     },
     "dependencies": {
-        "@valiq-trading/core": "workspace:*",
-        "@valiq-trading/agent": "workspace:*",
-        "@valiq-trading/valiq": "workspace:*",
-        "@valiq-trading/convex": "workspace:*"
+        "@valiq-trading/core": "workspace:*"
     }
 }

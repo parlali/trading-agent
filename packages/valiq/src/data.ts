@@ -1,9 +1,6 @@
 import type { ValiqDataClient } from "./client"
 import type {
     EquityOverview,
-    EquityPriceResponse,
-    EquityPriceParams,
-    EquityCurrentPriceResponse,
     EquityPerformanceResponse,
     EquityFinancialsResponse,
     EquityFinancialsParams,
@@ -20,10 +17,6 @@ import type {
     EquityAnalystRatingsResponse,
     EquityAnalystTargetsResponse,
     EquityAnalystParams,
-    OptionsChainResponse,
-    OptionsIVOverviewResponse,
-    OptionsScreeningResponse,
-    OptionsScreeningParams,
     ScreeningRequest,
     ScreeningResponse,
     MacroEconomyResponse,
@@ -64,19 +57,6 @@ export class ValiqDataAdapter {
 
     async getEquityOverview(ticker: string): Promise<EquityOverview> {
         return this.client.request<EquityOverview>(`/equity/${encodeURIComponent(ticker)}`)
-    }
-
-    async getEquityPrice(ticker: string, params?: EquityPriceParams): Promise<EquityPriceResponse> {
-        const query = params ? buildQuery(params) : ""
-        return this.client.request<EquityPriceResponse>(
-            `/equity/${encodeURIComponent(ticker)}/price${query}`
-        )
-    }
-
-    async getCurrentPrice(ticker: string): Promise<EquityCurrentPriceResponse> {
-        return this.client.request<EquityCurrentPriceResponse>(
-            `/equity/${encodeURIComponent(ticker)}/price/current`
-        )
     }
 
     async getPerformance(ticker: string, cutoff?: string): Promise<EquityPerformanceResponse> {
@@ -144,23 +124,6 @@ export class ValiqDataAdapter {
         return this.client.request<EquityAnalystTargetsResponse>(
             `/equity/${encodeURIComponent(ticker)}/analyst/targets${query}`
         )
-    }
-
-    async getOptionsChain(ticker: string): Promise<OptionsChainResponse> {
-        return this.client.request<OptionsChainResponse>(
-            `/options/${encodeURIComponent(ticker)}/chain`
-        )
-    }
-
-    async getOptionsIV(ticker: string): Promise<OptionsIVOverviewResponse> {
-        return this.client.request<OptionsIVOverviewResponse>(
-            `/options/${encodeURIComponent(ticker)}/iv`
-        )
-    }
-
-    async screenOptions(params?: OptionsScreeningParams): Promise<OptionsScreeningResponse> {
-        const query = params ? buildQuery(params) : ""
-        return this.client.request<OptionsScreeningResponse>(`/options/screening${query}`)
     }
 
     async screenAssets(criteria: ScreeningRequest): Promise<ScreeningResponse> {

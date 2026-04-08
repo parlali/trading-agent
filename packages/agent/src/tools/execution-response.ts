@@ -5,6 +5,7 @@ export function toExecutionToolResult(
     options: {
         trackedOrder?: OrderSnapshot | null
         validation?: ValidationResult
+        extra?: Record<string, unknown>
     } = {}
 ): Record<string, unknown> {
     const payload: Record<string, unknown> = {
@@ -14,6 +15,7 @@ export function toExecutionToolResult(
         fillPrice: result.fillPrice,
         error: result.error,
         errorDetail: result.errorDetail,
+        priceVerification: result.priceVerification,
     }
 
     if (options.trackedOrder !== undefined) {
@@ -25,6 +27,10 @@ export function toExecutionToolResult(
             allowed: options.validation.allowed,
             reason: options.validation.reason,
         }
+    }
+
+    if (options.extra) {
+        Object.assign(payload, options.extra)
     }
 
     return payload

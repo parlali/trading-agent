@@ -3,11 +3,22 @@ import {
     type AccountState,
     type ExecutionResult,
     type OrderIntent,
+    type PriceVerification,
+    type PriceVerifier,
     type Position,
     type VenueAdapter,
     type WorkingOrder,
 } from "@valiq-trading/core"
-import { AlpacaClient, type AlpacaPositionResponse } from "./alpaca-client"
+import {
+    AlpacaClient,
+    type AlpacaEquityQuote,
+    type AlpacaEquitySnapshot,
+    type AlpacaOptionContract,
+    type AlpacaOptionContractsParams,
+    type AlpacaOptionChainParams,
+    type AlpacaOptionSnapshotsResponse,
+    type AlpacaPositionResponse,
+} from "./alpaca-client"
 import { buildIronCondorInstrument, parseOptionContractSymbol } from "./risk-rules"
 
 interface PositionGroup {
@@ -21,8 +32,52 @@ interface PositionGroup {
     unrealizedPnl?: number
 }
 
-export class AlpacaOptionsVenueAdapter implements VenueAdapter {
+export class AlpacaOptionsVenueAdapter implements VenueAdapter, PriceVerifier {
     constructor(private readonly client: AlpacaClient) {}
+
+    async getOptionsChain(
+        underlyingSymbol: string,
+        params: AlpacaOptionChainParams = {}
+    ): Promise<{
+        contracts: AlpacaOptionContract[]
+        snapshots: Record<string, AlpacaOptionSnapshotsResponse["snapshots"][string]>
+        nextPageToken?: string
+    }> {
+        const contractsResponse = await this.client.getOptionContracts({
+            underlyingSymbol,
+            ...params,
+        })
+        const snapshotsResponse = await this.client.getOptionSnapshotsByUnderlying(
+            underlyingSymbol,
+            params
+        )
+
+        return {
+            contracts: contractsResponse.contracts,
+            snapshots: snapshotsResponse.snapshots,
+            nextPageToken: contractsResponse.nextPageToken ?? snapshotsResponse.nextPageToken,
+        }
+    }
+
+    async getOptionContracts(
+        params: AlpacaOptionContractsParams
+    ): Promise<{ contracts: AlpacaOptionContract[]; nextPageToken?: string }> {
+        return await this.client.getOptionContracts(params)
+    }
+
+    async getOptionSnapshots(
+        symbols: string[]
+    ): Promise<AlpacaOptionSnapshotsResponse> {
+        return await this.client.getOptionSnapshots(symbols)
+    }
+
+    async getQuote(symbol: string): Promise<AlpacaEquityQuote> {
+        return await this.client.getLatestEquityQuote(symbol)
+    }
+
+    async getEquitySnapshot(symbol: string): Promise<AlpacaEquitySnapshot> {
+        return await this.client.getEquitySnapshot(symbol)
+    }
 
     async getPositions(): Promise<Position[]> {
         const rawPositions = await this.client.getPositions()
@@ -116,6 +171,181 @@ export class AlpacaOptionsVenueAdapter implements VenueAdapter {
 
     async getOrderStatus(orderId: string): Promise<ExecutionResult> {
         return await this.client.getOrder(orderId)
+    }
+
+    async verify(intent: OrderIntent): Promise<PriceVerification> {
+        const parsedLegs = (intent.legs ?? []).map((leg) => ({
+            leg,
+            parsed: parseOptionContractSymbol(leg.instrument),
+        }))
+
+        if (parsedLegs.length === 0) {
+            return {
+                ok: false,
+                status: "block",
+                livePrices: {},
+                proposedPrice: intent.limitPrice,
+                message: "Alpaca price verification requires explicit option legs.",
+                details: {
+                    instrument: intent.instrument,
+                },
+            }
+        }
+
+        const invalidLeg = parsedLegs.find((entry) => !entry.parsed)
+        if (invalidLeg) {
+            return {
+                ok: false,
+                status: "block",
+                livePrices: {},
+                proposedPrice: intent.limitPrice,
+                message: `Invalid OCC option symbol: ${invalidLeg.leg.instrument}`,
+                details: {
+                    invalidSymbol: invalidLeg.leg.instrument,
+                },
+            }
+        }
+
+        const normalizedLegs = parsedLegs.map((entry) => ({
+            leg: entry.leg,
+            parsed: entry.parsed!,
+        }))
+        const underlyings = new Set(normalizedLegs.map((entry) => entry.parsed.underlying))
+        const expirations = new Set(normalizedLegs.map((entry) => entry.parsed.expiration))
+
+        if (underlyings.size !== 1 || expirations.size !== 1) {
+            return {
+                ok: false,
+                status: "block",
+                livePrices: {},
+                proposedPrice: intent.limitPrice,
+                message: "Submitted Alpaca legs do not share one underlying and expiration.",
+                details: {
+                    legs: normalizedLegs.map((entry) => ({
+                        symbol: entry.leg.instrument,
+                        side: entry.leg.side,
+                        underlying: entry.parsed.underlying,
+                        expiration: entry.parsed.expiration,
+                    })),
+                },
+            }
+        }
+
+        const underlyingSymbol = normalizedLegs[0]?.parsed.underlying
+        const expirationDate = normalizedLegs[0]?.parsed.expiration
+
+        if (!underlyingSymbol || !expirationDate) {
+            return {
+                ok: false,
+                status: "block",
+                livePrices: {},
+                proposedPrice: intent.limitPrice,
+                message: "Submitted Alpaca structure could not be normalized for price verification.",
+            }
+        }
+
+        const [contractsResponse, snapshotsResponse, underlyingQuote, underlyingSnapshot] = await Promise.all([
+            this.getOptionContracts({
+                underlyingSymbol,
+                expirationDate,
+                limit: 1000,
+            }),
+            this.getOptionSnapshots(normalizedLegs.map((entry) => entry.leg.instrument)),
+            this.getQuote(underlyingSymbol),
+            this.getEquitySnapshot(underlyingSymbol),
+        ])
+
+        const knownContracts = new Set(
+            contractsResponse.contracts.map((contract) => contract.symbol.toUpperCase())
+        )
+        const missingContracts = normalizedLegs
+            .map((entry) => entry.leg.instrument.toUpperCase())
+            .filter((symbol) => !knownContracts.has(symbol))
+
+        const legQuotes = normalizedLegs.map((entry) => {
+            const symbol = entry.leg.instrument.toUpperCase()
+            const snapshot = snapshotsResponse.snapshots[symbol]
+            const bid = snapshot?.latestQuote?.bidPrice
+            const ask = snapshot?.latestQuote?.askPrice
+            const midpoint = bid !== undefined && ask !== undefined
+                ? (bid + ask) / 2
+                : undefined
+
+            return {
+                symbol,
+                side: entry.leg.side,
+                bid,
+                ask,
+                midpoint,
+                impliedVolatility: snapshot?.impliedVolatility,
+                openInterest: snapshot?.openInterest,
+            }
+        })
+
+        const details: Record<string, unknown> = {
+            underlyingSymbol,
+            expirationDate,
+            underlyingQuote: {
+                bid: underlyingQuote.bidPrice,
+                ask: underlyingQuote.askPrice,
+                lastTradePrice: underlyingSnapshot.latestTrade?.price,
+            },
+            legs: legQuotes,
+        }
+
+        if (missingContracts.length > 0) {
+            return {
+                ok: false,
+                status: "block",
+                livePrices: {},
+                proposedPrice: intent.limitPrice,
+                message: `Alpaca does not recognize these OCC symbols: ${missingContracts.join(", ")}`,
+                details: {
+                    ...details,
+                    missingContracts,
+                },
+            }
+        }
+
+        const missingSnapshots = legQuotes
+            .filter((leg) => leg.bid === undefined || leg.ask === undefined)
+            .map((leg) => leg.symbol)
+        const livePrices = computeAlpacaStructurePrices(legQuotes)
+        const proposedPrice = intent.limitPrice
+        const drift = livePrices.mid !== undefined && proposedPrice !== undefined
+            ? proposedPrice - livePrices.mid
+            : undefined
+        const driftPercent = livePrices.mid && drift !== undefined
+            ? (drift / livePrices.mid) * 100
+            : undefined
+
+        if (missingSnapshots.length > 0) {
+            return {
+                ok: true,
+                status: "warn",
+                livePrices,
+                proposedPrice,
+                drift,
+                driftPercent,
+                message: `Alpaca live snapshots were unavailable for ${missingSnapshots.join(", ")}.`,
+                details: {
+                    ...details,
+                    missingSnapshots,
+                },
+            }
+        }
+
+        return {
+            ok: true,
+            livePrices,
+            proposedPrice,
+            drift,
+            driftPercent,
+            message: livePrices.mid !== undefined && proposedPrice !== undefined
+                ? `Compared proposed net price ${proposedPrice} against live midpoint ${roundPrice(livePrices.mid)}.`
+                : "Captured live Alpaca structure prices before submission.",
+            details,
+        }
     }
 }
 
@@ -293,6 +523,45 @@ function resolveGroupForClose(
     }
 
     return null
+}
+
+function computeAlpacaStructurePrices(
+    legs: Array<{
+        side: string
+        bid?: number
+        ask?: number
+        midpoint?: number
+    }>
+): PriceVerification["livePrices"] {
+    if (legs.length === 0) {
+        return {}
+    }
+
+    const bid = legs.every((leg) => leg.bid !== undefined && leg.ask !== undefined)
+        ? roundPrice(legs.reduce((sum, leg) => {
+            return sum + (leg.side.startsWith("sell") ? (leg.bid ?? 0) : -(leg.ask ?? 0))
+        }, 0))
+        : undefined
+    const ask = legs.every((leg) => leg.bid !== undefined && leg.ask !== undefined)
+        ? roundPrice(legs.reduce((sum, leg) => {
+            return sum + (leg.side.startsWith("sell") ? (leg.ask ?? 0) : -(leg.bid ?? 0))
+        }, 0))
+        : undefined
+    const mid = legs.every((leg) => leg.midpoint !== undefined)
+        ? roundPrice(legs.reduce((sum, leg) => {
+            return sum + (leg.side.startsWith("sell") ? 1 : -1) * (leg.midpoint ?? 0)
+        }, 0))
+        : undefined
+    const spread = bid !== undefined && ask !== undefined
+        ? roundPrice(Math.abs(ask - bid))
+        : undefined
+
+    return {
+        bid,
+        ask,
+        mid,
+        spread,
+    }
 }
 
 function toNumber(value: string | undefined): number {

@@ -7,6 +7,7 @@ import {
     type ExecutionPipeline,
     type MT5Policy,
     type OrderIntent,
+    type PriceVerification,
 } from "@valiq-trading/core"
 import type { MT5VenueAdapter } from "@valiq-trading/mt5"
 import {
@@ -54,6 +55,7 @@ export interface MT5OrderResult {
     fillPrice?: number
     error?: string
     errorDetail?: ExecutionErrorDetail
+    priceVerification?: PriceVerification
     computed?: {
         entryPrice: number
         stopLoss: number
@@ -190,6 +192,7 @@ export async function prepareMT5Order(
         fillPrice: result.fillPrice,
         error: result.error,
         errorDetail: result.errorDetail,
+        priceVerification: result.priceVerification,
         computed: {
             entryPrice,
             stopLoss: params.stopLoss,

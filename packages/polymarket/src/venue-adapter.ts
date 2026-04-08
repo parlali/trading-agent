@@ -4,13 +4,55 @@ import {
     type AccountState,
     type ExecutionResult,
     type OrderIntent,
+    type PriceVerification,
+    type PriceVerifier,
     type Position,
     type VenueAdapter,
     type WorkingOrder,
 } from "@valiq-trading/core"
-import type { PolymarketClient, PolymarketOpenOrder, PolymarketTrade } from "./polymarket-client"
+import type {
+    PolymarketClient,
+    PolymarketMarket,
+    PolymarketOpenOrder,
+    PolymarketOrderBook,
+    PolymarketTrade,
+} from "./polymarket-client"
 
-export class PolymarketVenueAdapter implements VenueAdapter {
+export interface PolymarketMarketPrice {
+    tokenId: string
+    midpoint: number
+    bestBid: number
+    bestAsk: number
+    spread: number
+    executablePrice?: number
+    executableSide?: "buy" | "sell"
+}
+
+export interface PolymarketMarketSearchResult {
+    conditionId: string
+    question: string
+    category: string
+    description: string
+    marketSlug: string
+    active: boolean
+    closed: boolean
+    negRisk: boolean
+    minimumOrderSize: number
+    minimumTickSize: number
+    volume?: number
+    liquidity?: number
+    endDateIso: string
+    tokens: Array<{
+        tokenId: string
+        outcome: string
+        midpoint?: number
+        bestBid?: number
+        bestAsk?: number
+        spread?: number
+    }>
+}
+
+export class PolymarketVenueAdapter implements VenueAdapter, PriceVerifier {
     private positionsCache: { positions: Position[]; fetchedAt: number } | null = null
     private readonly POSITIONS_CACHE_TTL = 5000
 
@@ -18,6 +60,55 @@ export class PolymarketVenueAdapter implements VenueAdapter {
 
     async getPrice(tokenId: string, side: "buy" | "sell"): Promise<number> {
         return this.client.getPrice(tokenId, side)
+    }
+
+    async getMarketPrice(
+        tokenId: string,
+        side?: "buy" | "sell"
+    ): Promise<PolymarketMarketPrice> {
+        const [midpoint, spread, executablePrice] = await Promise.all([
+            this.client.getMidpoint(tokenId),
+            this.client.getSpread(tokenId),
+            side ? this.client.getPrice(tokenId, side) : Promise.resolve(undefined),
+        ])
+
+        return {
+            tokenId,
+            midpoint,
+            bestBid: spread.bid,
+            bestAsk: spread.ask,
+            spread: spread.spread,
+            executablePrice,
+            executableSide: side,
+        }
+    }
+
+    async getOrderBook(tokenId: string): Promise<PolymarketOrderBook> {
+        return await this.client.getOrderBook(tokenId)
+    }
+
+    async searchMarkets(params: {
+        query?: string
+        conditionId?: string
+        limit?: number
+    }): Promise<PolymarketMarketSearchResult[]> {
+        if (params.conditionId) {
+            const market = await this.client.getMarket(params.conditionId)
+            return [await this.buildMarketSearchResult(market)]
+        }
+
+        const query = params.query?.trim().toLowerCase()
+        const limit = params.limit ?? 10
+        const markets = await this.client.getAllActiveMarkets()
+        const filtered = query
+            ? markets.filter((market) => matchesMarketQuery(market, query))
+            : markets
+
+        return await Promise.all(
+            filtered
+                .slice(0, limit)
+                .map(async (market) => await this.buildMarketSearchResult(market))
+        )
     }
 
     async getPositions(): Promise<Position[]> {
@@ -252,6 +343,83 @@ export class PolymarketVenueAdapter implements VenueAdapter {
         const order = await this.client.getOrder(orderId)
         return mapOpenOrderToExecutionResult(order)
     }
+
+    async verify(intent: OrderIntent): Promise<PriceVerification> {
+        const marketPrice = await this.getMarketPrice(intent.instrument, intent.side)
+        const proposedPrice = intent.orderType === "limit" || intent.orderType === "stop_limit"
+            ? intent.limitPrice
+            : undefined
+        const drift = proposedPrice !== undefined
+            ? proposedPrice - marketPrice.midpoint
+            : undefined
+        const driftPercent = marketPrice.midpoint > 0 && drift !== undefined
+            ? (drift / marketPrice.midpoint) * 100
+            : undefined
+
+        return {
+            ok: true,
+            status: proposedPrice === undefined ? "skipped" : undefined,
+            livePrices: {
+                bid: marketPrice.bestBid,
+                ask: marketPrice.bestAsk,
+                mid: marketPrice.midpoint,
+                spread: marketPrice.spread,
+            },
+            proposedPrice,
+            drift,
+            driftPercent,
+            message: proposedPrice === undefined
+                ? "Captured live Polymarket prices before submission. No limit price was provided for drift comparison."
+                : `Compared proposed Polymarket price ${proposedPrice} against live midpoint ${marketPrice.midpoint}.`,
+            details: {
+                tokenId: intent.instrument,
+                executablePrice: marketPrice.executablePrice,
+                executableSide: marketPrice.executableSide,
+            },
+        }
+    }
+
+    private async buildMarketSearchResult(
+        market: PolymarketMarket
+    ): Promise<PolymarketMarketSearchResult> {
+        const tokens = await Promise.all(
+            market.tokens.map(async (token) => {
+                try {
+                    const price = await this.getMarketPrice(token.tokenId)
+                    return {
+                        tokenId: token.tokenId,
+                        outcome: token.outcome,
+                        midpoint: price.midpoint,
+                        bestBid: price.bestBid,
+                        bestAsk: price.bestAsk,
+                        spread: price.spread,
+                    }
+                } catch {
+                    return {
+                        tokenId: token.tokenId,
+                        outcome: token.outcome,
+                    }
+                }
+            })
+        )
+
+        return {
+            conditionId: market.conditionId,
+            question: market.question,
+            category: market.category,
+            description: market.description,
+            marketSlug: market.marketSlug,
+            active: market.active,
+            closed: market.closed,
+            negRisk: market.negRisk,
+            minimumOrderSize: market.minimumOrderSize,
+            minimumTickSize: market.minimumTickSize,
+            volume: market.volume,
+            liquidity: market.liquidity,
+            endDateIso: market.endDateIso,
+            tokens,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -338,4 +506,21 @@ function mapOpenOrderToExecutionResult(order: PolymarketOpenOrder): ExecutionRes
         fillPrice: sizeMatched > 0 ? price : undefined,
         timestamp: Date.now(),
     }
+}
+
+function matchesMarketQuery(
+    market: PolymarketMarket,
+    query: string
+): boolean {
+    const haystack = [
+        market.question,
+        market.description,
+        market.category,
+        market.marketSlug,
+        ...market.tokens.map((token) => token.outcome),
+    ]
+        .join(" ")
+        .toLowerCase()
+
+    return haystack.includes(query)
 }

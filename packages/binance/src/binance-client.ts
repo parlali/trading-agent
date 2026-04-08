@@ -71,6 +71,14 @@ export interface BinancePremiumIndex {
     time: number
 }
 
+export interface BinanceOrderBookDepth {
+    lastUpdateId: number
+    bids: Array<[string, string]>
+    asks: Array<[string, string]>
+    E?: number
+    T?: number
+}
+
 export interface BinanceFundingRate {
     symbol: string
     fundingRate: string
@@ -227,6 +235,13 @@ export class BinanceClient {
 
     async getFundingRates(symbol: string, limit = 1): Promise<BinanceFundingRate[]> {
         return await this.publicRequest<BinanceFundingRate[]>("GET", "/fapi/v1/fundingRate", {
+            symbol,
+            limit,
+        })
+    }
+
+    async getDepth(symbol: string, limit = 20): Promise<BinanceOrderBookDepth> {
+        return await this.publicRequest<BinanceOrderBookDepth>("GET", "/fapi/v1/depth", {
             symbol,
             limit,
         })

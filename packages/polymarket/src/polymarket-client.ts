@@ -82,6 +82,8 @@ export interface PolymarketMarket {
     negRisk: boolean
     minimumOrderSize: number
     minimumTickSize: number
+    volume?: number
+    liquidity?: number
     endDateIso: string
     marketSlug: string
 }
@@ -661,6 +663,8 @@ interface RawMarket {
     neg_risk: boolean
     minimum_order_size: number
     minimum_tick_size: number
+    volume?: number | string
+    liquidity?: number | string
     end_date_iso: string
     market_slug: string
 }
@@ -678,6 +682,8 @@ function mapRawMarket(raw: RawMarket): PolymarketMarket {
         negRisk: raw.neg_risk,
         minimumOrderSize: raw.minimum_order_size,
         minimumTickSize: raw.minimum_tick_size,
+        volume: typeof raw.volume === "number" ? raw.volume : raw.volume ? Number(raw.volume) : undefined,
+        liquidity: typeof raw.liquidity === "number" ? raw.liquidity : raw.liquidity ? Number(raw.liquidity) : undefined,
         endDateIso: raw.end_date_iso,
         marketSlug: raw.market_slug,
     }

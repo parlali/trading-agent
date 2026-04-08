@@ -27,6 +27,33 @@ import {
     getExecutionErrorDetail,
 } from "./utils"
 
+export const PRICE_VERIFICATION_STATUSES = ["pass", "warn", "block", "skipped"] as const
+export type PriceVerificationStatus = typeof PRICE_VERIFICATION_STATUSES[number]
+
+export interface PriceVerificationLivePrices {
+    bid?: number
+    ask?: number
+    mid?: number
+    spread?: number
+}
+
+export interface PriceVerification {
+    ok: boolean
+    status?: PriceVerificationStatus
+    livePrices: PriceVerificationLivePrices
+    proposedPrice?: number
+    drift?: number
+    driftPercent?: number
+    warningThresholdPercent?: number
+    blockingThresholdPercent?: number
+    message: string
+    details?: Record<string, unknown>
+}
+
+export interface PriceVerifier {
+    verify(intent: OrderIntent): Promise<PriceVerification>
+}
+
 export interface VenueAdapter {
     getPositions(): Promise<Position[]>
     getAccountState(): Promise<AccountState>
@@ -51,6 +78,7 @@ export interface ExecutionPipelineConfig {
     venueName: string
     policy: Record<string, unknown>
     riskValidators?: readonly RiskValidator[]
+    priceVerification?: PriceVerificationConfig
     logger: Logger
     tradeEventLogger?: TradeEventLogger
     orderPersistence?: OrderPersistenceAdapter
@@ -75,17 +103,27 @@ export interface OrderLifecycleConfig {
     timeout?: number
 }
 
+export interface PriceVerificationConfig {
+    warningThresholdPercent?: number
+    blockingThresholdPercent?: number
+}
+
 export type OrderStatusCallback = (
     update: OrderUpdateContext
 ) => OrderUpdateDecision | void | Promise<OrderUpdateDecision | void>
 
 const ALLOWED_VALIDATION: ValidationResult = { allowed: true }
+const DEFAULT_PRICE_VERIFICATION_CONFIG: Required<PriceVerificationConfig> = {
+    warningThresholdPercent: 10,
+    blockingThresholdPercent: 20,
+}
 
 export class ExecutionPipeline {
     private venue: VenueAdapter
     private venueName: string
     private policy: Record<string, unknown>
     private riskValidators: readonly RiskValidator[]
+    private priceVerificationConfig: Required<PriceVerificationConfig>
     private logger: Logger
     private tradeEventLogger?: TradeEventLogger
     private lifecycleManager: OrderLifecycleManager
@@ -100,6 +138,7 @@ export class ExecutionPipeline {
         this.venueName = config.venueName
         this.policy = config.policy
         this.riskValidators = config.riskValidators ?? BASE_RISK_VALIDATORS
+        this.priceVerificationConfig = resolvePriceVerificationConfig(config.priceVerification)
         this.logger = config.logger
         this.tradeEventLogger = config.tradeEventLogger
         this.runId = config.runId
@@ -157,6 +196,37 @@ export class ExecutionPipeline {
         }
 
         const finalIntent = validation.adjustedIntent ?? intentWithLifecycleMetadata
+        const priceVerification = await this.runPriceVerification(finalIntent)
+
+        if (priceVerification?.status === "block") {
+            this.logger.warn("Order blocked by price verification", {
+                venue: this.venueName,
+                intent: finalIntent,
+                priceVerification,
+            })
+            const errorDetail = createExecutionErrorDetail(
+                "pre_validation",
+                priceVerification.message,
+                {
+                    code: "PRICE_VERIFICATION_BLOCKED",
+                    retryable: false,
+                    details: {
+                        priceVerification,
+                    },
+                }
+            )
+            const rejectedResult: ExecutionResult = {
+                orderId: "",
+                status: "rejected",
+                filledQuantity: 0,
+                timestamp: Date.now(),
+                error: formatExecutionError(errorDetail),
+                errorDetail,
+                priceVerification,
+            }
+            void this.tradeEventLogger?.logSubmission(this.runId, this.strategyId, rejectedResult, finalIntent)
+            return { result: rejectedResult, validation }
+        }
 
         if (this.policy.dryRun) {
             this.logger.info("Dry run -- order simulated", { intent: finalIntent })
@@ -166,6 +236,7 @@ export class ExecutionPipeline {
                 filledQuantity: finalIntent.quantity,
                 fillPrice: finalIntent.limitPrice ?? (finalIntent.metadata?.estimatedPrice as number) ?? 0,
                 timestamp: Date.now(),
+                priceVerification,
             }
             void this.tradeEventLogger?.logSubmission(this.runId, this.strategyId, mockResult, finalIntent)
             const handle = await this.lifecycleManager.registerSubmittedOrder(
@@ -187,16 +258,24 @@ export class ExecutionPipeline {
 
         try {
             const result = await this.venue.submitOrder(finalIntent)
-            this.logger.info("Order submitted", { orderId: result.orderId, status: result.status })
-            void this.tradeEventLogger?.logSubmission(this.runId, this.strategyId, result, finalIntent)
+            const resultWithVerification: ExecutionResult = {
+                ...result,
+                priceVerification,
+            }
+            this.logger.info("Order submitted", {
+                orderId: resultWithVerification.orderId,
+                status: resultWithVerification.status,
+                priceVerification,
+            })
+            void this.tradeEventLogger?.logSubmission(this.runId, this.strategyId, resultWithVerification, finalIntent)
             const handle = await this.lifecycleManager.registerSubmittedOrder(
                 finalIntent,
-                result,
+                resultWithVerification,
                 lifecycleContext.action,
                 lifecycleContext.metadata
             )
-            this.updateOwnedInstruments(lifecycleContext.action, finalIntent.instrument, result)
-            return { result, validation, handle }
+            this.updateOwnedInstruments(lifecycleContext.action, finalIntent.instrument, resultWithVerification)
+            return { result: resultWithVerification, validation, handle }
         } catch (error) {
             const errorDetail = getExecutionErrorDetail(error) ?? createExecutionErrorDetail("internal", getErrorMessage(error))
             const errorMsg = formatExecutionError(errorDetail)
@@ -208,6 +287,7 @@ export class ExecutionPipeline {
                 timestamp: Date.now(),
                 error: errorMsg,
                 errorDetail,
+                priceVerification,
             }
             void this.tradeEventLogger?.logSubmission(this.runId, this.strategyId, failedResult, finalIntent)
             return { result: failedResult, validation }
@@ -500,6 +580,78 @@ export class ExecutionPipeline {
         return this.venue.getAccountState()
     }
 
+    private async runPriceVerification(intent: OrderIntent): Promise<PriceVerification | undefined> {
+        if (!hasPriceVerifier(this.venue)) {
+            return undefined
+        }
+
+        try {
+            const verification = finalizePriceVerification(
+                await this.venue.verify(intent),
+                this.priceVerificationConfig
+            )
+
+            this.logPriceVerification(intent, verification)
+            return verification
+        } catch (error) {
+            const message = getErrorMessage(error)
+            const verification = finalizePriceVerification({
+                ok: true,
+                status: "warn",
+                livePrices: {},
+                proposedPrice: resolveIntentProposedPrice(intent),
+                message: `Price verification unavailable: ${message}. Submitted without broker snapshot.`,
+                details: {
+                    venue: this.venueName,
+                    verificationError: message,
+                },
+            }, this.priceVerificationConfig)
+
+            this.logger.warn("Price verification failed", {
+                venue: this.venueName,
+                intent,
+                error: message,
+            })
+
+            return verification
+        }
+    }
+
+    private logPriceVerification(intent: OrderIntent, verification: PriceVerification): void {
+        if (verification.status === "block") {
+            this.logger.warn("Price verification blocked submission", {
+                venue: this.venueName,
+                intent,
+                priceVerification: verification,
+            })
+            return
+        }
+
+        if (verification.status === "warn") {
+            this.logger.warn("Price verification warning", {
+                venue: this.venueName,
+                intent,
+                priceVerification: verification,
+            })
+            return
+        }
+
+        if (verification.status === "skipped") {
+            this.logger.info("Price verification skipped", {
+                venue: this.venueName,
+                intent,
+                priceVerification: verification,
+            })
+            return
+        }
+
+        this.logger.info("Price verification passed", {
+            venue: this.venueName,
+            intent,
+            priceVerification: verification,
+        })
+    }
+
     private netDryRunPosition(
         instrument: string,
         side: "buy" | "sell",
@@ -590,7 +742,6 @@ export class ExecutionPipeline {
                 this.ownedInstruments.delete(currentSnapshot.instrument)
             }
         }
-
     }
 }
 
@@ -650,4 +801,108 @@ function shouldPersistModifyIntentUpdates(result: ExecutionResult): boolean {
         result.status === "partially_filled" ||
         result.status === "filled"
     )
+}
+
+function resolvePriceVerificationConfig(
+    config: PriceVerificationConfig | undefined
+): Required<PriceVerificationConfig> {
+    const warningThresholdPercent = config?.warningThresholdPercent ?? DEFAULT_PRICE_VERIFICATION_CONFIG.warningThresholdPercent
+    const blockingThresholdPercent = config?.blockingThresholdPercent ?? DEFAULT_PRICE_VERIFICATION_CONFIG.blockingThresholdPercent
+
+    return {
+        warningThresholdPercent,
+        blockingThresholdPercent: Math.max(blockingThresholdPercent, warningThresholdPercent),
+    }
+}
+
+function hasPriceVerifier(venue: VenueAdapter): venue is VenueAdapter & PriceVerifier {
+    return typeof (venue as Partial<PriceVerifier>).verify === "function"
+}
+
+function finalizePriceVerification(
+    verification: PriceVerification,
+    config: Required<PriceVerificationConfig>
+): PriceVerification {
+    const driftPercent = typeof verification.driftPercent === "number"
+        ? Math.abs(verification.driftPercent)
+        : undefined
+
+    let status = verification.status ?? "pass"
+    let ok = verification.ok
+
+    if (!ok || status === "block") {
+        status = "block"
+        ok = false
+    } else if (driftPercent !== undefined && driftPercent > config.blockingThresholdPercent) {
+        status = "block"
+        ok = false
+    } else if (
+        status !== "warn" &&
+        driftPercent !== undefined &&
+        driftPercent > config.warningThresholdPercent
+    ) {
+        status = "warn"
+        ok = true
+    }
+
+    return {
+        ...verification,
+        ok,
+        status,
+        driftPercent,
+        warningThresholdPercent: config.warningThresholdPercent,
+        blockingThresholdPercent: config.blockingThresholdPercent,
+        message: buildPriceVerificationMessage(
+            verification,
+            driftPercent,
+            status,
+            config
+        ),
+    }
+}
+
+function buildPriceVerificationMessage(
+    verification: PriceVerification,
+    driftPercent: number | undefined,
+    status: PriceVerificationStatus,
+    config: Required<PriceVerificationConfig>
+): string {
+    if (driftPercent === undefined) {
+        return verification.message
+    }
+
+    const proposedPrice = verification.proposedPrice
+    const liveMid = verification.livePrices.mid
+    const drift = verification.drift
+
+    if (verification.status === "block" || verification.ok === false) {
+        return verification.message
+    }
+
+    const liveText = liveMid !== undefined ? `live mid ${liveMid}` : "live midpoint unavailable"
+    const proposedText = proposedPrice !== undefined ? `proposed price ${proposedPrice}` : "no proposed price"
+    const driftText = drift !== undefined ? `drift ${drift}` : "drift unavailable"
+
+    if (status === "block") {
+        return `Blocked by price verification: ${proposedText}, ${liveText}, ${driftText}, drift ${driftPercent.toFixed(2)}% exceeds ${config.blockingThresholdPercent}%`
+    }
+
+    if (status === "warn") {
+        return `Price verification warning: ${proposedText}, ${liveText}, ${driftText}, drift ${driftPercent.toFixed(2)}% exceeds ${config.warningThresholdPercent}%`
+    }
+
+    return `Price verification passed: ${proposedText}, ${liveText}, ${driftText}, drift ${driftPercent.toFixed(2)}%`
+}
+
+function resolveIntentProposedPrice(intent: OrderIntent): number | undefined {
+    if (typeof intent.limitPrice === "number") {
+        return intent.limitPrice
+    }
+
+    if (typeof intent.stopPrice === "number") {
+        return intent.stopPrice
+    }
+
+    const estimatedPrice = intent.metadata?.estimatedPrice
+    return typeof estimatedPrice === "number" ? estimatedPrice : undefined
 }

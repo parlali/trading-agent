@@ -8,9 +8,15 @@ export type {
     BinanceBookTicker,
     BinancePremiumIndex,
     BinanceFundingRate,
+    BinanceOrderBookDepth,
 } from "./binance-client"
 export { BinanceVenueAdapter } from "./venue-adapter"
-export type { BinanceSymbolRules } from "./venue-adapter"
+export type {
+    BinanceSymbolRules,
+    BinanceMarketPrice,
+    BinanceOrderBook,
+    BinanceOrderBookLevel,
+} from "./venue-adapter"
 export { binanceRiskValidators } from "./risk-rules"
 export { createBinanceMarketContextLine } from "./market-context"
 export type { BinanceMarketSnapshot } from "./market-context"

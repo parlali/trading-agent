@@ -8,6 +8,7 @@ import {
     type ExecutionErrorDetail,
     type ExecutionPipeline,
     type OrderIntent,
+    type PriceVerification,
 } from "@valiq-trading/core"
 import { computeImpliedRR, computeTakeProfitFromRR } from "@valiq-trading/mt5"
 
@@ -52,6 +53,7 @@ export interface BinanceOrderResult {
     fillPrice?: number
     error?: string
     errorDetail?: ExecutionErrorDetail
+    priceVerification?: PriceVerification
     protectionOrders?: {
         cancelledOrderIds: string[]
         createdOrderIds: string[]
@@ -217,6 +219,7 @@ export async function prepareBinanceOrder(
         fillPrice: result.fillPrice,
         error: result.error,
         errorDetail: result.errorDetail,
+        priceVerification: result.priceVerification,
         protectionOrders,
         computed: {
             entryPrice,

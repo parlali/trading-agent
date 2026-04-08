@@ -62,9 +62,11 @@
       "name": "@valiq-trading/agent",
       "version": "1.0.0",
       "dependencies": {
+        "@valiq-trading/alpaca-options": "workspace:*",
         "@valiq-trading/binance": "workspace:*",
         "@valiq-trading/core": "workspace:*",
         "@valiq-trading/mt5": "workspace:*",
+        "@valiq-trading/polymarket": "workspace:*",
         "zod": "^4.3.6",
       },
     },
@@ -72,10 +74,7 @@
       "name": "@valiq-trading/alpaca-options",
       "version": "1.0.0",
       "dependencies": {
-        "@valiq-trading/agent": "workspace:*",
-        "@valiq-trading/convex": "workspace:*",
         "@valiq-trading/core": "workspace:*",
-        "@valiq-trading/valiq": "workspace:*",
       },
     },
     "packages/binance": {
@@ -120,8 +119,6 @@
       "name": "@valiq-trading/polymarket",
       "version": "1.0.0",
       "dependencies": {
-        "@valiq-trading/agent": "workspace:*",
-        "@valiq-trading/convex": "workspace:*",
         "@valiq-trading/core": "workspace:*",
         "viem": "^2.21.0",
       },

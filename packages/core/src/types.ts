@@ -1,3 +1,4 @@
+import type { PriceVerification } from "./execution"
 import type { OrderAction, OrderStatus } from "./orders"
 
 export const VENUE_APPS = ["alpaca-options", "polymarket", "mt5", "binance-futures"] as const
@@ -71,6 +72,7 @@ export interface ExecutionResult {
     error?: string
     errorDetail?: ExecutionErrorDetail
     intentUpdates?: Partial<OrderIntent>
+    priceVerification?: PriceVerification
 }
 
 export interface ExecutionErrorDetail {

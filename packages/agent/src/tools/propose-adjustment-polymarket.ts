@@ -60,13 +60,18 @@ export function createPolymarketProposeAdjustmentTool(
                 stopPrice: validated.stopPrice,
                 timeInForce: validated.timeInForce,
                 metadata: {
-                    type: "adjustment",
+                    action: "adjustment",
                     reason: validated.reason,
                     estimatedPrice,
                 },
             }
 
-            const { result, validation } = await pipeline.executeIntent(intent, account, positions)
+            const { result, validation } = await pipeline.executeIntent(
+                intent,
+                account,
+                positions,
+                { action: "adjustment" }
+            )
 
             return toExecutionToolResult(result, { validation })
         },

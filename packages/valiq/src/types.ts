@@ -9,32 +9,6 @@ export interface EquityOverview {
     [key: string]: unknown
 }
 
-export interface PriceBar {
-    timestamp: string
-    open: number
-    high: number
-    low: number
-    close: number
-    volume: number
-}
-
-export interface EquityPriceResponse {
-    ticker: string
-    bars: PriceBar[]
-    pagination?: {
-        nextCursor: string | null
-        hasMore: boolean
-    }
-}
-
-export interface EquityCurrentPriceResponse {
-    ticker: string
-    latest: PriceBar
-    previousDayHigh: number | null
-    previousDayLow: number | null
-    [key: string]: unknown
-}
-
 export interface EquityPerformanceResponse {
     ticker: string
     returns: Record<string, number | null>
@@ -96,51 +70,6 @@ export interface EquityAnalystTargetsResponse {
     targets: Array<Record<string, unknown>>
     statistics: Record<string, unknown> | null
     [key: string]: unknown
-}
-
-export interface OptionsChainContract {
-    symbol: string
-    type: "call" | "put"
-    strike: number
-    expiration: string
-    bid: number | null
-    ask: number | null
-    lastPrice: number | null
-    volume: number | null
-    openInterest: number | null
-    impliedVolatility: number | null
-    delta: number | null
-    gamma: number | null
-    theta: number | null
-    vega: number | null
-    [key: string]: unknown
-}
-
-export interface OptionsChainResponse {
-    ticker: string
-    contracts: OptionsChainContract[]
-    [key: string]: unknown
-}
-
-export interface OptionsIVOverviewResponse {
-    ticker: string
-    atmIV: number | null
-    ivRank: number | null
-    ivPercentile: number | null
-    termStructure: Array<Record<string, unknown>>
-    [key: string]: unknown
-}
-
-export interface OptionsScreeningRow {
-    ticker: string
-    atmIV: number | null
-    ivRank: number | null
-    ivPercentile: number | null
-    [key: string]: unknown
-}
-
-export interface OptionsScreeningResponse {
-    rows: OptionsScreeningRow[]
 }
 
 export interface ScreeningRequest {
@@ -265,14 +194,6 @@ export interface ErrorData {
     code?: string
 }
 
-export interface EquityPriceParams {
-    limit?: number
-    start?: string
-    end?: string
-    bucket?: "1H" | "4H" | "day" | "week" | "month"
-    cursor?: string
-}
-
 export interface EquityFinancialsParams {
     limit?: number
     offset?: number
@@ -334,14 +255,6 @@ export interface MacroAnalysisParams {
 export interface MacroRiskFreeRateParams {
     startDate: string
     endDate: string
-}
-
-export interface OptionsChainParams {
-    [key: string]: unknown
-}
-
-export interface OptionsScreeningParams {
-    [key: string]: unknown
 }
 
 export interface BreakingNewsArticle {

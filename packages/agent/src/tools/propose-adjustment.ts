@@ -48,10 +48,18 @@ export function createProposeAdjustmentTool(pipeline: ExecutionPipeline): ToolDe
                 limitPrice: validated.limitPrice,
                 stopPrice: validated.stopPrice,
                 timeInForce: validated.timeInForce,
-                metadata: { type: "adjustment", reason: validated.reason },
+                metadata: {
+                    action: "adjustment",
+                    reason: validated.reason,
+                },
             }
 
-            const { result, validation } = await pipeline.executeIntent(intent, account, positions)
+            const { result, validation } = await pipeline.executeIntent(
+                intent,
+                account,
+                positions,
+                { action: "adjustment" }
+            )
 
             return toExecutionToolResult(result, { validation })
         },

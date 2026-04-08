@@ -5,6 +5,8 @@ import {
     type AccountState,
     type ExecutionResult,
     type OrderIntent,
+    type PriceVerification,
+    type PriceVerifier,
     type Position,
     type VenueAdapter,
     type WorkingOrder,
@@ -13,6 +15,7 @@ import {
     BinanceApiError,
     BinanceClient,
     type BinanceCreateOrderParams,
+    type BinanceOrderBookDepth,
     type BinanceExchangeSymbol,
     type BinanceOrderResponse,
 } from "./binance-client"
@@ -34,7 +37,32 @@ interface CompositeOrderId {
     rawOrderId: number
 }
 
-export class BinanceVenueAdapter implements VenueAdapter {
+export interface BinanceMarketPrice {
+    symbol: string
+    markPrice: number
+    indexPrice: number
+    bestBid: number
+    bestAsk: number
+    spread: number
+    fundingRate: number
+    nextFundingTime: number
+}
+
+export interface BinanceOrderBookLevel {
+    price: number
+    quantity: number
+}
+
+export interface BinanceOrderBook {
+    symbol: string
+    lastUpdateId: number
+    bids: BinanceOrderBookLevel[]
+    asks: BinanceOrderBookLevel[]
+    eventTime?: number
+    transactionTime?: number
+}
+
+export class BinanceVenueAdapter implements VenueAdapter, PriceVerifier {
     private readonly symbolRulesCache = new Map<string, BinanceSymbolRules>()
     private positionModeInitialized = false
 
@@ -291,6 +319,38 @@ export class BinanceVenueAdapter implements VenueAdapter {
         return mapExecutionResult(parsed.symbol, response)
     }
 
+    async getMarketPrice(symbol: string): Promise<BinanceMarketPrice> {
+        const normalizedSymbol = symbol.toUpperCase()
+        const [bookTicker, premium] = await Promise.all([
+            this.client.getBookTicker(normalizedSymbol),
+            this.client.getPremiumIndex(normalizedSymbol),
+        ])
+
+        const bestBid = Number(bookTicker.bidPrice)
+        const bestAsk = Number(bookTicker.askPrice)
+
+        return {
+            symbol: normalizedSymbol,
+            markPrice: Number(premium.markPrice),
+            indexPrice: Number(premium.indexPrice),
+            bestBid,
+            bestAsk,
+            spread: Math.max(bestAsk - bestBid, 0),
+            fundingRate: Number(premium.lastFundingRate),
+            nextFundingTime: premium.nextFundingTime,
+        }
+    }
+
+    async getOrderBook(
+        symbol: string,
+        limit = 20
+    ): Promise<BinanceOrderBook> {
+        const normalizedSymbol = symbol.toUpperCase()
+        const depth = await this.client.getDepth(normalizedSymbol, limit)
+
+        return mapDepthToOrderBook(normalizedSymbol, depth)
+    }
+
     async getCurrentMarkPrice(symbol: string): Promise<number> {
         const premium = await this.client.getPremiumIndex(symbol.toUpperCase())
         return Number(premium.markPrice)
@@ -299,6 +359,43 @@ export class BinanceVenueAdapter implements VenueAdapter {
     async getCurrentFundingRate(symbol: string): Promise<number> {
         const premium = await this.client.getPremiumIndex(symbol.toUpperCase())
         return Number(premium.lastFundingRate)
+    }
+
+    async verify(intent: OrderIntent): Promise<PriceVerification> {
+        const symbol = intent.instrument.toUpperCase()
+        const marketPrice = await this.getMarketPrice(symbol)
+        const mid = marketPrice.bestBid > 0 && marketPrice.bestAsk > 0
+            ? (marketPrice.bestBid + marketPrice.bestAsk) / 2
+            : marketPrice.markPrice
+        const proposedPrice = resolveBinanceVerificationPrice(intent)
+        const drift = proposedPrice !== undefined ? proposedPrice - mid : undefined
+        const driftPercent = mid > 0 && drift !== undefined
+            ? (drift / mid) * 100
+            : undefined
+
+        return {
+            ok: true,
+            status: proposedPrice === undefined ? "skipped" : undefined,
+            livePrices: {
+                bid: marketPrice.bestBid,
+                ask: marketPrice.bestAsk,
+                mid,
+                spread: marketPrice.spread,
+            },
+            proposedPrice,
+            drift,
+            driftPercent,
+            message: proposedPrice === undefined
+                ? "Captured live Binance market prices before submission. No limit price was provided for drift comparison."
+                : `Compared proposed Binance price ${proposedPrice} against live midpoint ${mid}.`,
+            details: {
+                symbol,
+                markPrice: marketPrice.markPrice,
+                indexPrice: marketPrice.indexPrice,
+                fundingRate: marketPrice.fundingRate,
+                nextFundingTime: marketPrice.nextFundingTime,
+            },
+        }
     }
 
     async getMarketSnapshot(symbols: string[]): Promise<BinanceMarketSnapshot[]> {
@@ -511,6 +608,34 @@ function mapExecutionResult(symbol: string, order: BinanceOrderResponse): Execut
         timestamp: order.updateTime ?? order.time ?? Date.now(),
         error: errorDetail ? formatExecutionError(errorDetail) : undefined,
         errorDetail,
+    }
+}
+
+function resolveBinanceVerificationPrice(intent: OrderIntent): number | undefined {
+    if (intent.orderType === "limit" || intent.orderType === "stop_limit") {
+        return intent.limitPrice
+    }
+
+    return undefined
+}
+
+function mapDepthToOrderBook(
+    symbol: string,
+    depth: BinanceOrderBookDepth
+): BinanceOrderBook {
+    return {
+        symbol,
+        lastUpdateId: depth.lastUpdateId,
+        bids: depth.bids.map(([price, quantity]) => ({
+            price: Number(price),
+            quantity: Number(quantity),
+        })),
+        asks: depth.asks.map(([price, quantity]) => ({
+            price: Number(price),
+            quantity: Number(quantity),
+        })),
+        eventTime: depth.E,
+        transactionTime: depth.T,
     }
 }
 

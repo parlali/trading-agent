@@ -13,6 +13,8 @@ import {
     type AccountState,
     type ExecutionResult,
     type OrderIntent,
+    type PriceVerification,
+    type PriceVerifier,
     type Position,
     type VenueAdapter,
     type WorkingOrder,
@@ -26,7 +28,7 @@ import {
 } from "./mt5-client"
 import { toMT5MarketSnapshot, type MT5MarketSnapshot } from "./market-context"
 
-export class MT5VenueAdapter implements VenueAdapter {
+export class MT5VenueAdapter implements VenueAdapter, PriceVerifier {
     private lastConnectedAt = 0
     private readonly CONNECTION_TTL = 60_000
 
@@ -216,6 +218,52 @@ export class MT5VenueAdapter implements VenueAdapter {
         return results.length > 0 ? (results[0] ?? null) : null
     }
 
+    async verify(intent: OrderIntent): Promise<PriceVerification> {
+        const symbolInfo = await this.getSymbolInfo(intent.instrument)
+        if (!symbolInfo) {
+            return {
+                ok: false,
+                status: "block",
+                livePrices: {},
+                proposedPrice: resolveMT5VerificationPrice(intent),
+                message: `Symbol ${intent.instrument} not found or unavailable for MT5 price verification.`,
+                details: {
+                    instrument: intent.instrument,
+                },
+            }
+        }
+
+        const mid = (symbolInfo.bid + symbolInfo.ask) / 2
+        const comparisonPrice = resolveMT5ComparisonPrice(intent, symbolInfo)
+        const proposedPrice = resolveMT5VerificationPrice(intent, symbolInfo)
+        const drift = proposedPrice !== undefined ? proposedPrice - comparisonPrice : undefined
+        const driftPercent = comparisonPrice > 0 && drift !== undefined
+            ? (drift / comparisonPrice) * 100
+            : undefined
+
+        return {
+            ok: true,
+            livePrices: {
+                bid: symbolInfo.bid,
+                ask: symbolInfo.ask,
+                mid,
+                spread: Math.abs(symbolInfo.ask - symbolInfo.bid),
+            },
+            proposedPrice,
+            drift,
+            driftPercent,
+            message: proposedPrice !== undefined
+                ? `Compared proposed MT5 price ${proposedPrice} against live executable price ${comparisonPrice}.`
+                : "Captured live MT5 market prices before submission.",
+            details: {
+                instrument: symbolInfo.symbol,
+                digits: symbolInfo.digits,
+                point: symbolInfo.point,
+                sidePrice: resolveMT5ComparisonPrice(intent, symbolInfo),
+            },
+        }
+    }
+
     async getMarketSnapshot(symbols: string[]): Promise<MT5MarketSnapshot[]> {
         if (symbols.length === 0) {
             return []
@@ -266,6 +314,41 @@ function mapMT5Position(raw: MT5Position): Position {
             openTime: raw.openTime,
         },
     }
+}
+
+function resolveMT5VerificationPrice(
+    intent: OrderIntent,
+    symbolInfo?: MT5SymbolInfo
+): number | undefined {
+    if (typeof intent.limitPrice === "number") {
+        return intent.limitPrice
+    }
+
+    if (typeof intent.stopPrice === "number") {
+        return intent.stopPrice
+    }
+
+    const estimatedPrice = intent.metadata?.estimatedPrice
+    if (typeof estimatedPrice === "number") {
+        return estimatedPrice
+    }
+
+    if (symbolInfo) {
+        return intent.side === "buy" ? symbolInfo.ask : symbolInfo.bid
+    }
+
+    return undefined
+}
+
+function resolveMT5ComparisonPrice(
+    intent: OrderIntent,
+    symbolInfo: MT5SymbolInfo
+): number {
+    if (intent.orderType === "market") {
+        return intent.side === "buy" ? symbolInfo.ask : symbolInfo.bid
+    }
+
+    return (symbolInfo.bid + symbolInfo.ask) / 2
 }
 
 function mapMT5WorkingOrder(raw: MT5OpenOrder): WorkingOrder {

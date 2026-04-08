@@ -239,6 +239,7 @@ function buildPolicySection(context: StrategyRunContext): string {
             "",
             "Lifecycle expectations:",
             "- Use `modify_order` only to improve or reduce the limit price on a still-working entry order",
+            "- Do not use `propose_adjustment` for Alpaca options structures in this strategy path. Filled structures must be managed with `propose_close`, and working entries with `modify_order`.",
             "- Use `get_order_status` and `wait_for_order_update` to supervise working orders",
             "- Use `propose_close` to close an already-filled iron condor structure",
             "- Do not submit single-leg options, partial structures, stop orders, or duplicate replacement entries",

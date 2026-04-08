@@ -1,5 +1,8 @@
 export { ToolRegistry } from "./tool-registry"
-export type { ToolDefinition } from "./tool-registry"
+export { TOOL_CATEGORIES } from "./tool-registry"
+export type { ToolCategory, ToolDefinition } from "./tool-registry"
+export { ToolPool } from "./tool-pool"
+export type { ToolFactoryRegistration, ToolRegistration } from "./tool-pool"
 export { LLMClient } from "./llm-client"
 export type { LLMClientConfig, ChatMessage, ToolCall, OpenRouterTool, LLMUsage, LLMResponse } from "./llm-client"
 export { ConversationManager } from "./conversation"
@@ -9,6 +12,10 @@ export type { AgentRuntimeConfig, AgentMessageLogger, AgentRunResult } from "./r
 export {
     createGetPositionsTool,
     createGetAccountTool,
+    createAlpacaGetOptionsChainTool,
+    createAlpacaGetQuoteTool,
+    createBinanceGetMarketPriceTool,
+    createBinanceGetOrderBookTool,
     createProposeOrderTool,
     createProposeAdjustmentTool,
     createProposeCloseTool,
@@ -21,8 +28,12 @@ export {
     createWaitForOrderUpdateTool,
     createWebSearchTool,
     createWebFetchTool,
+    createMT5GetSymbolInfoTool,
     createMT5ProposeOrderTool,
     createMT5ProposeAdjustmentTool,
+    createPolymarketGetMarketPriceTool,
+    createPolymarketGetOrderBookTool,
+    createPolymarketSearchMarketsTool,
     createPolymarketProposeOrderTool,
     createPolymarketProposeAdjustmentTool,
     createBinanceProposeOrderTool,

@@ -81,8 +81,6 @@ export function createValiqBreakingNewsTool(
 
 const dataEndpoints = [
     "getEquityOverview",
-    "getEquityPrice",
-    "getCurrentPrice",
     "getPerformance",
     "getFinancials",
     "getRatios",
@@ -92,9 +90,6 @@ const dataEndpoints = [
     "getSentiment",
     "getAnalystRatings",
     "getAnalystTargets",
-    "getOptionsChain",
-    "getOptionsIV",
-    "screenOptions",
     "screenAssets",
     "getMacroEconomy",
     "getMacroGrowth",
@@ -112,6 +107,8 @@ const dataEndpoints = [
     "getBreakingNews",
 ] as const
 
+export type ValiqDataEndpoint = (typeof dataEndpoints)[number]
+
 const dataParamsSchema = z.object({
     endpoint: z.enum(dataEndpoints),
     ticker: z.string().optional(),
@@ -125,10 +122,11 @@ export function createValiqDataTool(
     return {
         name: "query_valiq_data",
         description:
-            "Call Val-iQ's typed data endpoints for structured market data. " +
-            "Available endpoints: equity overview/price/performance/financials/ratios/fundamentals/beta/news/sentiment/analyst ratings+targets, " +
-            "options chain/IV/screening, asset screening, " +
+            "Call Val-iQ's typed data endpoints for structured non-broker market context. " +
+            "Available endpoints: equity overview/performance/financials/ratios/fundamentals/beta/news/sentiment/analyst ratings+targets, " +
+            "asset screening, " +
             "macro economy/growth/inflation/labor/stability/money-supply/energy/oil/gas/events/news/analysis/risk-free-rate, breaking-news. " +
+            "Pricing and options-chain endpoints are intentionally excluded so broker-native tools remain the live source of truth. " +
             "Provide the endpoint name, ticker or region, and optional parameters.",
         parameters: dataParamsSchema,
         jsonSchema: {
@@ -141,7 +139,7 @@ export function createValiqDataTool(
                 },
                 ticker: {
                     type: "string",
-                    description: "Stock ticker symbol (for equity and options endpoints)",
+                    description: "Stock ticker symbol (for equity endpoints)",
                 },
                 region: {
                     type: "string",
@@ -165,7 +163,7 @@ export function createValiqDataTool(
 
 async function routeDataRequest(
     data: ValiqDataAdapter,
-    endpoint: string,
+    endpoint: ValiqDataEndpoint,
     ticker?: string,
     region?: string,
     params?: Record<string, unknown>
@@ -173,10 +171,6 @@ async function routeDataRequest(
     switch (endpoint) {
         case "getEquityOverview":
             return data.getEquityOverview(requireTicker(ticker))
-        case "getEquityPrice":
-            return data.getEquityPrice(requireTicker(ticker), params as Record<string, unknown> | undefined)
-        case "getCurrentPrice":
-            return data.getCurrentPrice(requireTicker(ticker))
         case "getPerformance":
             return data.getPerformance(requireTicker(ticker), params?.cutoff as string | undefined)
         case "getFinancials":
@@ -195,12 +189,6 @@ async function routeDataRequest(
             return data.getAnalystRatings(requireTicker(ticker), params as Record<string, unknown> | undefined)
         case "getAnalystTargets":
             return data.getAnalystTargets(requireTicker(ticker), params as Record<string, unknown> | undefined)
-        case "getOptionsChain":
-            return data.getOptionsChain(requireTicker(ticker))
-        case "getOptionsIV":
-            return data.getOptionsIV(requireTicker(ticker))
-        case "screenOptions":
-            return data.screenOptions(params)
         case "screenAssets":
             return data.screenAssets(params ?? {})
         case "getMacroEconomy":
@@ -234,8 +222,10 @@ async function routeDataRequest(
             )
         case "getBreakingNews":
             return data.getBreakingNews(params as BreakingNewsParams | undefined)
-        default:
-            throw new Error(`Unknown Val-iQ data endpoint: ${endpoint}`)
+        default: {
+            const exhaustiveCheck: never = endpoint
+            throw new Error(`Unknown Val-iQ data endpoint: ${exhaustiveCheck}`)
+        }
     }
 }
 

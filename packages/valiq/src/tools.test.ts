@@ -156,6 +156,11 @@ describe("createValiqDataTool", () => {
         const tool = createValiqDataTool(adapter)
 
         expect(tool.parameters.safeParse({ endpoint: "getBreakingNews" }).success).toBe(true)
+        expect(tool.parameters.safeParse({ endpoint: "getCurrentPrice" }).success).toBe(false)
+        expect(tool.parameters.safeParse({ endpoint: "getEquityPrice" }).success).toBe(false)
+        expect(tool.parameters.safeParse({ endpoint: "getOptionsChain" }).success).toBe(false)
+        expect(tool.parameters.safeParse({ endpoint: "getOptionsIV" }).success).toBe(false)
+        expect(tool.parameters.safeParse({ endpoint: "screenOptions" }).success).toBe(false)
         expect(tool.parameters.safeParse({ endpoint: "nonExistent" }).success).toBe(false)
         expect(tool.parameters.safeParse({}).success).toBe(false)
     })

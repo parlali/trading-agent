@@ -1,4 +1,15 @@
+import type { VenueApp } from "@valiq-trading/core"
 import type { z } from "zod"
+
+export const TOOL_CATEGORIES = [
+    "execution",
+    "account",
+    "market-data",
+    "research",
+    "web",
+] as const
+
+export type ToolCategory = typeof TOOL_CATEGORIES[number]
 
 export interface ToolDefinition {
     name: string
@@ -6,6 +17,8 @@ export interface ToolDefinition {
     parameters: z.ZodType<unknown>
     jsonSchema?: Record<string, unknown>
     handler: (params: unknown) => Promise<unknown>
+    category?: ToolCategory
+    compatibleVenues?: readonly VenueApp[]
 }
 
 export class ToolRegistry {
