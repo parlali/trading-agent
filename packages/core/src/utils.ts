@@ -1,4 +1,4 @@
-import type { ExecutionErrorDetail, ExecutionErrorSource } from "./types"
+import type { AccountState, ExecutionErrorDetail, ExecutionErrorSource } from "./types"
 
 export function generateRunId(): string {
     return globalThis.crypto.randomUUID()
@@ -91,6 +91,19 @@ export function getExecutionErrorDetail(error: unknown): ExecutionErrorDetail | 
     }
 
     return undefined
+}
+
+export function getAccountEquity(state: AccountState): number {
+    return Number.isFinite(state.equity) ? state.equity : state.balance + state.openPnl
+}
+
+export function getRiskBudgetBase(state: AccountState): number {
+    const equity = getAccountEquity(state)
+    if (equity > 0) {
+        return equity
+    }
+
+    return state.balance
 }
 
 export async function withTimeout<T>(

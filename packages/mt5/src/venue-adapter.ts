@@ -15,8 +15,15 @@ import {
     type OrderIntent,
     type Position,
     type VenueAdapter,
+    type WorkingOrder,
 } from "@valiq-trading/core"
-import { MT5Client, type MT5Position, type MT5SymbolInfo, type MT5WorkerCredentials } from "./mt5-client"
+import {
+    MT5Client,
+    type MT5OpenOrder,
+    type MT5Position,
+    type MT5SymbolInfo,
+    type MT5WorkerCredentials,
+} from "./mt5-client"
 import { toMT5MarketSnapshot, type MT5MarketSnapshot } from "./market-context"
 
 export class MT5VenueAdapter implements VenueAdapter {
@@ -55,12 +62,19 @@ export class MT5VenueAdapter implements VenueAdapter {
 
         return {
             balance: info.balance,
+            equity: info.equity,
             buyingPower: info.freeMargin,
             marginUsed: info.margin,
             marginAvailable: info.freeMargin,
             openPnl: info.profit,
             dayPnl: 0, // MT5 doesn't expose day P&L directly
         }
+    }
+
+    async getWorkingOrders(): Promise<WorkingOrder[]> {
+        await this.ensureConnected()
+        const orders = await this.client.getOpenOrders()
+        return orders.map(mapMT5WorkingOrder)
     }
 
     async submitOrder(intent: OrderIntent): Promise<ExecutionResult> {
@@ -239,6 +253,8 @@ function mapMT5Position(raw: MT5Position): Position {
         entryPrice: raw.openPrice,
         currentPrice: raw.currentPrice,
         unrealizedPnl: raw.profit,
+        stopLoss: raw.stopLoss > 0 ? raw.stopLoss : undefined,
+        takeProfit: raw.takeProfit > 0 ? raw.takeProfit : undefined,
         metadata: {
             ticket: raw.ticket,
             stopLoss: raw.stopLoss,
@@ -248,6 +264,32 @@ function mapMT5Position(raw: MT5Position): Position {
             magic: raw.magic,
             comment: raw.comment,
             openTime: raw.openTime,
+        },
+    }
+}
+
+function mapMT5WorkingOrder(raw: MT5OpenOrder): WorkingOrder {
+    const quantity = raw.volumeInitial
+    const remainingQuantity = raw.volumeCurrent
+    const filledQuantity = Math.max(quantity - remainingQuantity, 0)
+
+    return {
+        orderId: String(raw.ticket),
+        instrument: raw.symbol,
+        status: mapMT5OrderState(raw.state),
+        quantity,
+        filledQuantity,
+        remainingQuantity,
+        submittedAt: raw.timeSetup || Date.now(),
+        updatedAt: raw.timeDone || raw.timeSetup || Date.now(),
+        side: raw.type.startsWith("buy") ? "buy" : "sell",
+        limitPrice: raw.priceOpen > 0 ? raw.priceOpen : undefined,
+        stopPrice: raw.stopLoss > 0 ? raw.stopLoss : undefined,
+        metadata: {
+            takeProfit: raw.takeProfit > 0 ? raw.takeProfit : undefined,
+            comment: raw.comment,
+            magic: raw.magic,
+            type: raw.type,
         },
     }
 }

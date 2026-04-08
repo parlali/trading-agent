@@ -1,4 +1,4 @@
-import { stripMetadataBlock, type StrategyRunContext } from "@valiq-trading/core"
+import { getAccountEquity, stripMetadataBlock, type StrategyRunContext } from "@valiq-trading/core"
 
 function formatCurrency(amount: number, currency = "USD"): string {
     return new Intl.NumberFormat("en-US", {
@@ -141,6 +141,7 @@ function buildAccountSnapshot(context: StrategyRunContext): string {
         "## Current Account State",
         "",
         `- Balance: ${formatCurrency(acct.balance)}`,
+        `- Equity / Net Liq: ${formatCurrency(getAccountEquity(acct))}`,
         `- Buying Power: ${formatCurrency(acct.buyingPower)}`,
         `- Margin Used: ${formatCurrency(acct.marginUsed)}`,
         `- Margin Available: ${formatCurrency(acct.marginAvailable)}`,

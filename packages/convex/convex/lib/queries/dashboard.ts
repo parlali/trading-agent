@@ -8,6 +8,10 @@ function isNonNullable<T>(value: T): value is NonNullable<T> {
     return value !== null && value !== undefined
 }
 
+function resolveSnapshotEquity(snapshot: { balance: number; openPnl: number; equity?: number }): number {
+    return snapshot.equity ?? (snapshot.balance + snapshot.openPnl)
+}
+
 export const getDashboardOverview = query({
     args: {},
     handler: async (ctx) => {
@@ -120,7 +124,7 @@ export const getPnlSummary = query({
             const first = points[0] ?? null
             const latest = points[points.length - 1] ?? null
             const change = first && latest
-                ? (latest.balance + latest.openPnl) - (first.balance + first.openPnl)
+                ? resolveSnapshotEquity(latest) - resolveSnapshotEquity(first)
                 : 0
 
             return {
@@ -142,7 +146,7 @@ export const getPnlSummary = query({
                         return total
                     }
 
-                    return total + item.latest.balance + item.latest.openPnl
+                    return total + resolveSnapshotEquity(item.latest)
                 }, 0),
                 periodChange: apps.reduce((total, item) => total + item.change, 0),
             },
@@ -189,7 +193,7 @@ export const getEquityTimeSeries = query({
             .map((s) => ({
                 app: s.app,
                 timestamp: s.timestamp,
-                equity: s.balance + s.openPnl,
+                equity: resolveSnapshotEquity(s),
                 balance: s.balance,
                 openPnl: s.openPnl,
             }))

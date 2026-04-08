@@ -6,6 +6,7 @@ import {
     type OrderIntent,
     type Position,
     type VenueAdapter,
+    type WorkingOrder,
 } from "@valiq-trading/core"
 import type { PolymarketClient, PolymarketOpenOrder, PolymarketTrade } from "./polymarket-client"
 
@@ -98,13 +99,42 @@ export class PolymarketVenueAdapter implements VenueAdapter {
         const totalEquity = usdcBalance + totalExposure + openPnl
 
         return {
-            balance: totalEquity,
+            balance: usdcBalance,
+            equity: totalEquity,
             buyingPower: usdcBalance,
             marginUsed: totalExposure,
             marginAvailable: usdcBalance,
             openPnl,
             dayPnl: 0,
         }
+    }
+
+    async getWorkingOrders(): Promise<WorkingOrder[]> {
+        const orders = await this.client.getOpenOrders()
+        return orders.map((order) => {
+            const quantity = Number(order.original_size)
+            const filledQuantity = Number(order.size_matched)
+            const submittedAt = Date.parse(order.created_at)
+
+            return {
+                orderId: order.id,
+                instrument: order.asset_id,
+                status: mapOpenOrderStatus(order),
+                quantity,
+                filledQuantity,
+                remainingQuantity: Math.max(quantity - filledQuantity, 0),
+                submittedAt: Number.isFinite(submittedAt) ? submittedAt : Date.now(),
+                updatedAt: Number.isFinite(submittedAt) ? submittedAt : Date.now(),
+                side: order.side.toLowerCase() === "buy" ? "buy" : "sell",
+                limitPrice: Number(order.price),
+                metadata: {
+                    market: order.market,
+                    outcome: order.outcome,
+                    orderType: order.order_type,
+                    expiration: order.expiration,
+                },
+            }
+        })
     }
 
     async submitOrder(intent: OrderIntent): Promise<ExecutionResult> {

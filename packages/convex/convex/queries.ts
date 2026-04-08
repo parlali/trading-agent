@@ -32,6 +32,14 @@ export {
 } from "./lib/queries/dashboard"
 
 export {
+    getPortfolioFreshness,
+    getPortfolioPositions,
+    getPortfolioPendingOrders,
+    getPortfolioTradeHistory,
+    getPortfolioEquitySeries,
+} from "./lib/queries/portfolio"
+
+export {
     getSystemState,
     getAppHealth,
     getManualRunRequests,

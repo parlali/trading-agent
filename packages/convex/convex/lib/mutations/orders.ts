@@ -213,9 +213,11 @@ export const logTradeEvent = mutation({
     },
     handler: async (ctx, args) => {
         requireServiceToken(args.serviceToken)
+        const strategy = await ctx.db.get(args.strategyId)
         await ctx.db.insert("trade_events", {
             runId: args.runId,
             strategyId: args.strategyId,
+            app: strategy?.app,
             eventType: args.eventType,
             payload: args.payload,
             timestamp: Date.now(),
@@ -282,6 +284,7 @@ export const upsertOrder = mutation({
             orderId: args.orderId,
             runId: args.runId,
             strategyId: args.strategyId,
+            app: strategy.app,
             venue: args.venue,
             instrument: args.instrument,
             status: args.status,

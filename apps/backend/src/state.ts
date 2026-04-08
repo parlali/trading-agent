@@ -1,6 +1,5 @@
 import { DuckDuckGoSearchProvider } from "@valiq-trading/agent"
 import {
-    createAccountSnapshotPersister,
     createKillSwitchChecker,
     createLogger,
     type App,
@@ -115,33 +114,6 @@ export const killSwitchCheckers = {
     }),
     "binance-futures": createKillSwitchChecker({
         appName: "binance-futures",
-        backend,
-        logger,
-    }),
-} as const
-
-export const accountSnapshotPersisters = {
-    "alpaca-options": createAccountSnapshotPersister({
-        appName: "alpaca-options",
-        venueName: "alpaca",
-        backend,
-        logger,
-    }),
-    "polymarket": createAccountSnapshotPersister({
-        appName: "polymarket",
-        venueName: "polymarket",
-        backend,
-        logger,
-    }),
-    "mt5": createAccountSnapshotPersister({
-        appName: "mt5",
-        venueName: "mt5",
-        backend,
-        logger,
-    }),
-    "binance-futures": createAccountSnapshotPersister({
-        appName: "binance-futures",
-        venueName: "binance-futures",
         backend,
         logger,
     }),

@@ -3,6 +3,7 @@ import type { BinanceVenueAdapter } from "@valiq-trading/binance"
 import {
     createExecutionErrorDetail,
     formatExecutionError,
+    getRiskBudgetBase,
     type BinancePolicy,
     type ExecutionErrorDetail,
     type ExecutionPipeline,
@@ -133,7 +134,9 @@ export async function prepareBinanceOrder(
         venue.getCurrentFundingRate(symbol).catch(() => undefined),
     ])
 
-    if (account.balance <= 0) {
+    const riskBudgetBase = getRiskBudgetBase(account)
+
+    if (riskBudgetBase <= 0) {
         return rejected("Account balance is zero or negative")
     }
 
@@ -142,7 +145,7 @@ export async function prepareBinanceOrder(
         return rejected("stopLoss distance must be greater than zero")
     }
 
-    const riskBudget = account.balance * (policy.maxRiskPercent / 100)
+    const riskBudget = riskBudgetBase * (policy.maxRiskPercent / 100)
     let rawQuantity = riskBudget / stopDistance
 
     if (entryPrice > 0 && account.marginAvailable > 0) {
@@ -165,7 +168,7 @@ export async function prepareBinanceOrder(
         : undefined
 
     const actualRiskAmount = quantity * Math.abs(entryPrice - normalizedStopLoss)
-    const actualRiskPercent = (actualRiskAmount / account.balance) * 100
+    const actualRiskPercent = (actualRiskAmount / riskBudgetBase) * 100
 
     const intent: OrderIntent = {
         instrument: symbol,

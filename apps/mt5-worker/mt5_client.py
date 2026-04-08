@@ -271,6 +271,33 @@ class MT5Client:
 
         return result
 
+    def get_open_orders(self) -> list[dict[str, Any]]:
+        self.ensure_connected()
+        orders = mt5.orders_get()
+
+        if orders is None:
+            return []
+
+        result: list[dict[str, Any]] = []
+        for order in orders:
+            result.append({
+                "ticket": int(order.ticket),
+                "symbol": order.symbol,
+                "type": self._order_type_str(order.type),
+                "volumeInitial": float(order.volume_initial),
+                "volumeCurrent": float(order.volume_current),
+                "priceOpen": float(order.price_open),
+                "stopLoss": float(order.sl),
+                "takeProfit": float(order.tp),
+                "state": self._order_state_str(order.state),
+                "comment": order.comment,
+                "magic": int(order.magic),
+                "timeSetup": int(order.time_setup) * 1000 if order.time_setup else 0,
+                "timeDone": int(order.time_done) * 1000 if order.time_done else 0,
+            })
+
+        return result
+
     # -- Order execution -------------------------------------------------------
 
     def submit_order(

@@ -1,4 +1,5 @@
 import {
+    getRiskBudgetBase,
     polymarketPolicySchema,
     type AccountState,
     type OrderIntent,
@@ -31,7 +32,7 @@ function maxBetValidator(
     if (policy.maxBet.mode === "fixed") {
         maxAllowed = policy.maxBet.value
     } else {
-        maxAllowed = (policy.maxBet.value / 100) * state.balance
+        maxAllowed = (policy.maxBet.value / 100) * getRiskBudgetBase(state)
     }
 
     if (intentCost > maxAllowed) {

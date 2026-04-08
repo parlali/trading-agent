@@ -61,9 +61,9 @@ import {
     searchProvider,
     syncStrategies,
     killSwitchCheckers,
-    accountSnapshotPersisters,
     healthState,
 } from "./state"
+import { reconcileProviderPortfolio, recordProviderSyncFailure } from "./provider-sync"
 
 const PRE_RUN_HOOK_TIMEOUT_MS = 90_000
 const POST_RUN_HOOK_TIMEOUT_MS = 90_000
@@ -427,17 +427,6 @@ export async function runStrategy(
                 }
             )
 
-            const [syncedPositions, finalAccountState] = await Promise.all([
-                isDryRun
-                    ? Promise.resolve(pipeline.getDryRunPositions())
-                    : venue.getPositions().then((all) => filterPositionsByOwnership(all, ownedInstruments)),
-                venue.getAccountState(),
-            ])
-            await Promise.all([
-                backend.syncPositions(strategy._id, app, syncedPositions),
-                accountSnapshotPersisters[app](finalAccountState),
-            ])
-
             if (plugin.postRunHooks) {
                 await withTimeout(
                     async () => await plugin.postRunHooks!({
@@ -450,6 +439,18 @@ export async function runStrategy(
                     POST_RUN_HOOK_TIMEOUT_MS,
                     `post-run hooks for strategy ${strategy._id}`
                 )
+            }
+
+            if (isDryRun) {
+                const syncedPositions = pipeline.getDryRunPositions()
+                await backend.syncPositions(strategy._id, app, syncedPositions)
+            } else {
+                await reconcileProviderPortfolio({
+                    app,
+                    venueName: plugin.venueName,
+                    source: "post_run_sync",
+                    venue,
+                })
             }
 
             const cleanSummary = result.summary
@@ -512,10 +513,21 @@ export async function runStrategy(
         updateHealth("failed", undefined, message)
 
         try {
-            const failureAccountState = await venue.getAccountState()
-            await accountSnapshotPersisters[app](failureAccountState)
-        } catch {
-            // Cannot reach venue for snapshot
+            if (Boolean(policy.dryRun)) {
+                await backend.syncPositions(strategy._id, app, pipeline.getDryRunPositions())
+            } else {
+                await reconcileProviderPortfolio({
+                    app,
+                    venueName: plugin.venueName,
+                    source: "post_run_sync",
+                    venue,
+                })
+            }
+        } catch (syncError) {
+            const syncMessage = syncError instanceof Error ? syncError.message : String(syncError)
+            if (!Boolean(policy.dryRun)) {
+                await recordProviderSyncFailure(app, syncMessage)
+            }
         }
 
         throw error

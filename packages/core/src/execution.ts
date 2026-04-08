@@ -5,6 +5,7 @@ import type {
     OrderLifecycleContext,
     Position,
     ValidationResult,
+    WorkingOrder,
 } from "./types"
 import {
     type OrderPersistenceAdapter,
@@ -29,6 +30,7 @@ import {
 export interface VenueAdapter {
     getPositions(): Promise<Position[]>
     getAccountState(): Promise<AccountState>
+    getWorkingOrders?(): Promise<WorkingOrder[]>
     submitOrder(intent: OrderIntent): Promise<ExecutionResult>
     cancelOrder(orderId: string): Promise<ExecutionResult>
     modifyOrder(orderId: string, changes: Partial<OrderIntent>): Promise<ExecutionResult>

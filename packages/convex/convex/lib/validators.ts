@@ -4,6 +4,8 @@ import {
     APPS,
     SEVERITY_LEVELS,
     EVENT_TYPES,
+    PORTFOLIO_PROVIDER_STATUSES,
+    PROVIDER_OWNERSHIP_STATUSES,
 } from "@valiq-trading/core"
 import {
     ORDER_STATUSES,
@@ -32,3 +34,6 @@ export const claimSourceV = v.union(
     v.literal("position"),
     v.literal("order"),
 )
+
+export const portfolioProviderStatusV = stringLiterals(PORTFOLIO_PROVIDER_STATUSES)
+export const providerOwnershipStatusV = stringLiterals(PROVIDER_OWNERSHIP_STATUSES)

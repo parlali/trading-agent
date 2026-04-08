@@ -174,6 +174,11 @@ async def get_positions(client: MT5Client = Depends(get_client)) -> list[dict[st
     return client.get_positions()
 
 
+@app.get("/orders", dependencies=[Depends(verify_access_key)])
+async def get_orders(client: MT5Client = Depends(get_client)) -> list[dict[str, Any]]:
+    return client.get_open_orders()
+
+
 @app.post("/order/submit", dependencies=[Depends(verify_access_key)])
 async def submit_order(
     req: SubmitOrderRequest,

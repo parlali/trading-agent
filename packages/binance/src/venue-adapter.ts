@@ -7,6 +7,7 @@ import {
     type OrderIntent,
     type Position,
     type VenueAdapter,
+    type WorkingOrder,
 } from "@valiq-trading/core"
 import {
     BinanceApiError,
@@ -69,13 +70,43 @@ export class BinanceVenueAdapter implements VenueAdapter {
         const openPnl = Number(account.totalUnrealizedProfit)
 
         return {
-            balance: walletBalance + openPnl,
+            balance: walletBalance,
+            equity: walletBalance + openPnl,
             buyingPower: Number(account.availableBalance),
             marginUsed: Number(account.totalInitialMargin || account.totalMaintMargin),
             marginAvailable: Number(account.availableBalance),
             openPnl,
             dayPnl: 0,
         }
+    }
+
+    async getWorkingOrders(): Promise<WorkingOrder[]> {
+        const orders = await this.client.getOpenOrders()
+        return orders.map((order) => {
+            const quantity = Number(order.origQty)
+            const filledQuantity = Number(order.executedQty)
+            const submittedAt = order.time ?? order.updateTime ?? Date.now()
+            const updatedAt = order.updateTime ?? order.time ?? Date.now()
+
+            return {
+                orderId: toCompositeOrderId(order.symbol, order.orderId),
+                instrument: order.symbol,
+                status: mapBinanceOrderStatus(order.status, filledQuantity, quantity),
+                quantity,
+                filledQuantity,
+                remainingQuantity: Math.max(quantity - filledQuantity, 0),
+                submittedAt,
+                updatedAt,
+                side: order.side === "BUY" ? "buy" : "sell",
+                limitPrice: Number(order.price) > 0 ? Number(order.price) : undefined,
+                stopPrice: Number(order.stopPrice) > 0 ? Number(order.stopPrice) : undefined,
+                avgFillPrice: Number(order.avgPrice) > 0 ? Number(order.avgPrice) : undefined,
+                metadata: {
+                    type: order.type,
+                    reduceOnly: order.reduceOnly,
+                },
+            }
+        })
     }
 
     async submitOrder(intent: OrderIntent): Promise<ExecutionResult> {
@@ -500,6 +531,18 @@ function mapOrderStatus(status: string): ExecutionResult["status"] {
         default:
             return "pending"
     }
+}
+
+function mapBinanceOrderStatus(
+    status: string,
+    filledQuantity: number,
+    quantity: number
+): ExecutionResult["status"] {
+    if (status === "NEW" && filledQuantity > 0 && filledQuantity < quantity) {
+        return "partially_filled"
+    }
+
+    return mapOrderStatus(status)
 }
 
 function mapToBinanceOrderType(

@@ -70,5 +70,11 @@ export interface VenueHealthState {
     environment?: string
     error?: string
     lastSyncAt?: number
+    lastVerifiedAt?: number
+    providerStatus?: "healthy" | "degraded" | "stale"
+    stale?: boolean
+    driftDetected?: boolean
+    positionCount?: number
+    pendingOrderCount?: number
     lastSyncError?: string
 }

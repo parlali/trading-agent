@@ -2,6 +2,7 @@ import { z } from "zod"
 import {
     createExecutionErrorDetail,
     formatExecutionError,
+    getRiskBudgetBase,
     type ExecutionErrorDetail,
     type ExecutionPipeline,
     type MT5Policy,
@@ -143,7 +144,7 @@ export async function prepareMT5Order(
     ])
 
     const lotResult = calculateLotSize({
-        accountBalance: account.balance,
+        accountBalance: getRiskBudgetBase(account),
         maxRiskPercent: policy.maxRiskPercent,
         entryPrice,
         stopLossPrice: params.stopLoss,

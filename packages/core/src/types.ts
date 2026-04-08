@@ -88,16 +88,35 @@ export interface Position {
     entryPrice: number
     currentPrice?: number
     unrealizedPnl?: number
+    stopLoss?: number
+    takeProfit?: number
     metadata?: Record<string, unknown>
 }
 
 export interface AccountState {
     balance: number
+    equity: number
     buyingPower: number
     marginUsed: number
     marginAvailable: number
     openPnl: number
     dayPnl: number
+}
+
+export interface WorkingOrder {
+    orderId: string
+    instrument: string
+    status: OrderStatus
+    quantity: number
+    filledQuantity: number
+    remainingQuantity: number
+    submittedAt: number
+    updatedAt: number
+    side?: OrderSide
+    limitPrice?: number
+    stopPrice?: number
+    avgFillPrice?: number
+    metadata?: Record<string, unknown>
 }
 
 export interface StrategyRunContext {
@@ -144,4 +163,88 @@ export interface OrderLifecycleContext {
     action: OrderAction
     reason?: string
     metadata?: Record<string, unknown>
+}
+
+export const PROVIDER_OWNERSHIP_STATUSES = ["owned", "unowned", "orphaned"] as const
+export type ProviderOwnershipStatus = typeof PROVIDER_OWNERSHIP_STATUSES[number]
+
+export const PORTFOLIO_PROVIDER_STATUSES = ["healthy", "degraded", "stale"] as const
+export type PortfolioProviderStatus = typeof PORTFOLIO_PROVIDER_STATUSES[number]
+
+export interface PortfolioFreshness {
+    app: VenueApp
+    accountScope: "single-account-per-venue"
+    lastSyncedAt?: number
+    lastVerifiedAt?: number
+    providerStatus: PortfolioProviderStatus
+    stale: boolean
+    driftDetected: boolean
+    lastError?: string
+    lastDriftSummary?: string
+    positionCount: number
+    pendingOrderCount: number
+}
+
+export interface PortfolioPosition {
+    app: VenueApp
+    strategyId?: string
+    strategyName?: string
+    ownershipStatus: ProviderOwnershipStatus
+    instrument: string
+    side: "long" | "short"
+    quantity: number
+    entryPrice: number
+    currentPrice?: number
+    unrealizedPnl?: number
+    stopLoss?: number
+    takeProfit?: number
+    syncedAt: number
+    metadata?: Record<string, unknown>
+}
+
+export interface PortfolioPendingOrder {
+    app: VenueApp
+    strategyId?: string
+    strategyName?: string
+    ownershipStatus: ProviderOwnershipStatus
+    orderId: string
+    instrument: string
+    venue: string
+    status: OrderStatus
+    action?: OrderAction
+    quantity: number
+    filledQuantity: number
+    remainingQuantity: number
+    side?: OrderSide
+    limitPrice?: number
+    stopPrice?: number
+    avgFillPrice?: number
+    submittedAt: number
+    updatedAt: number
+    metadata?: Record<string, unknown>
+}
+
+export interface PortfolioTradeRow {
+    eventId: string
+    timestamp: number
+    app: VenueApp
+    strategyId: string
+    strategyName: string
+    runId: string
+    orderId?: string
+    instrument?: string
+    eventType: EventType
+    action?: OrderAction
+    status?: OrderStatus
+    side?: OrderSide
+    quantity?: number
+    filledQuantity?: number
+    price?: number
+    summary: string
+}
+
+export interface PortfolioEquityPoint {
+    timestamp: number
+    total: number
+    providers: Partial<Record<VenueApp, number>>
 }

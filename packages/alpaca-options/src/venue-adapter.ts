@@ -5,6 +5,7 @@ import {
     type OrderIntent,
     type Position,
     type VenueAdapter,
+    type WorkingOrder,
 } from "@valiq-trading/core"
 import { AlpacaClient, type AlpacaPositionResponse } from "./alpaca-client"
 import { buildIronCondorInstrument, parseOptionContractSymbol } from "./risk-rules"
@@ -41,18 +42,25 @@ export class AlpacaOptionsVenueAdapter implements VenueAdapter {
 
     async getAccountState(): Promise<AccountState> {
         const account = await this.client.getAccount()
-        const balance = toNumber(account.equity) || toNumber(account.portfolio_value)
+        const equity = toNumber(account.equity) || toNumber(account.portfolio_value)
+        const balance = toNumber(account.cash)
         const previousBalance = toNumber(account.last_equity)
         const openPnl = toNumber(account.unrealized_pl)
 
         return {
             balance,
+            equity,
             buyingPower: toNumber(account.buying_power) || toNumber(account.regt_buying_power),
             marginUsed: toNumber(account.initial_margin) || toNumber(account.maintenance_margin),
             marginAvailable: Math.max((toNumber(account.buying_power) || 0) - (toNumber(account.initial_margin) || 0), 0),
             openPnl,
-            dayPnl: previousBalance > 0 ? balance - previousBalance : 0,
+            dayPnl: previousBalance > 0 ? equity - previousBalance : 0,
         }
+    }
+
+    async getWorkingOrders(): Promise<WorkingOrder[]> {
+        const orders = await this.client.getOpenOrders()
+        return orders.map((order) => mapWorkingOrder(order))
     }
 
     async submitOrder(intent: OrderIntent): Promise<ExecutionResult> {
@@ -221,6 +229,54 @@ function mapSinglePosition(position: AlpacaPositionResponse): Position {
     }
 }
 
+function mapWorkingOrder(order: Awaited<ReturnType<AlpacaClient["getOpenOrders"]>>[number]): WorkingOrder {
+    const submittedAt = resolveOrderTimestamp(order)
+    const quantity = order.qty ? Number(order.qty) : 0
+    const filledQuantity = Number(order.filled_qty ?? 0)
+
+    return {
+        orderId: order.id,
+        instrument: resolveOrderInstrument(order),
+        status: mapAlpacaOrderStatus(order.status),
+        quantity,
+        filledQuantity,
+        remainingQuantity: Math.max(quantity - filledQuantity, 0),
+        submittedAt,
+        updatedAt: submittedAt,
+        limitPrice: order.limit_price ? Number(order.limit_price) : undefined,
+        stopPrice: order.stop_price ? Number(order.stop_price) : undefined,
+        avgFillPrice: order.filled_avg_price ? Number(order.filled_avg_price) : undefined,
+        metadata: {
+            legs: order.legs,
+        },
+    }
+}
+
+function resolveOrderInstrument(
+    order: Awaited<ReturnType<AlpacaClient["getOpenOrders"]>>[number]
+): string {
+    if (!order.legs || order.legs.length === 0) {
+        return order.id
+    }
+
+    const parsedLegs = order.legs
+        .map((leg) => parseOptionContractSymbol(leg.symbol))
+        .filter((value): value is NonNullable<ReturnType<typeof parseOptionContractSymbol>> => Boolean(value))
+
+    if (parsedLegs.length === 4) {
+        const underlying = parsedLegs[0]?.underlying
+        const expiration = parsedLegs[0]?.expiration
+        const sharedExpiration = parsedLegs.every((leg) => leg.expiration === expiration)
+
+        if (underlying && expiration && sharedExpiration) {
+            const quantity = order.qty ? Number(order.qty) : 1
+            return buildIronCondorInstrument(underlying, expiration, quantity)
+        }
+    }
+
+    return order.legs.map((leg) => leg.symbol).join(" | ")
+}
+
 function resolveGroupForClose(
     positions: AlpacaPositionResponse[],
     instrument: string
@@ -245,4 +301,34 @@ function toNumber(value: string | undefined): number {
 
 function roundPrice(price: number): number {
     return Math.round(price * 100) / 100
+}
+
+function mapAlpacaOrderStatus(
+    status: string
+): ExecutionResult["status"] {
+    switch (status) {
+        case "filled":
+            return "filled"
+        case "partially_filled":
+            return "partially_filled"
+        case "canceled":
+        case "cancelled":
+        case "pending_cancel":
+            return "cancelled"
+        case "expired":
+            return "expired"
+        case "rejected":
+        case "suspended":
+            return "rejected"
+        default:
+            return "pending"
+    }
+}
+
+function resolveOrderTimestamp(
+    order: Awaited<ReturnType<AlpacaClient["getOpenOrders"]>>[number]
+): number {
+    const rawTimestamp = order.updated_at ?? order.submitted_at
+    const parsed = rawTimestamp ? Date.parse(rawTimestamp) : Number.NaN
+    return Number.isFinite(parsed) ? parsed : Date.now()
 }

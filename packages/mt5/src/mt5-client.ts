@@ -63,6 +63,22 @@ export interface MT5Position {
     identifier: number
 }
 
+export interface MT5OpenOrder {
+    ticket: number
+    symbol: string
+    type: string
+    volumeInitial: number
+    volumeCurrent: number
+    priceOpen: number
+    stopLoss: number
+    takeProfit: number
+    state: string
+    comment: string
+    magic: number
+    timeSetup: number
+    timeDone: number
+}
+
 export interface MT5OrderResult {
     retcode: number
     retcodeDescription: string
@@ -145,6 +161,10 @@ export class MT5Client {
 
     async getPositions(): Promise<MT5Position[]> {
         return await this.get<MT5Position[]>("/positions")
+    }
+
+    async getOpenOrders(): Promise<MT5OpenOrder[]> {
+        return await this.get<MT5OpenOrder[]>("/orders")
     }
 
     async submitOrder(params: {

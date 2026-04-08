@@ -1,238 +1,214 @@
 "use client"
 
-import { useState } from "react"
-import { useDashboardOverview } from "@/hooks/use-dashboard-overview"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Badge } from "@/components/ui/badge"
+import { useState, useMemo } from "react"
+import { useQuery } from "convex/react"
+import { api } from "@valiq-trading/convex"
+import {
+    DataTable,
+    CardList,
+    PortfolioSection,
+    ProviderFilter,
+    FreshnessHeader,
+    SideBadge,
+    EquityChart,
+    TradeHistoryTable,
+    TIME_RANGES,
+    type Column,
+    type TimeRange,
+    type PortfolioTradeRow,
+} from "@/components/portfolio"
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import { PageSkeleton } from "@/components/page-skeleton"
 import { VenueBadge } from "@/components/venue-badge"
+import { StatusBadge } from "@/components/status-badge"
 import { PnlText } from "@/components/pnl-text"
 import { EmptyState } from "@/components/empty-state"
 import { FilterBar } from "@/components/filter-bar"
-import { formatCurrency } from "@/lib/format"
-import { VENUE_APPS, VENUE_META, type VenueApp } from "@/lib/constants"
-import { Activity } from "lucide-react"
+import { formatCurrency, formatRelativeTime } from "@/lib/format"
+import type { VenueApp } from "@/lib/constants"
+import { usePortfolioFreshness } from "@/hooks/use-portfolio-freshness"
+import { useProviderFilter } from "@/hooks/use-provider-filter"
+import { Activity, ClipboardList } from "lucide-react"
 
-type PositionItem = {
-    app: VenueApp
+type PortfolioPosition = {
+    app: string
+    strategyId?: string
+    strategyName?: string
+    ownershipStatus: string
     instrument: string
     side: string
     quantity: number
     entryPrice: number
-    currentPrice?: number | null
-    unrealizedPnl?: number | null
-    strategy?: {
-        _id?: string
-        name: string
-    } | null
+    currentPrice?: number
+    unrealizedPnl?: number
+    stopLoss?: number
+    takeProfit?: number
+    syncedAt: number
 }
 
-type PositionGroupBy = "none" | "venue" | "strategy"
-
-type PositionGroup = {
-    key: string
-    title: string
-    app?: VenueApp
-    positions: PositionItem[]
+type PortfolioPendingOrder = {
+    app: string
+    strategyId?: string
+    strategyName?: string
+    ownershipStatus: string
+    orderId: string
+    instrument: string
+    venue: string
+    status: string
+    action?: string
+    side?: string
+    quantity: number
+    filledQuantity: number
+    remainingQuantity: number
+    limitPrice?: number
+    stopPrice?: number
+    avgFillPrice?: number
+    submittedAt: number
+    updatedAt: number
 }
 
-const GROUP_BY_OPTIONS = ["none", "venue", "strategy"] as const satisfies readonly PositionGroupBy[]
-
-function getPositionKey(pos: PositionItem) {
-    return [
-        pos.app,
-        pos.strategy?._id ?? pos.strategy?.name ?? "unknown",
-        pos.instrument,
-        pos.side,
-        pos.quantity,
-        pos.entryPrice,
-    ].join(":")
+function getPositionKey(pos: PortfolioPosition) {
+    return [pos.app, pos.instrument, pos.side, pos.quantity, pos.entryPrice].join(":")
 }
 
-function getGroupTotalUnrealizedPnl(positions: PositionItem[]) {
-    return positions.reduce((sum, pos) => sum + (pos.unrealizedPnl ?? 0), 0)
+function formatLevel(value: number | undefined): string {
+    if (value === undefined) return "--"
+    return formatCurrency(value)
 }
 
-function groupPositions(positions: PositionItem[], groupBy: PositionGroupBy): PositionGroup[] {
-    if (groupBy === "none") {
-        return [{
-            key: "all",
-            title: "All positions",
-            positions,
-        }]
-    }
+const positionColumns: Column<PortfolioPosition>[] = [
+    {
+        key: "venue",
+        header: "Venue",
+        render: (pos) => <VenueBadge app={pos.app} />,
+    },
+    {
+        key: "strategy",
+        header: "Strategy",
+        cellClassName: "truncate max-w-[120px]",
+        render: (pos) => pos.strategyName ?? "Unowned",
+    },
+    {
+        key: "instrument",
+        header: "Instrument",
+        cellClassName: "font-mono text-xs",
+        render: (pos) => pos.instrument,
+    },
+    {
+        key: "side",
+        header: "Side",
+        render: (pos) => <SideBadge side={pos.side} />,
+    },
+    {
+        key: "quantity",
+        header: "Qty",
+        align: "right",
+        cellClassName: "font-mono tabular-nums",
+        render: (pos) => pos.quantity,
+    },
+    {
+        key: "entry",
+        header: "Entry",
+        align: "right",
+        cellClassName: "font-mono tabular-nums",
+        render: (pos) => formatCurrency(pos.entryPrice),
+    },
+    {
+        key: "current",
+        header: "Current",
+        align: "right",
+        cellClassName: "font-mono tabular-nums",
+        render: (pos) => pos.currentPrice != null ? formatCurrency(pos.currentPrice) : "--",
+    },
+    {
+        key: "sl",
+        header: "SL",
+        align: "right",
+        cellClassName: "font-mono tabular-nums text-xs",
+        render: (pos) => (
+            <span className={pos.stopLoss !== undefined ? "text-loss" : "text-muted-foreground"}>
+                {formatLevel(pos.stopLoss)}
+            </span>
+        ),
+    },
+    {
+        key: "tp",
+        header: "TP",
+        align: "right",
+        cellClassName: "font-mono tabular-nums text-xs",
+        render: (pos) => (
+            <span className={pos.takeProfit !== undefined ? "text-profit" : "text-muted-foreground"}>
+                {formatLevel(pos.takeProfit)}
+            </span>
+        ),
+    },
+    {
+        key: "pnl",
+        header: "P&L",
+        align: "right",
+        render: (pos) => <PnlText value={pos.unrealizedPnl ?? 0} className="text-xs" />,
+    },
+]
 
-    const groups = new Map<string, PositionGroup>()
+const pendingOrderColumns: Column<PortfolioPendingOrder>[] = [
+    {
+        key: "venue",
+        header: "Venue",
+        render: (order) => <VenueBadge app={order.app} />,
+    },
+    {
+        key: "strategy",
+        header: "Strategy",
+        cellClassName: "truncate max-w-[120px]",
+        render: (order) => order.strategyName ?? "Unowned",
+    },
+    {
+        key: "instrument",
+        header: "Instrument",
+        cellClassName: "font-mono text-xs",
+        render: (order) => order.instrument,
+    },
+    {
+        key: "side",
+        header: "Side",
+        render: (order) => order.side ? <SideBadge side={order.side} /> : "--",
+    },
+    {
+        key: "action",
+        header: "Action",
+        render: (order) => order.action
+            ? <StatusBadge status={order.action} category="event" fallback="secondary" />
+            : "--",
+    },
+    {
+        key: "status",
+        header: "Status",
+        render: (order) => <StatusBadge status={order.status} category="event" fallback="secondary" />,
+    },
+    {
+        key: "qty",
+        header: "Qty",
+        align: "right",
+        cellClassName: "font-mono tabular-nums",
+        render: (order) => `${order.filledQuantity}/${order.quantity}`,
+    },
+    {
+        key: "limit",
+        header: "Limit",
+        align: "right",
+        cellClassName: "font-mono tabular-nums",
+        render: (order) => order.limitPrice != null ? formatCurrency(order.limitPrice) : "--",
+    },
+    {
+        key: "updated",
+        header: "Updated",
+        cellClassName: "text-xs text-muted-foreground whitespace-nowrap",
+        render: (order) => formatRelativeTime(order.updatedAt),
+    },
+]
 
-    for (const pos of positions) {
-        const strategyId = pos.strategy?._id ?? `${pos.app}:${pos.strategy?.name ?? "unknown"}`
-        const groupKey = groupBy === "venue" ? pos.app : strategyId
-        const existing = groups.get(groupKey)
-
-        if (existing) {
-            existing.positions.push(pos)
-            continue
-        }
-
-        groups.set(groupKey, {
-            key: groupKey,
-            title: groupBy === "venue"
-                ? VENUE_META[pos.app]?.label ?? pos.app
-                : pos.strategy?.name ?? "Unknown strategy",
-            app: pos.app,
-            positions: [pos],
-        })
-    }
-
-    const grouped = Array.from(groups.values())
-
-    if (groupBy === "venue") {
-        return grouped.sort(
-            (a, b) => VENUE_APPS.indexOf(a.key as VenueApp) - VENUE_APPS.indexOf(b.key as VenueApp),
-        )
-    }
-
-    return grouped.sort((a, b) => a.title.localeCompare(b.title))
-}
-
-function PositionCard({ pos }: { pos: PositionItem }) {
-    return (
-        <div className="rounded-lg border border-border-subtle p-3 space-y-2">
-            <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2 min-w-0">
-                    <span className="text-sm font-medium font-mono truncate">{pos.instrument}</span>
-                    <Badge
-                        variant={pos.side === "long" ? "default" : "destructive"}
-                        className="text-xs shrink-0"
-                    >
-                        {pos.side}
-                    </Badge>
-                </div>
-                <PnlText value={pos.unrealizedPnl ?? 0} className="text-sm font-medium shrink-0" />
-            </div>
-            <div className="flex items-center justify-between text-xs text-muted-foreground">
-                <div className="flex items-center gap-2">
-                    <VenueBadge app={pos.app} />
-                    <span className="truncate max-w-[100px]">{pos.strategy?.name ?? "Unknown"}</span>
-                </div>
-                <div className="flex items-center gap-3 font-mono tabular-nums shrink-0">
-                    <span>qty {pos.quantity}</span>
-                    <span>{formatCurrency(pos.entryPrice)}</span>
-                </div>
-            </div>
-        </div>
-    )
-}
-
-function PositionTable({ positions }: { positions: PositionItem[] }) {
-    return (
-        <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-                <thead>
-                    <tr className="border-b text-left text-muted-foreground">
-                        <th className="pb-2 pr-4 font-medium">Venue</th>
-                        <th className="pb-2 pr-4 font-medium">Strategy</th>
-                        <th className="pb-2 pr-4 font-medium">Instrument</th>
-                        <th className="pb-2 pr-4 font-medium">Side</th>
-                        <th className="pb-2 pr-4 font-medium text-right">Qty</th>
-                        <th className="pb-2 pr-4 font-medium text-right">Entry</th>
-                        <th className="pb-2 pr-4 font-medium text-right">Current</th>
-                        <th className="pb-2 font-medium text-right">P&L</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {positions.map((pos) => (
-                        <tr key={getPositionKey(pos)} className="border-b border-border-subtle last:border-0">
-                            <td className="py-2 pr-4">
-                                <VenueBadge app={pos.app} />
-                            </td>
-                            <td className="py-2 pr-4 truncate max-w-[120px]">
-                                {pos.strategy?.name ?? "Unknown"}
-                            </td>
-                            <td className="py-2 pr-4 font-mono text-xs">{pos.instrument}</td>
-                            <td className="py-2 pr-4">
-                                <Badge
-                                    variant={pos.side === "long" ? "default" : "destructive"}
-                                    className="text-xs"
-                                >
-                                    {pos.side}
-                                </Badge>
-                            </td>
-                            <td className="py-2 pr-4 text-right font-mono tabular-nums">
-                                {pos.quantity}
-                            </td>
-                            <td className="py-2 pr-4 text-right font-mono tabular-nums">
-                                {formatCurrency(pos.entryPrice)}
-                            </td>
-                            <td className="py-2 pr-4 text-right font-mono tabular-nums">
-                                {pos.currentPrice != null ? formatCurrency(pos.currentPrice) : "--"}
-                            </td>
-                            <td className="py-2 text-right">
-                                <PnlText value={pos.unrealizedPnl ?? 0} className="text-xs" />
-                            </td>
-                        </tr>
-                    ))}
-                </tbody>
-            </table>
-        </div>
-    )
-}
-
-function PositionGroupSection({
-    group,
-    groupBy,
-}: {
-    group: PositionGroup
-    groupBy: PositionGroupBy
-}) {
-    const groupTotalUnrealizedPnl = getGroupTotalUnrealizedPnl(group.positions)
-
-    return (
-        <section className="space-y-3">
-            {groupBy !== "none" ? (
-                <div className="flex items-center justify-between gap-3">
-                    <div className="flex items-center gap-2 min-w-0">
-                        {groupBy === "venue" && group.app ? <VenueBadge app={group.app} /> : null}
-                        <div className="min-w-0">
-                            <h3 className="truncate text-sm font-semibold">{group.title}</h3>
-                            <p className="text-xs text-muted-foreground">
-                                {group.positions.length} position{group.positions.length !== 1 ? "s" : ""}
-                            </p>
-                        </div>
-                    </div>
-                    <PnlText value={groupTotalUnrealizedPnl} className="text-sm font-semibold shrink-0" />
-                </div>
-            ) : null}
-
-            <div className="space-y-2 sm:hidden">
-                {group.positions.map((pos) => (
-                    <PositionCard key={getPositionKey(pos)} pos={pos} />
-                ))}
-            </div>
-
-            <Card className="hidden sm:block">
-                {groupBy !== "none" ? (
-                    <CardHeader className="pb-3">
-                        <CardTitle className="text-base">{group.title}</CardTitle>
-                    </CardHeader>
-                ) : null}
-                <CardContent className={groupBy === "none" ? "pt-6" : "pt-0"}>
-                    <PositionTable positions={group.positions} />
-                </CardContent>
-            </Card>
-        </section>
-    )
-}
-
-export default function PositionsPage() {
-    const [groupBy, setGroupBy] = useState<PositionGroupBy>("none")
-    const { data: overview, isLoading } = useDashboardOverview()
-
-    if (isLoading || !overview) {
-        return <PageSkeleton count={1} height="h-64" />
-    }
-
-    const positions = overview.openPositions as PositionItem[]
+function PositionsTab({ positions }: { positions: PortfolioPosition[] }) {
+    const totalPnl = positions.reduce((sum, p) => sum + (p.unrealizedPnl ?? 0), 0)
 
     if (positions.length === 0) {
         return (
@@ -244,47 +220,262 @@ export default function PositionsPage() {
         )
     }
 
-    const totalUnrealizedPnl = positions.reduce(
-        (sum, p) => sum + (p.unrealizedPnl ?? 0),
-        0,
+    return (
+        <div className="space-y-3">
+            <div className="flex items-center justify-between gap-3">
+                <p className="text-sm text-muted-foreground">
+                    {positions.length} open position{positions.length !== 1 ? "s" : ""}
+                </p>
+                <div className="flex items-center gap-2 text-sm">
+                    <span className="text-muted-foreground">Total P&L:</span>
+                    <PnlText value={totalPnl} className="font-semibold" />
+                </div>
+            </div>
+
+            <div className="sm:hidden">
+                <CardList
+                    data={positions}
+                    getKey={getPositionKey}
+                    renderCard={(pos) => (
+                        <div className="rounded-lg border border-border-subtle p-3 space-y-2">
+                            <div className="flex items-center justify-between">
+                                <div className="flex items-center gap-2 min-w-0">
+                                    <span className="text-sm font-medium font-mono truncate">
+                                        {pos.instrument}
+                                    </span>
+                                    <SideBadge side={pos.side} />
+                                </div>
+                                <PnlText
+                                    value={pos.unrealizedPnl ?? 0}
+                                    className="text-sm font-medium shrink-0"
+                                />
+                            </div>
+                            <div className="flex items-center justify-between text-xs text-muted-foreground">
+                                <div className="flex items-center gap-2">
+                                    <VenueBadge app={pos.app} />
+                                    <span className="truncate max-w-[100px]">
+                                        {pos.strategyName ?? "Unowned"}
+                                    </span>
+                                </div>
+                                <div className="flex items-center gap-3 font-mono tabular-nums shrink-0">
+                                    <span>qty {pos.quantity}</span>
+                                    <span>{formatCurrency(pos.entryPrice)}</span>
+                                </div>
+                            </div>
+                            <div className="flex items-center justify-between text-xs">
+                                <div className="flex items-center gap-3 font-mono tabular-nums">
+                                    <span className={pos.stopLoss !== undefined ? "text-loss" : "text-muted-foreground"}>
+                                        SL {formatLevel(pos.stopLoss)}
+                                    </span>
+                                    <span className={pos.takeProfit !== undefined ? "text-profit" : "text-muted-foreground"}>
+                                        TP {formatLevel(pos.takeProfit)}
+                                    </span>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+                />
+            </div>
+
+            <PortfolioSection className="hidden sm:block">
+                <DataTable
+                    columns={positionColumns}
+                    data={positions}
+                    getRowKey={getPositionKey}
+                />
+            </PortfolioSection>
+        </div>
     )
-    const groupedPositions = groupPositions(positions, groupBy)
+}
+
+function PendingOrdersTab({ orders }: { orders: PortfolioPendingOrder[] }) {
+    if (orders.length === 0) {
+        return (
+            <EmptyState
+                icon={ClipboardList}
+                title="No pending orders"
+                description="Working orders across all venues will appear here"
+            />
+        )
+    }
+
+    return (
+        <div className="space-y-3">
+            <p className="text-sm text-muted-foreground">
+                {orders.length} pending order{orders.length !== 1 ? "s" : ""}
+            </p>
+
+            <div className="sm:hidden">
+                <CardList
+                    data={orders}
+                    getKey={(o) => o.orderId}
+                    renderCard={(order) => (
+                        <div className="rounded-lg border border-border-subtle p-3 space-y-2">
+                            <div className="flex items-center justify-between">
+                                <div className="flex items-center gap-2 min-w-0">
+                                    <span className="text-sm font-medium font-mono truncate">
+                                        {order.instrument}
+                                    </span>
+                                    {order.side ? <SideBadge side={order.side} /> : null}
+                                </div>
+                                <StatusBadge status={order.status} category="event" fallback="secondary" />
+                            </div>
+                            <div className="flex items-center justify-between text-xs text-muted-foreground">
+                                <div className="flex items-center gap-2">
+                                    <VenueBadge app={order.app} />
+                                    <span className="truncate max-w-[100px]">
+                                        {order.strategyName ?? "Unowned"}
+                                    </span>
+                                </div>
+                                <div className="flex items-center gap-3 font-mono tabular-nums shrink-0">
+                                    <span>{order.filledQuantity}/{order.quantity}</span>
+                                    {order.limitPrice != null ? (
+                                        <span>@ {formatCurrency(order.limitPrice)}</span>
+                                    ) : null}
+                                </div>
+                            </div>
+                        </div>
+                    )}
+                />
+            </div>
+
+            <PortfolioSection className="hidden sm:block">
+                <DataTable
+                    columns={pendingOrderColumns}
+                    data={orders}
+                    getRowKey={(o) => o.orderId}
+                />
+            </PortfolioSection>
+        </div>
+    )
+}
+
+function TradeHistoryTab({ trades }: { trades: PortfolioTradeRow[] }) {
+    return <TradeHistoryTable trades={trades} />
+}
+
+function EquityTab({
+    provider,
+}: {
+    provider: VenueApp | null
+}) {
+    const [timeRange, setTimeRange] = useState<TimeRange>("30d")
+    const equityData = useQuery(api.queries.getPortfolioEquitySeries, {
+        app: provider ?? undefined,
+        timeRange,
+    })
+
+    const chartData = useMemo(() => {
+        if (!equityData || equityData.series.length === 0) return []
+
+        return equityData.series.map((point) => ({
+            timestamp: point.timestamp,
+            total: point.total,
+            ...point.providers,
+        }))
+    }, [equityData])
+
+    if (equityData === undefined) {
+        return <PageSkeleton count={1} height="h-[400px]" />
+    }
+
+    return (
+        <div className="space-y-3">
+            <div className="flex items-center justify-between">
+                <p className="text-sm text-muted-foreground">
+                    Equity curve across {provider ? "selected venue" : "all venues"}
+                </p>
+                <FilterBar
+                    items={TIME_RANGES.map((r) => r.value)}
+                    selected={timeRange}
+                    onSelect={setTimeRange}
+                    getLabel={(v) => TIME_RANGES.find((r) => r.value === v)!.label}
+                    variant="tabs"
+                />
+            </div>
+
+            {equityData.latest ? (
+                <div className="flex items-center gap-4 text-sm">
+                    <span className="text-muted-foreground">Latest equity:</span>
+                    <span className="font-semibold font-mono tabular-nums">
+                        {formatCurrency(equityData.latest.total)}
+                    </span>
+                </div>
+            ) : null}
+
+            <PortfolioSection>
+                <EquityChart data={chartData} timeRange={timeRange} />
+            </PortfolioSection>
+        </div>
+    )
+}
+
+export default function PositionsPage() {
+    const { provider, setProvider } = useProviderFilter()
+    const freshnessStates = usePortfolioFreshness(provider)
+    const positions = useQuery(api.queries.getPortfolioPositions, {
+        app: provider ?? undefined,
+    })
+    const pendingOrders = useQuery(api.queries.getPortfolioPendingOrders, {
+        app: provider ?? undefined,
+    })
+    const tradeHistory = useQuery(api.queries.getPortfolioTradeHistory, {
+        app: provider ?? undefined,
+        limit: 100,
+    })
+
+    const isLoading = positions === undefined
+        || pendingOrders === undefined
+        || tradeHistory === undefined
+
+    if (isLoading) {
+        return <PageSkeleton count={3} height="h-32" />
+    }
+
+    const positionCount = positions.length
+    const orderCount = pendingOrders.length
+    const tradeCount = tradeHistory.length
 
     return (
         <div className="space-y-4">
-            <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-                <div className="flex items-center justify-between gap-3">
-                    <p className="text-sm text-muted-foreground">
-                        {positions.length} open position{positions.length !== 1 ? "s" : ""}
-                    </p>
-                    <div className="flex items-center gap-2 text-sm">
-                        <span className="text-muted-foreground">Total P&L:</span>
-                        <PnlText value={totalUnrealizedPnl} className="font-semibold" />
-                    </div>
-                </div>
-                <div className="flex items-center justify-between gap-3 lg:justify-end">
-                    <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                        Group by
-                    </span>
-                    <FilterBar
-                        items={GROUP_BY_OPTIONS}
-                        selected={groupBy}
-                        onSelect={setGroupBy}
-                        getLabel={(value) => {
-                            if (value === "none") return "None"
-                            if (value === "venue") return "Venue"
-                            return "Strategy"
-                        }}
-                        variant="tabs"
-                    />
-                </div>
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <ProviderFilter selected={provider} onSelect={setProvider} />
             </div>
 
-            <div className="space-y-4">
-                {groupedPositions.map((group) => (
-                    <PositionGroupSection key={group.key} group={group} groupBy={groupBy} />
-                ))}
-            </div>
+            <FreshnessHeader freshness={freshnessStates} />
+
+            <Tabs defaultValue="positions">
+                <TabsList>
+                    <TabsTrigger value="positions">
+                        Positions{positionCount > 0 ? ` (${positionCount})` : ""}
+                    </TabsTrigger>
+                    <TabsTrigger value="orders">
+                        Orders{orderCount > 0 ? ` (${orderCount})` : ""}
+                    </TabsTrigger>
+                    <TabsTrigger value="trades">
+                        Trades{tradeCount > 0 ? ` (${tradeCount})` : ""}
+                    </TabsTrigger>
+                    <TabsTrigger value="equity">
+                        Equity
+                    </TabsTrigger>
+                </TabsList>
+
+                <TabsContent value="positions">
+                    <PositionsTab positions={positions as PortfolioPosition[]} />
+                </TabsContent>
+
+                <TabsContent value="orders">
+                    <PendingOrdersTab orders={pendingOrders as PortfolioPendingOrder[]} />
+                </TabsContent>
+
+                <TabsContent value="trades">
+                    <TradeHistoryTab trades={tradeHistory as PortfolioTradeRow[]} />
+                </TabsContent>
+
+                <TabsContent value="equity">
+                    <EquityTab provider={provider} />
+                </TabsContent>
+            </Tabs>
         </div>
     )
 }

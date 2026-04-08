@@ -18,6 +18,7 @@ export interface AlpacaCredentials {
 
 export interface AlpacaAccountResponse {
     id: string
+    cash?: string
     equity: string
     buying_power: string
     regt_buying_power?: string
@@ -110,6 +111,10 @@ export class AlpacaClient {
 
     async getPositions(): Promise<AlpacaPositionResponse[]> {
         return await this.request<AlpacaPositionResponse[]>("/v2/positions")
+    }
+
+    async getOpenOrders(): Promise<AlpacaOrderResponse[]> {
+        return await this.request<AlpacaOrderResponse[]>("/v2/orders?status=open&nested=true&direction=desc&limit=500")
     }
 
     async createOrder(intent: OrderIntent): Promise<ExecutionResult> {

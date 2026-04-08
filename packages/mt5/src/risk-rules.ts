@@ -1,4 +1,5 @@
 import {
+    getRiskBudgetBase,
     getCurrentTimeInTimezone,
     mt5PolicySchema,
     padTime,
@@ -85,7 +86,7 @@ function maxRiskPercentValidator(
 
     const policy = mt5PolicySchema.parse(rawPolicy)
 
-    if (state.balance <= 0) {
+    if (getRiskBudgetBase(state) <= 0) {
         return { allowed: true }
     }
 

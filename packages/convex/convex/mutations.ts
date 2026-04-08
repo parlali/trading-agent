@@ -32,3 +32,8 @@ export {
     setKillSwitch,
     clearManualRunRequest,
 } from "./lib/mutations/system"
+
+export {
+    reconcileProviderPortfolio,
+    recordProviderSyncFailure,
+} from "./lib/mutations/portfolio"

@@ -21,10 +21,17 @@ export function startHeartbeat(): void {
             })
 
             for (const [app, venueState] of Object.entries(healthState.venues) as [VenueApp, typeof healthState.venues[string]][]) {
-                const status = venueState?.validated ? "healthy" : "degraded"
+                const status = venueState?.providerStatus === "healthy" && venueState?.validated
+                    ? "healthy"
+                    : "degraded"
                 await backend.reportHeartbeat(app, status, {
                     source: "periodic",
                     lastSyncAt: venueState?.lastSyncAt,
+                    lastVerifiedAt: venueState?.lastVerifiedAt,
+                    stale: venueState?.stale,
+                    driftDetected: venueState?.driftDetected,
+                    positionCount: venueState?.positionCount,
+                    pendingOrderCount: venueState?.pendingOrderCount,
                     error: venueState?.lastSyncError ?? venueState?.error,
                 })
             }

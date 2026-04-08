@@ -10,6 +10,8 @@ import {
     severityV,
     eventTypeV,
     claimSourceV,
+    portfolioProviderStatusV,
+    providerOwnershipStatusV,
 } from "./lib/validators"
 
 export default defineSchema({
@@ -73,17 +75,20 @@ export default defineSchema({
     trade_events: defineTable({
         runId: v.id("strategy_runs"),
         strategyId: v.id("strategies"),
+        app: v.optional(venueAppV),
         eventType: eventTypeV,
         payload: v.string(), // JSON stringified event data
         timestamp: v.number(),
     })
         .index("by_run", ["runId"])
-        .index("by_strategy", ["strategyId"]),
+        .index("by_strategy", ["strategyId"])
+        .index("by_app_timestamp", ["app", "timestamp"]),
 
     orders: defineTable({
         orderId: v.string(),
         runId: v.id("strategy_runs"),
         strategyId: v.id("strategies"),
+        app: v.optional(venueAppV),
         venue: v.string(),
         instrument: v.string(),
         status: orderStatusV,
@@ -109,6 +114,7 @@ export default defineSchema({
     })
         .index("by_order_id", ["orderId"])
         .index("by_strategy_status", ["strategyId", "status"])
+        .index("by_app_status", ["app", "status"])
         .index("by_run", ["runId"]),
 
     order_transitions: defineTable({
@@ -203,6 +209,7 @@ export default defineSchema({
         app: appV,
         venue: v.string(),
         balance: v.number(),
+        equity: v.optional(v.number()),
         buyingPower: v.number(),
         marginUsed: v.number(),
         marginAvailable: v.number(),
@@ -212,6 +219,66 @@ export default defineSchema({
     })
         .index("by_app", ["app"])
         .index("by_app_timestamp", ["app", "timestamp"]),
+
+    provider_sync_state: defineTable({
+        app: venueAppV,
+        accountScope: v.literal("single-account-per-venue"),
+        lastSyncedAt: v.optional(v.number()),
+        lastVerifiedAt: v.optional(v.number()),
+        providerStatus: portfolioProviderStatusV,
+        stale: v.boolean(),
+        driftDetected: v.boolean(),
+        lastError: v.optional(v.string()),
+        lastDriftSummary: v.optional(v.string()),
+        positionCount: v.number(),
+        pendingOrderCount: v.number(),
+        updatedAt: v.number(),
+    }).index("by_app", ["app"]),
+
+    provider_positions: defineTable({
+        app: venueAppV,
+        positionKey: v.string(),
+        strategyId: v.optional(v.id("strategies")),
+        ownershipStatus: providerOwnershipStatusV,
+        instrument: v.string(),
+        side: v.union(v.literal("long"), v.literal("short")),
+        quantity: v.number(),
+        entryPrice: v.number(),
+        currentPrice: v.optional(v.number()),
+        unrealizedPnl: v.optional(v.number()),
+        stopLoss: v.optional(v.number()),
+        takeProfit: v.optional(v.number()),
+        metadata: v.optional(v.string()),
+        syncedAt: v.number(),
+    })
+        .index("by_app", ["app"])
+        .index("by_app_strategy", ["app", "strategyId"]),
+
+    provider_working_orders: defineTable({
+        app: venueAppV,
+        orderId: v.string(),
+        strategyId: v.optional(v.id("strategies")),
+        runId: v.optional(v.id("strategy_runs")),
+        ownershipStatus: providerOwnershipStatusV,
+        venue: v.string(),
+        instrument: v.string(),
+        status: orderStatusV,
+        action: v.optional(orderActionV),
+        side: v.optional(v.union(v.literal("buy"), v.literal("sell"))),
+        quantity: v.number(),
+        filledQuantity: v.number(),
+        remainingQuantity: v.number(),
+        limitPrice: v.optional(v.number()),
+        stopPrice: v.optional(v.number()),
+        avgFillPrice: v.optional(v.number()),
+        metadata: v.optional(v.string()),
+        submittedAt: v.number(),
+        updatedAt: v.number(),
+        syncedAt: v.number(),
+    })
+        .index("by_app", ["app"])
+        .index("by_app_strategy", ["app", "strategyId"])
+        .index("by_app_status", ["app", "status"]),
 
     manual_run_requests: defineTable({
         strategyId: v.id("strategies"),

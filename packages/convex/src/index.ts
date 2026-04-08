@@ -14,6 +14,7 @@ import type {
     StrategyConfig,
     TradeEventLogger,
     ValidationResult,
+    WorkingOrder,
 } from "@valiq-trading/core"
 import { withTimeout } from "@valiq-trading/core"
 
@@ -117,6 +118,15 @@ export interface ReplaceAllStrategiesResult {
     deleted: DeleteAllStrategiesResult
 }
 
+export interface ProviderPortfolioReconciliationResult {
+    app: Exclude<App, "backend">
+    source: "startup_sync" | "periodic_sync" | "post_run_sync"
+    positionCount: number
+    pendingOrderCount: number
+    driftDetected: boolean
+    driftSummary?: string
+}
+
 export interface TradingBackendClient extends TradeEventLoggerMethods {
     getStrategyConfigs(app: App): Promise<StoredStrategy[]>
     getStrategyById(id: Id<"strategies">): Promise<StoredStrategy | null>
@@ -127,6 +137,15 @@ export interface TradingBackendClient extends TradeEventLoggerMethods {
     updateRun(runId: Id<"strategy_runs">, status: StoredRun["status"], summary?: string, error?: string): Promise<void>
     recordRunCallback(runId: Id<"strategy_runs">, callbackRequestedMinutes: number, callbackFiresAt: number): Promise<void>
     syncPositions(strategyId: Id<"strategies">, app: App, positions: Position[]): Promise<void>
+    reconcileProviderPortfolio(
+        app: Exclude<App, "backend">,
+        venue: string,
+        source: ProviderPortfolioReconciliationResult["source"],
+        accountState: AccountState,
+        positions: Position[],
+        workingOrders: WorkingOrder[]
+    ): Promise<ProviderPortfolioReconciliationResult>
+    recordProviderSyncFailure(app: Exclude<App, "backend">, error: string): Promise<void>
     log(
         runId: string,
         strategyId: string,
@@ -377,6 +396,69 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
                 })
             )
         },
+        async reconcileProviderPortfolio(
+            app: Exclude<App, "backend">,
+            venue: string,
+            source: ProviderPortfolioReconciliationResult["source"],
+            accountState: AccountState,
+            positions: Position[],
+            workingOrders: WorkingOrder[]
+        ): Promise<ProviderPortfolioReconciliationResult> {
+            return await runWithTimeout(
+                "Convex mutation reconcileProviderPortfolio",
+                async () => await client.mutation(api.mutations.reconcileProviderPortfolio, {
+                    ...requireMachineAuth(),
+                    app,
+                    venue,
+                    source,
+                    accountState: {
+                        balance: accountState.balance,
+                        equity: accountState.equity,
+                        buyingPower: accountState.buyingPower,
+                        marginUsed: accountState.marginUsed,
+                        marginAvailable: accountState.marginAvailable,
+                        openPnl: accountState.openPnl,
+                        dayPnl: accountState.dayPnl,
+                    },
+                    positions: positions.map((position) => ({
+                        instrument: position.instrument,
+                        side: position.side,
+                        quantity: position.quantity,
+                        entryPrice: position.entryPrice,
+                        currentPrice: position.currentPrice,
+                        unrealizedPnl: position.unrealizedPnl,
+                        stopLoss: position.stopLoss,
+                        takeProfit: position.takeProfit,
+                        metadata: position.metadata ? JSON.stringify(position.metadata) : undefined,
+                    })),
+                    workingOrders: workingOrders.map((order) => ({
+                        orderId: order.orderId,
+                        instrument: order.instrument,
+                        status: order.status,
+                        quantity: order.quantity,
+                        filledQuantity: order.filledQuantity,
+                        remainingQuantity: order.remainingQuantity,
+                        submittedAt: order.submittedAt,
+                        updatedAt: order.updatedAt,
+                        side: order.side,
+                        limitPrice: order.limitPrice,
+                        stopPrice: order.stopPrice,
+                        avgFillPrice: order.avgFillPrice,
+                        metadata: order.metadata ? JSON.stringify(order.metadata) : undefined,
+                    })),
+                } as never) as ProviderPortfolioReconciliationResult
+            )
+        },
+        async recordProviderSyncFailure(app: Exclude<App, "backend">, error: string): Promise<void> {
+            await runWithTimeout(
+                "Convex mutation recordProviderSyncFailure",
+                async () => await client.mutation(api.mutations.recordProviderSyncFailure, {
+                    ...requireMachineAuth(),
+                    app,
+                    error,
+                } as never)
+            )
+        },
         async resolveSecrets(keys: string[]): Promise<Record<string, string | null>> {
             return await runWithTimeout(
                 "Convex action resolveSecrets",
@@ -405,6 +487,7 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
                     app,
                     venue,
                     balance: state.balance,
+                    equity: state.equity,
                     buyingPower: state.buyingPower,
                     marginUsed: state.marginUsed,
                     marginAvailable: state.marginAvailable,
