@@ -9,6 +9,12 @@
         "dev": "bun --watch src/index.ts",
         "start": "bun src/index.ts",
         "build": "tsc --noEmit",
+        "strategies:diff": "bun scripts/strategies-diff.ts",
+        "strategies:list": "bun scripts/strategies-list.ts",
+        "strategies:add": "bun scripts/strategies-add.ts",
+        "strategies:add-all": "bun scripts/strategies-add-all.ts",
+        "strategies:delete": "bun scripts/strategies-delete.ts",
+        "strategies:reset": "bun scripts/strategies-reset.ts",
         "strategies:reset-import": "bun scripts/reset-and-import-strategies.ts"
     },
     "dependencies": {

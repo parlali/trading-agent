@@ -93,21 +93,28 @@ export interface ManualRunRequest {
     requestedAt: number
 }
 
+export interface CascadeDeleteCounts {
+    runs: number
+    agentLogs: number
+    tradeEvents: number
+    orders: number
+    orderTransitions: number
+    positions: number
+    instrumentClaims: number
+    positionSyncs: number
+    manualRunRequests: number
+    alerts: number
+}
+
+export interface DeleteStrategyResult extends CascadeDeleteCounts {}
+
+export interface DeleteAllStrategiesResult extends CascadeDeleteCounts {
+    strategies: number
+}
+
 export interface ReplaceAllStrategiesResult {
     importedStrategies: number
-    deleted: {
-        strategies: number
-        runs: number
-        agentLogs: number
-        tradeEvents: number
-        orders: number
-        orderTransitions: number
-        positions: number
-        instrumentClaims: number
-        positionSyncs: number
-        manualRunRequests: number
-        alerts: number
-    }
+    deleted: DeleteAllStrategiesResult
 }
 
 export interface TradingBackendClient extends TradeEventLoggerMethods {
@@ -142,6 +149,10 @@ export interface TradingBackendClient extends TradeEventLoggerMethods {
     getStrategyOwnedInstruments(strategyId: Id<"strategies">): Promise<string[]>
     getAllOwnedInstrumentsByApp(app: Exclude<App, "backend">): Promise<Array<{ instrument: string, strategyId: string }>>
     getLatestPositions(strategyId: Id<"strategies">): Promise<Position[]>
+    getAllStrategies(): Promise<StoredStrategy[]>
+    addStrategy(config: StrategyConfig): Promise<Id<"strategies">>
+    deleteStrategy(id: Id<"strategies">): Promise<DeleteStrategyResult>
+    deleteAllStrategies(): Promise<DeleteAllStrategiesResult>
     replaceAllStrategies(strategies: StrategyConfig[]): Promise<ReplaceAllStrategiesResult>
 }
 
@@ -481,6 +492,43 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
                 unrealizedPnl: doc.unrealizedPnl,
                 metadata: doc.metadata ? JSON.parse(doc.metadata) as Record<string, unknown> : undefined,
             }))
+        },
+        async getAllStrategies(): Promise<StoredStrategy[]> {
+            return await runWithTimeout(
+                "Convex query getAllStrategies",
+                async () => await client.query(api.queries.getAllStrategies, { ...requireMachineAuth() }) as StoredStrategy[]
+            )
+        },
+        async addStrategy(config: StrategyConfig): Promise<Id<"strategies">> {
+            return await runWithTimeout(
+                "Convex mutation upsertStrategy",
+                async () => await client.mutation(api.mutations.upsertStrategy, {
+                    ...requireMachineAuth(),
+                    app: config.app,
+                    name: config.name,
+                    enabled: config.enabled,
+                    schedule: config.schedule,
+                    policy: config.policy,
+                    context: config.context,
+                } as never) as Id<"strategies">
+            )
+        },
+        async deleteStrategy(id: Id<"strategies">): Promise<DeleteStrategyResult> {
+            return await runWithTimeout(
+                "Convex mutation deleteStrategy",
+                async () => await client.mutation(api.mutations.deleteStrategy, {
+                    ...requireMachineAuth(),
+                    strategyId: id,
+                } as never) as DeleteStrategyResult
+            )
+        },
+        async deleteAllStrategies(): Promise<DeleteAllStrategiesResult> {
+            return await runWithTimeout(
+                "Convex mutation deleteAllStrategies",
+                async () => await client.mutation(api.mutations.deleteAllStrategies, {
+                    ...requireMachineAuth(),
+                } as never) as DeleteAllStrategiesResult
+            )
         },
         async replaceAllStrategies(strategies: StrategyConfig[]): Promise<ReplaceAllStrategiesResult> {
             return await runWithTimeout(

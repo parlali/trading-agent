@@ -19,7 +19,7 @@ export default function TradesPage() {
         app: selectedApp as VenueApp | undefined,
         limit: 100,
     })
-    const allStrategies = useQuery(api.queries.getAllStrategies)
+    const allStrategies = useQuery(api.queries.getAllStrategies, {})
 
     if (trades === undefined || allStrategies === undefined) {
         return <PageSkeleton count={5} />

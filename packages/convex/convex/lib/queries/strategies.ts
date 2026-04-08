@@ -36,9 +36,15 @@ export const getStrategyById = query({
 })
 
 export const getAllStrategies = query({
-    args: {},
-    handler: async (ctx) => {
-        await requireUser(ctx)
+    args: {
+        serviceToken: v.optional(v.string()),
+    },
+    handler: async (ctx, args) => {
+        if (args.serviceToken) {
+            requireServiceToken(args.serviceToken)
+        } else {
+            await requireUser(ctx)
+        }
         return await ctx.db.query("strategies").collect()
     },
 })

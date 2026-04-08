@@ -1,83 +1,55 @@
-import { resolve } from "node:path"
 import {
-    createTradingBackendClient,
-    type ReplaceAllStrategiesResult,
-} from "@valiq-trading/convex"
-import { parseStrategyMarkdownDocument } from "@valiq-trading/core"
+    createClient,
+    loadStrategiesFromDocument,
+    printDeleteCounts,
+    runScript,
+} from "./lib/strategy-cli"
 
-function resolveArg(name: string): string | undefined {
-    const prefix = `--${name}=`
-    const entry = Bun.argv.find((value) => value.startsWith(prefix))
+runScript(async () => {
+    const strategies = await loadStrategiesFromDocument()
+    const client = createClient()
 
-    if (!entry) {
-        return undefined
+    const existing = await client.getAllStrategies()
+
+    const totals = {
+        strategies: 0,
+        runs: 0,
+        agentLogs: 0,
+        tradeEvents: 0,
+        orders: 0,
+        orderTransitions: 0,
+        positions: 0,
+        instrumentClaims: 0,
+        positionSyncs: 0,
+        manualRunRequests: 0,
+        alerts: 0,
     }
 
-    return entry.slice(prefix.length).trim() || undefined
-}
+    if (existing.length > 0) {
+        console.log(`Deleting ${existing.length} existing strategies...`)
 
-function resolveDocumentPath(): string {
-    const explicitPath = resolveArg("file")
+        for (const strategy of existing) {
+            console.log(`  Deleting ${strategy.name}...`)
+            const result = await client.deleteStrategy(strategy._id)
+            totals.strategies++
+            for (const key of Object.keys(result) as Array<keyof typeof result>) {
+                if (key in totals) {
+                    (totals as Record<string, number>)[key] += result[key] as number
+                }
+            }
+        }
 
-    if (explicitPath) {
-        return resolve(process.cwd(), explicitPath)
+        console.log("Deleted:")
+        printDeleteCounts(totals)
+        console.log("")
     }
 
-    return resolve(import.meta.dir, "../../../strategies.md")
-}
+    console.log(`Importing ${strategies.length} strategies...`)
 
-function requireEnv(name: string): string {
-    const value = process.env[name]?.trim()
-
-    if (!value) {
-        throw new Error(`${name} is required`)
+    for (const strategy of strategies) {
+        await client.addStrategy(strategy)
+        console.log(`  + ${strategy.name}`)
     }
 
-    return value
-}
-
-function printSummary(result: ReplaceAllStrategiesResult): void {
-    console.log(`Imported ${result.importedStrategies} strategies`)
-    console.log(`Deleted ${result.deleted.strategies} previous strategies`)
-    console.log(`Deleted ${result.deleted.runs} runs`)
-    console.log(`Deleted ${result.deleted.agentLogs} agent logs`)
-    console.log(`Deleted ${result.deleted.tradeEvents} trade events`)
-    console.log(`Deleted ${result.deleted.orders} orders`)
-    console.log(`Deleted ${result.deleted.orderTransitions} order transitions`)
-    console.log(`Deleted ${result.deleted.positions} positions`)
-    console.log(`Deleted ${result.deleted.instrumentClaims} instrument claims`)
-    console.log(`Deleted ${result.deleted.positionSyncs} position syncs`)
-    console.log(`Deleted ${result.deleted.manualRunRequests} manual run requests`)
-    console.log(`Deleted ${result.deleted.alerts} strategy-linked alerts`)
-}
-
-async function main(): Promise<void> {
-    const documentPath = resolveDocumentPath()
-    const file = Bun.file(documentPath)
-
-    if (!(await file.exists())) {
-        throw new Error(`Strategy document not found: ${documentPath}`)
-    }
-
-    const markdown = await file.text()
-    const document = parseStrategyMarkdownDocument(markdown)
-
-    console.log(`Parsed ${document.strategies.length} strategies from ${documentPath}`)
-
-    const client = createTradingBackendClient({
-        url: requireEnv("CONVEX_URL"),
-        machineAuth: {
-            serviceToken: requireEnv("BACKEND_SERVICE_TOKEN"),
-        },
-    })
-
-    const result = await client.replaceAllStrategies(document.strategies)
-
-    printSummary(result)
-}
-
-void main().catch((error) => {
-    const message = error instanceof Error ? error.message : String(error)
-    console.error(message)
-    process.exit(1)
+    console.log(`Imported ${strategies.length} strategies`)
 })

@@ -68,6 +68,21 @@ The password should be entered in plain text there. It is hashed automatically b
 bun run dev
 ```
 
+## Strategy Management
+
+`strategies.md` is the source of truth. Edit it, then push to Convex with the commands below.
+
+| Command | Description |
+|---|---|
+| `bun run strategies:diff` | Compare strategies.md against backend |
+| `bun run strategies:list` | List all strategies in backend with IDs |
+| `bun run strategies:add --name="..."` | Add one strategy from strategies.md |
+| `bun run strategies:add-all` | Add all from strategies.md without deleting existing |
+| `bun run strategies:delete --name="..."` | Delete one strategy by name (cascades all data) |
+| `bun run strategies:delete --id=<id>` | Delete one strategy by Convex ID |
+| `bun run strategies:reset` | Delete all strategies and associated data |
+| `bun run strategies:reset-import` | Delete everything then import all from strategies.md |
+
 ## Architecture
 
 The backend runs N strategies, each defined by a config record in Convex:

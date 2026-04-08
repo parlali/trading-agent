@@ -18,6 +18,7 @@ export {
     stopRun,
     deleteRun,
     deleteAllRuns,
+    deleteAllStrategies,
     replaceAllStrategies,
 } from "./lib/mutations/strategies"
 

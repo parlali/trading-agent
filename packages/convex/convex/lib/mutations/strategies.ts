@@ -29,9 +29,14 @@ export const upsertStrategy = mutation({
         schedule: v.string(),
         policy: v.any(),
         context: v.string(),
+        serviceToken: v.optional(v.string()),
     },
     handler: async (ctx, args) => {
-        await requireUser(ctx)
+        if (args.serviceToken) {
+            requireServiceToken(args.serviceToken)
+        } else {
+            await requireUser(ctx)
+        }
         const now = Date.now()
         if (args.id) {
             await ctx.db.patch(args.id, {
@@ -67,9 +72,16 @@ export const disableStrategy = mutation({
 })
 
 export const deleteStrategy = mutation({
-    args: { strategyId: v.id("strategies") },
+    args: {
+        strategyId: v.id("strategies"),
+        serviceToken: v.optional(v.string()),
+    },
     handler: async (ctx, args) => {
-        await requireUser(ctx)
+        if (args.serviceToken) {
+            requireServiceToken(args.serviceToken)
+        } else {
+            await requireUser(ctx)
+        }
         const strategy = await ctx.db.get(args.strategyId)
         if (!strategy) {
             throw new Error(`Strategy not found: ${args.strategyId}`)
@@ -86,7 +98,49 @@ export const deleteStrategy = mutation({
             throw new Error("Cannot delete a strategy with an active run")
         }
 
-        await cascadeDeleteStrategy(ctx, args.strategyId)
+        return await cascadeDeleteStrategy(ctx, args.strategyId)
+    },
+})
+
+export const deleteAllStrategies = mutation({
+    args: {
+        serviceToken: v.string(),
+    },
+    handler: async (ctx, args) => {
+        requireServiceToken(args.serviceToken)
+
+        const deleted = {
+            strategies: 0,
+            runs: 0,
+            agentLogs: 0,
+            tradeEvents: 0,
+            orders: 0,
+            orderTransitions: 0,
+            positions: 0,
+            instrumentClaims: 0,
+            positionSyncs: 0,
+            manualRunRequests: 0,
+            alerts: 0,
+        }
+
+        const existingStrategies = await ctx.db.query("strategies").collect()
+
+        for (const strategy of existingStrategies) {
+            const result = await cascadeDeleteStrategy(ctx, strategy._id)
+            deleted.strategies++
+            deleted.runs += result.runs
+            deleted.agentLogs += result.agentLogs
+            deleted.tradeEvents += result.tradeEvents
+            deleted.orders += result.orders
+            deleted.orderTransitions += result.orderTransitions
+            deleted.positions += result.positions
+            deleted.instrumentClaims += result.instrumentClaims
+            deleted.positionSyncs += result.positionSyncs
+            deleted.manualRunRequests += result.manualRunRequests
+            deleted.alerts += result.alerts
+        }
+
+        return deleted
     },
 })
 
