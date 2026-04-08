@@ -1,5 +1,6 @@
 import {
     createClient,
+    getStrategyModel,
     loadStrategiesFromDocument,
     findStrategyByName,
     requireArg,
@@ -14,6 +15,6 @@ runScript(async () => {
     const client = createClient()
     const id = await client.addStrategy(config)
 
-    console.log(`Added "${config.name}" (${config.app}, enabled=${config.enabled})`)
+    console.log(`Added "${config.name}" (${config.app}, enabled=${config.enabled}, model=${getStrategyModel(config)})`)
     console.log(`ID: ${id}`)
 })

@@ -16,7 +16,6 @@ export class PolymarketPlugin implements VenuePlugin {
             "POLYMARKET_API_PASSPHRASE",
             "POLYMARKET_HOST",
             "POLYMARKET_CHAIN_ID",
-            "POLYMARKET_SIGNATURE_TYPE",
             "POLYMARKET_FUNDER_ADDRESS",
             "VALIQ_DATA_API_URL",
             "VALIQ_DATA_API",
@@ -28,27 +27,9 @@ export class PolymarketPlugin implements VenuePlugin {
     }
 
     async validateEnvironment(secrets: Record<string, string | null>): Promise<void> {
-        const credentials = this.resolveValidationCredentials(secrets)
-
+        const credentials = this.resolveCredentials(secrets)
         const client = new PolymarketClient(credentials)
-        const balance = await client.getBalance()
-
-        if (balance > 0 || client.getSignatureType() !== 0) {
-            return
-        }
-
-        for (const signatureType of [1, 2] as const) {
-            const proxyBalance = await client.getBalanceAllowance({
-                assetType: "COLLATERAL",
-                signatureType,
-            })
-
-            if (Number(proxyBalance?.balance ?? "0") > 0) {
-                throw new Error(
-                    `Detected Polymarket balance under signature type ${signatureType}. Set POLYMARKET_SIGNATURE_TYPE=${signatureType} and POLYMARKET_FUNDER_ADDRESS to your Polymarket profile wallet address.`
-                )
-            }
-        }
+        await client.getBalance()
     }
 
     createVenueAdapter(
@@ -109,30 +90,7 @@ export class PolymarketPlugin implements VenuePlugin {
             chainId: secrets.POLYMARKET_CHAIN_ID
                 ? Number(secrets.POLYMARKET_CHAIN_ID)
                 : undefined,
-            signatureType: parseSignatureType(secrets.POLYMARKET_SIGNATURE_TYPE),
-            funderAddress: secrets.POLYMARKET_FUNDER_ADDRESS ?? undefined,
+            funderAddress: requireResolvedSecret(secrets, "POLYMARKET_FUNDER_ADDRESS"),
         }
     }
-
-    private resolveValidationCredentials(
-        secrets: Record<string, string | null>
-    ): PolymarketCredentials {
-        return this.resolveCredentials(secrets)
-    }
-}
-
-function parseSignatureType(
-    value: string | null | undefined
-): 0 | 1 | 2 | undefined {
-    if (!value) {
-        return undefined
-    }
-
-    const parsed = Number(value)
-
-    if (parsed === 0 || parsed === 1 || parsed === 2) {
-        return parsed
-    }
-
-    throw new Error("POLYMARKET_SIGNATURE_TYPE must be 0, 1, or 2")
 }

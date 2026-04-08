@@ -1,8 +1,8 @@
-import { VENUE_META, type VenueApp } from "@/lib/constants"
+import { VENUE_META, type ActiveVenueApp } from "@/lib/constants"
 import { Badge } from "@/components/ui/badge"
 
 export function VenueBadge({ app }: { app: string }) {
-    const meta = VENUE_META[app as VenueApp]
+    const meta = VENUE_META[app as ActiveVenueApp]
     if (!meta) return <Badge variant="outline">{app}</Badge>
 
     return (

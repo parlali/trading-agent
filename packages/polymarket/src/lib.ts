@@ -4,7 +4,6 @@ export type {
     PolymarketCredentials,
     PolymarketMarket,
     PolymarketOrderBook,
-    PolymarketSignatureType,
 } from "./polymarket-client"
 export { polymarketRiskValidators } from "./risk-rules"
 export { PolymarketVenueAdapter } from "./venue-adapter"

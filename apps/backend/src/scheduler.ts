@@ -3,11 +3,6 @@ import {
     ToolRegistry,
     createAlpacaGetOptionsChainTool,
     createAlpacaGetQuoteTool,
-    createBinanceGetMarketPriceTool,
-    createBinanceGetOrderBookTool,
-    createBinanceProposeAdjustmentTool,
-    createBinanceProposeCloseTool,
-    createBinanceProposeOrderTool,
     createCancelOrderTool,
     createGetAccountTool,
     createGetOrderStatusTool,
@@ -42,7 +37,6 @@ import {
     isTerminalOrderStatus,
     createInstrumentConflictValidator,
     createKillSwitchGuardedVenue as createRuntimeKillSwitchGuardedVenue,
-    binancePolicySchema,
     filterPositionsByOwnership,
     getNextCronFireMs,
     mt5PolicySchema,
@@ -57,7 +51,6 @@ import {
     type VenueAdapter,
 } from "@valiq-trading/core"
 import { AlpacaOptionsVenueAdapter } from "@valiq-trading/alpaca-options"
-import { BinanceVenueAdapter } from "@valiq-trading/binance"
 import { MT5VenueAdapter } from "@valiq-trading/mt5"
 import { PolymarketVenueAdapter } from "@valiq-trading/polymarket"
 import type { RunTrigger } from "@valiq-trading/convex"
@@ -99,7 +92,9 @@ export function updateHealth(
 }
 
 async function checkKillSwitch(app: VenueApp, context: string): Promise<boolean> {
-    return await killSwitchCheckers[app](context)
+    const checker = killSwitchCheckers[app]
+    if (!checker) return false
+    return await checker(context)
 }
 
 function createKillSwitchGuardedVenue(
@@ -107,10 +102,12 @@ function createKillSwitchGuardedVenue(
     app: VenueApp,
     strategyId: string
 ): VenueAdapter {
+    const checker = killSwitchCheckers[app]
+    if (!checker) return venue
     return createRuntimeKillSwitchGuardedVenue(
         venue,
         strategyId,
-        killSwitchCheckers[app]
+        checker
     )
 }
 
@@ -257,7 +254,7 @@ function buildToolPool(config: {
     toolPool.registerFactory({
         name: "modify_order",
         category: "execution",
-        compatibleVenues: ["mt5", "binance-futures", "polymarket"],
+        compatibleVenues: ["mt5", "polymarket"],
         create: () => createModifyOrderTool(pipeline),
     })
     toolPool.registerFactory({
@@ -364,78 +361,6 @@ function buildToolPool(config: {
         category: "execution",
         compatibleVenues: ["alpaca-options"],
         create: () => createProposeCloseTool(pipeline),
-    })
-    toolPool.registerFactory({
-        name: "get_market_price",
-        category: "market-data",
-        compatibleVenues: ["binance-futures"],
-        create: () => {
-            if (!(venue instanceof BinanceVenueAdapter)) {
-                logVenueToolMismatch(runLogger, app, "get_market_price", "BinanceVenueAdapter", venue)
-                return null
-            }
-
-            return createBinanceGetMarketPriceTool(venue)
-        },
-    })
-    toolPool.registerFactory({
-        name: "get_order_book",
-        category: "market-data",
-        compatibleVenues: ["binance-futures"],
-        create: () => {
-            if (!(venue instanceof BinanceVenueAdapter)) {
-                logVenueToolMismatch(runLogger, app, "get_order_book", "BinanceVenueAdapter", venue)
-                return null
-            }
-
-            return createBinanceGetOrderBookTool(venue)
-        },
-    })
-    toolPool.registerFactory({
-        name: "propose_order",
-        category: "execution",
-        compatibleVenues: ["binance-futures"],
-        create: () => {
-            if (!(venue instanceof BinanceVenueAdapter)) {
-                logVenueToolMismatch(runLogger, app, "propose_order", "BinanceVenueAdapter", venue)
-                return null
-            }
-
-            return createBinanceProposeOrderTool(
-                pipeline,
-                venue,
-                binancePolicySchema.parse(policy)
-            )
-        },
-    })
-    toolPool.registerFactory({
-        name: "propose_adjustment",
-        category: "execution",
-        compatibleVenues: ["binance-futures"],
-        create: () => {
-            if (!(venue instanceof BinanceVenueAdapter)) {
-                logVenueToolMismatch(runLogger, app, "propose_adjustment", "BinanceVenueAdapter", venue)
-                return null
-            }
-
-            const binancePolicy = binancePolicySchema.parse(policy)
-            return createBinanceProposeAdjustmentTool(pipeline, venue, {
-                dryRun: binancePolicy.dryRun,
-            })
-        },
-    })
-    toolPool.registerFactory({
-        name: "propose_close",
-        category: "execution",
-        compatibleVenues: ["binance-futures"],
-        create: () => {
-            if (!(venue instanceof BinanceVenueAdapter)) {
-                logVenueToolMismatch(runLogger, app, "propose_close", "BinanceVenueAdapter", venue)
-                return null
-            }
-
-            return createBinanceProposeCloseTool(pipeline, venue)
-        },
     })
     toolPool.registerFactory({
         name: "get_market_price",
@@ -593,6 +518,10 @@ export async function registerStrategyWithScheduler(
     strategy: StoredStrategy
 ): Promise<void> {
     const plugin = plugins[app]
+    if (!plugin) {
+        logger.warn("No plugin registered for app, skipping strategy", { app, strategyId: strategy._id })
+        return
+    }
     const policy = validatePolicy(app, strategy.policy)
     const additionalSecretKeys = plugin.resolveAdditionalSecretKeys?.(policy) ?? []
     const additionalSecrets =
@@ -790,7 +719,7 @@ export async function runStrategy(
                 {
                     llm: {
                         apiKey: resolvedSecrets.OPENROUTER_API_KEY,
-                        model: resolvedSecrets.OPENROUTER_MODEL ?? "anthropic/claude-sonnet-4.6",
+                        model: policy.model as string,
                     },
                     tools,
                     logger: runLogger,

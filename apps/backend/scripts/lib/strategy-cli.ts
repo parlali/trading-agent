@@ -73,6 +73,18 @@ export async function loadStrategiesFromDocument(): Promise<StrategyConfig[]> {
     return document.strategies
 }
 
+export function getStrategyModel(strategy: {
+    policy: Record<string, unknown>
+}): string {
+    const model = strategy.policy.model
+
+    if (typeof model !== "string" || model.trim().length === 0) {
+        throw new Error("Strategy policy.model must be a non-empty string")
+    }
+
+    return model.trim()
+}
+
 export function findStrategyByName(
     strategies: StrategyConfig[],
     name: string

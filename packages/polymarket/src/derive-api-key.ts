@@ -76,9 +76,7 @@ async function main() {
     console.log(`POLYMARKET_API_SECRET=${data.secret}`)
     console.log(`POLYMARKET_API_PASSPHRASE=${data.passphrase}`)
     console.log(`POLYMARKET_PRIVATE_KEY=${privateKey}`)
-    console.log("\nIf your Polymarket funds live on a proxy/profile wallet, also set:")
-    console.log("POLYMARKET_SIGNATURE_TYPE=<1 or 2>")
-    console.log("POLYMARKET_FUNDER_ADDRESS=<your Polymarket profile wallet address>")
+    console.log(`POLYMARKET_FUNDER_ADDRESS=<your Polymarket profile wallet address>`)
 }
 
 await main()

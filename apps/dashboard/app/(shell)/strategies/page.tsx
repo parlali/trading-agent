@@ -14,7 +14,7 @@ import { StatusBadge } from "@/components/status-badge"
 import { PageSkeleton } from "@/components/page-skeleton"
 import { EmptyState } from "@/components/empty-state"
 import { formatRelativeTime } from "@/lib/format"
-import { VENUE_APPS, VENUE_META, type VenueApp } from "@/lib/constants"
+import { ACTIVE_VENUE_APPS, VENUE_META, type ActiveVenueApp } from "@/lib/constants"
 import { ChevronRight, Layers, Play, Plus } from "lucide-react"
 import { toast } from "sonner"
 
@@ -108,7 +108,7 @@ export default function StrategiesPage() {
         return <PageSkeleton count={3} height="h-20" spacing="space-y-4" />
     }
 
-    const groupedByVenue = VENUE_APPS.map((app) => ({
+    const groupedByVenue = ACTIVE_VENUE_APPS.map((app) => ({
         app,
         meta: VENUE_META[app],
         strategies: overview.strategies.filter((s) => s.app === app),

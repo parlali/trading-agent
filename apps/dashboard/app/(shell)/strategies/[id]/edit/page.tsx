@@ -4,7 +4,7 @@ import { use } from "react"
 import { useStrategy } from "@/hooks/use-strategy"
 import { Skeleton } from "@/components/ui/skeleton"
 import { StrategyForm } from "@/components/strategy-form"
-import type { VenueApp } from "@/lib/constants"
+import type { ActiveVenueApp } from "@/lib/constants"
 
 export default function EditStrategyPage({
     params,
@@ -38,7 +38,7 @@ export default function EditStrategyPage({
                 mode="edit"
                 initialData={{
                     id: strategy._id,
-                    app: strategy.app as VenueApp,
+                    app: strategy.app as ActiveVenueApp,
                     name: strategy.name,
                     enabled: strategy.enabled,
                     schedule: strategy.schedule,

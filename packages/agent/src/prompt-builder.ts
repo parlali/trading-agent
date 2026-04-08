@@ -203,26 +203,6 @@ function buildPolicySection(context: StrategyRunContext): string {
             "",
             "If an order is rejected (invalid params, insufficient RR, or broker error), the rejection is returned to you. Adjust your parameters and retry if appropriate.",
         )
-    } else if (context.app === "binance-futures") {
-        const maxRisk = context.policy.maxRiskPercent ?? 1
-        const maxLeverage = context.policy.maxLeverage ?? 3
-
-        lines.push(
-            "",
-            "## Binance Futures Order Requirements",
-            "",
-            "When proposing entries, you MUST provide:",
-            "- stopLoss: absolute stop-loss price (always required)",
-            "- EITHER takeProfit (absolute price) OR riskRewardRatio, not both",
-            "",
-            `You must NEVER specify quantity manually. Position size is calculated automatically from stop distance and maxRiskPercent (${maxRisk}%).`,
-            "",
-            `Leverage defaults to policy maxLeverage and can never exceed ${maxLeverage}x.`,
-            "",
-            "For filled entries, the system attempts to attach protective SL/TP orders automatically. If the order is still pending, monitor fill status and run propose_adjustment once the position opens.",
-            "",
-            "If an order is rejected, revise parameters and retry only with materially different inputs.",
-        )
     } else if (context.app === "alpaca-options") {
         lines.push(
             "",

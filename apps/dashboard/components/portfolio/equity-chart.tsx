@@ -11,7 +11,7 @@ import {
     Legend,
 } from "recharts"
 import { formatCurrency, formatCompactCurrency, formatTimestamp } from "@/lib/format"
-import { VENUE_APPS, VENUE_META } from "@/lib/constants"
+import { ACTIVE_VENUE_APPS, VENUE_META } from "@/lib/constants"
 
 export type TimeRange = "24h" | "7d" | "30d" | "90d" | "all"
 
@@ -78,7 +78,7 @@ export function EquityChart({
                     formatter={(value: number) => [formatCurrency(value)]}
                 />
                 <Legend />
-                {VENUE_APPS.map((app) => {
+                {ACTIVE_VENUE_APPS.map((app) => {
                     const meta = VENUE_META[app]
                     return (
                         <Area

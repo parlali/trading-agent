@@ -1,5 +1,6 @@
 import {
     createClient,
+    getStrategyModel,
     runScript,
 } from "./lib/strategy-cli"
 
@@ -21,6 +22,11 @@ runScript(async () => {
         console.log(`  ${s.name}`)
         console.log(`    id: ${s._id}`)
         console.log(`    app: ${s.app}  |  ${status}  |  ${mode}`)
+        try {
+            console.log(`    model: ${getStrategyModel(s as { policy: Record<string, unknown> })}`)
+        } catch {
+            console.log(`    model: (missing)`)
+        }
         console.log(`    schedule: ${s.schedule}`)
         console.log("")
     }

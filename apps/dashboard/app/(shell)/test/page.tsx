@@ -17,7 +17,6 @@ import {
     BarChart3,
     TrendingUp,
     Coins,
-    CandlestickChart,
     Sparkles,
     ChevronDown,
     ChevronRight,
@@ -185,7 +184,6 @@ export default function TestPage() {
     const testMT5 = useAction(api.connectionTests.testMT5Connection)
     const testAlpaca = useAction(api.connectionTests.testAlpacaConnection)
     const testPolymarket = useAction(api.connectionTests.testPolymarketConnection)
-    const testBinance = useAction(api.connectionTests.testBinanceConnection)
     const testValiq = useAction(api.connectionTests.testValiqConnection)
 
     const [valiqPrompt, setValiqPrompt] = useState("")
@@ -226,13 +224,6 @@ export default function TestPage() {
                     description="Public API reachability, authenticated balance, and open bets"
                     icon={Coins}
                     onRun={() => testPolymarket()}
-                />
-
-                <TestCard
-                    title={VENUE_META["binance-futures"].label}
-                    description="Public API reachability, signed account check, and open futures positions"
-                    icon={CandlestickChart}
-                    onRun={() => testBinance()}
                 />
 
                 <TestCard

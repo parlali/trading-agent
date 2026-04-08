@@ -62,13 +62,11 @@ export interface PolymarketCredentials {
     host?: string
     /** Chain ID. 137 for Polygon mainnet, 80002 for Amoy testnet */
     chainId?: number
-    /** Signature type for order signing and authenticated account queries */
-    signatureType?: PolymarketSignatureType
-    /** Polymarket profile or funder address for proxy wallet setups */
-    funderAddress?: string
+    /** Polymarket profile or funder address for proxy wallet (type 1) */
+    funderAddress: string
 }
 
-export type PolymarketSignatureType = 0 | 1 | 2
+export type PolymarketSignatureType = 1
 
 export interface PolymarketMarket {
     conditionId: string
@@ -224,17 +222,17 @@ export class PolymarketClient {
         this.apiPassphrase = credentials.apiPassphrase
         this.host = (credentials.host ?? DEFAULT_HOST).replace(/\/+$/, "")
         this.chainId = credentials.chainId ?? DEFAULT_CHAIN_ID
-        this.signatureType = credentials.signatureType ?? 0
+        this.signatureType = 1
 
-        const normalizedFunder = credentials.funderAddress?.trim()
-        if (this.signatureType !== 0 && !normalizedFunder) {
-            throw new Error("Polymarket funderAddress is required when signatureType is 1 or 2")
+        const normalizedFunder = credentials.funderAddress.trim()
+        if (!normalizedFunder) {
+            throw new Error("Polymarket funderAddress is required")
         }
-        if (normalizedFunder && !normalizedFunder.startsWith("0x")) {
+        if (!normalizedFunder.startsWith("0x")) {
             throw new Error("Polymarket funderAddress must be a 0x-prefixed address")
         }
 
-        this.funderAddress = (normalizedFunder ?? this.address) as `0x${string}`
+        this.funderAddress = normalizedFunder as `0x${string}`
     }
 
     getAddress(): string {
@@ -550,7 +548,6 @@ export class PolymarketClient {
 
     async getBalanceAllowance(params: {
         assetType: "COLLATERAL" | "CONDITIONAL"
-        signatureType?: PolymarketSignatureType
         tokenId?: string
     }): Promise<PolymarketBalanceAllowance | undefined> {
         return this.requestAuthenticated<PolymarketBalanceAllowance>(
@@ -560,7 +557,7 @@ export class PolymarketClient {
             {
                 asset_type: params.assetType,
                 token_id: params.tokenId,
-                signature_type: params.signatureType ?? this.signatureType,
+                signature_type: this.signatureType,
             }
         )
     }

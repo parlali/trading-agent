@@ -20,7 +20,7 @@ import { VenueBadge } from "@/components/venue-badge"
 import { StatusDot } from "@/components/status-dot"
 import { StatusBadge } from "@/components/status-badge"
 import { formatRelativeTime } from "@/lib/format"
-import { VENUE_APPS, VENUE_META, type VenueApp } from "@/lib/constants"
+import { ACTIVE_VENUE_APPS, VENUE_META, type ActiveVenueApp } from "@/lib/constants"
 
 function OverviewSkeleton() {
     return (
@@ -173,7 +173,7 @@ export default function OverviewPage() {
     const killSwitches = data.systemState.appKillSwitches ?? {}
 
     const backendHeartbeat = data.appHealth.find((h) => h.app === "backend") as Heartbeat | undefined
-    const venueHeartbeats = VENUE_APPS.map((app) => ({
+    const venueHeartbeats = ACTIVE_VENUE_APPS.map((app) => ({
         app,
         heartbeat: data.appHealth.find((h) => h.app === app) as Heartbeat | undefined,
     }))
@@ -204,7 +204,7 @@ export default function OverviewPage() {
                             Deployment Status
                         </CardTitle>
                         <span className="text-xs text-muted-foreground">
-                            {healthyCount}/{VENUE_APPS.length} venues connected
+                            {healthyCount}/{ACTIVE_VENUE_APPS.length} venues connected
                         </span>
                     </div>
                 </CardHeader>

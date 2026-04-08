@@ -1,8 +1,8 @@
-import { VENUE_META, type VenueApp } from "@/lib/constants"
+import { VENUE_META, type ActiveVenueApp } from "@/lib/constants"
 import { cn } from "@/lib/utils"
 
 export type FreshnessState = {
-    provider: VenueApp
+    provider: string
     stale: boolean
     lastSyncedAt?: number
     providerStatus?: "healthy" | "degraded" | "unhealthy"
@@ -27,7 +27,8 @@ export function FreshnessHeader({
     const issueSummary = freshness
         .filter((entry) => entry.stale || entry.driftDetected || entry.providerStatus !== "healthy")
         .map((entry) => {
-            const label = VENUE_META[entry.provider].shortLabel
+            const meta = VENUE_META[entry.provider as ActiveVenueApp]
+            const label = meta?.shortLabel ?? entry.provider
             const reasons: string[] = []
 
             if (entry.stale) {

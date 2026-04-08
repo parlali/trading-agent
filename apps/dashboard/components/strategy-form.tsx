@@ -19,7 +19,7 @@ import {
     SelectValue,
 } from "@/components/ui/select"
 import { ScheduleBuilder } from "@/components/schedule-builder"
-import { VENUE_META, type VenueApp } from "@/lib/constants"
+import { VENUE_META, type ActiveVenueApp } from "@/lib/constants"
 import { POLICY_DEFAULTS, STRATEGY_CONTEXT_DEFAULTS } from "@valiq-trading/core"
 import { toast } from "sonner"
 import { Loader2, Plus, X } from "lucide-react"
@@ -27,7 +27,7 @@ import { Loader2, Plus, X } from "lucide-react"
 type PolicyFields = Record<string, unknown>
 
 type StrategyFormData = {
-    app: VenueApp
+    app: ActiveVenueApp
     name: string
     enabled: boolean
     schedule: string
@@ -78,7 +78,7 @@ export function StrategyForm({ mode, initialData }: StrategyFormProps) {
     const upsertStrategy = useMutation(api.mutations.upsertStrategy)
     const [saving, setSaving] = useState(false)
 
-    const [app, setApp] = useState<VenueApp>(initialData?.app ?? "alpaca-options")
+    const [app, setApp] = useState<ActiveVenueApp>(initialData?.app ?? "alpaca-options")
     const [name, setName] = useState(initialData?.name ?? "")
     const [enabled, setEnabled] = useState(initialData?.enabled ?? false)
     const [schedule, setSchedule] = useState(initialData?.schedule ?? "")
@@ -87,7 +87,7 @@ export function StrategyForm({ mode, initialData }: StrategyFormProps) {
     )
     const [context, setContext] = useState(initialData?.context ?? STRATEGY_CONTEXT_DEFAULTS["alpaca-options"])
 
-    function handleVenueChange(newApp: VenueApp) {
+    function handleVenueChange(newApp: ActiveVenueApp) {
         setApp(newApp)
         if (mode === "create") {
             setPolicy(POLICY_DEFAULTS[newApp])
@@ -126,6 +126,12 @@ export function StrategyForm({ mode, initialData }: StrategyFormProps) {
             return
         }
 
+        const model = typeof policy.model === "string" ? policy.model.trim() : ""
+        if (!model) {
+            toast.error("OpenRouter model id is required")
+            return
+        }
+
         setSaving(true)
         try {
             const strategyId = await upsertStrategy({
@@ -134,7 +140,10 @@ export function StrategyForm({ mode, initialData }: StrategyFormProps) {
                 name: name.trim(),
                 enabled,
                 schedule: schedule.trim(),
-                policy: cleanPolicy(policy),
+                policy: cleanPolicy({
+                    ...policy,
+                    model,
+                }),
                 context: context.trim(),
             })
 
@@ -148,9 +157,6 @@ export function StrategyForm({ mode, initialData }: StrategyFormProps) {
     }
 
     const maxBet = (policy.maxBet ?? { mode: "fixed", value: 100 }) as { mode: string; value: number }
-    const allowedInstruments = Array.isArray(policy.allowedInstruments)
-        ? (policy.allowedInstruments as string[])
-        : []
 
     return (
         <form onSubmit={handleSubmit} className="space-y-6">
@@ -165,14 +171,14 @@ export function StrategyForm({ mode, initialData }: StrategyFormProps) {
                         </Label>
                         <Select
                             value={app}
-                            onValueChange={(v) => handleVenueChange(v as VenueApp)}
+                            onValueChange={(v) => handleVenueChange(v as ActiveVenueApp)}
                             disabled={mode === "edit"}
                         >
                             <SelectTrigger className="w-full">
                                 <SelectValue />
                             </SelectTrigger>
                             <SelectContent>
-                                {(Object.entries(VENUE_META) as [VenueApp, typeof VENUE_META[VenueApp]][]).map(
+                                {(Object.entries(VENUE_META) as [ActiveVenueApp, typeof VENUE_META[ActiveVenueApp]][]).map(
                                     ([key, meta]) => (
                                         <SelectItem key={key} value={key}>
                                             {meta.label}
@@ -222,6 +228,24 @@ export function StrategyForm({ mode, initialData }: StrategyFormProps) {
                             checked={policy.dryRun === true}
                             onCheckedChange={(checked) => handlePolicyFieldChange("dryRun", checked)}
                         />
+                    </div>
+
+                    <div className="space-y-1.5">
+                        <Label className="text-sm">
+                            OpenRouter Model ID<span className="text-signal-danger ml-0.5">*</span>
+                        </Label>
+                        <Input
+                            placeholder="anthropic/claude-sonnet-4.6"
+                            value={(policy.model as string) ?? ""}
+                            onChange={(e) => handlePolicyFieldChange(
+                                "model",
+                                e.target.value
+                            )}
+                            className="font-mono"
+                        />
+                        <p className="text-xs text-muted-foreground">
+                            Required OpenRouter model id for this strategy.
+                        </p>
                     </div>
 
                     {app === "alpaca-options" ? (
@@ -458,142 +482,6 @@ export function StrategyForm({ mode, initialData }: StrategyFormProps) {
                         </>
                     ) : null}
 
-                    {app === "binance-futures" ? (
-                        <>
-                            <div className="space-y-1.5">
-                                <Label className="text-sm">
-                                    Allowed Instruments<span className="text-signal-danger ml-0.5">*</span>
-                                </Label>
-                                <Input
-                                    placeholder="BTCUSDT, ETHUSDT"
-                                    value={allowedInstruments.join(", ")}
-                                    onChange={(e) => handlePolicyFieldChange(
-                                        "allowedInstruments",
-                                        e.target.value
-                                            .split(",")
-                                            .map((value) => value.trim().toUpperCase())
-                                            .filter(Boolean)
-                                    )}
-                                    className="font-mono"
-                                />
-                                <p className="text-xs text-muted-foreground">
-                                    Comma-separated perpetual symbols this strategy is allowed to trade
-                                </p>
-                            </div>
-
-                            <div className="space-y-1.5">
-                                <Label className="text-sm">
-                                    Max Leverage (x)<span className="text-signal-danger ml-0.5">*</span>
-                                </Label>
-                                <Input
-                                    type="number"
-                                    min={1}
-                                    max={5}
-                                    step={1}
-                                    placeholder="3"
-                                    value={policy.maxLeverage !== undefined ? String(policy.maxLeverage) : ""}
-                                    onChange={(e) => handlePolicyFieldChange(
-                                        "maxLeverage",
-                                        e.target.value === "" ? undefined : Number(e.target.value)
-                                    )}
-                                />
-                            </div>
-
-                            <div className="space-y-1.5">
-                                <Label className="text-sm">
-                                    Max Risk Per Trade (%)<span className="text-signal-danger ml-0.5">*</span>
-                                </Label>
-                                <Input
-                                    type="number"
-                                    step="any"
-                                    min={0}
-                                    max={100}
-                                    placeholder="1"
-                                    value={policy.maxRiskPercent !== undefined ? String(policy.maxRiskPercent) : ""}
-                                    onChange={(e) => handlePolicyFieldChange(
-                                        "maxRiskPercent",
-                                        e.target.value === "" ? undefined : Number(e.target.value)
-                                    )}
-                                />
-                            </div>
-
-                            <div className="space-y-1.5">
-                                <Label className="text-sm">
-                                    Trading Hours<span className="text-signal-danger ml-0.5">*</span>
-                                </Label>
-                                <div className="flex items-center gap-2 flex-wrap">
-                                    <Input
-                                        placeholder="00:00"
-                                        value={getNestedValue(policy, "tradingHours.start") as string ?? ""}
-                                        onChange={(e) => handlePolicyFieldChange("tradingHours.start", e.target.value)}
-                                        className="w-20 sm:w-24 font-mono"
-                                    />
-                                    <span className="text-muted-foreground">to</span>
-                                    <Input
-                                        placeholder="23:59"
-                                        value={getNestedValue(policy, "tradingHours.end") as string ?? ""}
-                                        onChange={(e) => handlePolicyFieldChange("tradingHours.end", e.target.value)}
-                                        className="w-20 sm:w-24 font-mono"
-                                    />
-                                    <Input
-                                        placeholder="UTC"
-                                        value={getNestedValue(policy, "tradingHours.timezone") as string ?? ""}
-                                        onChange={(e) => handlePolicyFieldChange("tradingHours.timezone", e.target.value)}
-                                        className="w-24 sm:w-28"
-                                    />
-                                </div>
-                            </div>
-
-                            <div className="space-y-1.5">
-                                <Label className="text-sm">
-                                    Emergency Flatten Threshold ($)<span className="text-signal-danger ml-0.5">*</span>
-                                </Label>
-                                <Input
-                                    type="number"
-                                    step="any"
-                                    placeholder="1000"
-                                    value={policy.emergencyFlattenThreshold !== undefined ? String(policy.emergencyFlattenThreshold) : ""}
-                                    onChange={(e) => handlePolicyFieldChange(
-                                        "emergencyFlattenThreshold",
-                                        e.target.value === "" ? undefined : Number(e.target.value)
-                                    )}
-                                />
-                            </div>
-
-                            <div className="space-y-1.5">
-                                <Label className="text-sm">
-                                    Funding Rate Threshold<span className="text-signal-danger ml-0.5">*</span>
-                                </Label>
-                                <Input
-                                    type="number"
-                                    step="any"
-                                    min={0}
-                                    placeholder="0.003"
-                                    value={policy.fundingRateThreshold !== undefined ? String(policy.fundingRateThreshold) : ""}
-                                    onChange={(e) => handlePolicyFieldChange(
-                                        "fundingRateThreshold",
-                                        e.target.value === "" ? undefined : Number(e.target.value)
-                                    )}
-                                />
-                                <p className="text-xs text-muted-foreground">
-                                    Entries are blocked when absolute funding exceeds this value
-                                </p>
-                            </div>
-
-                            <div className="flex items-center justify-between">
-                                <div>
-                                    <Label className="text-sm">Require Take Profit</Label>
-                                    <p className="text-xs text-muted-foreground mt-0.5">
-                                        Enforce take-profit on every new entry
-                                    </p>
-                                </div>
-                                <Switch
-                                    checked={policy.requireTakeProfit === true}
-                                    onCheckedChange={(checked) => handlePolicyFieldChange("requireTakeProfit", checked)}
-                                />
-                            </div>
-                        </>
-                    ) : null}
                 </CardContent>
             </Card>
 

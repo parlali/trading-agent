@@ -2,6 +2,7 @@ import { z } from "zod/v4"
 
 export const baseStrategyPolicySchema = z.object({
     dryRun: z.boolean().default(false),
+    model: z.string().trim().min(1, "OpenRouter model id is required"),
 }).passthrough()
 
 export type BaseStrategyPolicy = z.infer<typeof baseStrategyPolicySchema>
@@ -85,7 +86,10 @@ export function validateStrategyConfig(raw: unknown): StrategyConfig {
 
     const policySchema = policySchemas[config.app]
     if (policySchema) {
-        policySchema.parse(config.policy)
+        return {
+            ...config,
+            policy: policySchema.parse(config.policy) as Record<string, unknown>,
+        }
     }
 
     return config
@@ -93,6 +97,7 @@ export function validateStrategyConfig(raw: unknown): StrategyConfig {
 
 export const ALPACA_OPTIONS_POLICY_DEFAULTS: AlpacaOptionsPolicy = {
     dryRun: true,
+    model: "",
     maxLossPerPlay: 500,
 }
 
@@ -133,11 +138,13 @@ Preserve capital first. This strategy should look like selective weekly position
 
 export const POLYMARKET_POLICY_DEFAULTS: PolymarketPolicy = {
     dryRun: true,
+    model: "",
     maxBet: { mode: "fixed", value: 100 },
 }
 
 export const MT5_POLICY_DEFAULTS: MT5Policy = {
     dryRun: true,
+    model: "",
     maxRiskPercent: 2,
     minRiskReward: 0.5,
     tradingHours: { start: "08:00", end: "16:00", timezone: "UTC" },
@@ -146,6 +153,7 @@ export const MT5_POLICY_DEFAULTS: MT5Policy = {
 
 export const BINANCE_POLICY_DEFAULTS: BinancePolicy = {
     dryRun: true,
+    model: "",
     allowedInstruments: ["BTCUSDT", "ETHUSDT"],
     maxLeverage: 3,
     maxRiskPercent: 1,

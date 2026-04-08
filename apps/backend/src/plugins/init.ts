@@ -15,7 +15,6 @@ export async function resolveAllSecrets(): Promise<void> {
     const allKeys = new Set<string>()
 
     allKeys.add("OPENROUTER_API_KEY")
-    allKeys.add("OPENROUTER_MODEL")
 
     for (const plugin of Object.values(plugins)) {
         for (const key of plugin.resolveSecretKeys()) {
@@ -45,6 +44,7 @@ export async function resolveAllSecrets(): Promise<void> {
 export async function validateAllEnvironments(apps: VenueApp[]): Promise<void> {
     for (const app of apps) {
         const plugin = plugins[app]
+        if (!plugin) continue
         const validationSecrets = syncStrategies[app]?.[0]?.secrets ?? resolvedSecrets
         try {
             await plugin.validateEnvironment(validationSecrets)

@@ -36,6 +36,7 @@ export async function performStartupSync(): Promise<void> {
 
         try {
             const plugin = plugins[app]
+            if (!plugin) continue
             const venue = plugin.createVenueAdapter(entry.policy, entry.secrets)
             const result = await reconcileProviderPortfolio({
                 app,
@@ -162,6 +163,7 @@ export async function performPeriodicSync(): Promise<void> {
 
         try {
             const plugin = plugins[app]
+            if (!plugin) continue
             const venue = plugin.createVenueAdapter(entry.policy, entry.secrets)
             const result = await reconcileProviderPortfolio({
                 app,

@@ -1,5 +1,5 @@
 import { FilterBar } from "@/components/filter-bar"
-import { VENUE_APPS, VENUE_META, type VenueApp } from "@/lib/constants"
+import { ACTIVE_VENUE_APPS, VENUE_META, type VenueApp } from "@/lib/constants"
 
 export function ProviderFilter({
     selected,
@@ -10,10 +10,10 @@ export function ProviderFilter({
 }) {
     return (
         <FilterBar
-            items={[null, ...VENUE_APPS] as const}
+            items={[null, ...ACTIVE_VENUE_APPS] as const}
             selected={selected as string | null}
             onSelect={(v) => onSelect(v as VenueApp | null)}
-            getLabel={(v) => v === null ? "All" : VENUE_META[v as VenueApp].shortLabel}
+            getLabel={(v) => v === null ? "All" : VENUE_META[v]?.shortLabel ?? v}
         />
     )
 }

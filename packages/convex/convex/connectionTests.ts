@@ -275,24 +275,7 @@ export const testPolymarketConnection = action({
             path: "/balance-allowance",
         })
 
-        const balanceEoa = await fetchPolymarketAuthenticatedJson(
-            host,
-            authHeaders,
-            "/balance-allowance",
-            {
-                asset_type: "COLLATERAL",
-                signature_type: 0,
-            }
-        )
-        if (!balanceEoa.ok) {
-            steps.push({ name: "Balance", ok: false, error: balanceEoa.error })
-            return { ok: false, steps }
-        }
-        const eoaData = balanceEoa.data as { balance?: string; allowances?: Record<string, string> } | undefined
-        const eoaRaw = Number(eoaData?.balance ?? "0")
-        steps.push({ name: "Balance (EOA, type=0)", ok: true, data: { ...eoaData, balanceUsd: eoaRaw / USDC_DECIMALS } })
-
-        const balanceProxy = await fetchPolymarketAuthenticatedJson(
+        const balanceResult = await fetchPolymarketAuthenticatedJson(
             host,
             authHeaders,
             "/balance-allowance",
@@ -301,15 +284,13 @@ export const testPolymarketConnection = action({
                 signature_type: 1,
             }
         )
-        if (balanceProxy.ok) {
-            const proxyData = balanceProxy.data as { balance?: string; allowances?: Record<string, string> } | undefined
-            const proxyRaw = Number(proxyData?.balance ?? "0")
-            steps.push({
-                name: "Balance (Proxy, type=1)",
-                ok: true,
-                data: { ...proxyData, balanceUsd: proxyRaw / USDC_DECIMALS },
-            })
+        if (!balanceResult.ok) {
+            steps.push({ name: "Balance", ok: false, error: balanceResult.error })
+            return { ok: false, steps }
         }
+        const balanceData = balanceResult.data as { balance?: string; allowances?: Record<string, string> } | undefined
+        const balanceRaw = Number(balanceData?.balance ?? "0")
+        steps.push({ name: "Balance", ok: true, data: { ...balanceData, balanceUsd: balanceRaw / USDC_DECIMALS } })
 
         const openOrders = await fetchPolymarketAuthenticatedJson(
             host,

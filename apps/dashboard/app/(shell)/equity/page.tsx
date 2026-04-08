@@ -16,7 +16,7 @@ import { PnlText } from "@/components/pnl-text"
 import { StatCard } from "@/components/stat-card"
 import { FilterBar } from "@/components/filter-bar"
 import { formatCurrency } from "@/lib/format"
-import { VENUE_APPS, VENUE_META } from "@/lib/constants"
+import { ACTIVE_VENUE_APPS, VENUE_META } from "@/lib/constants"
 import { usePortfolioFreshness } from "@/hooks/use-portfolio-freshness"
 import { useProviderFilter } from "@/hooks/use-provider-filter"
 
@@ -47,7 +47,7 @@ export default function EquityPage() {
         }
 
         const firstPoint = equityData.series[0]
-        const apps = provider ? [] : VENUE_APPS
+        const apps = provider ? [] : ACTIVE_VENUE_APPS
 
         return apps
             .map((app) => {

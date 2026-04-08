@@ -2,6 +2,7 @@ import { mutation } from "../../_generated/server"
 import type { DatabaseWriter } from "../../_generated/server"
 import type { Id } from "../../_generated/dataModel"
 import { v } from "convex/values"
+import { validateStrategyConfig } from "@valiq-trading/core"
 import { requireUser, requireServiceToken } from "../authGuards"
 
 const venueAppArg = v.union(
@@ -37,26 +38,36 @@ export const upsertStrategy = mutation({
         } else {
             await requireUser(ctx)
         }
-        const now = Date.now()
-        if (args.id) {
-            await ctx.db.patch(args.id, {
-                app: args.app,
-                name: args.name,
-                enabled: args.enabled,
-                schedule: args.schedule,
-                policy: args.policy,
-                context: args.context,
-                updatedAt: now,
-            })
-            return args.id
-        }
-        return await ctx.db.insert("strategies", {
+
+        const strategy = validateStrategyConfig({
             app: args.app,
             name: args.name,
             enabled: args.enabled,
             schedule: args.schedule,
             policy: args.policy,
             context: args.context,
+        })
+
+        const now = Date.now()
+        if (args.id) {
+            await ctx.db.patch(args.id, {
+                app: strategy.app,
+                name: strategy.name,
+                enabled: strategy.enabled,
+                schedule: strategy.schedule,
+                policy: strategy.policy,
+                context: strategy.context,
+                updatedAt: now,
+            })
+            return args.id
+        }
+        return await ctx.db.insert("strategies", {
+            app: strategy.app,
+            name: strategy.name,
+            enabled: strategy.enabled,
+            schedule: strategy.schedule,
+            policy: strategy.policy,
+            context: strategy.context,
             createdAt: now,
             updatedAt: now,
         })
@@ -395,6 +406,8 @@ export const replaceAllStrategies = mutation({
     handler: async (ctx, args) => {
         requireServiceToken(args.serviceToken)
 
+        const strategies = args.strategies.map((strategy) => validateStrategyConfig(strategy))
+
         const deleted = {
             strategies: 0,
             runs: 0,
@@ -466,7 +479,7 @@ export const replaceAllStrategies = mutation({
 
         const now = Date.now()
 
-        for (const strategy of args.strategies) {
+        for (const strategy of strategies) {
             await ctx.db.insert("strategies", {
                 ...strategy,
                 createdAt: now,
@@ -475,7 +488,7 @@ export const replaceAllStrategies = mutation({
         }
 
         return {
-            importedStrategies: args.strategies.length,
+            importedStrategies: strategies.length,
             deleted,
         }
     },
