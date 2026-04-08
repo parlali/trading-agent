@@ -1,6 +1,12 @@
 import { createHmac, randomBytes } from "crypto"
 import { privateKeyToAccount, type PrivateKeyAccount } from "viem/accounts"
-import { retryWithBackoff } from "@valiq-trading/core"
+import {
+    createExecutionError,
+    createExecutionErrorDetail,
+    fetchWithTimeout,
+    retryWithBackoff,
+    type ExecutionErrorDetail,
+} from "@valiq-trading/core"
 
 // ---------------------------------------------------------------------------
 // Contract addresses (Polygon mainnet)
@@ -12,6 +18,7 @@ const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000" as const
 
 const DEFAULT_HOST = "https://clob.polymarket.com"
 const DEFAULT_CHAIN_ID = 137
+const POLYMARKET_REQUEST_TIMEOUT_MS = 30_000
 
 // 6-decimal precision for USDC and conditional token amounts
 const AMOUNT_DECIMALS = 6
@@ -152,6 +159,35 @@ interface PaginatedResponse<T> {
     next_cursor: string
     limit: number
     count: number
+}
+
+export class PolymarketApiError extends Error {
+    readonly status: number
+    readonly retryable: boolean
+    readonly executionError: ExecutionErrorDetail
+
+    constructor(
+        message: string,
+        status: number,
+        options: {
+            code?: string
+            retryable?: boolean
+            details?: Record<string, unknown>
+        } = {}
+    ) {
+        super(message)
+        this.name = "PolymarketApiError"
+        this.status = status
+        this.retryable = options.retryable ?? (status >= 500 || status === 429)
+        this.executionError = createExecutionErrorDetail("venue", message, {
+            code: options.code,
+            retryable: this.retryable,
+            details: {
+                status,
+                ...(options.details ?? {}),
+            },
+        })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -394,11 +430,27 @@ export class PolymarketClient {
         )
 
         if (!response) {
-            throw new Error("Polymarket order returned empty response")
+            throw createExecutionError("venue", "Polymarket order returned empty response", {
+                code: "EMPTY_RESPONSE",
+                retryable: true,
+                details: {
+                    tokenId: params.tokenId,
+                    side: params.side,
+                },
+            })
         }
 
         if (!response.success) {
-            throw new Error(`Polymarket order failed: ${response.errorMsg}`)
+            throw createExecutionError("venue", response.errorMsg || "Polymarket order rejected", {
+                code: response.status || "ORDER_REJECTED",
+                retryable: false,
+                details: {
+                    tokenId: params.tokenId,
+                    side: params.side,
+                    orderType: params.orderType,
+                    response,
+                },
+            })
         }
 
         return response
@@ -407,7 +459,13 @@ export class PolymarketClient {
     async getOrder(orderId: string): Promise<PolymarketOpenOrder> {
         const response = await this.requestAuthenticated<PolymarketOpenOrder>("GET", `/data/order/${orderId}`)
         if (!response) {
-            throw new Error(`Order ${orderId} not found`)
+            throw createExecutionError("venue", `Order ${orderId} not found`, {
+                code: "ORDER_NOT_FOUND",
+                retryable: false,
+                details: {
+                    orderId,
+                },
+            })
         }
         return response
     }
@@ -511,13 +569,12 @@ export class PolymarketClient {
 
     private async requestPublic<T>(path: string): Promise<T> {
         return retryWithBackoff(async () => {
-            const response = await fetch(`${this.host}${path}`, {
+            const response = await fetchWithTimeout(`${this.host}${path}`, {
                 headers: { "Content-Type": "application/json" },
-            })
+            }, POLYMARKET_REQUEST_TIMEOUT_MS, `Polymarket request ${path}`)
 
             if (!response.ok) {
-                const body = await response.text().catch(() => "")
-                throw new Error(`Polymarket API error: ${response.status} ${response.statusText} ${body}`)
+                throw await toPolymarketApiError(response, path)
             }
 
             return (await response.json()) as T
@@ -547,11 +604,15 @@ export class PolymarketClient {
                 init.body = bodyString
             }
 
-            const response = await fetch(url, init)
+            const response = await fetchWithTimeout(
+                url,
+                init,
+                POLYMARKET_REQUEST_TIMEOUT_MS,
+                `Polymarket authenticated request ${path}`
+            )
 
             if (!response.ok) {
-                const text = await response.text().catch(() => "")
-                throw new Error(`Polymarket API error: ${response.status} ${response.statusText} ${text}`)
+                throw await toPolymarketApiError(response, path)
             }
 
             if (response.status === 204) {
@@ -656,6 +717,41 @@ function roundToTickSize(price: number, tickSize: string): number {
 function generateSalt(): bigint {
     const bytes = randomBytes(32)
     return BigInt("0x" + bytes.toString("hex"))
+}
+
+async function toPolymarketApiError(response: Response, path: string): Promise<PolymarketApiError> {
+    let message = `${response.status} ${response.statusText}`
+    let code: string | undefined
+    let details: Record<string, unknown> | undefined
+
+    try {
+        const payload = await response.json() as Record<string, unknown>
+        details = payload
+
+        const payloadMessage = payload.errorMsg ?? payload.message ?? payload.error ?? payload.msg
+        if (typeof payloadMessage === "string" && payloadMessage.trim()) {
+            message = payloadMessage
+        }
+
+        const payloadCode = payload.code
+        if (typeof payloadCode === "string" || typeof payloadCode === "number") {
+            code = String(payloadCode)
+        }
+    } catch {
+        const body = await response.text().catch(() => "")
+        if (body) {
+            message = body
+            details = { body }
+        }
+    }
+
+    return new PolymarketApiError(message, response.status, {
+        code,
+        details: {
+            path,
+            ...(details ?? {}),
+        },
+    })
 }
 
 function appendQueryParams(

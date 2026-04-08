@@ -3,6 +3,7 @@ import type { ExecutionPipeline, Position } from "@valiq-trading/core"
 import type { MT5VenueAdapter } from "@valiq-trading/mt5"
 import type { BinanceVenueAdapter } from "@valiq-trading/binance"
 import type { ToolDefinition } from "../tool-registry"
+import { toExecutionToolResult } from "./execution-response"
 import {
     resolveEstimatedPrice as resolvePolymarketEstimatedPrice,
     type PolymarketPriceProvider,
@@ -59,17 +60,7 @@ export function createProposeCloseTool(
                 { estimatedPrice }
             )
 
-            return {
-                orderId: result.orderId,
-                status: result.status,
-                filledQuantity: result.filledQuantity,
-                fillPrice: result.fillPrice,
-                error: result.error,
-                riskValidation: {
-                    allowed: validation.allowed,
-                    reason: validation.reason,
-                },
-            }
+            return toExecutionToolResult(result, { validation })
         },
     }
 }

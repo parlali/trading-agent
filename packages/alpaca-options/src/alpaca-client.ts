@@ -1,4 +1,5 @@
 import {
+    createExecutionError,
     createExecutionErrorDetail,
     fetchWithTimeout,
     formatExecutionError,
@@ -75,7 +76,7 @@ export class AlpacaApiError extends Error {
         this.name = "AlpacaApiError"
         this.status = status
         this.code = options.code
-        this.retryable = options.retryable ?? status >= 500 || status === 429
+        this.retryable = options.retryable ?? (status >= 500 || status === 429)
         this.executionError = createExecutionErrorDetail("venue", message, {
             code: options.code,
             retryable: this.retryable,
@@ -146,15 +147,24 @@ export class AlpacaClient {
         }
 
         if (changes.stopPrice !== undefined) {
-            throw new Error("Alpaca iron condor orders do not support stop price modifications")
+            throw createExecutionError("pre_validation", "Alpaca iron condor orders do not support stop price modifications", {
+                code: "STOP_PRICE_UNSUPPORTED",
+                retryable: false,
+            })
         }
 
         if (changes.timeInForce !== undefined && changes.timeInForce !== "day") {
-            throw new Error("Alpaca iron condor orders only support day time in force")
+            throw createExecutionError("pre_validation", "Alpaca iron condor orders only support day time in force", {
+                code: "TIME_IN_FORCE_UNSUPPORTED",
+                retryable: false,
+            })
         }
 
         if (Object.keys(payload).length === 0) {
-            throw new Error("No supported Alpaca order modifications were provided")
+            throw createExecutionError("pre_validation", "No supported Alpaca order modifications were provided", {
+                code: "NO_SUPPORTED_MODIFICATIONS",
+                retryable: false,
+            })
         }
 
         const response = await this.request<AlpacaOrderResponse>(`/v2/orders/${orderId}`, {
@@ -258,31 +268,52 @@ function normalizeBaseUrl(baseUrl?: string): string {
 
 function buildCreateOrderPayload(intent: OrderIntent): Record<string, unknown> {
     if (!intent.legs || intent.legs.length !== 4) {
-        throw new Error("Alpaca options orders must be submitted as exactly 4 legs")
+        throw createExecutionError("pre_validation", "Alpaca options orders must be submitted as exactly 4 legs", {
+            code: "INVALID_LEG_COUNT",
+            retryable: false,
+        })
     }
 
     if (!Number.isInteger(intent.quantity) || intent.quantity <= 0) {
-        throw new Error("Alpaca options orders require a positive integer structure quantity")
+        throw createExecutionError("pre_validation", "Alpaca options orders require a positive integer structure quantity", {
+            code: "INVALID_QUANTITY",
+            retryable: false,
+        })
     }
 
     if (intent.orderType !== "limit") {
-        throw new Error("Alpaca options orders only support limit pricing")
+        throw createExecutionError("pre_validation", "Alpaca options orders only support limit pricing", {
+            code: "ORDER_TYPE_UNSUPPORTED",
+            retryable: false,
+        })
     }
 
     if (intent.timeInForce !== "day") {
-        throw new Error("Alpaca options orders only support day time in force")
+        throw createExecutionError("pre_validation", "Alpaca options orders only support day time in force", {
+            code: "TIME_IN_FORCE_UNSUPPORTED",
+            retryable: false,
+        })
     }
 
     if (intent.limitPrice === undefined || intent.limitPrice <= 0) {
-        throw new Error("Alpaca options orders require a positive limit price")
+        throw createExecutionError("pre_validation", "Alpaca options orders require a positive limit price", {
+            code: "INVALID_LIMIT_PRICE",
+            retryable: false,
+        })
     }
 
     if (intent.stopPrice !== undefined) {
-        throw new Error("Alpaca options orders do not support stop prices")
+        throw createExecutionError("pre_validation", "Alpaca options orders do not support stop prices", {
+            code: "STOP_PRICE_UNSUPPORTED",
+            retryable: false,
+        })
     }
 
     if (intent.legs.some((leg) => !Number.isInteger(leg.quantity) || leg.quantity <= 0)) {
-        throw new Error("Alpaca options orders require positive integer leg ratios")
+        throw createExecutionError("pre_validation", "Alpaca options orders require positive integer leg ratios", {
+            code: "INVALID_LEG_RATIO",
+            retryable: false,
+        })
     }
 
     return {

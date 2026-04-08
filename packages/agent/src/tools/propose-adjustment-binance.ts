@@ -1,6 +1,6 @@
 import { z } from "zod"
 import type { BinanceVenueAdapter } from "@valiq-trading/binance"
-import type { ExecutionPipeline } from "@valiq-trading/core"
+import { createExecutionErrorDetail, formatExecutionError, type ExecutionPipeline } from "@valiq-trading/core"
 import type { ToolDefinition } from "../tool-registry"
 
 const binanceAdjustmentParamsSchema = z.object({
@@ -35,18 +35,31 @@ export function createBinanceProposeAdjustmentTool(
             const validated = params as z.infer<typeof binanceAdjustmentParamsSchema>
 
             if (validated.stopLoss === undefined && validated.takeProfit === undefined) {
+                const errorDetail = createExecutionErrorDetail("pre_validation", "Provide stopLoss, takeProfit, or both", {
+                    retryable: false,
+                })
                 return {
                     status: "rejected",
-                    error: "Provide stopLoss, takeProfit, or both",
+                    error: formatExecutionError(errorDetail),
+                    errorDetail,
                 }
             }
 
             const positions = await pipeline.getPositions()
             const position = positions.find((entry) => entry.instrument.toUpperCase() === validated.instrument.toUpperCase())
             if (!position) {
+                const errorDetail = createExecutionErrorDetail(
+                    "pre_validation",
+                    `No open position found for ${validated.instrument.toUpperCase()}`,
+                    {
+                        code: "POSITION_NOT_FOUND",
+                        retryable: false,
+                    }
+                )
                 return {
                     status: "rejected",
-                    error: `No open position found for ${validated.instrument.toUpperCase()}`,
+                    error: formatExecutionError(errorDetail),
+                    errorDetail,
                 }
             }
 

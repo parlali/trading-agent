@@ -2,6 +2,7 @@ import { mutation } from "../../_generated/server"
 import type { DatabaseWriter } from "../../_generated/server"
 import type { Id } from "../../_generated/dataModel"
 import { v } from "convex/values"
+import { DEFAULT_STALE_RUN_TIMEOUT_MS } from "@valiq-trading/core"
 import { requireServiceToken } from "../authGuards"
 import { reconcileOrderInstrumentClaim } from "../instrumentClaims"
 
@@ -23,16 +24,31 @@ export const createRun = mutation({
     },
     handler: async (ctx, args) => {
         requireServiceToken(args.serviceToken)
-        const activeRun = await ctx.db
+        const activeRuns = await ctx.db
             .query("strategy_runs")
             .withIndex("by_strategy_status", (q) =>
                 q.eq("strategyId", args.strategyId).eq("status", "running")
             )
-            .first()
+            .collect()
 
-        if (activeRun) {
+        const now = Date.now()
+        const freshActiveRun = activeRuns.find((run) => now - run.startedAt <= DEFAULT_STALE_RUN_TIMEOUT_MS)
+
+        for (const run of activeRuns) {
+            if (now - run.startedAt <= DEFAULT_STALE_RUN_TIMEOUT_MS) {
+                continue
+            }
+
+            await ctx.db.patch(run._id, {
+                status: "failed",
+                error: "Recovered stale running record automatically before creating a new run",
+                endedAt: now,
+            })
+        }
+
+        if (freshActiveRun) {
             throw new Error(
-                `Strategy ${args.strategyId} already has an active run (${activeRun._id})`
+                `Strategy ${args.strategyId} already has an active run (${freshActiveRun._id})`
             )
         }
 
@@ -43,6 +59,39 @@ export const createRun = mutation({
             trigger: args.trigger ?? "cron",
             startedAt: Date.now(),
         })
+    },
+})
+
+export const recoverStaleRunningRuns = mutation({
+    args: {
+        serviceToken: v.string(),
+        olderThanMs: v.optional(v.number()),
+    },
+    handler: async (ctx, args) => {
+        requireServiceToken(args.serviceToken)
+
+        const olderThanMs = args.olderThanMs ?? DEFAULT_STALE_RUN_TIMEOUT_MS
+        const runningRuns = (await ctx.db.query("strategy_runs").collect()).filter(
+            (run) => run.status === "running"
+        )
+
+        const endedAt = Date.now()
+        let recovered = 0
+
+        for (const run of runningRuns) {
+            if (endedAt - run.startedAt <= olderThanMs) {
+                continue
+            }
+
+            await ctx.db.patch(run._id, {
+                status: "failed",
+                error: "Recovered stale running record during periodic recovery",
+                endedAt,
+            })
+            recovered++
+        }
+
+        return { recovered }
     },
 })
 

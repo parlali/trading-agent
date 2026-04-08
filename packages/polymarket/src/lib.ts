@@ -1,4 +1,4 @@
-export { PolymarketClient } from "./polymarket-client"
+export { PolymarketClient, PolymarketApiError } from "./polymarket-client"
 export type {
     PolymarketBalanceAllowance,
     PolymarketCredentials,

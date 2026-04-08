@@ -37,6 +37,7 @@ import {
     parseSummaryMetadata,
     stripMetadataBlock,
     validatePolicy,
+    withTimeout,
     type PendingOrderContext,
     type Logger,
     type Scheduler,
@@ -63,6 +64,10 @@ import {
     accountSnapshotPersisters,
     healthState,
 } from "./state"
+
+const PRE_RUN_HOOK_TIMEOUT_MS = 90_000
+const POST_RUN_HOOK_TIMEOUT_MS = 90_000
+const STRATEGY_RUN_TIMEOUT_MS = 12 * 60 * 1000
 
 export function updateHealth(
     status: "completed" | "failed",
@@ -245,13 +250,17 @@ export async function runStrategy(
     let runtimeContextLines: string[] | undefined
 
     if (plugin.preRunHooks) {
-        const hookResult = await plugin.preRunHooks({
-            venue,
-            policy,
-            strategyId: strategy._id,
-            logger,
-            createAlert: (alert) => backend.createAlert(alert),
-        })
+        const hookResult = await withTimeout(
+            async () => await plugin.preRunHooks!({
+                venue,
+                policy,
+                strategyId: strategy._id,
+                logger,
+                createAlert: (alert) => backend.createAlert(alert),
+            }),
+            PRE_RUN_HOOK_TIMEOUT_MS,
+            `pre-run hooks for strategy ${strategy._id}`
+        )
         if (hookResult.skip) {
             logger.warn("Pre-run hook skipped strategy", {
                 strategyId: strategy._id,
@@ -363,126 +372,132 @@ export async function runStrategy(
     }
 
     try {
-        if (!resolvedSecrets.OPENROUTER_API_KEY) {
-            throw new Error("Cannot run strategy: OPENROUTER_API_KEY is not set in Convex environment variables")
-        }
-
-        const isDryRun = Boolean(policy.dryRun)
-        const { pendingOrders, runtimeContextLines: pendingOrderRuntimeContext } = await reconcilePendingOrdersForRun(
-            pipeline,
-            strategy._id,
-            orderPersistence,
-            runLogger
-        )
-        runtimeContextLines = mergeRuntimeContextLines(runtimeContextLines, pendingOrderRuntimeContext)
-
-        const [allPositions, accountState, previousRunSummary] = await Promise.all([
-            isDryRun ? backend.getLatestPositions(strategy._id) : venue.getPositions(),
-            venue.getAccountState(),
-            backend.getLastCompletedRunSummary(strategy._id),
-        ])
-        const positions = isDryRun
-            ? allPositions
-            : filterPositionsByOwnership(allPositions, ownedInstruments)
-
-        if (isDryRun) {
-            pipeline.seedDryRunPositions(positions)
-        }
-
-        const result = await executeAgentRun(
-            {
-                runId,
-                strategyId: strategy._id,
-                app,
-                timestamp: Date.now(),
-                trigger,
-                positions,
-                accountState,
-                policy,
-                context: strategy.context,
-                runtimeContextLines,
-                schedule: strategy.schedule,
-                pendingOrders,
-                previousRunSummary: previousRunSummary ?? undefined,
-            },
-            {
-                llm: {
-                    apiKey: resolvedSecrets.OPENROUTER_API_KEY,
-                    model: resolvedSecrets.OPENROUTER_MODEL ?? "anthropic/claude-sonnet-4.6",
-                },
-                tools,
-                logger: runLogger,
-                agentLogger: backend,
-                killSwitchChecker: () => checkKillSwitch(app, `mid-run:${strategy._id}`),
+        await withTimeout(async () => {
+            if (!resolvedSecrets.OPENROUTER_API_KEY) {
+                throw new Error("Cannot run strategy: OPENROUTER_API_KEY is not set in Convex environment variables")
             }
-        )
 
-        const [syncedPositions, finalAccountState] = await Promise.all([
-            isDryRun
-                ? Promise.resolve(pipeline.getDryRunPositions())
-                : venue.getPositions().then((all) => filterPositionsByOwnership(all, ownedInstruments)),
-            venue.getAccountState(),
-        ])
-        await Promise.all([
-            backend.syncPositions(strategy._id, app, syncedPositions),
-            accountSnapshotPersisters[app](finalAccountState),
-        ])
+            const isDryRun = Boolean(policy.dryRun)
+            const { pendingOrders, runtimeContextLines: pendingOrderRuntimeContext } = await reconcilePendingOrdersForRun(
+                pipeline,
+                strategy._id,
+                orderPersistence,
+                runLogger
+            )
+            runtimeContextLines = mergeRuntimeContextLines(runtimeContextLines, pendingOrderRuntimeContext)
 
-        if (plugin.postRunHooks) {
-            await plugin.postRunHooks({
-                venue,
-                policy,
-                strategyId: strategy._id,
-                logger: runLogger,
-                createAlert: (alert) => backend.createAlert(alert),
-            })
-        }
+            const [allPositions, accountState, previousRunSummary] = await Promise.all([
+                isDryRun ? backend.getLatestPositions(strategy._id) : venue.getPositions(),
+                venue.getAccountState(),
+                backend.getLastCompletedRunSummary(strategy._id),
+            ])
+            const positions = isDryRun
+                ? allPositions
+                : filterPositionsByOwnership(allPositions, ownedInstruments)
 
-        const cleanSummary = result.summary
-            ? stripMetadataBlock(result.summary)
-            : result.summary
+            if (isDryRun) {
+                pipeline.seedDryRunPositions(positions)
+            }
 
-        if (result.error) {
-            await Promise.all([
-                backend.updateRun(runId, "failed", cleanSummary, result.error),
-                backend.createAlert({
+            const result = await executeAgentRun(
+                {
+                    runId,
                     strategyId: strategy._id,
                     app,
-                    severity: "warning",
-                    message: `Agent run failed: ${result.error}`,
-                }),
+                    timestamp: Date.now(),
+                    trigger,
+                    positions,
+                    accountState,
+                    policy,
+                    context: strategy.context,
+                    runtimeContextLines,
+                    schedule: strategy.schedule,
+                    pendingOrders,
+                    previousRunSummary: previousRunSummary ?? undefined,
+                },
+                {
+                    llm: {
+                        apiKey: resolvedSecrets.OPENROUTER_API_KEY,
+                        model: resolvedSecrets.OPENROUTER_MODEL ?? "anthropic/claude-sonnet-4.6",
+                    },
+                    tools,
+                    logger: runLogger,
+                    agentLogger: backend,
+                    killSwitchChecker: () => checkKillSwitch(app, `mid-run:${strategy._id}`),
+                }
+            )
+
+            const [syncedPositions, finalAccountState] = await Promise.all([
+                isDryRun
+                    ? Promise.resolve(pipeline.getDryRunPositions())
+                    : venue.getPositions().then((all) => filterPositionsByOwnership(all, ownedInstruments)),
+                venue.getAccountState(),
             ])
-            updateHealth("failed", cleanSummary, result.error)
-            return
-        }
+            await Promise.all([
+                backend.syncPositions(strategy._id, app, syncedPositions),
+                accountSnapshotPersisters[app](finalAccountState),
+            ])
 
-        await backend.updateRun(runId, "completed", cleanSummary)
-        updateHealth("completed", cleanSummary)
-
-        if (scheduler && result.summary) {
-            const metadata = parseSummaryMetadata(result.summary)
-            if (metadata?.nextRunInMinutes) {
-                const delayMs = metadata.nextRunInMinutes * 60 * 1000
-                const nextCronMs = getNextCronFireMs(strategy.schedule)
-                if (nextCronMs && delayMs >= nextCronMs) {
-                    logger.info("Oneshot not scheduled -- cron fires sooner", {
+            if (plugin.postRunHooks) {
+                await withTimeout(
+                    async () => await plugin.postRunHooks!({
+                        venue,
+                        policy,
                         strategyId: strategy._id,
-                        requestedMs: delayMs,
-                        nextCronMs,
-                    })
-                } else {
-                    const callbackFiresAt = Date.now() + delayMs
-                    scheduler.scheduleOneshot(strategy._id, delayMs, async () => {
-                        await runStrategy(app, plugin, strategy, policy, strategySecrets, scheduler, "callback")
-                    })
-                    void backend.recordRunCallback(
-                        runId,
-                        metadata.nextRunInMinutes,
-                        callbackFiresAt
-                    )
+                        logger: runLogger,
+                        createAlert: (alert) => backend.createAlert(alert),
+                    }),
+                    POST_RUN_HOOK_TIMEOUT_MS,
+                    `post-run hooks for strategy ${strategy._id}`
+                )
+            }
+
+            const cleanSummary = result.summary
+                ? stripMetadataBlock(result.summary)
+                : result.summary
+
+            if (result.error) {
+                await Promise.all([
+                    backend.updateRun(runId, "failed", cleanSummary, result.error),
+                    backend.createAlert({
+                        strategyId: strategy._id,
+                        app,
+                        severity: "warning",
+                        message: `Agent run failed: ${result.error}`,
+                    }),
+                ])
+                updateHealth("failed", cleanSummary, result.error)
+                return
+            }
+
+            await backend.updateRun(runId, "completed", cleanSummary)
+            updateHealth("completed", cleanSummary)
+
+            if (scheduler && result.summary) {
+                const metadata = parseSummaryMetadata(result.summary)
+                if (metadata?.nextRunInMinutes) {
+                    const delayMs = metadata.nextRunInMinutes * 60 * 1000
+                    const nextCronMs = getNextCronFireMs(strategy.schedule)
+                    if (nextCronMs && delayMs >= nextCronMs) {
+                        logger.info("Oneshot not scheduled -- cron fires sooner", {
+                            strategyId: strategy._id,
+                            requestedMs: delayMs,
+                            nextCronMs,
+                        })
+                    } else {
+                        const callbackFiresAt = Date.now() + delayMs
+                        scheduler.scheduleOneshot(strategy._id, delayMs, async () => {
+                            await runStrategy(app, plugin, strategy, policy, strategySecrets, scheduler, "callback")
+                        })
+                        void backend.recordRunCallback(
+                            runId,
+                            metadata.nextRunInMinutes,
+                            callbackFiresAt
+                        )
+                    }
                 }
             }
-        }
+        }, STRATEGY_RUN_TIMEOUT_MS, `strategy run ${strategy._id}`)
     } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
         await Promise.all([

@@ -277,7 +277,7 @@ export class ExecutionPipeline {
                 reason: "At least one order modification must be provided",
             }
             void this.tradeEventLogger?.logValidation(this.runId, this.strategyId, validation, intent)
-            const errorDetail = createExecutionErrorDetail("pre_validation", validation.reason)
+            const errorDetail = createExecutionErrorDetail("pre_validation", validation.reason ?? "At least one order modification must be provided")
 
             return {
                 orderId,
@@ -346,7 +346,27 @@ export class ExecutionPipeline {
         }
 
         if (position && this.venue.buildCloseIntent) {
-            const venueIntent = await this.venue.buildCloseIntent(instrument)
+            let venueIntent: OrderIntent
+            try {
+                venueIntent = await this.venue.buildCloseIntent(instrument)
+            } catch (error) {
+                const errorDetail = getExecutionErrorDetail(error) ?? createExecutionErrorDetail("internal", getErrorMessage(error))
+                return {
+                    result: {
+                        orderId: "",
+                        status: "rejected",
+                        filledQuantity: 0,
+                        timestamp: Date.now(),
+                        error: formatExecutionError(errorDetail),
+                        errorDetail,
+                    },
+                    validation: {
+                        allowed: false,
+                        reason: errorDetail.message,
+                    },
+                }
+            }
+
             intent = {
                 ...venueIntent,
                 metadata: {
@@ -367,7 +387,7 @@ export class ExecutionPipeline {
                 reason: `No open position found for ${instrument}`,
             }
             void this.tradeEventLogger?.logValidation(this.runId, this.strategyId, validation, intent)
-            const errorDetail = createExecutionErrorDetail("pre_validation", validation.reason)
+            const errorDetail = createExecutionErrorDetail("pre_validation", validation.reason ?? "No open position found")
 
             return {
                 result: {

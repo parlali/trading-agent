@@ -426,9 +426,13 @@ class MT5Client:
                     "ticket": int(pos.ticket),
                     "retcode": -1,
                     "retcodeDescription": str(exc),
+                    "retcodeExternal": None,
                     "orderId": "",
                     "volume": 0.0,
                     "price": 0.0,
+                    "comment": str(exc),
+                    "bid": None,
+                    "ask": None,
                 })
 
         return results
@@ -577,11 +581,14 @@ class MT5Client:
         return {
             "retcode": retcode,
             "retcodeDescription": self._retcode_description(retcode),
+            "retcodeExternal": int(getattr(result, "retcode_external", 0)) if hasattr(result, "retcode_external") else None,
             "orderId": str(result.order) if result.order else "",
             "dealId": str(result.deal) if result.deal else "",
             "volume": float(result.volume),
             "price": float(result.price),
             "comment": result.comment if hasattr(result, "comment") else "",
+            "bid": float(getattr(result, "bid", 0.0)) if hasattr(result, "bid") else None,
+            "ask": float(getattr(result, "ask", 0.0)) if hasattr(result, "ask") else None,
             "success": retcode == mt5.TRADE_RETCODE_DONE,
         }
 

@@ -6,7 +6,16 @@
  * orders that fill immediately, so the order lifecycle is simpler.
  */
 
-import type { AccountState, ExecutionResult, OrderIntent, Position, VenueAdapter } from "@valiq-trading/core"
+import {
+    createExecutionError,
+    createExecutionErrorDetail,
+    formatExecutionError,
+    type AccountState,
+    type ExecutionResult,
+    type OrderIntent,
+    type Position,
+    type VenueAdapter,
+} from "@valiq-trading/core"
 import { MT5Client, type MT5Position, type MT5SymbolInfo, type MT5WorkerCredentials } from "./mt5-client"
 import { toMT5MarketSnapshot, type MT5MarketSnapshot } from "./market-context"
 
@@ -90,12 +99,20 @@ export class MT5VenueAdapter implements VenueAdapter {
         // In MT5, "modifying an order" typically means adjusting SL/TP on an open position
         const ticket = Number(orderId)
         if (Number.isNaN(ticket)) {
+            const errorDetail = createExecutionErrorDetail("pre_validation", "Invalid MT5 ticket number", {
+                code: "INVALID_ORDER_ID",
+                retryable: false,
+                details: {
+                    orderId,
+                },
+            })
             return {
                 orderId,
                 status: "rejected",
                 filledQuantity: 0,
                 timestamp: Date.now(),
-                error: "Invalid MT5 ticket number",
+                error: formatExecutionError(errorDetail),
+                errorDetail,
             }
         }
 
@@ -116,12 +133,20 @@ export class MT5VenueAdapter implements VenueAdapter {
         const position = positions.find((p) => p.symbol === instrument)
 
         if (!position) {
+            const errorDetail = createExecutionErrorDetail("pre_validation", `No open MT5 position found for ${instrument}`, {
+                code: "POSITION_NOT_FOUND",
+                retryable: false,
+                details: {
+                    instrument,
+                },
+            })
             return {
                 orderId: "",
                 status: "rejected",
                 filledQuantity: 0,
                 timestamp: Date.now(),
-                error: `No open MT5 position found for ${instrument}`,
+                error: formatExecutionError(errorDetail),
+                errorDetail,
             }
         }
 
@@ -134,23 +159,32 @@ export class MT5VenueAdapter implements VenueAdapter {
 
         const ticket = Number(orderId)
         if (Number.isNaN(ticket)) {
+            const errorDetail = createExecutionErrorDetail("pre_validation", "Invalid MT5 ticket number", {
+                code: "INVALID_ORDER_ID",
+                retryable: false,
+                details: {
+                    orderId,
+                },
+            })
             return {
                 orderId,
                 status: "rejected",
                 filledQuantity: 0,
                 timestamp: Date.now(),
-                error: "Invalid MT5 ticket number",
+                error: formatExecutionError(errorDetail),
+                errorDetail,
             }
         }
 
         const status = await this.client.getOrderStatus(ticket)
         if (!status) {
-            return {
-                orderId,
-                status: "filled", // Assume filled if not in pending or history (MT5 market orders fill instantly)
-                filledQuantity: 0,
-                timestamp: Date.now(),
-            }
+            throw createExecutionError("venue", `MT5 order ${orderId} not found in order book or history`, {
+                code: "ORDER_NOT_FOUND",
+                retryable: false,
+                details: {
+                    orderId,
+                },
+            })
         }
 
         return {

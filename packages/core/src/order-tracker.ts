@@ -401,6 +401,7 @@ export class OrderLifecycleManager {
             details: result.error
                 ? {
                     error: result.error,
+                    errorDetail: result.errorDetail,
                 }
                 : undefined,
         }

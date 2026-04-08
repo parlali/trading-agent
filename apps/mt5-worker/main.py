@@ -198,9 +198,13 @@ async def submit_order(
             "success": False,
             "retcode": -1,
             "retcodeDescription": str(exc),
+            "retcodeExternal": None,
             "orderId": "",
             "volume": 0.0,
             "price": 0.0,
+            "comment": str(exc),
+            "bid": None,
+            "ask": None,
         }
 
 
@@ -221,9 +225,13 @@ async def modify_position(
             "success": False,
             "retcode": -1,
             "retcodeDescription": str(exc),
+            "retcodeExternal": None,
             "orderId": "",
             "volume": 0.0,
             "price": 0.0,
+            "comment": str(exc),
+            "bid": None,
+            "ask": None,
         }
 
 
@@ -244,9 +252,13 @@ async def close_position(
             "success": False,
             "retcode": -1,
             "retcodeDescription": str(exc),
+            "retcodeExternal": None,
             "orderId": "",
             "volume": 0.0,
             "price": 0.0,
+            "comment": str(exc),
+            "bid": None,
+            "ask": None,
         }
 
 

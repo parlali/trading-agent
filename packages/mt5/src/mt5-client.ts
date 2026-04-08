@@ -5,7 +5,15 @@
  * interface calls to the worker's REST endpoints.
  */
 
-import { retryWithBackoff, type ExecutionResult, type OrderIntent } from "@valiq-trading/core"
+import {
+    createExecutionError,
+    createExecutionErrorDetail,
+    fetchWithTimeout,
+    formatExecutionError,
+    retryWithBackoff,
+    type ExecutionResult,
+    type OrderIntent,
+} from "@valiq-trading/core"
 
 export interface MT5WorkerCredentials {
     login: number
@@ -58,11 +66,14 @@ export interface MT5Position {
 export interface MT5OrderResult {
     retcode: number
     retcodeDescription: string
+    retcodeExternal?: number
     orderId: string
     dealId?: string
     volume: number
     price: number
     comment?: string
+    bid?: number
+    ask?: number
     success: boolean
 }
 
@@ -185,21 +196,40 @@ export class MT5Client {
     } | null> {
         try {
             return await this.post("/order/status", { orderId })
-        } catch {
-            return null
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error)
+            if (message.includes("404")) {
+                return null
+            }
+            throw error
         }
     }
 
     // -- Mapping helpers for VenueAdapter -------------------------------------
 
     mapOrderResultToExecution(result: MT5OrderResult): ExecutionResult {
+        const errorDetail = result.success
+            ? undefined
+            : createExecutionErrorDetail("venue", result.retcodeDescription, {
+                code: String(result.retcode),
+                retryable: result.retcode === 10004 || result.retcode === 10020 || result.retcode === 10024 || result.retcode === 10031,
+                details: {
+                    retcode: result.retcode,
+                    retcodeExternal: result.retcodeExternal,
+                    comment: result.comment,
+                    bid: result.bid,
+                    ask: result.ask,
+                },
+            })
+
         return {
             orderId: result.orderId || result.dealId || "",
             status: result.success ? "filled" : "rejected",
             filledQuantity: result.success ? result.volume : 0,
             fillPrice: result.success ? result.price : undefined,
             timestamp: Date.now(),
-            error: result.success ? undefined : result.retcodeDescription,
+            error: errorDetail ? formatExecutionError(errorDetail) : undefined,
+            errorDetail,
         }
     }
 
@@ -211,15 +241,24 @@ export class MT5Client {
             const timeoutId = setTimeout(() => controller.abort(), this.timeout)
 
             try {
-                const response = await fetch(`${this.workerUrl}${path}`, {
+                const response = await fetchWithTimeout(`${this.workerUrl}${path}`, {
                     method: "GET",
                     headers: this.headers(),
                     signal: controller.signal,
-                })
+                }, this.timeout, `MT5 worker GET ${path}`)
 
                 if (!response.ok) {
                     const body = await response.text().catch(() => "")
-                    throw new Error(`MT5 worker error: ${response.status} ${response.statusText} ${body}`)
+                    throw createExecutionError("venue", `MT5 worker error: ${response.status} ${response.statusText} ${body}`.trim(), {
+                        code: String(response.status),
+                        retryable: response.status >= 500 || response.status === 429,
+                        details: {
+                            path,
+                            status: response.status,
+                            statusText: response.statusText,
+                            body,
+                        },
+                    })
                 }
 
                 return (await response.json()) as T
@@ -235,16 +274,25 @@ export class MT5Client {
             const timeoutId = setTimeout(() => controller.abort(), this.timeout)
 
             try {
-                const response = await fetch(`${this.workerUrl}${path}`, {
+                const response = await fetchWithTimeout(`${this.workerUrl}${path}`, {
                     method: "POST",
                     headers: this.headers(),
                     body: JSON.stringify(body),
                     signal: controller.signal,
-                })
+                }, this.timeout, `MT5 worker POST ${path}`)
 
                 if (!response.ok) {
                     const text = await response.text().catch(() => "")
-                    throw new Error(`MT5 worker error: ${response.status} ${response.statusText} ${text}`)
+                    throw createExecutionError("venue", `MT5 worker error: ${response.status} ${response.statusText} ${text}`.trim(), {
+                        code: String(response.status),
+                        retryable: response.status >= 500 || response.status === 429,
+                        details: {
+                            path,
+                            status: response.status,
+                            statusText: response.statusText,
+                            body: text,
+                        },
+                    })
                 }
 
                 return (await response.json()) as T

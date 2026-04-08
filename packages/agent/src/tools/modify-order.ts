@@ -1,6 +1,7 @@
 import { z } from "zod"
 import type { ExecutionPipeline, OrderIntent } from "@valiq-trading/core"
 import type { ToolDefinition } from "../tool-registry"
+import { toExecutionToolResult } from "./execution-response"
 
 const defaultParamsSchema = z.object({
     orderId: z.string(),
@@ -62,19 +63,14 @@ export function createModifyOrderTool(
 
             if (validated.limitPrice !== undefined) changes.limitPrice = validated.limitPrice
             if ("stopPrice" in validated && validated.stopPrice !== undefined) {
-                changes.stopPrice = validated.stopPrice
+                changes.stopPrice = validated.stopPrice as number
             }
             if (validated.quantity !== undefined) changes.quantity = validated.quantity
 
             const result = await pipeline.modifyOrder(validated.orderId, changes, validated.reason)
             const trackedOrder = await pipeline.getOrderSnapshot(validated.orderId)
 
-            return {
-                orderId: result.orderId,
-                status: result.status,
-                error: result.error,
-                trackedOrder,
-            }
+            return toExecutionToolResult(result, { trackedOrder })
         },
     }
 }

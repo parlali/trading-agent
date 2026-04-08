@@ -1,6 +1,8 @@
 import { privateKeyToAccount } from "viem/accounts"
+import { fetchWithTimeout } from "@valiq-trading/core"
 
 const HOST = "https://clob.polymarket.com"
+const REQUEST_TIMEOUT_MS = 30_000
 
 async function main() {
     const privateKey = process.argv[2]
@@ -46,7 +48,7 @@ async function main() {
         },
     })
 
-    const response = await fetch(`${HOST}/auth/derive-api-key`, {
+    const response = await fetchWithTimeout(`${HOST}/auth/derive-api-key`, {
         method: "GET",
         headers: {
             POLY_ADDRESS: account.address,
@@ -54,7 +56,7 @@ async function main() {
             POLY_TIMESTAMP: String(timestamp),
             POLY_NONCE: String(nonce),
         },
-    })
+    }, REQUEST_TIMEOUT_MS, "Polymarket derive API key request")
 
     if (!response.ok) {
         const text = await response.text()

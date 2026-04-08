@@ -1,6 +1,13 @@
 import { z } from "zod"
 import type { BinanceVenueAdapter } from "@valiq-trading/binance"
-import type { BinancePolicy, ExecutionPipeline, OrderIntent } from "@valiq-trading/core"
+import {
+    createExecutionErrorDetail,
+    formatExecutionError,
+    type BinancePolicy,
+    type ExecutionErrorDetail,
+    type ExecutionPipeline,
+    type OrderIntent,
+} from "@valiq-trading/core"
 import { computeImpliedRR, computeTakeProfitFromRR } from "@valiq-trading/mt5"
 
 export const binanceOrderParamsSchema = z.object({
@@ -43,6 +50,7 @@ export interface BinanceOrderResult {
     filledQuantity: number
     fillPrice?: number
     error?: string
+    errorDetail?: ExecutionErrorDetail
     protectionOrders?: {
         cancelledOrderIds: string[]
         createdOrderIds: string[]
@@ -205,6 +213,7 @@ export async function prepareBinanceOrder(
         filledQuantity: result.filledQuantity,
         fillPrice: result.fillPrice,
         error: result.error,
+        errorDetail: result.errorDetail,
         protectionOrders,
         computed: {
             entryPrice,
@@ -244,14 +253,19 @@ function resolveEntryPrice(
 }
 
 function rejected(error: string): BinanceOrderResult {
+    const errorDetail = createExecutionErrorDetail("pre_validation", error, {
+        retryable: false,
+    })
+
     return {
         orderId: "",
         status: "rejected",
         filledQuantity: 0,
-        error,
+        error: formatExecutionError(errorDetail),
+        errorDetail,
         riskValidation: {
             allowed: false,
-            reason: error,
+            reason: errorDetail.message,
         },
     }
 }

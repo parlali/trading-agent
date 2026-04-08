@@ -34,7 +34,7 @@ export function parseStrategyMarkdownDocument(markdown: string): StrategyMarkdow
         .map((match) => match.index ?? 0)
 
     for (let index = 0; index < headings.length; index++) {
-        const heading = headings[index]
+        const heading = headings[index]!
         const rawName = heading[1]
 
         if (!rawName) {

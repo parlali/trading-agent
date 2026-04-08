@@ -1,5 +1,12 @@
 import { z } from "zod"
-import type { ExecutionPipeline, MT5Policy, OrderIntent } from "@valiq-trading/core"
+import {
+    createExecutionErrorDetail,
+    formatExecutionError,
+    type ExecutionErrorDetail,
+    type ExecutionPipeline,
+    type MT5Policy,
+    type OrderIntent,
+} from "@valiq-trading/core"
 import type { MT5VenueAdapter } from "@valiq-trading/mt5"
 import {
     calculateLotSize,
@@ -45,6 +52,7 @@ export interface MT5OrderResult {
     filledQuantity: number
     fillPrice?: number
     error?: string
+    errorDetail?: ExecutionErrorDetail
     computed?: {
         entryPrice: number
         stopLoss: number
@@ -180,6 +188,7 @@ export async function prepareMT5Order(
         filledQuantity: result.filledQuantity,
         fillPrice: result.fillPrice,
         error: result.error,
+        errorDetail: result.errorDetail,
         computed: {
             entryPrice,
             stopLoss: params.stopLoss,
@@ -217,14 +226,19 @@ function resolveEntryPrice(
 }
 
 function rejected(error: string): MT5OrderResult {
+    const errorDetail = createExecutionErrorDetail("pre_validation", error, {
+        retryable: false,
+    })
+
     return {
         orderId: "",
         status: "rejected",
         filledQuantity: 0,
-        error,
+        error: formatExecutionError(errorDetail),
+        errorDetail,
         riskValidation: {
             allowed: false,
-            reason: error,
+            reason: errorDetail.message,
         },
     }
 }

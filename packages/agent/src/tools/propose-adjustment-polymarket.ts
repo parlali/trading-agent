@@ -1,6 +1,7 @@
 import { z } from "zod"
 import type { ExecutionPipeline, OrderIntent } from "@valiq-trading/core"
 import type { ToolDefinition } from "../tool-registry"
+import { toExecutionToolResult } from "./execution-response"
 import { resolveEstimatedPrice, type PolymarketPriceProvider } from "./polymarket-order-helpers"
 
 const adjustmentParamsSchema = z.object({
@@ -67,18 +68,7 @@ export function createPolymarketProposeAdjustmentTool(
 
             const { result, validation } = await pipeline.executeIntent(intent, account, positions)
 
-            return {
-                orderId: result.orderId,
-                status: result.status,
-                filledQuantity: result.filledQuantity,
-                fillPrice: result.fillPrice,
-                error: result.error,
-                riskValidation: {
-                    allowed: validation.allowed,
-                    reason: validation.reason,
-                },
-            }
+            return toExecutionToolResult(result, { validation })
         },
     }
 }
-

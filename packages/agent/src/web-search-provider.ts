@@ -1,12 +1,15 @@
+import { fetchWithTimeout } from "@valiq-trading/core"
 import type { SearchResult, WebSearchProvider } from "./tools/web-search"
+
+const SEARCH_REQUEST_TIMEOUT_MS = 15_000
 
 export class DuckDuckGoSearchProvider implements WebSearchProvider {
     async search(query: string, maxResults = 5): Promise<SearchResult[]> {
-        const response = await fetch(`https://duckduckgo.com/html/?q=${encodeURIComponent(query)}`, {
+        const response = await fetchWithTimeout(`https://duckduckgo.com/html/?q=${encodeURIComponent(query)}`, {
             headers: {
                 "User-Agent": "ValiqTradingAgent/1.0",
             },
-        })
+        }, SEARCH_REQUEST_TIMEOUT_MS, "DuckDuckGo search request")
 
         if (!response.ok) {
             throw new Error(`Search request failed: ${response.status} ${response.statusText}`)

@@ -1,5 +1,5 @@
 import { createHmac } from "crypto"
-import { retryWithBackoff } from "@valiq-trading/core"
+import { createExecutionErrorDetail, fetchWithTimeout, retryWithBackoff, type ExecutionErrorDetail } from "@valiq-trading/core"
 
 export interface BinanceCredentials {
     apiKey: string
@@ -95,17 +95,26 @@ export class BinanceApiError extends Error {
     readonly status: number
     readonly code?: number
     readonly retryable: boolean
+    readonly executionError: ExecutionErrorDetail
 
     constructor(message: string, status: number, code?: number) {
         super(message)
         this.status = status
         this.code = code
         this.retryable = isRetryableBinanceError(status, code)
+        this.executionError = createExecutionErrorDetail("venue", message, {
+            code: code !== undefined ? String(code) : undefined,
+            retryable: this.retryable,
+            details: {
+                status,
+            },
+        })
     }
 }
 
 const DEFAULT_BASE_URL = "https://fapi.binance.com"
 const DEFAULT_RECV_WINDOW = 5000
+const BINANCE_REQUEST_TIMEOUT_MS = 30_000
 
 export class BinanceClient {
     private readonly apiKey: string
@@ -231,12 +240,12 @@ export class BinanceClient {
         return await retryWithBackoff(async () => {
             const query = buildQuery(params)
             const url = query ? `${this.baseUrl}${path}?${query}` : `${this.baseUrl}${path}`
-            const response = await fetch(url, {
+            const response = await fetchWithTimeout(url, {
                 method,
                 headers: {
                     "Content-Type": "application/json",
                 },
-            })
+            }, BINANCE_REQUEST_TIMEOUT_MS, `Binance request ${path}`)
             this.captureRateLimitHeaders(response)
             return await parseBinanceResponse<T>(response)
         }, 2, 300)
@@ -256,13 +265,13 @@ export class BinanceClient {
             const query = buildQuery(signedParams)
             const signature = this.sign(query)
             const url = `${this.baseUrl}${path}?${query}&signature=${signature}`
-            const response = await fetch(url, {
+            const response = await fetchWithTimeout(url, {
                 method,
                 headers: {
                     "Content-Type": "application/json",
                     "X-MBX-APIKEY": this.apiKey,
                 },
-            })
+            }, BINANCE_REQUEST_TIMEOUT_MS, `Binance signed request ${path}`)
             this.captureRateLimitHeaders(response)
             return await parseBinanceResponse<T>(response)
         }, 2, 300)

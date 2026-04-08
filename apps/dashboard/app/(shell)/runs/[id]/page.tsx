@@ -28,6 +28,12 @@ import {
 } from "@/components/ui/dialog"
 import { toast } from "sonner"
 
+interface ExecutionErrorSummary {
+    source?: string
+    code?: string
+    message: string
+}
+
 export default function RunDetailPage({
     params,
 }: {
@@ -258,6 +264,7 @@ export default function RunDetailPage({
                             {tradeEvents.map((event) => {
                                 let payload: Record<string, unknown> | null = null
                                 try { payload = JSON.parse(event.payload) } catch { /* ignore */ }
+                                const executionError = extractExecutionError(payload)
                                 return (
                                     <div
                                         key={event._id}
@@ -272,6 +279,25 @@ export default function RunDetailPage({
                                             <p className="text-xs text-muted-foreground">
                                                 {formatTimestamp(event.timestamp)}
                                             </p>
+                                            {executionError ? (
+                                                <div className="mt-2 rounded border border-signal-danger/30 bg-signal-danger/5 p-2 text-xs text-signal-danger">
+                                                    <div className="flex flex-wrap items-center gap-2">
+                                                        {executionError.source ? (
+                                                            <Badge variant="outline" className="text-[10px] uppercase tracking-wide">
+                                                                {executionError.source}
+                                                            </Badge>
+                                                        ) : null}
+                                                        {executionError.code ? (
+                                                            <Badge variant="outline" className="text-[10px] font-mono">
+                                                                {executionError.code}
+                                                            </Badge>
+                                                        ) : null}
+                                                    </div>
+                                                    <p className="mt-1 whitespace-pre-wrap break-words">
+                                                        {executionError.message}
+                                                    </p>
+                                                </div>
+                                            ) : null}
                                             {payload ? (
                                                 <pre className="text-xs font-mono mt-1 bg-muted/50 rounded p-2 overflow-auto max-h-[150px] break-words whitespace-pre-wrap">
                                                     {JSON.stringify(payload, null, 2)}
@@ -316,4 +342,35 @@ export default function RunDetailPage({
             </Dialog>
         </div>
     )
+}
+
+function extractExecutionError(payload: Record<string, unknown> | null): ExecutionErrorSummary | null {
+    if (!payload) {
+        return null
+    }
+
+    const candidate = isRecord(payload.result)
+        ? payload.result
+        : payload
+    const errorDetail = isRecord(candidate.errorDetail)
+        ? candidate.errorDetail
+        : null
+
+    if (errorDetail && typeof errorDetail.message === "string") {
+        return {
+            source: typeof errorDetail.source === "string" ? errorDetail.source : undefined,
+            code: typeof errorDetail.code === "string" ? errorDetail.code : undefined,
+            message: errorDetail.message,
+        }
+    }
+
+    if (typeof candidate.error === "string" && candidate.error.trim()) {
+        return { message: candidate.error }
+    }
+
+    return null
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return Boolean(value) && typeof value === "object"
 }

@@ -1,6 +1,5 @@
 import {
-    createExecutionErrorDetail,
-    formatExecutionError,
+    createExecutionError,
     type AccountState,
     type ExecutionResult,
     type OrderIntent,
@@ -73,14 +72,13 @@ export class AlpacaOptionsVenueAdapter implements VenueAdapter {
         const group = resolveGroupForClose(rawPositions, instrument)
 
         if (!group) {
-            const errorDetail = createExecutionErrorDetail("pre_validation", `No Alpaca options structure found for ${instrument}`, {
+            throw createExecutionError("pre_validation", `No Alpaca options structure found for ${instrument}`, {
                 code: "POSITION_NOT_FOUND",
                 retryable: false,
                 details: {
                     instrument,
                 },
             })
-            throw new Error(formatExecutionError(errorDetail))
         }
 
         return {

@@ -1,4 +1,10 @@
-import { filterPositionsByOwnership, type Scheduler } from "@valiq-trading/core"
+import {
+    DEFAULT_STALE_RUN_TIMEOUT_MS,
+    filterPositionsByOwnership,
+    type AccountState,
+    type Position,
+    type Scheduler,
+} from "@valiq-trading/core"
 import {
     PERIODIC_SYNC_INTERVAL_MS,
     ALL_APPS,
@@ -16,6 +22,41 @@ import {
 import { registerStrategyWithScheduler } from "./scheduler"
 import type { VenueApp } from "./types"
 
+async function getPositionsForSync(
+    strategyId: string,
+    policy: Record<string, unknown>,
+    venue: { getPositions(): Promise<Position[]> }
+): Promise<Position[]> {
+    if (Boolean(policy.dryRun)) {
+        return await backend.getLatestPositions(strategyId as never)
+    }
+
+    const ownedInstrumentsList = await backend.getStrategyOwnedInstruments(strategyId as never)
+    const ownedInstruments = new Set(ownedInstrumentsList)
+    const allPositions = await venue.getPositions()
+    return filterPositionsByOwnership(allPositions, ownedInstruments)
+}
+
+async function syncStrategySnapshot(
+    strategyId: string,
+    app: VenueApp,
+    policy: Record<string, unknown>,
+    venue: {
+        getAccountState(): Promise<AccountState>
+        getPositions(): Promise<Position[]>
+    }
+): Promise<{ accountState: AccountState; positions: Position[] }> {
+    const isDryRun = Boolean(policy.dryRun)
+    const accountState = await venue.getAccountState()
+    const positions = await getPositionsForSync(strategyId, policy, venue)
+
+    if (!isDryRun) {
+        await backend.syncPositions(strategyId as never, app, positions)
+    }
+
+    return { accountState, positions }
+}
+
 export async function performStartupSync(): Promise<void> {
     logger.info("Performing startup sync for validated venues")
 
@@ -31,14 +72,13 @@ export async function performStartupSync(): Promise<void> {
         for (const entry of entries) {
             try {
                 const venue = plugin.createVenueAdapter(entry.policy, entry.secrets)
-                const accountState = await venue.getAccountState()
+                const { accountState, positions } = await syncStrategySnapshot(
+                    entry.strategy._id,
+                    app,
+                    entry.policy,
+                    venue
+                )
                 await accountSnapshotPersisters[app](accountState)
-
-                const ownedInstrumentsList = await backend.getStrategyOwnedInstruments(entry.strategy._id)
-                const ownedInstruments = new Set(ownedInstrumentsList)
-                const allPositions = await venue.getPositions()
-                const positions = filterPositionsByOwnership(allPositions, ownedInstruments)
-                await backend.syncPositions(entry.strategy._id, app, positions)
 
                 healthState.venues[app] = {
                     ...healthState.venues[app],
@@ -124,6 +164,12 @@ export function startPeriodicSync(scheduler: Scheduler): void {
         setPeriodicSyncInFlight(true)
 
         try {
+            const recoveredRuns = await backend.recoverStaleRunningRuns(DEFAULT_STALE_RUN_TIMEOUT_MS)
+            if (recoveredRuns > 0) {
+                logger.warn("Recovered stale runs during periodic sync", {
+                    recoveredRuns,
+                })
+            }
             await reconcileStrategies(scheduler)
             await performPeriodicSync()
         } catch (error) {
@@ -152,14 +198,13 @@ export async function performPeriodicSync(): Promise<void> {
         for (const entry of entries) {
             try {
                 const venue = plugin.createVenueAdapter(entry.policy, entry.secrets)
-                const accountState = await venue.getAccountState()
+                const { accountState, positions } = await syncStrategySnapshot(
+                    entry.strategy._id,
+                    app,
+                    entry.policy,
+                    venue
+                )
                 await accountSnapshotPersisters[app](accountState)
-
-                const ownedInstrumentsList = await backend.getStrategyOwnedInstruments(entry.strategy._id)
-                const ownedInstruments = new Set(ownedInstrumentsList)
-                const allPositions = await venue.getPositions()
-                const positions = filterPositionsByOwnership(allPositions, ownedInstruments)
-                await backend.syncPositions(entry.strategy._id, app, positions)
 
                 healthState.venues[app] = {
                     ...healthState.venues[app],

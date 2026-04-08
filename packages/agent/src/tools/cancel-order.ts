@@ -1,6 +1,7 @@
 import { z } from "zod"
 import type { ExecutionPipeline } from "@valiq-trading/core"
 import type { ToolDefinition } from "../tool-registry"
+import { toExecutionToolResult } from "./execution-response"
 
 const paramsSchema = z.object({
     orderId: z.string(),
@@ -25,12 +26,7 @@ export function createCancelOrderTool(pipeline: ExecutionPipeline): ToolDefiniti
             const result = await pipeline.cancelOrder(validated.orderId, validated.reason)
             const trackedOrder = await pipeline.getOrderSnapshot(validated.orderId)
 
-            return {
-                orderId: result.orderId,
-                status: result.status,
-                error: result.error,
-                trackedOrder,
-            }
+            return toExecutionToolResult(result, { trackedOrder })
         },
     }
 }

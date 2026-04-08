@@ -1,4 +1,12 @@
-import type { AccountState, ExecutionResult, OrderIntent, Position, VenueAdapter } from "@valiq-trading/core"
+import {
+    createExecutionErrorDetail,
+    formatExecutionError,
+    type AccountState,
+    type ExecutionResult,
+    type OrderIntent,
+    type Position,
+    type VenueAdapter,
+} from "@valiq-trading/core"
 import type { PolymarketClient, PolymarketOpenOrder, PolymarketTrade } from "./polymarket-client"
 
 export class PolymarketVenueAdapter implements VenueAdapter {
@@ -172,7 +180,21 @@ export class PolymarketVenueAdapter implements VenueAdapter {
         const balance = await this.client.getTokenBalance(instrument)
 
         if (balance <= 0) {
-            throw new Error(`No position found for token ${instrument}`)
+            const errorDetail = createExecutionErrorDetail("pre_validation", `No position found for token ${instrument}`, {
+                code: "POSITION_NOT_FOUND",
+                retryable: false,
+                details: {
+                    instrument,
+                },
+            })
+            return {
+                orderId: "",
+                status: "rejected",
+                filledQuantity: 0,
+                timestamp: Date.now(),
+                error: formatExecutionError(errorDetail),
+                errorDetail,
+            }
         }
 
         // Price the close order slightly below mid to increase fill probability

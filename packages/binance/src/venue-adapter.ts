@@ -1,4 +1,13 @@
-import type { AccountState, ExecutionResult, OrderIntent, Position, VenueAdapter } from "@valiq-trading/core"
+import {
+    createExecutionError,
+    createExecutionErrorDetail,
+    formatExecutionError,
+    type AccountState,
+    type ExecutionResult,
+    type OrderIntent,
+    type Position,
+    type VenueAdapter,
+} from "@valiq-trading/core"
 import {
     BinanceApiError,
     BinanceClient,
@@ -83,12 +92,32 @@ export class BinanceVenueAdapter implements VenueAdapter {
         const quantity = await this.normalizeQuantity(symbol, intent.quantity)
 
         if (quantity <= 0) {
-            throw new Error(`Order quantity for ${symbol} is below exchange minimum`)
+            throw createExecutionError("pre_validation", `Order quantity for ${symbol} is below exchange minimum`, {
+                code: "QUANTITY_BELOW_MINIMUM",
+                retryable: false,
+                details: {
+                    symbol,
+                    requestedQuantity: intent.quantity,
+                },
+            })
         }
 
         const rules = await this.getSymbolRules(symbol)
         if (quantity * notionalPrice < rules.minNotional) {
-            throw new Error(`Order notional ${quantity * notionalPrice} is below minimum ${rules.minNotional} for ${symbol}`)
+            throw createExecutionError(
+                "pre_validation",
+                `Order notional ${quantity * notionalPrice} is below minimum ${rules.minNotional} for ${symbol}`,
+                {
+                    code: "NOTIONAL_BELOW_MINIMUM",
+                    retryable: false,
+                    details: {
+                        symbol,
+                        quantity,
+                        notionalPrice,
+                        minNotional: rules.minNotional,
+                    },
+                }
+            )
         }
 
         const payload: BinanceCreateOrderParams = {
@@ -111,7 +140,13 @@ export class BinanceVenueAdapter implements VenueAdapter {
     async cancelOrder(orderId: string): Promise<ExecutionResult> {
         const parsed = parseCompositeOrderId(orderId)
         if (!parsed) {
-            throw new Error(`Unsupported Binance order id format: ${orderId}`)
+            throw createExecutionError("pre_validation", `Unsupported Binance order id format: ${orderId}`, {
+                code: "INVALID_ORDER_ID",
+                retryable: false,
+                details: {
+                    orderId,
+                },
+            })
         }
 
         const response = await this.client.cancelOrder(parsed.symbol, parsed.rawOrderId)
@@ -121,7 +156,13 @@ export class BinanceVenueAdapter implements VenueAdapter {
     async modifyOrder(orderId: string, changes: Partial<OrderIntent>): Promise<ExecutionResult> {
         const parsed = parseCompositeOrderId(orderId)
         if (!parsed) {
-            throw new Error(`Unsupported Binance order id format: ${orderId}`)
+            throw createExecutionError("pre_validation", `Unsupported Binance order id format: ${orderId}`, {
+                code: "INVALID_ORDER_ID",
+                retryable: false,
+                details: {
+                    orderId,
+                },
+            })
         }
 
         const existing = await this.client.getOrder(parsed.symbol, parsed.rawOrderId)
@@ -164,12 +205,20 @@ export class BinanceVenueAdapter implements VenueAdapter {
         const position = positions.find((entry) => entry.instrument.toUpperCase() === symbol)
 
         if (!position) {
+            const errorDetail = createExecutionErrorDetail("pre_validation", `No Binance futures position found for ${symbol}`, {
+                code: "POSITION_NOT_FOUND",
+                retryable: false,
+                details: {
+                    instrument: symbol,
+                },
+            })
             return {
                 orderId: "",
                 status: "rejected",
                 filledQuantity: 0,
                 timestamp: Date.now(),
-                error: `No Binance futures position found for ${symbol}`,
+                error: formatExecutionError(errorDetail),
+                errorDetail,
             }
         }
 
@@ -190,12 +239,20 @@ export class BinanceVenueAdapter implements VenueAdapter {
     async getOrderStatus(orderId: string): Promise<ExecutionResult> {
         const parsed = parseCompositeOrderId(orderId)
         if (!parsed) {
+            const errorDetail = createExecutionErrorDetail("pre_validation", "Unsupported Binance order id format", {
+                code: "INVALID_ORDER_ID",
+                retryable: false,
+                details: {
+                    orderId,
+                },
+            })
             return {
                 orderId,
                 status: "rejected",
                 filledQuantity: 0,
                 timestamp: Date.now(),
-                error: "Unsupported Binance order id format",
+                error: formatExecutionError(errorDetail),
+                errorDetail,
             }
         }
 
@@ -275,7 +332,13 @@ export class BinanceVenueAdapter implements VenueAdapter {
         const position = positions.find((entry) => entry.instrument.toUpperCase() === symbol)
 
         if (!position) {
-            throw new Error(`No open position found for ${symbol}`)
+            throw createExecutionError("pre_validation", `No open position found for ${symbol}`, {
+                code: "POSITION_NOT_FOUND",
+                retryable: false,
+                details: {
+                    instrument: symbol,
+                },
+            })
         }
 
         const existingOrders = await this.client.getOpenOrders(symbol)
@@ -376,7 +439,13 @@ export class BinanceVenueAdapter implements VenueAdapter {
         const symbolInfo = exchangeInfo.symbols.find((entry) => entry.symbol === symbol)
 
         if (!symbolInfo) {
-            throw new Error(`Binance symbol not found in exchangeInfo: ${symbol}`)
+            throw createExecutionError("venue", `Binance symbol not found in exchangeInfo: ${symbol}`, {
+                code: "SYMBOL_NOT_FOUND",
+                retryable: false,
+                details: {
+                    symbol,
+                },
+            })
         }
 
         const rules = parseSymbolRules(symbolInfo)
@@ -391,14 +460,26 @@ function mapExecutionResult(symbol: string, order: BinanceOrderResponse): Execut
         : Number(order.price) > 0
             ? Number(order.price)
             : undefined
+    const status = mapOrderStatus(order.status)
+    const errorDetail = status === "rejected"
+        ? createExecutionErrorDetail("venue", order.status, {
+            code: order.status,
+            retryable: false,
+            details: {
+                symbol,
+                orderId: order.orderId,
+            },
+        })
+        : undefined
 
     return {
         orderId: toCompositeOrderId(symbol, order.orderId),
-        status: mapOrderStatus(order.status),
+        status,
         filledQuantity: Number(order.executedQty),
         fillPrice,
         timestamp: order.updateTime ?? order.time ?? Date.now(),
-        error: mapOrderStatus(order.status) === "rejected" ? order.status : undefined,
+        error: errorDetail ? formatExecutionError(errorDetail) : undefined,
+        errorDetail,
     }
 }
 
@@ -478,7 +559,13 @@ function parseSymbolRules(symbol: BinanceExchangeSymbol): BinanceSymbolRules {
     const minNotionalFilter = symbol.filters.find((filter) => filter.filterType === "MIN_NOTIONAL")
 
     if (!lotFilter || !priceFilter) {
-        throw new Error(`Missing LOT_SIZE or PRICE_FILTER for symbol ${symbol.symbol}`)
+        throw createExecutionError("venue", `Missing LOT_SIZE or PRICE_FILTER for symbol ${symbol.symbol}`, {
+            code: "SYMBOL_RULES_INCOMPLETE",
+            retryable: false,
+            details: {
+                symbol: symbol.symbol,
+            },
+        })
     }
 
     const minNotional = Number(minNotionalFilter?.notional ?? minNotionalFilter?.minNotional ?? "0")

@@ -1,6 +1,7 @@
 import { z } from "zod"
 import type { ExecutionPipeline, OrderIntent } from "@valiq-trading/core"
 import type { ToolDefinition } from "../tool-registry"
+import { toExecutionToolResult } from "./execution-response"
 
 const genericLegSchema = z.object({
     instrument: z.string(),
@@ -153,18 +154,10 @@ export function createProposeOrderTool(
                 action: "entry",
             })
 
-            return {
-                orderId: result.orderId,
-                status: result.status,
-                filledQuantity: result.filledQuantity,
-                fillPrice: result.fillPrice,
-                error: result.error,
+            return toExecutionToolResult(result, {
                 trackedOrder: handle?.snapshot,
-                riskValidation: {
-                    allowed: validation.allowed,
-                    reason: validation.reason,
-                },
-            }
+                validation,
+            })
         },
     }
 }
