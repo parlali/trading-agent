@@ -1,0 +1,24 @@
+name: Deploy MT5 Worker
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'apps/mt5-worker/**'
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to Windows VM
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.MT5_WORKER_VM_HOST }}
+          port: 2227
+          username: ${{ secrets.VM_USER }}
+          password: ${{ secrets.VM_PASSWORD }}
+          script: |
+            cd ${{ secrets.MT5_WORKER_REPO_DIR }}
+            git pull
+            nssm restart trading-mt5-worker
