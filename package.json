@@ -21,7 +21,7 @@
         "strategies:reset-import": "cd apps/backend && bun run strategies:reset-import",
         "build": "turbo build",
         "lint": "turbo lint",
-        "deploy:convex": "cd packages/convex && bunx convex deploy --prod",
+        "deploy:convex": "cd packages/convex && bun run deploy:prod",
         "clean": "bun run clean:modules && bun run clean:dist",
         "clean:modules": "rm -rf node_modules && rm -rf apps/*/node_modules && rm -rf packages/*/node_modules",
         "clean:dist": "rm -rf apps/*/dist && rm -rf packages/*/dist"

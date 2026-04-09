@@ -1,1 +1,0 @@
-{"version":3,"file":"web-search-provider.d.ts","sourceRoot":"","sources":["web-search-provider.ts"],"names":[],"mappings":"AACA,OAAO,KAAK,EAAE,YAAY,EAAE,iBAAiB,EAAE,MAAM,oBAAoB,CAAA;AAIzE,qBAAa,wBAAyB,YAAW,iBAAiB;IACxD,MAAM,CAAC,KAAK,EAAE,MAAM,EAAE,UAAU,SAAI,GAAG,OAAO,CAAC,YAAY,EAAE,CAAC;CAoCvE"}

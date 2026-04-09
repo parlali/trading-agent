@@ -1,1 +1,0 @@
-{"version":3,"file":"propose-order-mt5.d.ts","sourceRoot":"","sources":["propose-order-mt5.ts"],"names":[],"mappings":"AAAA,OAAO,KAAK,EAAE,iBAAiB,EAAE,SAAS,EAAE,MAAM,qBAAqB,CAAA;AACvE,OAAO,KAAK,EAAE,eAAe,EAAE,MAAM,oBAAoB,CAAA;AACzD,OAAO,KAAK,EAAE,cAAc,EAAE,MAAM,kBAAkB,CAAA;AAOtD,wBAAgB,yBAAyB,CACrC,QAAQ,EAAE,iBAAiB,EAC3B,KAAK,EAAE,eAAe,EACtB,MAAM,EAAE,SAAS,GAClB,cAAc,CAShB"}

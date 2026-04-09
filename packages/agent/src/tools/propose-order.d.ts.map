@@ -1,1 +1,0 @@
-{"version":3,"file":"propose-order.d.ts","sourceRoot":"","sources":["propose-order.ts"],"names":[],"mappings":"AACA,OAAO,EACH,KAAK,iBAAiB,EAEzB,MAAM,qBAAqB,CAAA;AAC5B,OAAO,KAAK,EAAE,cAAc,EAAE,MAAM,kBAAkB,CAAA;AAQtD,UAAU,6BAA6B;IACnC,IAAI,CAAC,EAAE,SAAS,GAAG,gBAAgB,CAAA;CACtC;AAED,wBAAgB,sBAAsB,CAClC,QAAQ,EAAE,iBAAiB,EAC3B,OAAO,GAAE,6BAAkC,GAC5C,cAAc,CAoChB"}
