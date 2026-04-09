@@ -655,6 +655,22 @@ export async function runStrategy(
     scheduler?: Scheduler,
     trigger: RunTrigger = "cron"
 ): Promise<void> {
+    if (healthState.venues[app]?.validated !== true) {
+        logger.warn("Run skipped because venue environment is not validated", {
+            strategyId: strategy._id,
+            app,
+            trigger,
+            validationError: healthState.venues[app]?.error,
+        })
+        await backend.createAlert({
+            strategyId: strategy._id,
+            app,
+            severity: "warning",
+            message: `Strategy run skipped: ${app} environment not validated${healthState.venues[app]?.error ? ` (${healthState.venues[app]?.error})` : ""}`,
+        })
+        return
+    }
+
     if (await checkKillSwitch(app, `pre-run:${strategy._id}`)) {
         logger.warn("Run skipped due to active kill switch", { strategyId: strategy._id, app })
         await backend.createAlert({

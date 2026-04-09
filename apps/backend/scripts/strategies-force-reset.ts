@@ -1,4 +1,7 @@
 import {
+    addDeleteCounts,
+    createDeleteTotals,
+    flushOrphanedStrategyHistory,
     printDeleteCounts,
     createClient,
     runScript,
@@ -9,7 +12,7 @@ import {
     isDryRunStrategy,
     reconcileAndVerifyReset,
 } from "./lib/safe-strategy-reset"
-import type { StoredStrategy } from "@valiq-trading/convex"
+import type { StoredStrategy, TradingBackendClient } from "@valiq-trading/convex"
 import { MT5VenueAdapter } from "@valiq-trading/mt5"
 
 const FORCE_RESET_FLATTEN_ATTEMPTS = 5
@@ -18,6 +21,7 @@ const FORCE_RESET_FLATTEN_DELAY_MS = 1500
 runScript(async () => {
     const client = createClient()
     const strategies = await client.getAllStrategies()
+    const representativeStrategies = getRepresentativeStrategiesByApp(strategies)
 
     if (strategies.length === 0) {
         console.log("No strategies to reset")
@@ -26,6 +30,8 @@ runScript(async () => {
 
     console.log("Destructive force reset requested")
     console.log("Expecting backend schedulers and workers to already be stopped before this runs")
+
+    await preflightForceReset(client, representativeStrategies)
 
     const recoveredBeforeDisable = await client.recoverRunningRuns()
     console.log(`Recovered running runs before disable: ${recoveredBeforeDisable}`)
@@ -39,7 +45,7 @@ runScript(async () => {
     let cancelledOrders = 0
     let closedPositions = 0
 
-    for (const strategy of getRepresentativeStrategiesByApp(strategies)) {
+    for (const strategy of representativeStrategies) {
         console.log(`  Flattening ${strategy.app} provider account using ${strategy.name}...`)
 
         if (isDryRunStrategy(strategy)) {
@@ -94,7 +100,18 @@ runScript(async () => {
     const recoveredBeforeDelete = await client.recoverRunningRuns()
     console.log(`Recovered running runs before delete: ${recoveredBeforeDelete}`)
 
-    const deleted = await client.deleteAllStrategies()
+    const deleted = createDeleteTotals()
+
+    for (const strategy of strategies) {
+        const result = await client.deleteStrategy(strategy._id)
+        deleted.strategies++
+        addDeleteCounts(deleted, result)
+    }
+
+    const orphaned = await flushOrphanedStrategyHistory(client, {
+        log: (message) => console.log(`  ${message}`),
+    })
+    addDeleteCounts(deleted, orphaned)
 
     console.log("Provider cleanup:")
     console.log(`  cancelled orders: ${cancelledOrders}`)
@@ -102,6 +119,36 @@ runScript(async () => {
     console.log("Deleted:")
     printDeleteCounts(deleted)
 })
+
+async function preflightForceReset(
+    client: TradingBackendClient,
+    strategies: StoredStrategy[]
+): Promise<void> {
+    const failures: string[] = []
+
+    console.log("Preflighting venue access before destructive reset...")
+
+    for (const strategy of strategies) {
+        if (isDryRunStrategy(strategy)) {
+            console.log(`  ${strategy.app}: ${strategy.name} -> dry-run only, venue preflight skipped`)
+            continue
+        }
+
+        try {
+            const { venue } = await createVenue(strategy, client)
+            await venue.getAccountState()
+            console.log(`  ${strategy.app}: ${strategy.name} -> venue access OK`)
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error)
+            failures.push(`${strategy.app}: ${strategy.name} -> ${message}`)
+            console.log(`  ${strategy.app}: ${strategy.name} -> FAILED (${message})`)
+        }
+    }
+
+    if (failures.length > 0) {
+        throw new Error(`Force reset preflight failed:\n${failures.map((failure) => `  - ${failure}`).join("\n")}`)
+    }
+}
 
 function getRepresentativeStrategiesByApp(
     strategies: StoredStrategy[]

@@ -1,5 +1,8 @@
 import {
+    addDeleteCounts,
     createClient,
+    createDeleteTotals,
+    flushOrphanedStrategyHistory,
     getStrategyModel,
     loadStrategiesFromDocument,
     printDeleteCounts,
@@ -13,24 +16,7 @@ runScript(async () => {
 
     const existing = await client.getAllStrategies()
 
-    const totals = {
-        strategies: 0,
-        runs: 0,
-        agentLogs: 0,
-        tradeEvents: 0,
-        orders: 0,
-        orderTransitions: 0,
-        positions: 0,
-        instrumentClaims: 0,
-        positionSyncs: 0,
-        providerPositions: 0,
-        providerWorkingOrders: 0,
-        providerSyncStates: 0,
-        accountSnapshots: 0,
-        appHeartbeats: 0,
-        manualRunRequests: 0,
-        alerts: 0,
-    }
+    const totals = createDeleteTotals()
 
     if (existing.length > 0) {
         console.log(`Safely resetting ${existing.length} existing strategies...`)
@@ -41,13 +27,13 @@ runScript(async () => {
             totals.strategies++
             console.log(`    cancelled orders: ${result.cancelledOrders}`)
             console.log(`    closed positions: ${result.closedPositions}`)
-            for (const key of Object.keys(result.deleted) as Array<keyof typeof result.deleted>) {
-                if (key in totals) {
-                    const numericTotals = totals as Record<string, number>
-                    numericTotals[key] += result.deleted[key] as number
-                }
-            }
+            addDeleteCounts(totals, result.deleted)
         }
+
+        const orphaned = await flushOrphanedStrategyHistory(client, {
+            log: (message) => console.log(`  ${message}`),
+        })
+        addDeleteCounts(totals, orphaned)
 
         console.log("Deleted:")
         printDeleteCounts(totals)

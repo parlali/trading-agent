@@ -180,6 +180,322 @@ export const deleteAllStrategies = mutation({
     },
 })
 
+export const deleteOrphanedStrategyHistoryBatch = mutation({
+    args: {
+        serviceToken: v.string(),
+        batchSize: v.optional(v.number()),
+    },
+    handler: async (ctx, args) => {
+        requireServiceToken(args.serviceToken)
+
+        const batchSize = Math.max(1, Math.min(args.batchSize ?? 100, 250))
+        const deleted = {
+            runs: 0,
+            agentLogs: 0,
+            tradeEvents: 0,
+            orders: 0,
+            orderTransitions: 0,
+            positions: 0,
+            instrumentClaims: 0,
+            positionSyncs: 0,
+            providerPositions: 0,
+            providerWorkingOrders: 0,
+            providerSyncStates: 0,
+            accountSnapshots: 0,
+            appHeartbeats: 0,
+            manualRunRequests: 0,
+            alerts: 0,
+        }
+
+        const strategyExistsCache = new Map<string, boolean>()
+        const runExistsCache = new Map<string, boolean>()
+        const orderExistsCache = new Map<string, boolean>()
+
+        const strategyExists = async (strategyId: Id<"strategies"> | undefined): Promise<boolean> => {
+            if (!strategyId) {
+                return false
+            }
+
+            const key = String(strategyId)
+            const cached = strategyExistsCache.get(key)
+            if (cached !== undefined) {
+                return cached
+            }
+
+            const exists = (await ctx.db.get(strategyId)) !== null
+            strategyExistsCache.set(key, exists)
+            return exists
+        }
+
+        const runExists = async (runId: Id<"strategy_runs"> | undefined): Promise<boolean> => {
+            if (!runId) {
+                return false
+            }
+
+            const key = String(runId)
+            const cached = runExistsCache.get(key)
+            if (cached !== undefined) {
+                return cached
+            }
+
+            const exists = (await ctx.db.get(runId)) !== null
+            runExistsCache.set(key, exists)
+            return exists
+        }
+
+        const orderExists = async (orderId: string | undefined): Promise<boolean> => {
+            if (!orderId) {
+                return false
+            }
+
+            const cached = orderExistsCache.get(orderId)
+            if (cached !== undefined) {
+                return cached
+            }
+
+            const exists = await ctx.db
+                .query("orders")
+                .withIndex("by_order_id", (q) => q.eq("orderId", orderId))
+                .first()
+
+            const result = exists !== null
+            orderExistsCache.set(orderId, result)
+            return result
+        }
+
+        const deleteOrderWithTransitions = async (
+            order: Doc<"orders">
+        ): Promise<void> => {
+            const transitions = await ctx.db
+                .query("order_transitions")
+                .withIndex("by_order_sequence", (q) => q.eq("orderId", order.orderId))
+                .collect()
+
+            for (const transition of transitions) {
+                await ctx.db.delete(transition._id)
+                deleted.orderTransitions++
+            }
+
+            await ctx.db.delete(order._id)
+            deleted.orders++
+            orderExistsCache.set(order.orderId, false)
+        }
+
+        const orphanRuns = await ctx.db.query("strategy_runs").order("asc").take(batchSize)
+        for (const run of orphanRuns) {
+            if (await strategyExists(run.strategyId)) {
+                continue
+            }
+
+            const result = await cascadeDeleteRun(ctx, run._id)
+            deleted.runs++
+            deleted.agentLogs += result.agentLogs
+            deleted.tradeEvents += result.tradeEvents
+            deleted.orders += result.orders
+            deleted.orderTransitions += result.orderTransitions
+            runExistsCache.set(String(run._id), false)
+        }
+
+        if (sumDeletedCounts(deleted) > 0) {
+            return {
+                ...deleted,
+                hasMore: true,
+            }
+        }
+
+        const orphanLogs = await ctx.db.query("agent_logs").order("asc").take(batchSize)
+        for (const log of orphanLogs) {
+            if (await strategyExists(log.strategyId) && await runExists(log.runId)) {
+                continue
+            }
+
+            await ctx.db.delete(log._id)
+            deleted.agentLogs++
+        }
+
+        if (sumDeletedCounts(deleted) > 0) {
+            return {
+                ...deleted,
+                hasMore: true,
+            }
+        }
+
+        const orphanEvents = await ctx.db.query("trade_events").order("asc").take(batchSize)
+        for (const event of orphanEvents) {
+            if (await strategyExists(event.strategyId) && await runExists(event.runId)) {
+                continue
+            }
+
+            await ctx.db.delete(event._id)
+            deleted.tradeEvents++
+        }
+
+        if (sumDeletedCounts(deleted) > 0) {
+            return {
+                ...deleted,
+                hasMore: true,
+            }
+        }
+
+        const orphanOrders = await ctx.db.query("orders").order("asc").take(batchSize)
+        for (const order of orphanOrders) {
+            if (await strategyExists(order.strategyId) && await runExists(order.runId)) {
+                continue
+            }
+
+            await deleteOrderWithTransitions(order)
+        }
+
+        if (sumDeletedCounts(deleted) > 0) {
+            return {
+                ...deleted,
+                hasMore: true,
+            }
+        }
+
+        const orphanTransitions = await ctx.db.query("order_transitions").order("asc").take(batchSize)
+        for (const transition of orphanTransitions) {
+            if (
+                await strategyExists(transition.strategyId) &&
+                await runExists(transition.runId) &&
+                await orderExists(transition.orderId)
+            ) {
+                continue
+            }
+
+            await ctx.db.delete(transition._id)
+            deleted.orderTransitions++
+        }
+
+        if (sumDeletedCounts(deleted) > 0) {
+            return {
+                ...deleted,
+                hasMore: true,
+            }
+        }
+
+        const orphanPositions = await ctx.db.query("positions").order("asc").take(batchSize)
+        for (const position of orphanPositions) {
+            if (await strategyExists(position.strategyId)) {
+                continue
+            }
+
+            await ctx.db.delete(position._id)
+            deleted.positions++
+        }
+
+        if (sumDeletedCounts(deleted) > 0) {
+            return {
+                ...deleted,
+                hasMore: true,
+            }
+        }
+
+        const orphanClaims = await ctx.db.query("instrument_claims").order("asc").take(batchSize)
+        for (const claim of orphanClaims) {
+            if (await strategyExists(claim.strategyId)) {
+                continue
+            }
+
+            await ctx.db.delete(claim._id)
+            deleted.instrumentClaims++
+        }
+
+        if (sumDeletedCounts(deleted) > 0) {
+            return {
+                ...deleted,
+                hasMore: true,
+            }
+        }
+
+        const orphanSyncs = await ctx.db.query("position_syncs").order("asc").take(batchSize)
+        for (const sync of orphanSyncs) {
+            if (await strategyExists(sync.strategyId)) {
+                continue
+            }
+
+            await ctx.db.delete(sync._id)
+            deleted.positionSyncs++
+        }
+
+        if (sumDeletedCounts(deleted) > 0) {
+            return {
+                ...deleted,
+                hasMore: true,
+            }
+        }
+
+        const orphanProviderPositions = await ctx.db.query("provider_positions").order("asc").take(batchSize)
+        for (const position of orphanProviderPositions) {
+            if (!position.strategyId || await strategyExists(position.strategyId)) {
+                continue
+            }
+
+            await ctx.db.delete(position._id)
+            deleted.providerPositions++
+        }
+
+        if (sumDeletedCounts(deleted) > 0) {
+            return {
+                ...deleted,
+                hasMore: true,
+            }
+        }
+
+        const orphanProviderOrders = await ctx.db.query("provider_working_orders").order("asc").take(batchSize)
+        for (const order of orphanProviderOrders) {
+            const hasValidStrategy = !order.strategyId || await strategyExists(order.strategyId)
+            const hasValidRun = !order.runId || await runExists(order.runId)
+
+            if (hasValidStrategy && hasValidRun) {
+                continue
+            }
+
+            await ctx.db.delete(order._id)
+            deleted.providerWorkingOrders++
+        }
+
+        if (sumDeletedCounts(deleted) > 0) {
+            return {
+                ...deleted,
+                hasMore: true,
+            }
+        }
+
+        const orphanManualRequests = await ctx.db.query("manual_run_requests").order("asc").take(batchSize)
+        for (const request of orphanManualRequests) {
+            if (await strategyExists(request.strategyId)) {
+                continue
+            }
+
+            await ctx.db.delete(request._id)
+            deleted.manualRunRequests++
+        }
+
+        if (sumDeletedCounts(deleted) > 0) {
+            return {
+                ...deleted,
+                hasMore: true,
+            }
+        }
+
+        const orphanAlerts = await ctx.db.query("alerts").order("asc").take(batchSize)
+        for (const alert of orphanAlerts) {
+            if (!alert.strategyId || await strategyExists(alert.strategyId)) {
+                continue
+            }
+
+            await ctx.db.delete(alert._id)
+            deleted.alerts++
+        }
+
+        return {
+            ...deleted,
+            hasMore: false,
+        }
+    },
+})
+
 export const triggerManualRun = mutation({
     args: {
         strategyId: v.id("strategies"),
@@ -689,4 +1005,40 @@ function isPortfolioStateStale(lastVerifiedAt: number | undefined): boolean {
     }
 
     return Date.now() - lastVerifiedAt > PORTFOLIO_STALE_AFTER_MS
+}
+
+function sumDeletedCounts(counts: {
+    runs: number
+    agentLogs: number
+    tradeEvents: number
+    orders: number
+    orderTransitions: number
+    positions: number
+    instrumentClaims: number
+    positionSyncs: number
+    providerPositions: number
+    providerWorkingOrders: number
+    providerSyncStates: number
+    accountSnapshots: number
+    appHeartbeats: number
+    manualRunRequests: number
+    alerts: number
+}): number {
+    return (
+        counts.runs +
+        counts.agentLogs +
+        counts.tradeEvents +
+        counts.orders +
+        counts.orderTransitions +
+        counts.positions +
+        counts.instrumentClaims +
+        counts.positionSyncs +
+        counts.providerPositions +
+        counts.providerWorkingOrders +
+        counts.providerSyncStates +
+        counts.accountSnapshots +
+        counts.appHeartbeats +
+        counts.manualRunRequests +
+        counts.alerts
+    )
 }

@@ -118,6 +118,10 @@ export interface DeleteAllStrategiesResult extends CascadeDeleteCounts {
     strategies: number
 }
 
+export interface DeleteOrphanedStrategyHistoryBatchResult extends CascadeDeleteCounts {
+    hasMore: boolean
+}
+
 export interface ReplaceAllStrategiesResult {
     importedStrategies: number
     deleted: DeleteAllStrategiesResult
@@ -235,6 +239,7 @@ export interface TradingBackendClient extends TradeEventLoggerMethods {
     disableStrategy(id: Id<"strategies">): Promise<void>
     deleteStrategy(id: Id<"strategies">): Promise<DeleteStrategyResult>
     deleteAllStrategies(): Promise<DeleteAllStrategiesResult>
+    deleteOrphanedStrategyHistoryBatch(batchSize?: number): Promise<DeleteOrphanedStrategyHistoryBatchResult>
     replaceAllStrategies(strategies: StrategyConfig[]): Promise<ReplaceAllStrategiesResult>
 }
 
@@ -732,6 +737,17 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
                 async () => await client.mutation(api.mutations.deleteAllStrategies, {
                     ...requireMachineAuth(),
                 } as never) as DeleteAllStrategiesResult
+            )
+        },
+        async deleteOrphanedStrategyHistoryBatch(
+            batchSize?: number
+        ): Promise<DeleteOrphanedStrategyHistoryBatchResult> {
+            return await runWithTimeout(
+                "Convex mutation deleteOrphanedStrategyHistoryBatch",
+                async () => await client.mutation(api.mutations.deleteOrphanedStrategyHistoryBatch, {
+                    ...requireMachineAuth(),
+                    batchSize,
+                } as never) as DeleteOrphanedStrategyHistoryBatchResult
             )
         },
         async replaceAllStrategies(strategies: StrategyConfig[]): Promise<ReplaceAllStrategiesResult> {

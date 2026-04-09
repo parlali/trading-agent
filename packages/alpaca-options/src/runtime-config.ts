@@ -1,9 +1,9 @@
 import { requireResolvedSecret } from "@valiq-trading/core"
 
 export const ALPACA_RUNTIME_SECRET_KEYS = [
-    "ALPACA_PRIMARY_API_KEY",
-    "ALPACA_PRIMARY_SECRET_KEY",
-    "ALPACA_PRIMARY_ENVIRONMENT",
+    "ALPACA_API_KEY",
+    "ALPACA_SECRET_KEY",
+    "ALPACA_ENVIRONMENT",
     "ALPACA_ACCOUNT_ID",
 ] as const
 
@@ -40,8 +40,8 @@ export function resolveAlpacaCredentials(
     secrets: Record<string, string | null>
 ): AlpacaCredentials {
     return {
-        apiKey: requireResolvedSecret(secrets, "ALPACA_PRIMARY_API_KEY"),
-        secretKey: requireResolvedSecret(secrets, "ALPACA_PRIMARY_SECRET_KEY"),
+        apiKey: requireResolvedSecret(secrets, "ALPACA_API_KEY"),
+        secretKey: requireResolvedSecret(secrets, "ALPACA_SECRET_KEY"),
         accountId: secrets.ALPACA_ACCOUNT_ID ?? "",
     }
 }
@@ -56,7 +56,7 @@ export function resolveAlpacaEnvironment(
     }
 
     throw new Error(
-        `Invalid Alpaca environment "${baseUrl}". Set ALPACA_PRIMARY_ENVIRONMENT to "paper" or "live".`
+        `Invalid Alpaca environment "${baseUrl}". Set ALPACA_ENVIRONMENT to "paper" or "live".`
     )
 }
 
@@ -76,7 +76,7 @@ export function resolveAlpacaRuntimeConfig(
     secrets: Record<string, string | null>
 ): AlpacaRuntimeConfig {
     const environment = resolveAlpacaEnvironment(
-        requireResolvedSecret(secrets, "ALPACA_PRIMARY_ENVIRONMENT")
+        requireResolvedSecret(secrets, "ALPACA_ENVIRONMENT")
     )
 
     return {

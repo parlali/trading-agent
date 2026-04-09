@@ -5,9 +5,9 @@ import { resolveAlpacaRuntimeConfig } from "./runtime-config"
 describe("resolveAlpacaRuntimeConfig", () => {
     it("derives paper hosts from the explicit environment", () => {
         const config = resolveAlpacaRuntimeConfig({
-            ALPACA_PRIMARY_API_KEY: "paper-key",
-            ALPACA_PRIMARY_SECRET_KEY: "paper-secret",
-            ALPACA_PRIMARY_ENVIRONMENT: "paper",
+            ALPACA_API_KEY: "paper-key",
+            ALPACA_SECRET_KEY: "paper-secret",
+            ALPACA_ENVIRONMENT: "paper",
             ALPACA_ACCOUNT_ID: "paper-account",
         })
 
@@ -23,9 +23,9 @@ describe("resolveAlpacaRuntimeConfig", () => {
 
     it("derives live hosts from the explicit environment", () => {
         const config = resolveAlpacaRuntimeConfig({
-            ALPACA_PRIMARY_API_KEY: "live-key",
-            ALPACA_PRIMARY_SECRET_KEY: "live-secret",
-            ALPACA_PRIMARY_ENVIRONMENT: "live",
+            ALPACA_API_KEY: "live-key",
+            ALPACA_SECRET_KEY: "live-secret",
+            ALPACA_ENVIRONMENT: "live",
             ALPACA_ACCOUNT_ID: null,
         })
 
@@ -37,11 +37,11 @@ describe("resolveAlpacaRuntimeConfig", () => {
 
     it("rejects unsupported Alpaca environments", () => {
         expect(() => resolveAlpacaRuntimeConfig({
-            ALPACA_PRIMARY_API_KEY: "key",
-            ALPACA_PRIMARY_SECRET_KEY: "secret",
-            ALPACA_PRIMARY_ENVIRONMENT: "sandbox",
+            ALPACA_API_KEY: "key",
+            ALPACA_SECRET_KEY: "secret",
+            ALPACA_ENVIRONMENT: "sandbox",
             ALPACA_ACCOUNT_ID: null,
-        })).toThrow('Set ALPACA_PRIMARY_ENVIRONMENT to "paper" or "live"')
+        })).toThrow('Set ALPACA_ENVIRONMENT to "paper" or "live"')
     })
 })
 
@@ -68,9 +68,9 @@ describe("AlpacaClient host routing", () => {
         )
 
         const client = new AlpacaClient(resolveAlpacaRuntimeConfig({
-            ALPACA_PRIMARY_API_KEY: "key",
-            ALPACA_PRIMARY_SECRET_KEY: "secret",
-            ALPACA_PRIMARY_ENVIRONMENT: "paper",
+            ALPACA_API_KEY: "key",
+            ALPACA_SECRET_KEY: "secret",
+            ALPACA_ENVIRONMENT: "paper",
             ALPACA_ACCOUNT_ID: null,
         }))
 
@@ -103,9 +103,9 @@ describe("AlpacaClient host routing", () => {
         )
 
         const client = new AlpacaClient(resolveAlpacaRuntimeConfig({
-            ALPACA_PRIMARY_API_KEY: "key",
-            ALPACA_PRIMARY_SECRET_KEY: "secret",
-            ALPACA_PRIMARY_ENVIRONMENT: "live",
+            ALPACA_API_KEY: "key",
+            ALPACA_SECRET_KEY: "secret",
+            ALPACA_ENVIRONMENT: "live",
             ALPACA_ACCOUNT_ID: null,
         }))
 

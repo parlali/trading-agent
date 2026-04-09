@@ -29,9 +29,9 @@ describe("AlpacaPlugin.validateEnvironment", () => {
         const plugin = new AlpacaPlugin()
 
         await plugin.validateEnvironment({
-            ALPACA_PRIMARY_API_KEY: "key",
-            ALPACA_PRIMARY_SECRET_KEY: "secret",
-            ALPACA_PRIMARY_ENVIRONMENT: "paper",
+            ALPACA_API_KEY: "key",
+            ALPACA_SECRET_KEY: "secret",
+            ALPACA_ENVIRONMENT: "paper",
             ALPACA_ACCOUNT_ID: null,
         })
 

@@ -14,6 +14,7 @@ export {
     upsertStrategy,
     disableStrategy,
     deleteStrategy,
+    deleteOrphanedStrategyHistoryBatch,
     triggerManualRun,
     stopRun,
     deleteRun,

@@ -1,6 +1,8 @@
 import { resolve } from "node:path"
 import {
     createTradingBackendClient,
+    type CascadeDeleteCounts,
+    type DeleteOrphanedStrategyHistoryBatchResult,
     type TradingBackendClient,
     type DeleteAllStrategiesResult,
 } from "@valiq-trading/convex"
@@ -122,6 +124,90 @@ export function printDeleteCounts(deleted: DeleteAllStrategiesResult): void {
     console.log(`  app heartbeats: ${deleted.appHeartbeats}`)
     console.log(`  manual run requests: ${deleted.manualRunRequests}`)
     console.log(`  alerts: ${deleted.alerts}`)
+}
+
+export function createDeleteTotals(): DeleteAllStrategiesResult {
+    return {
+        strategies: 0,
+        runs: 0,
+        agentLogs: 0,
+        tradeEvents: 0,
+        orders: 0,
+        orderTransitions: 0,
+        positions: 0,
+        instrumentClaims: 0,
+        positionSyncs: 0,
+        providerPositions: 0,
+        providerWorkingOrders: 0,
+        providerSyncStates: 0,
+        accountSnapshots: 0,
+        appHeartbeats: 0,
+        manualRunRequests: 0,
+        alerts: 0,
+    }
+}
+
+export function addDeleteCounts(
+    totals: DeleteAllStrategiesResult,
+    deleted: CascadeDeleteCounts
+): void {
+    for (const key of Object.keys(deleted) as Array<keyof CascadeDeleteCounts>) {
+        totals[key] += deleted[key]
+    }
+}
+
+export async function flushOrphanedStrategyHistory(
+    client: TradingBackendClient,
+    options?: {
+        batchSize?: number
+        log?: (message: string) => void
+    }
+): Promise<DeleteAllStrategiesResult> {
+    const totals = createDeleteTotals()
+    const log = options?.log
+    const batchSize = options?.batchSize
+    let batches = 0
+
+    while (true) {
+        const result = await client.deleteOrphanedStrategyHistoryBatch(batchSize)
+        batches++
+        addDeleteCounts(totals, result)
+
+        const deletedThisBatch = sumDeleteCounts(result)
+        if (deletedThisBatch > 0) {
+            log?.(
+                `Orphan history cleanup batch ${batches}: removed ${deletedThisBatch} document(s)`
+            )
+        }
+
+        if (!result.hasMore) {
+            break
+        }
+    }
+
+    return totals
+}
+
+function sumDeleteCounts(
+    deleted: CascadeDeleteCounts | DeleteOrphanedStrategyHistoryBatchResult
+): number {
+    return (
+        deleted.runs +
+        deleted.agentLogs +
+        deleted.tradeEvents +
+        deleted.orders +
+        deleted.orderTransitions +
+        deleted.positions +
+        deleted.instrumentClaims +
+        deleted.positionSyncs +
+        deleted.providerPositions +
+        deleted.providerWorkingOrders +
+        deleted.providerSyncStates +
+        deleted.accountSnapshots +
+        deleted.appHeartbeats +
+        deleted.manualRunRequests +
+        deleted.alerts
+    )
 }
 
 export function runScript(main: () => Promise<void>): void {
