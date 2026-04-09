@@ -127,6 +127,23 @@ export class MT5VenueAdapter implements VenueAdapter, PriceVerifier {
         })
     }
 
+    async cancelAllOrders(): Promise<{ cancelled: number; results: ExecutionResult[] }> {
+        await this.ensureConnected()
+
+        const response = await this.client.cancelAllOrders()
+
+        return {
+            cancelled: response.cancelled,
+            results: response.results.map((result) =>
+                this.client.mapOrderResultToExecution(result, {
+                    fallbackOrderId: result.orderId,
+                    successStatus: "cancelled",
+                    filledQuantity: 0,
+                })
+            ),
+        }
+    }
+
     async modifyOrder(orderId: string, changes: Partial<OrderIntent>): Promise<ExecutionResult> {
         await this.ensureConnected()
 

@@ -5,9 +5,11 @@ import type {
     StoredStrategy,
     TradingBackendClient,
 } from "@valiq-trading/convex"
+import { AlpacaPlugin } from "../../src/plugins/alpaca"
 import { BinancePlugin } from "../../src/plugins/binance"
 import {
     isDryRunStrategy,
+    reconcileAndVerifyReset,
     resetStrategySafely,
 } from "./safe-strategy-reset.ts"
 
@@ -50,6 +52,12 @@ function createStrategy(
             fundingRateThreshold: 0.003,
             requireTakeProfit: false,
         }
+        : app === "alpaca-options"
+            ? {
+                dryRun: false,
+                model: "openai/gpt-5.4",
+                maxLossPerPlay: 150,
+            }
         : {
             dryRun: false,
             model: "openai/gpt-5.4",
@@ -332,5 +340,91 @@ describe("resetStrategySafely", () => {
         expect(client.deleteStrategy).toHaveBeenCalledWith(strategy._id)
         expect(result.cancelledOrders).toBe(0)
         expect(result.closedPositions).toBe(0)
+    })
+
+    it("includes remaining exposure identifiers in verification failures", async () => {
+        vi.useFakeTimers()
+
+        const strategy = createStrategy("alpaca-options")
+        const venue = {
+            getAccountState: vi.fn().mockResolvedValue({
+                balance: 1000,
+                equity: 1000,
+                buyingPower: 1000,
+                marginUsed: 0,
+                marginAvailable: 1000,
+                openPnl: 0,
+                dayPnl: 0,
+            }),
+            getPositions: vi.fn().mockResolvedValue([]),
+            getWorkingOrders: vi.fn().mockResolvedValue([]),
+            cancelOrder: vi.fn(),
+            modifyOrder: vi.fn(),
+            closePosition: vi.fn(),
+            submitOrder: vi.fn(),
+            getOrderStatus: vi.fn(),
+        }
+
+        vi.spyOn(AlpacaPlugin.prototype, "resolveSecretKeys").mockReturnValue([])
+        vi.spyOn(AlpacaPlugin.prototype, "createVenueAdapter").mockReturnValue(venue as never)
+
+        const client = {
+            resolveSecrets: vi.fn().mockResolvedValue({}),
+            reconcileProviderPortfolio: vi.fn().mockResolvedValue(undefined),
+            getPortfolioFreshness: vi.fn().mockResolvedValue([{
+                app: "alpaca-options",
+                accountScope: "single-account-per-venue",
+                lastSyncedAt: Date.now(),
+                lastVerifiedAt: Date.now(),
+                providerStatus: "healthy",
+                stale: false,
+                driftDetected: false,
+                positionCount: 2,
+                pendingOrderCount: 1,
+            }]),
+            getPortfolioPositions: vi.fn().mockResolvedValue([
+                {
+                    app: "alpaca-options",
+                    ownershipStatus: "owned",
+                    instrument: "SPY-IC-1",
+                    side: "short",
+                    quantity: 1,
+                    entryPrice: 1.23,
+                    syncedAt: Date.now(),
+                },
+                {
+                    app: "alpaca-options",
+                    ownershipStatus: "owned",
+                    instrument: "SPY-IC-2",
+                    side: "short",
+                    quantity: 2,
+                    entryPrice: 1.11,
+                    syncedAt: Date.now(),
+                },
+            ]),
+            getPortfolioPendingOrders: vi.fn().mockResolvedValue([
+                {
+                    app: "alpaca-options",
+                    ownershipStatus: "owned",
+                    orderId: "alpaca-order-1",
+                    instrument: "SPY-IC-1",
+                    venue: "alpaca",
+                    status: "pending",
+                    quantity: 1,
+                    filledQuantity: 0,
+                    remainingQuantity: 1,
+                    submittedAt: Date.now(),
+                    updatedAt: Date.now(),
+                },
+            ]),
+        } as unknown as TradingBackendClient
+
+        const verificationPromise = reconcileAndVerifyReset(client, strategy)
+        const assertion = expect(verificationPromise).rejects.toThrow(
+            "positions=SPY-IC-1:1, SPY-IC-2:2; orders=alpaca-order-1:SPY-IC-1"
+        )
+
+        await vi.runAllTimersAsync()
+        await assertion
     })
 })

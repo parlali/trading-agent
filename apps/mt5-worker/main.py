@@ -267,6 +267,35 @@ async def cancel_order(
         }
 
 
+@app.post("/order/cancel-all", dependencies=[Depends(verify_access_key)])
+async def cancel_all_orders(
+    client: MT5Client = Depends(get_client),
+) -> dict[str, Any]:
+    try:
+        results = client.cancel_all_orders()
+        return {
+            "cancelled": sum(1 for result in results if result.get("success")),
+            "results": results,
+        }
+    except MT5ConnectionError as exc:
+        return {
+            "cancelled": 0,
+            "results": [{
+                "success": False,
+                "retcode": -1,
+                "retcodeDescription": str(exc),
+                "retcodeExternal": None,
+                "orderId": "",
+                "dealId": "",
+                "volume": 0.0,
+                "price": 0.0,
+                "comment": str(exc),
+                "bid": None,
+                "ask": None,
+            }],
+        }
+
+
 @app.post("/position/close", dependencies=[Depends(verify_access_key)])
 async def close_position(
     req: ClosePositionRequest,

@@ -415,6 +415,37 @@ class MT5Client:
 
         return self._map_order_result(result, fallback_order_id=ticket)
 
+    def cancel_all_orders(self) -> list[dict[str, Any]]:
+        self.ensure_connected()
+
+        orders = mt5.orders_get()
+        if not orders:
+            return []
+
+        results: list[dict[str, Any]] = []
+        for order in orders:
+            ticket = int(order.ticket)
+            try:
+                result = self.cancel_order(ticket)
+                results.append(result)
+            except Exception as exc:
+                log.error("cancel_pending_order_failed", ticket=ticket, error=str(exc))
+                results.append({
+                    "retcode": -1,
+                    "retcodeDescription": str(exc),
+                    "retcodeExternal": None,
+                    "orderId": str(ticket),
+                    "dealId": "",
+                    "volume": 0.0,
+                    "price": 0.0,
+                    "comment": str(exc),
+                    "bid": None,
+                    "ask": None,
+                    "success": False,
+                })
+
+        return results
+
     def close_position(
         self,
         ticket: int,

@@ -10,6 +10,7 @@ import {
     reconcileAndVerifyReset,
 } from "./lib/safe-strategy-reset"
 import type { StoredStrategy } from "@valiq-trading/convex"
+import { MT5VenueAdapter } from "@valiq-trading/mt5"
 
 const FORCE_RESET_FLATTEN_ATTEMPTS = 5
 const FORCE_RESET_FLATTEN_DELAY_MS = 1500
@@ -61,13 +62,24 @@ runScript(async () => {
                 `    attempt ${attempt}/${FORCE_RESET_FLATTEN_ATTEMPTS}: ${positions.length} live position(s), ${workingOrders.length} live working order(s)`
             )
 
-            const result = await flattenVenueExposure(venue, {
-                positions,
-                workingOrders,
-            })
+            const result =
+                venue instanceof MT5VenueAdapter && workingOrders.length > 0
+                    ? await flattenMT5Exposure(venue, positions, workingOrders)
+                    : await flattenVenueExposure(venue, {
+                        positions,
+                        workingOrders,
+                    })
 
             cancelledOrders += result.cancelledOrders
             closedPositions += result.closedPositions
+
+            for (const failure of result.orderFailures) {
+                console.log(`      ${failure}`)
+            }
+
+            for (const failure of result.positionFailures) {
+                console.log(`      ${failure}`)
+            }
 
             if (attempt < FORCE_RESET_FLATTEN_ATTEMPTS) {
                 await sleep(FORCE_RESET_FLATTEN_DELAY_MS)
@@ -113,4 +125,38 @@ function getRepresentativeStrategiesByApp(
 
 async function sleep(delayMs: number): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, delayMs))
+}
+
+async function flattenMT5Exposure(
+    venue: MT5VenueAdapter,
+    positions: Awaited<ReturnType<MT5VenueAdapter["getPositions"]>>,
+    workingOrders: Awaited<ReturnType<MT5VenueAdapter["getWorkingOrders"]>>
+): Promise<{
+    cancelledOrders: number
+    closedPositions: number
+    orderFailures: string[]
+    positionFailures: string[]
+}> {
+    const cancelled = await venue.cancelAllOrders()
+    const orderFailures: string[] = []
+
+    for (const result of cancelled.results) {
+        if (result.status !== "cancelled" && result.status !== "filled") {
+            orderFailures.push(
+                `MT5 order ${result.orderId || "<unknown>"}: ${result.error ?? result.status}`
+            )
+        }
+    }
+
+    const closed = await flattenVenueExposure(venue, {
+        positions,
+        workingOrders: [],
+    })
+
+    return {
+        cancelledOrders: cancelled.cancelled,
+        closedPositions: closed.closedPositions,
+        orderFailures: [...orderFailures, ...closed.orderFailures],
+        positionFailures: closed.positionFailures,
+    }
 }

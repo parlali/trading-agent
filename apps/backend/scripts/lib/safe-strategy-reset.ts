@@ -41,6 +41,8 @@ export interface VenueResetContext {
 export interface VenueExposureResetResult {
     cancelledOrders: number
     closedPositions: number
+    orderFailures: string[]
+    positionFailures: string[]
 }
 
 const RESET_VERIFICATION_ATTEMPTS = 6
@@ -164,45 +166,71 @@ export async function flattenVenueExposure(
     )
 
     return {
-        cancelledOrders,
-        closedPositions,
+        cancelledOrders: cancelledOrders.count,
+        closedPositions: closedPositions.count,
+        orderFailures: cancelledOrders.failures,
+        positionFailures: closedPositions.failures,
     }
 }
 
 async function cancelOrders(
     venue: VenueAdapter,
     orderIds: string[]
-): Promise<number> {
+): Promise<{
+    count: number
+    failures: string[]
+}> {
     let cancelled = 0
+    const failures: string[] = []
 
     for (const orderId of orderIds) {
         try {
             const result = await venue.cancelOrder(orderId)
             if (result.status === "cancelled" || result.status === "filled") {
                 cancelled++
+            } else {
+                failures.push(`order ${orderId}: ${result.error ?? result.status}`)
             }
-        } catch {}
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error)
+            failures.push(`order ${orderId}: ${message}`)
+        }
     }
 
-    return cancelled
+    return {
+        count: cancelled,
+        failures,
+    }
 }
 
 async function closePositions(
     venue: VenueAdapter,
     instruments: string[]
-): Promise<number> {
+): Promise<{
+    count: number
+    failures: string[]
+}> {
     let closed = 0
+    const failures: string[] = []
 
     for (const instrument of instruments) {
         try {
             const result = await venue.closePosition(instrument)
             if (result.status === "filled" || result.status === "pending" || result.status === "partially_filled") {
                 closed++
+            } else {
+                failures.push(`position ${instrument}: ${result.error ?? result.status}`)
             }
-        } catch {}
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error)
+            failures.push(`position ${instrument}: ${message}`)
+        }
     }
 
-    return closed
+    return {
+        count: closed,
+        failures,
+    }
 }
 
 export async function reconcileAndVerifyReset(
@@ -275,7 +303,7 @@ export async function reconcileAndVerifyReset(
     }
 
     throw new Error(
-        `Reset verification failed for ${strategy.name}: ${lastRemainingPositions.length} provider position(s) and ${lastRemainingOrders.length} working order(s) still remain.`
+        `Reset verification failed for ${strategy.name}: ${lastRemainingPositions.length} provider position(s) and ${lastRemainingOrders.length} working order(s) still remain. ${formatRemainingExposure(lastRemainingPositions, lastRemainingOrders)}`
     )
 }
 
@@ -289,6 +317,45 @@ async function getFreshness(
 
 function uniqueStrings(values: string[]): string[] {
     return Array.from(new Set(values))
+}
+
+function formatRemainingExposure(
+    positions: ProviderPositionRow[],
+    orders: ProviderPendingOrderRow[]
+): string {
+    const parts: string[] = []
+
+    if (positions.length > 0) {
+        parts.push(`positions=${formatPositionList(positions)}`)
+    }
+
+    if (orders.length > 0) {
+        parts.push(`orders=${formatOrderList(orders)}`)
+    }
+
+    return parts.join("; ")
+}
+
+function formatPositionList(positions: ProviderPositionRow[]): string {
+    const values = uniqueStrings(
+        positions.map((position) => `${position.instrument}:${position.quantity}`)
+    )
+    return formatList(values)
+}
+
+function formatOrderList(orders: ProviderPendingOrderRow[]): string {
+    const values = uniqueStrings(
+        orders.map((order) => `${order.orderId}:${order.instrument}`)
+    )
+    return formatList(values)
+}
+
+function formatList(values: string[]): string {
+    if (values.length <= 5) {
+        return values.join(", ")
+    }
+
+    return `${values.slice(0, 5).join(", ")}, ... (+${values.length - 5} more)`
 }
 
 async function sleep(delayMs: number): Promise<void> {

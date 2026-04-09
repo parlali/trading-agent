@@ -196,6 +196,10 @@ export class MT5Client {
         return await this.post<MT5OrderResult>("/order/cancel", params)
     }
 
+    async cancelAllOrders(): Promise<{ cancelled: number; results: MT5OrderResult[] }> {
+        return await this.post("/order/cancel-all", {})
+    }
+
     async closePosition(params: {
         ticket: number
         volume?: number
