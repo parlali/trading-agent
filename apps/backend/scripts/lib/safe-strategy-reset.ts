@@ -9,7 +9,9 @@ import {
 } from "@valiq-trading/convex"
 import {
     validatePolicy,
+    type Position,
     type VenueAdapter,
+    type WorkingOrder,
 } from "@valiq-trading/core"
 import { AlpacaPlugin } from "../../src/plugins/alpaca"
 import { BinancePlugin } from "../../src/plugins/binance"
@@ -30,6 +32,19 @@ export interface SafeStrategyResetResult {
     cancelledOrders: number
     closedPositions: number
 }
+
+export interface VenueResetContext {
+    venue: VenueAdapter
+    venueName: string
+}
+
+export interface VenueExposureResetResult {
+    cancelledOrders: number
+    closedPositions: number
+}
+
+const RESET_VERIFICATION_ATTEMPTS = 6
+const RESET_VERIFICATION_DELAY_MS = 1000
 
 export async function resetStrategySafely(
     client: TradingBackendClient,
@@ -54,11 +69,20 @@ export async function resetStrategySafely(
 
     await client.disableStrategy(strategy._id)
 
-    const { venue, venueName } = await createVenue(strategy, client)
-    const cancelledOrders = await cancelTrackedOrders(venue, trackedOrders)
-    const closedPositions = await closeTrackedPositions(venue, trackedPositions)
+    let cancelledOrders = 0
+    let closedPositions = 0
 
-    await reconcileAndVerifyReset(client, strategy, venue, venueName)
+    if (!isDryRunStrategy(strategy)) {
+        const { venue } = await createVenue(strategy, client)
+        const result = await flattenVenueExposure(venue, {
+            positions: trackedPositions.map((position) => ({ instrument: position.instrument })),
+            workingOrders: trackedOrders.map((order) => ({ orderId: order.orderId })),
+        })
+        cancelledOrders = result.cancelledOrders
+        closedPositions = result.closedPositions
+
+        await reconcileAndVerifyReset(client, strategy)
+    }
 
     const deleted = await client.deleteStrategy(strategy._id)
 
@@ -76,6 +100,10 @@ function assertResetPreconditions(
     trackedPositions: ProviderPositionRow[],
     trackedOrders: ProviderPendingOrderRow[]
 ): void {
+    if (isDryRunStrategy(strategy)) {
+        return
+    }
+
     const requiresHealthyProviderState =
         (freshness?.lastVerifiedAt ?? 0) > 0 ||
         trackedPositions.length > 0 ||
@@ -96,13 +124,10 @@ function assertResetPreconditions(
     }
 }
 
-async function createVenue(
+export async function createVenue(
     strategy: StoredStrategy,
     client: TradingBackendClient
-): Promise<{
-    venue: VenueAdapter
-    venueName: string
-}> {
+): Promise<VenueResetContext> {
     const plugin = RESET_PLUGINS[strategy.app]
 
     if (!plugin) {
@@ -122,15 +147,37 @@ async function createVenue(
     }
 }
 
-async function cancelTrackedOrders(
+export async function flattenVenueExposure(
     venue: VenueAdapter,
-    orders: ProviderPendingOrderRow[]
+    exposure: {
+        positions: Array<Pick<ProviderPositionRow, "instrument"> | Pick<Position, "instrument">>
+        workingOrders: Array<Pick<ProviderPendingOrderRow, "orderId"> | Pick<WorkingOrder, "orderId">>
+    }
+): Promise<VenueExposureResetResult> {
+    const cancelledOrders = await cancelOrders(
+        venue,
+        uniqueStrings(exposure.workingOrders.map((order) => order.orderId))
+    )
+    const closedPositions = await closePositions(
+        venue,
+        uniqueStrings(exposure.positions.map((position) => position.instrument))
+    )
+
+    return {
+        cancelledOrders,
+        closedPositions,
+    }
+}
+
+async function cancelOrders(
+    venue: VenueAdapter,
+    orderIds: string[]
 ): Promise<number> {
     let cancelled = 0
 
-    for (const order of orders) {
+    for (const orderId of orderIds) {
         try {
-            const result = await venue.cancelOrder(order.orderId)
+            const result = await venue.cancelOrder(orderId)
             if (result.status === "cancelled" || result.status === "filled") {
                 cancelled++
             }
@@ -140,15 +187,15 @@ async function cancelTrackedOrders(
     return cancelled
 }
 
-async function closeTrackedPositions(
+async function closePositions(
     venue: VenueAdapter,
-    positions: ProviderPositionRow[]
+    instruments: string[]
 ): Promise<number> {
     let closed = 0
 
-    for (const position of positions) {
+    for (const instrument of instruments) {
         try {
-            const result = await venue.closePosition(position.instrument)
+            const result = await venue.closePosition(instrument)
             if (result.status === "filled" || result.status === "pending" || result.status === "partially_filled") {
                 closed++
             }
@@ -158,44 +205,78 @@ async function closeTrackedPositions(
     return closed
 }
 
-async function reconcileAndVerifyReset(
+export async function reconcileAndVerifyReset(
     client: TradingBackendClient,
     strategy: StoredStrategy,
-    venue: VenueAdapter,
-    venueName: string
+    strategyId?: Id<"strategies">,
+    options?: {
+        requireHealthyState?: boolean
+    }
 ): Promise<void> {
-    const [accountState, positions, workingOrders] = await Promise.all([
-        venue.getAccountState(),
-        venue.getPositions(),
-        venue.getWorkingOrders ? venue.getWorkingOrders() : Promise.resolve([]),
-    ])
+    const requireHealthyState = options?.requireHealthyState ?? true
+    let lastFreshness: PortfolioFreshnessRow | null = null
+    let lastRemainingPositions: ProviderPositionRow[] = []
+    let lastRemainingOrders: ProviderPendingOrderRow[] = []
 
-    await client.reconcileProviderPortfolio(
-        strategy.app,
-        venueName,
-        "periodic_sync",
-        accountState,
-        positions,
-        workingOrders
-    )
+    for (let attempt = 0; attempt < RESET_VERIFICATION_ATTEMPTS; attempt++) {
+        const { venue, venueName } = await createVenue(strategy, client)
+        const [accountState, positions, workingOrders] = await Promise.all([
+            venue.getAccountState(),
+            venue.getPositions(),
+            venue.getWorkingOrders ? venue.getWorkingOrders() : Promise.resolve([]),
+        ])
 
-    const [freshness, remainingPositions, remainingOrders] = await Promise.all([
-        getFreshness(client, strategy.app),
-        client.getPortfolioPositions(strategy.app, strategy._id),
-        client.getPortfolioPendingOrders(strategy.app, strategy._id),
-    ])
+        await client.reconcileProviderPortfolio(
+            strategy.app,
+            venueName,
+            "periodic_sync",
+            accountState,
+            positions,
+            workingOrders
+        )
 
-    if (!freshness || freshness.stale || freshness.driftDetected || freshness.providerStatus !== "healthy") {
+        ;[lastFreshness, lastRemainingPositions, lastRemainingOrders] = await Promise.all([
+            getFreshness(client, strategy.app),
+            client.getPortfolioPositions(strategy.app, strategyId),
+            client.getPortfolioPendingOrders(strategy.app, strategyId),
+        ])
+
+        const healthy =
+            lastFreshness &&
+            !lastFreshness.stale &&
+            !lastFreshness.driftDetected &&
+            lastFreshness.providerStatus === "healthy"
+
+        if (
+            lastRemainingPositions.length === 0 &&
+            lastRemainingOrders.length === 0 &&
+            (!requireHealthyState || healthy)
+        ) {
+            return
+        }
+
+        if (attempt < RESET_VERIFICATION_ATTEMPTS - 1) {
+            await sleep(RESET_VERIFICATION_DELAY_MS)
+        }
+    }
+
+    if (
+        requireHealthyState &&
+        (
+            !lastFreshness ||
+            lastFreshness.stale ||
+            lastFreshness.driftDetected ||
+            lastFreshness.providerStatus !== "healthy"
+        )
+    ) {
         throw new Error(
             `Reset verification failed for ${strategy.name}: ${strategy.app} provider ownership is stale or drifted after cleanup.`
         )
     }
 
-    if (remainingPositions.length > 0 || remainingOrders.length > 0) {
-        throw new Error(
-            `Reset verification failed for ${strategy.name}: ${remainingPositions.length} provider position(s) and ${remainingOrders.length} working order(s) still remain.`
-        )
-    }
+    throw new Error(
+        `Reset verification failed for ${strategy.name}: ${lastRemainingPositions.length} provider position(s) and ${lastRemainingOrders.length} working order(s) still remain.`
+    )
 }
 
 async function getFreshness(
@@ -204,4 +285,16 @@ async function getFreshness(
 ): Promise<PortfolioFreshnessRow | null> {
     const rows = await client.getPortfolioFreshness(app)
     return rows[0] ?? null
+}
+
+function uniqueStrings(values: string[]): string[] {
+    return Array.from(new Set(values))
+}
+
+async function sleep(delayMs: number): Promise<void> {
+    await new Promise((resolve) => setTimeout(resolve, delayMs))
+}
+
+export function isDryRunStrategy(strategy: Pick<StoredStrategy, "policy">): boolean {
+    return strategy.policy.dryRun === true
 }

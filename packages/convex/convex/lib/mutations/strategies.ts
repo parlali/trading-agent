@@ -611,6 +611,7 @@ async function assertStrategyDeletionSafe(
     ctx: { db: DatabaseWriter },
     strategy: Doc<"strategies">
 ): Promise<void> {
+    const isDryRun = strategy.policy?.dryRun === true
     const [activeRun, providerState, trackedPositions, trackedWorkingOrders, pendingOrders, partiallyFilledOrders] = await Promise.all([
         ctx.db
             .query("strategy_runs")
@@ -652,7 +653,11 @@ async function assertStrategyDeletionSafe(
         throw new Error("Cannot delete a strategy with an active run")
     }
 
+    const hasLiveProviderExposure = trackedPositions.length > 0 || trackedWorkingOrders.length > 0
+
     if (
+        !isDryRun &&
+        hasLiveProviderExposure &&
         providerState &&
         (
             providerState.driftDetected ||
@@ -665,13 +670,13 @@ async function assertStrategyDeletionSafe(
         )
     }
 
-    if (trackedPositions.length > 0 || trackedWorkingOrders.length > 0) {
+    if (!isDryRun && (trackedPositions.length > 0 || trackedWorkingOrders.length > 0)) {
         throw new Error(
             `Cannot delete strategy with live provider-tracked exposure or working orders. Run the backend-admin reset flow first.`
         )
     }
 
-    if (pendingOrders.length > 0 || partiallyFilledOrders.length > 0) {
+    if (!isDryRun && (pendingOrders.length > 0 || partiallyFilledOrders.length > 0)) {
         throw new Error(
             "Cannot delete strategy with pending or partially filled orders in Convex state. Run the backend-admin reset flow first."
         )

@@ -21,8 +21,7 @@
     "scripts": {
         "build": "tsc --noEmit",
         "clean:function-artifacts": "bun scripts/clean-function-artifacts.ts",
-        "deploy": "bun run clean:function-artifacts && convex deploy",
-        "deploy:prod": "bun run clean:function-artifacts && convex deploy --prod"
+        "deploy": "bun run clean:function-artifacts && convex deploy"
     },
     "dependencies": {
         "@auth/core": "^0.37.0",

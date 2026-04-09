@@ -318,16 +318,17 @@ export class PolymarketVenueAdapter implements VenueAdapter, PriceVerifier {
             }
         }
 
-        // Price the close order slightly below mid to increase fill probability
-        let midPrice: number
+        let sellPrice: number
         try {
-            midPrice = await this.client.getMidpoint(instrument)
+            sellPrice = await this.client.getPrice(instrument, "sell")
         } catch {
-            // Fallback: get bid price
-            midPrice = await this.client.getPrice(instrument, "sell")
+            try {
+                sellPrice = await this.client.getMidpoint(instrument)
+            } catch {
+                sellPrice = 0.01
+            }
         }
-
-        const sellPrice = Math.max(midPrice * 0.98, 0.01)
+        sellPrice = Math.max(sellPrice, 0.01)
 
         return this.submitOrder({
             instrument,
@@ -335,7 +336,7 @@ export class PolymarketVenueAdapter implements VenueAdapter, PriceVerifier {
             quantity: balance,
             orderType: "limit",
             limitPrice: sellPrice,
-            timeInForce: "fok",
+            timeInForce: "ioc",
         })
     }
 

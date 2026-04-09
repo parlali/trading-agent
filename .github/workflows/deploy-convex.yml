@@ -18,7 +18,7 @@ jobs:
               run: bun install
 
             - name: Deploy Convex
-              run: bun run deploy:prod
+              run: bun run deploy
               working-directory: packages/convex
               env:
                   CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_DEPLOY_KEY }}
