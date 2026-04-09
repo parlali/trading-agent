@@ -72,11 +72,9 @@ export class ToolPool {
 
             for (const tool of resolved) {
                 if (!("tool" in entry) && tool.name !== entry.name) {
-                    this.options.logger?.warn("Tool factory produced an unexpected tool name", {
-                        expectedTool: entry.name,
-                        actualTool: tool.name,
-                        venue,
-                    })
+                    throw new Error(
+                        `Tool factory for ${entry.name} produced unexpected tool ${tool.name} for venue ${venue}`
+                    )
                 }
 
                 const decoratedTool = this.decorateTool(
@@ -87,10 +85,9 @@ export class ToolPool {
                 )
 
                 if (seenNames.has(decoratedTool.name)) {
-                    this.options.logger?.warn("Duplicate tool registration detected for venue", {
-                        venue,
-                        tool: decoratedTool.name,
-                    })
+                    throw new Error(
+                        `Duplicate tool registration detected for ${decoratedTool.name} on venue ${venue}`
+                    )
                 }
 
                 seenNames.add(decoratedTool.name)

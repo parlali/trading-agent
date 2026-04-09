@@ -1,27 +1,16 @@
 import { z } from "zod"
 import type { ExecutionPipeline } from "@valiq-trading/core"
 import type { ToolDefinition } from "../tool-registry"
-
-const paramsSchema = z.object({
-    orderId: z.string(),
-    timeoutMs: z.number().int().positive().max(300000).optional(),
-})
+import {
+    createToolDefinition,
+    waitForOrderUpdateParamsSchema,
+} from "../tool-contracts"
 
 export function createWaitForOrderUpdateTool(pipeline: ExecutionPipeline): ToolDefinition {
-    return {
+    return createToolDefinition({
         name: "wait_for_order_update",
-        description: "Wait for the next order lifecycle update in the current run. Use this when an order is still pending or partially filled and you need the refreshed snapshot before deciding what to do next.",
-        parameters: paramsSchema,
-        jsonSchema: {
-            type: "object",
-            properties: {
-                orderId: { type: "string", description: "The tracked order ID to wait on" },
-                timeoutMs: { type: "number", description: "Optional maximum wait for this tool call in milliseconds" },
-            },
-            required: ["orderId"],
-        },
         handler: async (params) => {
-            const validated = params as z.infer<typeof paramsSchema>
+            const validated = params as z.infer<typeof waitForOrderUpdateParamsSchema>
             const snapshot = await pipeline.waitForOrderUpdate(
                 validated.orderId,
                 () => ({ decision: "wait" }),
@@ -40,5 +29,5 @@ export function createWaitForOrderUpdateTool(pipeline: ExecutionPipeline): ToolD
                 polling: snapshot.polling,
             }
         },
-    }
+    })
 }

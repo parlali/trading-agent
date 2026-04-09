@@ -18,5 +18,9 @@ export type {
     BinanceOrderBookLevel,
 } from "./venue-adapter"
 export { binanceRiskValidators } from "./risk-rules"
+export {
+    BINANCE_RUNTIME_SECRET_KEYS,
+    resolveBinanceCredentials,
+} from "./runtime-config"
 export { createBinanceMarketContextLine } from "./market-context"
 export type { BinanceMarketSnapshot } from "./market-context"

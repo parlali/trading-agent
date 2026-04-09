@@ -407,7 +407,12 @@ export class OrderLifecycleManager {
         }
 
         this.persistTransition(tracked, transition)
-        void this.tradeEventLogger?.logFillUpdate(this.runId, this.strategyId, result)
+        if (
+            previousSnapshot.status !== updatedSnapshot.status ||
+            previousSnapshot.filledQuantity !== updatedSnapshot.filledQuantity
+        ) {
+            void this.tradeEventLogger?.logFillUpdate(this.runId, this.strategyId, result)
+        }
 
         if (previousSnapshot.status !== updatedSnapshot.status || previousSnapshot.filledQuantity !== updatedSnapshot.filledQuantity) {
             this.logger.info("Order status update", {

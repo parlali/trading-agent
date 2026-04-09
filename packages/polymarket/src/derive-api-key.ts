@@ -77,6 +77,10 @@ async function main() {
     console.log(`POLYMARKET_API_PASSPHRASE=${data.passphrase}`)
     console.log(`POLYMARKET_PRIVATE_KEY=${privateKey}`)
     console.log(`POLYMARKET_FUNDER_ADDRESS=<your Polymarket profile wallet address>`)
+    console.log("")
+    console.log("POLYMARKET_FUNDER_ADDRESS must be the profile or proxy wallet shown in Polymarket.")
+    console.log("Do not copy the signer wallet from the exported private key unless it is also your profile wallet.")
+    console.log("Validate the pair in Dashboard > Test > Polymarket before scheduling live runs.")
 }
 
 await main()

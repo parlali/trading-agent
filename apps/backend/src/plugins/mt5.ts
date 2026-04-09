@@ -1,10 +1,19 @@
 import type { ToolDefinition } from "@valiq-trading/agent"
-import { createValiqDataTool, createValiqResearchTool, ValiqClient, ValiqDataClient, ValiqDataAdapter, ValiqResearchAdapter, createOAuthTokenProvider } from "@valiq-trading/valiq"
+import {
+    createOAuthTokenProvider,
+    createValiqDataTool,
+    createValiqResearchTool,
+    getMissingValiqDataApiSecrets,
+    resolveValiqDataApiConfig,
+    ValiqClient,
+    ValiqDataAdapter,
+    ValiqDataClient,
+    ValiqResearchAdapter,
+} from "@valiq-trading/valiq"
 import {
     getCurrentTimeInTimezone,
     mt5PolicySchema,
     padTime,
-    requireResolvedSecret,
     type MT5Policy,
     type RiskValidator,
     type VenueAdapter,
@@ -13,8 +22,9 @@ import {
     createMT5SpreadContextLine,
     HolidayGuard,
     MT5Client,
-    type MT5WorkerCredentials,
+    MT5_RUNTIME_SECRET_KEYS,
     mt5RiskValidators,
+    resolveMT5RuntimeConfig,
     MT5VenueAdapter,
     resolveMT5InstrumentRegions,
 } from "@valiq-trading/mt5"
@@ -33,21 +43,14 @@ export class MT5Plugin implements VenuePlugin {
 
     resolveSecretKeys(): string[] {
         return [
-            "MT5_WORKER_URL",
-            "MT5_WORKER_ACCESS_KEY",
-            "MT5_PRIMARY_LOGIN",
-            "MT5_PRIMARY_PASSWORD",
-            "MT5_PRIMARY_SERVER",
-            "MT5_LOGIN",
-            "MT5_PASSWORD",
-            "MT5_SERVER",
+            ...MT5_RUNTIME_SECRET_KEYS,
             "VALIQ_API_URL",
             "VALIQ_AUTH_URL",
             "VALIQ_OAUTH_CLIENT_ID",
             "VALIQ_OAUTH_CLIENT_SECRET",
             "VALIQ_OAUTH_USER_UUID",
             "VALIQ_DATA_API_URL",
-            "VALIQ_DATA_API_KEY",
+            "VALIQ_DATA_API",
         ]
     }
 
@@ -56,23 +59,21 @@ export class MT5Plugin implements VenuePlugin {
     }
 
     async validateEnvironment(secrets: Record<string, string | null>): Promise<void> {
-        const workerUrl = requireResolvedSecret(secrets, "MT5_WORKER_URL")
-        const accessKey = requireResolvedSecret(secrets, "MT5_WORKER_ACCESS_KEY")
-        const client = new MT5Client({ workerUrl, accessKey })
+        const runtimeConfig = resolveMT5RuntimeConfig(secrets)
+        const client = new MT5Client({
+            workerUrl: runtimeConfig.workerUrl,
+            accessKey: runtimeConfig.accessKey,
+        })
 
         await client.getHealth()
-
-        const credentials = this.resolveValidationCredentials(secrets)
-        if (credentials) {
-            await client.connect(credentials)
-        }
+        await client.connect(runtimeConfig.credentials)
     }
 
     createVenueAdapter(
-        policy: Record<string, unknown>,
+        _policy: Record<string, unknown>,
         secrets: Record<string, string | null>
     ): VenueAdapter {
-        const resolved = this.resolveCredentials(policy, secrets)
+        const resolved = resolveMT5RuntimeConfig(secrets)
         const client = new MT5Client({
             workerUrl: resolved.workerUrl,
             accessKey: resolved.accessKey,
@@ -111,17 +112,24 @@ export class MT5Plugin implements VenuePlugin {
             tools.push(createValiqResearchTool(research))
         }
 
-        const dataApiUrl = config.secrets.VALIQ_DATA_API_URL
-        const dataApiKey = config.secrets.VALIQ_DATA_API_KEY
+        const dataApi = resolveValiqDataApiConfig(config.secrets)
 
-        if (dataApiUrl && dataApiKey) {
+        if (dataApi) {
             const dataClient = new ValiqDataClient({
-                apiUrl: dataApiUrl,
-                apiKey: dataApiKey,
+                apiUrl: dataApi.apiUrl,
+                apiKey: dataApi.apiKey,
                 logger: config.runLogger,
             })
             const data = new ValiqDataAdapter(dataClient)
             tools.push(createValiqDataTool(data))
+        } else {
+            const missing = getMissingValiqDataApiSecrets(config.secrets)
+            if (missing.length > 0) {
+                config.runLogger.warn(
+                    "Valiq data tools NOT registered: missing secrets",
+                    { missing }
+                )
+            }
         }
 
         return tools
@@ -325,61 +333,4 @@ export class MT5Plugin implements VenuePlugin {
         }
     }
 
-    private resolveCredentials(
-        _policy: Record<string, unknown>,
-        secrets: Record<string, string | null>
-    ): { workerUrl: string; accessKey: string; credentials: MT5WorkerCredentials } {
-        const workerUrl = requireResolvedSecret(secrets, "MT5_WORKER_URL")
-        const login = requireResolvedSecret(secrets, "MT5_PRIMARY_LOGIN", "MT5_LOGIN")
-        const password = requireResolvedSecret(secrets, "MT5_PRIMARY_PASSWORD", "MT5_PASSWORD")
-        const server = requireResolvedSecret(secrets, "MT5_PRIMARY_SERVER", "MT5_SERVER")
-
-        return {
-            workerUrl,
-            accessKey: requireResolvedSecret(secrets, "MT5_WORKER_ACCESS_KEY"),
-            credentials: {
-                login: Number(login),
-                password,
-                server,
-            },
-        }
-    }
-
-    private resolveValidationCredentials(
-        secrets: Record<string, string | null>
-    ): MT5WorkerCredentials | null {
-        const login = secrets.MT5_PRIMARY_LOGIN ?? secrets.MT5_LOGIN
-        const password = secrets.MT5_PRIMARY_PASSWORD ?? secrets.MT5_PASSWORD
-        const server = secrets.MT5_PRIMARY_SERVER ?? secrets.MT5_SERVER
-
-        if (login && password && server) {
-            return {
-                login: Number(login),
-                password,
-                server,
-            }
-        }
-
-        for (const key of Object.keys(secrets)) {
-            const match = key.match(/^MT5_(.+)_LOGIN$/)
-            if (!match || match[1] === "PRIMARY") {
-                continue
-            }
-
-            const prefix = match[1]
-            const fallbackLogin = secrets[key]
-            const fallbackPassword = secrets[`MT5_${prefix}_PASSWORD`]
-            const fallbackServer = secrets[`MT5_${prefix}_SERVER`]
-
-            if (fallbackLogin && fallbackPassword && fallbackServer) {
-                return {
-                    login: Number(fallbackLogin),
-                    password: fallbackPassword,
-                    server: fallbackServer,
-                }
-            }
-        }
-
-        return null
-    }
 }

@@ -1,30 +1,19 @@
 import { z } from "zod"
 import type { MT5VenueAdapter } from "@valiq-trading/mt5"
 import type { ToolDefinition } from "../tool-registry"
-
-const paramsSchema = z.object({
-    symbol: z.string(),
-})
+import {
+    createToolDefinition,
+    singleSymbolParamsSchema,
+} from "../tool-contracts"
 
 export function createMT5GetSymbolInfoTool(
     venue: MT5VenueAdapter
 ): ToolDefinition {
-    return {
+    return createToolDefinition({
         name: "get_symbol_info",
-        description: "Fetch live MT5 symbol information including bid, ask, spread, tick value, contract size, and volume constraints.",
-        parameters: paramsSchema,
-        jsonSchema: {
-            type: "object",
-            properties: {
-                symbol: {
-                    type: "string",
-                    description: "MT5 symbol such as XAUUSD or US30",
-                },
-            },
-            required: ["symbol"],
-        },
+        venue: "mt5",
         handler: async (params) => {
-            const validated = params as z.infer<typeof paramsSchema>
+            const validated = params as z.infer<typeof singleSymbolParamsSchema>
             const info = await venue.getSymbolInfo(validated.symbol)
 
             if (!info) {
@@ -53,5 +42,5 @@ export function createMT5GetSymbolInfoTool(
                 description: info.description,
             }
         },
-    }
+    })
 }

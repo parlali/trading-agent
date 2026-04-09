@@ -3,12 +3,19 @@ import {
     ToolRegistry,
     createAlpacaGetOptionsChainTool,
     createAlpacaGetQuoteTool,
+    createBinanceGetMarketPriceTool,
+    createBinanceGetOrderBookTool,
+    createBinanceProposeAdjustmentTool,
+    createBinanceProposeCloseTool,
+    createBinanceProposeOrderTool,
     createCancelOrderTool,
     createGetAccountTool,
     createGetOrderStatusTool,
     createGetPositionsTool,
+    getToolCategory,
     createMT5ProposeCloseTool,
     createMT5GetSymbolInfoTool,
+    createMT5ModifyOrderTool,
     createModifyOrderTool,
     createProposeAdjustmentTool,
     createPolymarketGetMarketPriceTool,
@@ -38,6 +45,7 @@ import {
     createInstrumentConflictValidator,
     createKillSwitchGuardedVenue as createRuntimeKillSwitchGuardedVenue,
     filterPositionsByOwnership,
+    binancePolicySchema,
     getNextCronFireMs,
     mt5PolicySchema,
     parseSummaryMetadata,
@@ -51,6 +59,7 @@ import {
     type VenueAdapter,
 } from "@valiq-trading/core"
 import { AlpacaOptionsVenueAdapter } from "@valiq-trading/alpaca-options"
+import { BinanceVenueAdapter } from "@valiq-trading/binance"
 import { MT5VenueAdapter } from "@valiq-trading/mt5"
 import { PolymarketVenueAdapter } from "@valiq-trading/polymarket"
 import type { RunTrigger } from "@valiq-trading/convex"
@@ -161,12 +170,12 @@ function resolveExtraToolCategory(
         return category
     }
 
-    runLogger.warn("Unknown extra tool category, defaulting to research", {
+    runLogger.error("Unknown extra tool category", {
         app,
         tool: tool.name,
     })
 
-    return "research"
+    throw new Error(`Unknown extra tool category for ${tool.name}`)
 }
 
 function logVenueToolMismatch(
@@ -181,6 +190,20 @@ function logVenueToolMismatch(
         tool: toolName,
         expectedAdapter,
         receivedAdapter: venue.constructor.name,
+    })
+}
+
+function registerCanonicalTool(
+    toolPool: ToolPool,
+    registration: {
+        name: string
+        compatibleVenues: readonly VenueApp[]
+        create: () => ToolDefinition | ToolDefinition[] | null | undefined
+    }
+): void {
+    toolPool.registerFactory({
+        ...registration,
+        category: getToolCategory(registration.name),
     })
 }
 
@@ -215,51 +238,52 @@ function buildToolPool(config: {
         })
     }
 
-    toolPool.registerFactory({
+    registerCanonicalTool(toolPool, {
         name: "get_positions",
-        category: "account",
         compatibleVenues: VENUE_APPS,
         create: () => createGetPositionsTool(pipeline),
     })
-    toolPool.registerFactory({
+    registerCanonicalTool(toolPool, {
         name: "get_account",
-        category: "account",
         compatibleVenues: VENUE_APPS,
         create: () => createGetAccountTool(pipeline),
     })
-    toolPool.registerFactory({
+    registerCanonicalTool(toolPool, {
         name: "get_order_status",
-        category: "execution",
         compatibleVenues: VENUE_APPS,
         create: () => createGetOrderStatusTool(pipeline),
     })
-    toolPool.registerFactory({
+    registerCanonicalTool(toolPool, {
         name: "cancel_order",
-        category: "execution",
         compatibleVenues: VENUE_APPS,
         create: () => createCancelOrderTool(pipeline),
     })
-    toolPool.registerFactory({
+    registerCanonicalTool(toolPool, {
         name: "wait_for_order_update",
-        category: "execution",
         compatibleVenues: VENUE_APPS,
         create: () => createWaitForOrderUpdateTool(pipeline),
     })
-    toolPool.registerFactory({
+    registerCanonicalTool(toolPool, {
         name: "modify_order",
-        category: "execution",
-        compatibleVenues: ["alpaca-options"],
-        create: () => createModifyOrderTool(pipeline, { mode: "alpaca-options" }),
+        compatibleVenues: ["alpaca-options", "mt5", "polymarket"],
+        create: () => {
+            if (app === "alpaca-options") {
+                return createModifyOrderTool(pipeline, { mode: "alpaca-options" })
+            }
+
+            if (app === "mt5") {
+                return createMT5ModifyOrderTool(pipeline)
+            }
+
+            if (app === "polymarket") {
+                return createModifyOrderTool(pipeline)
+            }
+
+            return null
+        },
     })
-    toolPool.registerFactory({
-        name: "modify_order",
-        category: "execution",
-        compatibleVenues: ["mt5", "polymarket"],
-        create: () => createModifyOrderTool(pipeline),
-    })
-    toolPool.registerFactory({
+    registerCanonicalTool(toolPool, {
         name: "get_symbol_info",
-        category: "market-data",
         compatibleVenues: ["mt5"],
         create: () => {
             if (!(venue instanceof MT5VenueAdapter)) {
@@ -270,48 +294,140 @@ function buildToolPool(config: {
             return createMT5GetSymbolInfoTool(venue)
         },
     })
-    toolPool.registerFactory({
+    registerCanonicalTool(toolPool, {
         name: "propose_order",
-        category: "execution",
-        compatibleVenues: ["mt5"],
+        compatibleVenues: VENUE_APPS,
         create: () => {
-            if (!(venue instanceof MT5VenueAdapter)) {
-                logVenueToolMismatch(runLogger, app, "propose_order", "MT5VenueAdapter", venue)
-                return null
+            if (app === "mt5") {
+                if (!(venue instanceof MT5VenueAdapter)) {
+                    logVenueToolMismatch(runLogger, app, "propose_order", "MT5VenueAdapter", venue)
+                    return null
+                }
+
+                return createMT5ProposeOrderTool(pipeline, venue, mt5PolicySchema.parse(policy))
             }
 
-            return createMT5ProposeOrderTool(pipeline, venue, mt5PolicySchema.parse(policy))
+            if (app === "alpaca-options") {
+                if (!(venue instanceof AlpacaOptionsVenueAdapter)) {
+                    logVenueToolMismatch(runLogger, app, "propose_order", "AlpacaOptionsVenueAdapter", venue)
+                    return null
+                }
+
+                return createProposeOrderTool(pipeline, {
+                    mode: "alpaca-options",
+                })
+            }
+
+            if (app === "polymarket") {
+                if (!(venue instanceof PolymarketVenueAdapter)) {
+                    logVenueToolMismatch(runLogger, app, "propose_order", "PolymarketVenueAdapter", venue)
+                    return null
+                }
+
+                return createPolymarketProposeOrderTool(pipeline, venue)
+            }
+
+            if (app === "binance-futures") {
+                if (!(venue instanceof BinanceVenueAdapter)) {
+                    logVenueToolMismatch(runLogger, app, "propose_order", "BinanceVenueAdapter", venue)
+                    return null
+                }
+
+                return createBinanceProposeOrderTool(
+                    pipeline,
+                    venue,
+                    binancePolicySchema.parse(policy)
+                )
+            }
+
+            return null
         },
     })
-    toolPool.registerFactory({
+    registerCanonicalTool(toolPool, {
         name: "propose_adjustment",
-        category: "execution",
-        compatibleVenues: ["mt5"],
+        compatibleVenues: VENUE_APPS,
         create: () => {
-            if (!(venue instanceof MT5VenueAdapter)) {
-                logVenueToolMismatch(runLogger, app, "propose_adjustment", "MT5VenueAdapter", venue)
-                return null
+            if (app === "mt5") {
+                if (!(venue instanceof MT5VenueAdapter)) {
+                    logVenueToolMismatch(runLogger, app, "propose_adjustment", "MT5VenueAdapter", venue)
+                    return null
+                }
+
+                return createMT5ProposeAdjustmentTool(
+                    pipeline,
+                    venue,
+                    mt5PolicySchema.parse(policy)
+                )
             }
 
-            return createMT5ProposeAdjustmentTool(pipeline, venue, mt5PolicySchema.parse(policy))
+            if (app === "alpaca-options") {
+                return createProposeAdjustmentTool(pipeline)
+            }
+
+            if (app === "polymarket") {
+                if (!(venue instanceof PolymarketVenueAdapter)) {
+                    logVenueToolMismatch(runLogger, app, "propose_adjustment", "PolymarketVenueAdapter", venue)
+                    return null
+                }
+
+                return createPolymarketProposeAdjustmentTool(pipeline, venue)
+            }
+
+            if (app === "binance-futures") {
+                if (!(venue instanceof BinanceVenueAdapter)) {
+                    logVenueToolMismatch(runLogger, app, "propose_adjustment", "BinanceVenueAdapter", venue)
+                    return null
+                }
+
+                const parsedPolicy = binancePolicySchema.parse(policy)
+                return createBinanceProposeAdjustmentTool(pipeline, venue, {
+                    dryRun: parsedPolicy.dryRun,
+                })
+            }
+
+            return null
         },
     })
-    toolPool.registerFactory({
+    registerCanonicalTool(toolPool, {
         name: "propose_close",
-        category: "execution",
-        compatibleVenues: ["mt5"],
+        compatibleVenues: VENUE_APPS,
         create: () => {
-            if (!(venue instanceof MT5VenueAdapter)) {
-                logVenueToolMismatch(runLogger, app, "propose_close", "MT5VenueAdapter", venue)
-                return null
+            if (app === "mt5") {
+                if (!(venue instanceof MT5VenueAdapter)) {
+                    logVenueToolMismatch(runLogger, app, "propose_close", "MT5VenueAdapter", venue)
+                    return null
+                }
+
+                return createMT5ProposeCloseTool(pipeline, venue)
             }
 
-            return createMT5ProposeCloseTool(pipeline, venue)
+            if (app === "alpaca-options") {
+                return createProposeCloseTool(pipeline)
+            }
+
+            if (app === "polymarket") {
+                if (!(venue instanceof PolymarketVenueAdapter)) {
+                    logVenueToolMismatch(runLogger, app, "propose_close", "PolymarketVenueAdapter", venue)
+                    return null
+                }
+
+                return createPolymarketProposeCloseTool(pipeline, venue)
+            }
+
+            if (app === "binance-futures") {
+                if (!(venue instanceof BinanceVenueAdapter)) {
+                    logVenueToolMismatch(runLogger, app, "propose_close", "BinanceVenueAdapter", venue)
+                    return null
+                }
+
+                return createBinanceProposeCloseTool(pipeline, venue)
+            }
+
+            return null
         },
     })
-    toolPool.registerFactory({
+    registerCanonicalTool(toolPool, {
         name: "get_options_chain",
-        category: "market-data",
         compatibleVenues: ["alpaca-options"],
         create: () => {
             if (!(venue instanceof AlpacaOptionsVenueAdapter)) {
@@ -322,9 +438,8 @@ function buildToolPool(config: {
             return createAlpacaGetOptionsChainTool(venue)
         },
     })
-    toolPool.registerFactory({
+    registerCanonicalTool(toolPool, {
         name: "get_quote",
-        category: "market-data",
         compatibleVenues: ["alpaca-options"],
         create: () => {
             if (!(venue instanceof AlpacaOptionsVenueAdapter)) {
@@ -335,62 +450,58 @@ function buildToolPool(config: {
             return createAlpacaGetQuoteTool(venue)
         },
     })
-    toolPool.registerFactory({
-        name: "propose_order",
-        category: "execution",
-        compatibleVenues: ["alpaca-options"],
-        create: () => {
-            if (!(venue instanceof AlpacaOptionsVenueAdapter)) {
-                logVenueToolMismatch(runLogger, app, "propose_order", "AlpacaOptionsVenueAdapter", venue)
-                return null
-            }
-
-            return createProposeOrderTool(pipeline, {
-                mode: "alpaca-options",
-            })
-        },
-    })
-    toolPool.registerFactory({
-        name: "propose_adjustment",
-        category: "execution",
-        compatibleVenues: ["alpaca-options"],
-        create: () => createProposeAdjustmentTool(pipeline),
-    })
-    toolPool.registerFactory({
-        name: "propose_close",
-        category: "execution",
-        compatibleVenues: ["alpaca-options"],
-        create: () => createProposeCloseTool(pipeline),
-    })
-    toolPool.registerFactory({
+    registerCanonicalTool(toolPool, {
         name: "get_market_price",
-        category: "market-data",
-        compatibleVenues: ["polymarket"],
+        compatibleVenues: ["polymarket", "binance-futures"],
         create: () => {
-            if (!(venue instanceof PolymarketVenueAdapter)) {
-                logVenueToolMismatch(runLogger, app, "get_market_price", "PolymarketVenueAdapter", venue)
-                return null
+            if (app === "polymarket") {
+                if (!(venue instanceof PolymarketVenueAdapter)) {
+                    logVenueToolMismatch(runLogger, app, "get_market_price", "PolymarketVenueAdapter", venue)
+                    return null
+                }
+
+                return createPolymarketGetMarketPriceTool(venue)
             }
 
-            return createPolymarketGetMarketPriceTool(venue)
+            if (app === "binance-futures") {
+                if (!(venue instanceof BinanceVenueAdapter)) {
+                    logVenueToolMismatch(runLogger, app, "get_market_price", "BinanceVenueAdapter", venue)
+                    return null
+                }
+
+                return createBinanceGetMarketPriceTool(venue)
+            }
+
+            return null
         },
     })
-    toolPool.registerFactory({
+    registerCanonicalTool(toolPool, {
         name: "get_order_book",
-        category: "market-data",
-        compatibleVenues: ["polymarket"],
+        compatibleVenues: ["polymarket", "binance-futures"],
         create: () => {
-            if (!(venue instanceof PolymarketVenueAdapter)) {
-                logVenueToolMismatch(runLogger, app, "get_order_book", "PolymarketVenueAdapter", venue)
-                return null
+            if (app === "polymarket") {
+                if (!(venue instanceof PolymarketVenueAdapter)) {
+                    logVenueToolMismatch(runLogger, app, "get_order_book", "PolymarketVenueAdapter", venue)
+                    return null
+                }
+
+                return createPolymarketGetOrderBookTool(venue)
             }
 
-            return createPolymarketGetOrderBookTool(venue)
+            if (app === "binance-futures") {
+                if (!(venue instanceof BinanceVenueAdapter)) {
+                    logVenueToolMismatch(runLogger, app, "get_order_book", "BinanceVenueAdapter", venue)
+                    return null
+                }
+
+                return createBinanceGetOrderBookTool(venue)
+            }
+
+            return null
         },
     })
-    toolPool.registerFactory({
+    registerCanonicalTool(toolPool, {
         name: "search_markets",
-        category: "market-data",
         compatibleVenues: ["polymarket"],
         create: () => {
             if (!(venue instanceof PolymarketVenueAdapter)) {
@@ -401,57 +512,16 @@ function buildToolPool(config: {
             return createPolymarketSearchMarketsTool(venue)
         },
     })
-    toolPool.registerFactory({
-        name: "propose_order",
-        category: "execution",
-        compatibleVenues: ["polymarket"],
-        create: () => {
-            if (!(venue instanceof PolymarketVenueAdapter)) {
-                logVenueToolMismatch(runLogger, app, "propose_order", "PolymarketVenueAdapter", venue)
-                return null
-            }
-
-            return createPolymarketProposeOrderTool(pipeline, venue)
-        },
-    })
-    toolPool.registerFactory({
-        name: "propose_adjustment",
-        category: "execution",
-        compatibleVenues: ["polymarket"],
-        create: () => {
-            if (!(venue instanceof PolymarketVenueAdapter)) {
-                logVenueToolMismatch(runLogger, app, "propose_adjustment", "PolymarketVenueAdapter", venue)
-                return null
-            }
-
-            return createPolymarketProposeAdjustmentTool(pipeline, venue)
-        },
-    })
-    toolPool.registerFactory({
-        name: "propose_close",
-        category: "execution",
-        compatibleVenues: ["polymarket"],
-        create: () => {
-            if (!(venue instanceof PolymarketVenueAdapter)) {
-                logVenueToolMismatch(runLogger, app, "propose_close", "PolymarketVenueAdapter", venue)
-                return null
-            }
-
-            return createPolymarketProposeCloseTool(pipeline, venue)
-        },
-    })
-    toolPool.registerFactory({
+    registerCanonicalTool(toolPool, {
         name: "web_search",
-        category: "web",
         compatibleVenues: ["polymarket"],
         create: () => withCallBudget(
             createWebSearchTool(searchProvider),
             isCallback ? 2 : 5
         ),
     })
-    toolPool.registerFactory({
+    registerCanonicalTool(toolPool, {
         name: "web_fetch",
-        category: "web",
         compatibleVenues: ["polymarket"],
         create: () => withCallBudget(
             createWebFetchTool(),
@@ -550,6 +620,26 @@ export async function registerStrategyWithScheduler(
         scheduleType: "cron",
         cronExpression: strategy.schedule,
         handler: async () => {
+            const latestStrategy = await backend.getStrategyById(strategy._id)
+
+            if (!latestStrategy) {
+                logger.info("Skipping scheduled run for deleted strategy", {
+                    strategyId: strategy._id,
+                    app,
+                })
+                pendingManualTriggers.delete(strategy._id)
+                return
+            }
+
+            if (!latestStrategy.enabled) {
+                logger.info("Skipping scheduled run for disabled strategy", {
+                    strategyId: strategy._id,
+                    app,
+                })
+                pendingManualTriggers.delete(strategy._id)
+                return
+            }
+
             const isManual = pendingManualTriggers.delete(strategy._id)
             await runStrategy(app, plugin, strategy, policy, strategySecrets, scheduler, isManual ? "manual" : "cron")
         },

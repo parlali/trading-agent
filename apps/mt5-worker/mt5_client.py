@@ -390,6 +390,31 @@ class MT5Client:
 
         return self._map_order_result(result)
 
+    def cancel_order(self, ticket: int) -> dict[str, Any]:
+        self.ensure_connected()
+
+        order = self._find_open_order(ticket)
+        if order is None:
+            raise ValueError(f"Pending order {ticket} not found")
+
+        request: dict[str, Any] = {
+            "action": mt5.TRADE_ACTION_REMOVE,
+            "order": ticket,
+            "symbol": order.symbol,
+            "magic": order.magic,
+            "comment": "cancel",
+        }
+
+        result = mt5.order_send(request)
+        if result is None:
+            err = mt5.last_error()
+            raise MT5ConnectionError(
+                f"cancel order failed: {err}",
+                error_type="order_failed",
+            )
+
+        return self._map_order_result(result, fallback_order_id=ticket)
+
     def close_position(
         self,
         ticket: int,
@@ -562,6 +587,26 @@ class MT5Client:
                 "timeDone": int(deal.time) * 1000,
             }
 
+        history_orders = mt5.history_orders_get(ticket=order_id)
+        if not history_orders:
+            epoch = datetime(2020, 1, 1, tzinfo=timezone.utc)
+            now = datetime.now(timezone.utc)
+            history_orders = mt5.history_orders_get(epoch, now, ticket=order_id)
+
+        if history_orders and len(history_orders) > 0:
+            order = history_orders[0]
+            return {
+                "ticket": int(order.ticket),
+                "symbol": order.symbol,
+                "type": self._order_type_str(order.type),
+                "volume": float(order.volume_current if hasattr(order, "volume_current") else order.volume_initial),
+                "price": float(order.price_open),
+                "stopLoss": float(order.sl),
+                "takeProfit": float(order.tp),
+                "state": self._order_state_str(order.state),
+                "timeDone": int(order.time_done) * 1000 if order.time_done else 0,
+            }
+
         return None
 
     # -- Helpers ---------------------------------------------------------------
@@ -570,6 +615,12 @@ class MT5Client:
         positions = mt5.positions_get(ticket=ticket)
         if positions and len(positions) > 0:
             return positions[0]
+        return None
+
+    def _find_open_order(self, ticket: int) -> Any:
+        orders = mt5.orders_get(ticket=ticket)
+        if orders and len(orders) > 0:
+            return orders[0]
         return None
 
     def _resolve_order_type(self, side: str, order_type: str) -> int:
@@ -603,13 +654,13 @@ class MT5Client:
             return mt5.ORDER_FILLING_FOK
         return mt5.ORDER_FILLING_RETURN
 
-    def _map_order_result(self, result: Any) -> dict[str, Any]:
+    def _map_order_result(self, result: Any, fallback_order_id: int | None = None) -> dict[str, Any]:
         retcode = int(result.retcode)
         return {
             "retcode": retcode,
             "retcodeDescription": self._retcode_description(retcode),
             "retcodeExternal": int(getattr(result, "retcode_external", 0)) if hasattr(result, "retcode_external") else None,
-            "orderId": str(result.order) if result.order else "",
+            "orderId": str(result.order) if result.order else (str(fallback_order_id) if fallback_order_id is not None else ""),
             "dealId": str(result.deal) if result.deal else "",
             "volume": float(result.volume),
             "price": float(result.price),

@@ -4,7 +4,7 @@ import { ValiqDataAdapter } from "./data"
 import { createValiqBreakingNewsTool } from "./tools"
 
 const apiUrl = process.env.VALIQ_DATA_API_URL
-const apiKey = process.env.VALIQ_DATA_API_KEY
+const apiKey = process.env.VALIQ_DATA_API
 
 const canRun = Boolean(apiUrl && apiKey)
 
@@ -75,10 +75,10 @@ describe.skipIf(!canRun)("valiq breaking news -- live integration", () => {
 })
 
 describe.skipIf(canRun)("valiq integration -- skip notice", () => {
-    it("skipped: set VALIQ_DATA_API_URL and VALIQ_DATA_API_KEY to run", () => {
+    it("skipped: set VALIQ_DATA_API_URL and VALIQ_DATA_API to run", () => {
         console.log(
             "Integration tests skipped. Run with:\n" +
-            "  VALIQ_DATA_API_URL=... VALIQ_DATA_API_KEY=... bun run test"
+            "  VALIQ_DATA_API_URL=... VALIQ_DATA_API=... bun run test"
         )
     })
 })

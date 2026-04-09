@@ -192,8 +192,8 @@ export default function TestPage() {
         <div className="space-y-4">
             <div className="space-y-1">
                 <p className="text-xs text-muted-foreground">
-                    Test each external connection independently. Each test reads credentials from Convex
-                    environment variables and makes live API calls.
+                    Test each external connection independently. Each test now reuses the same
+                    runtime credential resolution and client or adapter path that scheduled runs use.
                 </p>
             </div>
 
@@ -207,21 +207,21 @@ export default function TestPage() {
 
                 <TestCard
                     title={VENUE_META.mt5.label}
-                    description="Worker health, MT5 terminal connection, and open positions"
+                    description="Runtime-aligned worker health, MT5 account, positions, and working orders"
                     icon={BarChart3}
                     onRun={() => testMT5()}
                 />
 
                 <TestCard
                     title={VENUE_META["alpaca-options"].label}
-                    description="Account info and open positions via Alpaca API"
+                    description="Runtime-aligned Alpaca trading account, positions, and market-data host"
                     icon={TrendingUp}
                     onRun={() => testAlpaca()}
                 />
 
                 <TestCard
                     title={VENUE_META.polymarket.label}
-                    description="Public API reachability, authenticated balance, and open bets"
+                    description="Runtime-aligned signer and funder config, authenticated startup path, account state, positions, and open bets"
                     icon={Coins}
                     onRun={() => testPolymarket()}
                 />

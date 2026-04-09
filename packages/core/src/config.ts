@@ -58,6 +58,8 @@ export const mt5PolicySchema = baseStrategyPolicySchema.extend({
     tradingHours: mt5TradingHoursSchema,
     emergencyFlattenThreshold: z.number().positive(),
     marketRegionsByInstrument: mt5MarketRegionsByInstrumentSchema.optional(),
+    allowMultiplePendingEntryOrdersPerInstrument: z.boolean().default(false),
+    allowOverlappingExposure: z.boolean().default(false),
 })
 
 export type MT5Policy = z.infer<typeof mt5PolicySchema>
@@ -149,6 +151,8 @@ export const MT5_POLICY_DEFAULTS: MT5Policy = {
     minRiskReward: 0.5,
     tradingHours: { start: "08:00", end: "16:00", timezone: "UTC" },
     emergencyFlattenThreshold: 1000,
+    allowMultiplePendingEntryOrdersPerInstrument: false,
+    allowOverlappingExposure: false,
 }
 
 export const BINANCE_POLICY_DEFAULTS: BinancePolicy = {

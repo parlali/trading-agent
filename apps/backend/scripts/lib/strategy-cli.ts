@@ -115,6 +115,11 @@ export function printDeleteCounts(deleted: DeleteAllStrategiesResult): void {
     console.log(`  positions: ${deleted.positions}`)
     console.log(`  instrument claims: ${deleted.instrumentClaims}`)
     console.log(`  position syncs: ${deleted.positionSyncs}`)
+    console.log(`  provider positions: ${deleted.providerPositions}`)
+    console.log(`  provider working orders: ${deleted.providerWorkingOrders}`)
+    console.log(`  provider sync states: ${deleted.providerSyncStates}`)
+    console.log(`  account snapshots: ${deleted.accountSnapshots}`)
+    console.log(`  app heartbeats: ${deleted.appHeartbeats}`)
     console.log(`  manual run requests: ${deleted.manualRunRequests}`)
     console.log(`  alerts: ${deleted.alerts}`)
 }

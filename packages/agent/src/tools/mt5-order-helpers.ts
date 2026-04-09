@@ -1,5 +1,6 @@
 import { z } from "zod"
 import {
+    ACTIVE_ORDER_STATUSES,
     createExecutionErrorDetail,
     formatExecutionError,
     getRiskBudgetBase,
@@ -16,17 +17,35 @@ import {
     computeImpliedRR,
 } from "@valiq-trading/mt5"
 
-export const mt5OrderParamsSchema = z.object({
+const optionalNumberField = z.preprocess(
+    (value) => value === null ? undefined : value,
+    z.number().optional()
+)
+
+const mt5OrderBaseSchema = z.object({
     instrument: z.string(),
     side: z.enum(["buy", "sell"]),
     orderType: z.enum(["market", "limit", "stop", "stop_limit"]),
-    limitPrice: z.number().optional(),
-    stopPrice: z.number().optional(),
+    limitPrice: optionalNumberField,
+    stopPrice: optionalNumberField,
     stopLoss: z.number(),
-    takeProfit: z.number().optional(),
-    riskRewardRatio: z.number().positive().optional(),
+    takeProfit: optionalNumberField,
+    riskRewardRatio: optionalNumberField.pipe(z.number().positive().optional()),
     timeInForce: z.enum(["day", "gtc", "ioc", "fok"]).default("gtc"),
     reason: z.string(),
+})
+
+export const mt5OrderParamsSchema = mt5OrderBaseSchema.superRefine((value, ctx) => {
+    const hasTakeProfit = value.takeProfit !== undefined
+    const hasRiskRewardRatio = value.riskRewardRatio !== undefined
+
+    if (hasTakeProfit === hasRiskRewardRatio) {
+        ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: "Provide exactly one of takeProfit or riskRewardRatio",
+            path: hasTakeProfit ? ["takeProfit"] : ["riskRewardRatio"],
+        })
+    }
 })
 
 export type MT5OrderParams = z.infer<typeof mt5OrderParamsSchema>
@@ -46,6 +65,14 @@ export const mt5OrderJsonSchema = {
         reason: { type: "string", description: "Why this trade is being taken" },
     },
     required: ["instrument", "side", "orderType", "stopLoss", "reason"],
+    oneOf: [
+        {
+            required: ["takeProfit"],
+        },
+        {
+            required: ["riskRewardRatio"],
+        },
+    ],
 } as const
 
 export interface MT5OrderResult {
@@ -138,6 +165,16 @@ export async function prepareMT5Order(
         return rejected(
             `Risk-reward ratio ${impliedRR.toFixed(2)} is below minimum ${policy.minRiskReward}. Widen your TP or tighten your SL.`
         )
+    }
+
+    const exposureViolation = await checkMT5ExposureGuards(
+        pipeline,
+        params.instrument,
+        policy,
+        action
+    )
+    if (exposureViolation) {
+        return rejected(exposureViolation)
     }
 
     const [account, positions] = await Promise.all([
@@ -245,4 +282,46 @@ function rejected(error: string): MT5OrderResult {
             reason: errorDetail.message,
         },
     }
+}
+
+async function checkMT5ExposureGuards(
+    pipeline: ExecutionPipeline,
+    instrument: string,
+    policy: MT5Policy,
+    action: "entry" | "adjustment"
+): Promise<string | null> {
+    const [positions, trackedOrders] = await Promise.all([
+        pipeline.getPositions(),
+        Promise.resolve(pipeline.getTrackedOrders()),
+    ])
+
+    const activeEntryOrders = trackedOrders.filter((order) =>
+        ACTIVE_ORDER_STATUSES.includes(order.status) &&
+        (order.action === "entry" || order.action === "adjustment")
+    )
+
+    if (!policy.allowMultiplePendingEntryOrdersPerInstrument) {
+        const duplicatePendingOrder = activeEntryOrders.find((order) => order.instrument === instrument)
+        if (duplicatePendingOrder) {
+            return `An active MT5 entry order already exists for ${instrument} (${duplicatePendingOrder.orderId}). Manage or cancel it before placing another entry.`
+        }
+    }
+
+    if (!policy.allowOverlappingExposure) {
+        if (action === "adjustment") {
+            return "This MT5 strategy does not allow overlapping exposure or add-on entries. Manage the existing position instead of adding to it."
+        }
+
+        if (positions.length > 0) {
+            const liveInstruments = Array.from(new Set(positions.map((position) => position.instrument))).join(", ")
+            return `This MT5 strategy allows only one live position or entry order at a time. Existing exposure: ${liveInstruments}.`
+        }
+
+        if (activeEntryOrders.length > 0) {
+            const liveOrderIds = activeEntryOrders.map((order) => order.orderId).join(", ")
+            return `This MT5 strategy allows only one live position or entry order at a time. Existing working order(s): ${liveOrderIds}.`
+        }
+    }
+
+    return null
 }

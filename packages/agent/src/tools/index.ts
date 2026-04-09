@@ -15,6 +15,7 @@ export {
 export { createGetOrderStatusTool } from "./get-order-status"
 export { createCancelOrderTool } from "./cancel-order"
 export { createModifyOrderTool } from "./modify-order"
+export { createMT5ModifyOrderTool } from "./modify-order-mt5"
 export { createWaitForOrderUpdateTool } from "./wait-for-order-update"
 export { createWebSearchTool } from "./web-search"
 export type { WebSearchProvider, SearchResult } from "./web-search"

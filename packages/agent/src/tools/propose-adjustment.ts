@@ -1,40 +1,18 @@
 import { z } from "zod"
 import type { ExecutionPipeline, OrderIntent } from "@valiq-trading/core"
 import type { ToolDefinition } from "../tool-registry"
+import {
+    createToolDefinition,
+    genericAdjustmentParamsSchema,
+} from "../tool-contracts"
 import { toExecutionToolResult } from "./execution-response"
 
-const adjustmentParamsSchema = z.object({
-    instrument: z.string(),
-    side: z.enum(["buy", "sell"]),
-    quantity: z.number().positive(),
-    orderType: z.enum(["market", "limit", "stop", "stop_limit"]),
-    limitPrice: z.number().optional(),
-    stopPrice: z.number().optional(),
-    timeInForce: z.enum(["day", "gtc", "ioc", "fok"]).default("day"),
-    reason: z.string(),
-})
-
 export function createProposeAdjustmentTool(pipeline: ExecutionPipeline): ToolDefinition {
-    return {
+    return createToolDefinition({
         name: "propose_adjustment",
-        description: "Propose adjusting an existing position by adding to or partially reducing it. Provide the instrument, direction, and quantity of the adjustment. Include a reason for the adjustment.",
-        parameters: adjustmentParamsSchema,
-        jsonSchema: {
-            type: "object",
-            properties: {
-                instrument: { type: "string", description: "The instrument to adjust" },
-                side: { type: "string", enum: ["buy", "sell"], description: "Direction of the adjustment" },
-                quantity: { type: "number", description: "Quantity to adjust by" },
-                orderType: { type: "string", enum: ["market", "limit", "stop", "stop_limit"] },
-                limitPrice: { type: "number" },
-                stopPrice: { type: "number" },
-                timeInForce: { type: "string", enum: ["day", "gtc", "ioc", "fok"], default: "day" },
-                reason: { type: "string", description: "Why this adjustment is being made" },
-            },
-            required: ["instrument", "side", "quantity", "orderType", "reason"],
-        },
+        venue: "alpaca-options",
         handler: async (params) => {
-            const validated = params as z.infer<typeof adjustmentParamsSchema>
+            const validated = params as z.infer<typeof genericAdjustmentParamsSchema>
             const [positions, account] = await Promise.all([
                 pipeline.getPositions(),
                 pipeline.getAccountState(),
@@ -63,5 +41,5 @@ export function createProposeAdjustmentTool(pipeline: ExecutionPipeline): ToolDe
 
             return toExecutionToolResult(result, { validation })
         },
-    }
+    })
 }

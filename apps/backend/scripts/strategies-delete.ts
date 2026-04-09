@@ -5,6 +5,7 @@ import {
     printDeleteCounts,
     runScript,
 } from "./lib/strategy-cli"
+import { resetStrategySafely } from "./lib/safe-strategy-reset"
 
 runScript(async () => {
     const idArg = resolveArg("id")
@@ -45,10 +46,12 @@ runScript(async () => {
         targetName = match.name
     }
 
-    console.log(`Deleting "${targetName}" (${targetId})...`)
+    console.log(`Resetting "${targetName}" (${targetId})...`)
 
-    const result = await client.deleteStrategy(targetId)
+    const result = await resetStrategySafely(client, targetId)
 
-    console.log(`Deleted "${targetName}" and cascaded:`)
-    printDeleteCounts(result as never)
+    console.log(`Reset "${targetName}" and deleted Convex state:`)
+    console.log(`  cancelled orders: ${result.cancelledOrders}`)
+    console.log(`  closed positions: ${result.closedPositions}`)
+    printDeleteCounts(result.deleted as never)
 })

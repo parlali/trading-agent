@@ -1,16 +1,10 @@
-import { z } from "zod"
 import type { ExecutionPipeline } from "@valiq-trading/core"
 import type { ToolDefinition } from "../tool-registry"
+import { createToolDefinition } from "../tool-contracts"
 
 export function createGetPositionsTool(pipeline: ExecutionPipeline): ToolDefinition {
-    return {
+    return createToolDefinition({
         name: "get_positions",
-        description: "Get all current open positions. Returns instrument, side, quantity, entry price, current price, and unrealized P&L for each position.",
-        parameters: z.object({}),
-        jsonSchema: {
-            type: "object",
-            properties: {},
-        },
         handler: async () => {
             const positions = await pipeline.getPositions()
             if (positions.length === 0) {
@@ -18,5 +12,5 @@ export function createGetPositionsTool(pipeline: ExecutionPipeline): ToolDefinit
             }
             return { positions }
         },
-    }
+    })
 }

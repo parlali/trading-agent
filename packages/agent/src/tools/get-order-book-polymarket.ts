@@ -1,35 +1,19 @@
 import { z } from "zod"
 import type { PolymarketVenueAdapter } from "@valiq-trading/polymarket"
 import type { ToolDefinition } from "../tool-registry"
-
-const paramsSchema = z.object({
-    tokenId: z.string(),
-    levels: z.number().int().positive().max(50).optional(),
-})
+import {
+    createToolDefinition,
+    polymarketOrderBookParamsSchema,
+} from "../tool-contracts"
 
 export function createPolymarketGetOrderBookTool(
     venue: PolymarketVenueAdapter
 ): ToolDefinition {
-    return {
+    return createToolDefinition({
         name: "get_order_book",
-        description: "Fetch the live Polymarket order book for a token. Use this to assess spread and available depth before sizing an order.",
-        parameters: paramsSchema,
-        jsonSchema: {
-            type: "object",
-            properties: {
-                tokenId: {
-                    type: "string",
-                    description: "Polymarket token ID",
-                },
-                levels: {
-                    type: "number",
-                    description: "Optional number of bid and ask levels to return",
-                },
-            },
-            required: ["tokenId"],
-        },
+        venue: "polymarket",
         handler: async (params) => {
-            const validated = params as z.infer<typeof paramsSchema>
+            const validated = params as z.infer<typeof polymarketOrderBookParamsSchema>
             const orderBook = await venue.getOrderBook(validated.tokenId)
             const levels = validated.levels
 
@@ -41,5 +25,5 @@ export function createPolymarketGetOrderBookTool(
                 asks: levels ? orderBook.asks.slice(0, levels) : orderBook.asks,
             }
         },
-    }
+    })
 }

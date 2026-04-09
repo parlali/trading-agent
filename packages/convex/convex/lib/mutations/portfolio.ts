@@ -88,50 +88,16 @@ export const reconcileProviderPortfolio = mutation({
             .collect()
 
         const strategyMap = new Map(strategies.map((strategy) => [String(strategy._id), strategy]))
-        const claims = await ctx.db
-            .query("instrument_claims")
-            .withIndex("by_app", (q) => q.eq("app", args.app))
-            .collect()
-        const claimsByInstrument = buildClaimsByInstrument(claims, strategyMap)
         const activeOrders = await listActiveOrdersForApp(ctx, strategies)
         const activeOrdersById = new Map(activeOrders.map((order) => [order.orderId, order]))
         const protectionLevelsByInstrument = buildProtectionLevels(args.workingOrders)
 
-        const resolvedPositions = args.positions.map((position) => ({
-            ...position,
-            stopLoss: position.stopLoss ?? protectionLevelsByInstrument.get(position.instrument)?.stopLoss,
-            takeProfit: position.takeProfit ?? protectionLevelsByInstrument.get(position.instrument)?.takeProfit,
-            positionKey: buildPositionKey(position),
-            ...resolveOwnership({
-                instrument: position.instrument,
-                claimsByInstrument,
-            }),
-        }))
-
-        const resolvedWorkingOrders = args.workingOrders.map((order) => {
-            const existingOrder = activeOrdersById.get(order.orderId)
-            const ownership = resolveOwnership({
-                instrument: order.instrument,
-                claimsByInstrument,
-                existingOrder,
-                strategyMap,
-            })
-
-            return {
-                ...order,
-                venue: existingOrder?.venue ?? args.venue,
-                action: existingOrder?.action,
-                runId: existingOrder?.runId,
-                ...ownership,
-            }
-        })
-
-        const liveWorkingOrderIds = new Set(resolvedWorkingOrders.map((order) => order.orderId))
-        const livePositionInstruments = new Set(resolvedPositions.map((position) => position.instrument))
+        const liveWorkingOrderIds = new Set(args.workingOrders.map((order) => order.orderId))
+        const livePositionInstruments = new Set(args.positions.map((position) => position.instrument))
         const statusMismatches: string[] = []
         const closedPersistedOrders: string[] = []
 
-        for (const liveOrder of resolvedWorkingOrders) {
+        for (const liveOrder of args.workingOrders) {
             const existingOrder = activeOrdersById.get(liveOrder.orderId)
             if (!existingOrder) {
                 continue
@@ -174,6 +140,41 @@ export const reconcileProviderPortfolio = mutation({
                 })
             }
         }
+
+        const refreshedClaims = await ctx.db
+            .query("instrument_claims")
+            .withIndex("by_app", (q) => q.eq("app", args.app))
+            .collect()
+        const refreshedClaimsByInstrument = buildClaimsByInstrument(refreshedClaims, strategyMap)
+
+        const resolvedPositions = args.positions.map((position) => ({
+            ...position,
+            stopLoss: position.stopLoss ?? protectionLevelsByInstrument.get(position.instrument)?.stopLoss,
+            takeProfit: position.takeProfit ?? protectionLevelsByInstrument.get(position.instrument)?.takeProfit,
+            positionKey: buildPositionKey(position),
+            ...resolveOwnership({
+                instrument: position.instrument,
+                claimsByInstrument: refreshedClaimsByInstrument,
+            }),
+        }))
+
+        const resolvedWorkingOrders = args.workingOrders.map((order) => {
+            const existingOrder = activeOrdersById.get(order.orderId)
+            const ownership = resolveOwnership({
+                instrument: order.instrument,
+                claimsByInstrument: refreshedClaimsByInstrument,
+                existingOrder,
+                strategyMap,
+            })
+
+            return {
+                ...order,
+                venue: existingOrder?.venue ?? args.venue,
+                action: existingOrder?.action,
+                runId: existingOrder?.runId,
+                ...ownership,
+            }
+        })
 
         for (const existingOrder of activeOrders) {
             if (liveWorkingOrderIds.has(existingOrder.orderId)) {

@@ -392,6 +392,32 @@ export function StrategyForm({ mode, initialData }: StrategyFormProps) {
                                 </p>
                             </div>
 
+                            <div className="flex items-start justify-between gap-4 rounded-lg border p-3">
+                                <div className="space-y-1">
+                                    <Label className="text-sm">Allow Multiple Pending Entries Per Instrument</Label>
+                                    <p className="text-xs text-muted-foreground">
+                                        When off, MT5 will reject a new entry if this strategy already has a live pending entry order for the same instrument
+                                    </p>
+                                </div>
+                                <Switch
+                                    checked={Boolean(policy.allowMultiplePendingEntryOrdersPerInstrument)}
+                                    onCheckedChange={(checked) => handlePolicyFieldChange("allowMultiplePendingEntryOrdersPerInstrument", checked)}
+                                />
+                            </div>
+
+                            <div className="flex items-start justify-between gap-4 rounded-lg border p-3">
+                                <div className="space-y-1">
+                                    <Label className="text-sm">Allow Overlapping Exposure</Label>
+                                    <p className="text-xs text-muted-foreground">
+                                        When off, MT5 enforces one live position or entry order at a time for this strategy and blocks add-on entries
+                                    </p>
+                                </div>
+                                <Switch
+                                    checked={Boolean(policy.allowOverlappingExposure)}
+                                    onCheckedChange={(checked) => handlePolicyFieldChange("allowOverlappingExposure", checked)}
+                                />
+                            </div>
+
                             <div className="space-y-1.5">
                                 <Label className="text-sm">Market Regions by Instrument</Label>
                                 <p className="text-xs text-muted-foreground">

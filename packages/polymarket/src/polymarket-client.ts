@@ -385,7 +385,7 @@ export class PolymarketClient {
             makerAmount,
             takerAmount,
             expiration: BigInt(expiration),
-            nonce: 0n,
+            nonce: BigInt(0),
             feeRateBps: BigInt(feeRateBps),
             side: sideEnum,
             signatureType: this.signatureType,

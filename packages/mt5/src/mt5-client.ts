@@ -190,6 +190,12 @@ export class MT5Client {
         return await this.post<MT5OrderResult>("/order/modify", params)
     }
 
+    async cancelOrder(params: {
+        ticket: number
+    }): Promise<MT5OrderResult> {
+        return await this.post<MT5OrderResult>("/order/cancel", params)
+    }
+
     async closePosition(params: {
         ticket: number
         volume?: number
@@ -227,7 +233,15 @@ export class MT5Client {
 
     // -- Mapping helpers for VenueAdapter -------------------------------------
 
-    mapOrderResultToExecution(result: MT5OrderResult): ExecutionResult {
+    mapOrderResultToExecution(
+        result: MT5OrderResult,
+        options: {
+            fallbackOrderId?: string
+            successStatus?: ExecutionResult["status"]
+            filledQuantity?: number
+            fillPrice?: number
+        } = {}
+    ): ExecutionResult {
         const errorDetail = result.success
             ? undefined
             : createExecutionErrorDetail("venue", result.retcodeDescription, {
@@ -243,10 +257,12 @@ export class MT5Client {
             })
 
         return {
-            orderId: result.orderId || result.dealId || "",
-            status: result.success ? "filled" : "rejected",
-            filledQuantity: result.success ? result.volume : 0,
-            fillPrice: result.success ? result.price : undefined,
+            orderId: result.orderId || result.dealId || options.fallbackOrderId || "",
+            status: result.success ? options.successStatus ?? "filled" : "rejected",
+            filledQuantity: result.success ? options.filledQuantity ?? result.volume : 0,
+            fillPrice: result.success
+                ? options.fillPrice ?? (result.price > 0 ? result.price : undefined)
+                : undefined,
             timestamp: Date.now(),
             error: errorDetail ? formatExecutionError(errorDetail) : undefined,
             errorDetail,

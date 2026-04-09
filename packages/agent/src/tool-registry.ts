@@ -16,6 +16,10 @@ export interface ToolDefinition {
     description: string
     parameters: z.ZodType<unknown>
     jsonSchema?: Record<string, unknown>
+    outputDescription?: string
+    errorSemantics?: string
+    contractBoundary?: "shared" | "venue-owned"
+    contractOwner?: string
     handler: (params: unknown) => Promise<unknown>
     category?: ToolCategory
     compatibleVenues?: readonly VenueApp[]
@@ -25,6 +29,10 @@ export class ToolRegistry {
     private tools = new Map<string, ToolDefinition>()
 
     register(tool: ToolDefinition): void {
+        if (this.tools.has(tool.name)) {
+            throw new Error(`Duplicate tool registration detected for ${tool.name}`)
+        }
+
         this.tools.set(tool.name, tool)
     }
 

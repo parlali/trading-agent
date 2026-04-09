@@ -4,7 +4,6 @@ Always use 4 spaces to indent code.
 Never use semicolons when its optional for the language.
 Never write inline comments in code.
 No Emojis anywhere.
-Do not run any test or build commands.
 
 never duplicate logic
 never createmultiple sources of truth 

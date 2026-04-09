@@ -1,6 +1,20 @@
 export { ToolRegistry } from "./tool-registry"
 export { TOOL_CATEGORIES } from "./tool-registry"
 export type { ToolCategory, ToolDefinition } from "./tool-registry"
+export {
+    createToolContractCatalog,
+    createToolDefinition,
+    getToolBoundary,
+    getToolCategory,
+    getToolContract,
+    listToolContracts,
+} from "./tool-contracts"
+export type {
+    ResolvedToolContract,
+    ToolContractBoundary,
+    ToolContractDefinition,
+    ToolContractVariant,
+} from "./tool-contracts"
 export { ToolPool } from "./tool-pool"
 export type { ToolFactoryRegistration, ToolRegistration } from "./tool-pool"
 export { LLMClient } from "./llm-client"
@@ -25,6 +39,7 @@ export {
     createGetOrderStatusTool,
     createCancelOrderTool,
     createModifyOrderTool,
+    createMT5ModifyOrderTool,
     createWaitForOrderUpdateTool,
     createWebSearchTool,
     createWebFetchTool,

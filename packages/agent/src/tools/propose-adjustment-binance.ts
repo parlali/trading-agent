@@ -2,13 +2,10 @@ import { z } from "zod"
 import type { BinanceVenueAdapter } from "@valiq-trading/binance"
 import { createExecutionErrorDetail, formatExecutionError, type ExecutionPipeline } from "@valiq-trading/core"
 import type { ToolDefinition } from "../tool-registry"
-
-const binanceAdjustmentParamsSchema = z.object({
-    instrument: z.string(),
-    stopLoss: z.number().optional(),
-    takeProfit: z.number().optional(),
-    reason: z.string(),
-})
+import {
+    binanceAdjustmentParamsSchema,
+    createToolDefinition,
+} from "../tool-contracts"
 
 export function createBinanceProposeAdjustmentTool(
     pipeline: ExecutionPipeline,
@@ -17,20 +14,9 @@ export function createBinanceProposeAdjustmentTool(
         dryRun?: boolean
     }
 ): ToolDefinition {
-    return {
+    return createToolDefinition({
         name: "propose_adjustment",
-        description: "Update protective stop-loss/take-profit orders for an existing Binance futures position.",
-        parameters: binanceAdjustmentParamsSchema,
-        jsonSchema: {
-            type: "object",
-            properties: {
-                instrument: { type: "string", description: "Perpetual symbol, e.g. BTCUSDT or ETHUSDT" },
-                stopLoss: { type: "number", description: "New stop-loss price" },
-                takeProfit: { type: "number", description: "New take-profit price" },
-                reason: { type: "string", description: "Why this adjustment is needed" },
-            },
-            required: ["instrument", "reason"],
-        },
+        venue: "binance-futures",
         handler: async (params) => {
             const validated = params as z.infer<typeof binanceAdjustmentParamsSchema>
 
@@ -93,5 +79,5 @@ export function createBinanceProposeAdjustmentTool(
                 reason: validated.reason,
             }
         },
-    }
+    })
 }

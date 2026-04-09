@@ -73,6 +73,10 @@ class ModifyPositionRequest(BaseModel):
     takeProfit: float | None = None
 
 
+class CancelOrderRequest(BaseModel):
+    ticket: int
+
+
 class ClosePositionRequest(BaseModel):
     ticket: int
     volume: float | None = None
@@ -232,6 +236,29 @@ async def modify_position(
             "retcodeDescription": str(exc),
             "retcodeExternal": None,
             "orderId": "",
+            "volume": 0.0,
+            "price": 0.0,
+            "comment": str(exc),
+            "bid": None,
+            "ask": None,
+        }
+
+
+@app.post("/order/cancel", dependencies=[Depends(verify_access_key)])
+async def cancel_order(
+    req: CancelOrderRequest,
+    client: MT5Client = Depends(get_client),
+) -> dict[str, Any]:
+    try:
+        result = client.cancel_order(req.ticket)
+        return result
+    except (ValueError, MT5ConnectionError) as exc:
+        return {
+            "success": False,
+            "retcode": -1,
+            "retcodeDescription": str(exc),
+            "retcodeExternal": None,
+            "orderId": str(req.ticket),
             "volume": 0.0,
             "price": 0.0,
             "comment": str(exc),

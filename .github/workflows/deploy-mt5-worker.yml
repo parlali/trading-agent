@@ -18,7 +18,8 @@ jobs:
           port: 2227
           username: ${{ secrets.VM_USER }}
           password: ${{ secrets.VM_PASSWORD }}
+          script_stop: true
           script: |
-            cd ${{ secrets.MT5_WORKER_REPO_DIR }}
+            cd /d "${{ secrets.MT5_WORKER_REPO_DIR }}"
             git pull
             nssm restart trading-mt5-worker

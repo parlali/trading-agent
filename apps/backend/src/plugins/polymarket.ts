@@ -1,7 +1,20 @@
 import type { ToolDefinition } from "@valiq-trading/agent"
-import { requireResolvedSecret, type RiskValidator, type VenueAdapter } from "@valiq-trading/core"
-import { PolymarketClient, type PolymarketCredentials, polymarketRiskValidators, PolymarketVenueAdapter } from "@valiq-trading/polymarket"
-import { createValiqBreakingNewsTool, ValiqDataClient, ValiqDataAdapter } from "@valiq-trading/valiq"
+import { type RiskValidator, type VenueAdapter } from "@valiq-trading/core"
+import {
+    PolymarketClient,
+    polymarketRiskValidators,
+    POLYMARKET_RUNTIME_SECRET_KEYS,
+    PolymarketVenueAdapter,
+    resolvePolymarketCredentials,
+} from "@valiq-trading/polymarket"
+import {
+    createValiqBreakingNewsTool,
+    VALIQ_DATA_SECRET_KEYS,
+    getMissingValiqDataApiSecrets,
+    resolveValiqDataApiConfig,
+    ValiqDataClient,
+    ValiqDataAdapter,
+} from "@valiq-trading/valiq"
 import type { VenuePlugin, ExtraToolsConfig } from "../types"
 
 export class PolymarketPlugin implements VenuePlugin {
@@ -10,15 +23,8 @@ export class PolymarketPlugin implements VenuePlugin {
 
     resolveSecretKeys(): string[] {
         return [
-            "POLYMARKET_PRIVATE_KEY",
-            "POLYMARKET_API_KEY",
-            "POLYMARKET_API_SECRET",
-            "POLYMARKET_API_PASSPHRASE",
-            "POLYMARKET_HOST",
-            "POLYMARKET_CHAIN_ID",
-            "POLYMARKET_FUNDER_ADDRESS",
-            "VALIQ_DATA_API_URL",
-            "VALIQ_DATA_API",
+            ...POLYMARKET_RUNTIME_SECRET_KEYS,
+            ...VALIQ_DATA_SECRET_KEYS,
         ]
     }
 
@@ -27,16 +33,17 @@ export class PolymarketPlugin implements VenuePlugin {
     }
 
     async validateEnvironment(secrets: Record<string, string | null>): Promise<void> {
-        const credentials = this.resolveCredentials(secrets)
+        const credentials = resolvePolymarketCredentials(secrets)
         const client = new PolymarketClient(credentials)
         await client.getBalance()
+        await client.getOpenOrders()
     }
 
     createVenueAdapter(
         _policy: Record<string, unknown>,
         secrets: Record<string, string | null>
     ): VenueAdapter {
-        const credentials = this.resolveCredentials(secrets)
+        const credentials = resolvePolymarketCredentials(secrets)
         const client = new PolymarketClient(credentials)
         return new PolymarketVenueAdapter(client)
     }
@@ -46,14 +53,10 @@ export class PolymarketPlugin implements VenuePlugin {
     }
 
     getExtraTools(config: ExtraToolsConfig): ToolDefinition[] {
-        const dataApiUrl = config.secrets.VALIQ_DATA_API_URL
-        const dataApiKey = config.secrets.VALIQ_DATA_API
+        const dataApi = resolveValiqDataApiConfig(config.secrets)
 
-        if (!dataApiUrl || !dataApiKey) {
-            const missing = [
-                !dataApiUrl ? "VALIQ_DATA_API_URL" : null,
-                !dataApiKey ? "VALIQ_DATA_API" : null,
-            ].filter(Boolean)
+        if (!dataApi) {
+            const missing = getMissingValiqDataApiSecrets(config.secrets)
             config.runLogger.warn(
                 "Valiq tools NOT registered: missing secrets",
                 { missing }
@@ -62,8 +65,8 @@ export class PolymarketPlugin implements VenuePlugin {
         }
 
         const dataClient = new ValiqDataClient({
-            apiUrl: dataApiUrl,
-            apiKey: dataApiKey,
+            apiUrl: dataApi.apiUrl,
+            apiKey: dataApi.apiKey,
             logger: config.runLogger,
         })
         const data = new ValiqDataAdapter(dataClient)
@@ -71,26 +74,5 @@ export class PolymarketPlugin implements VenuePlugin {
         return [
             createValiqBreakingNewsTool(data),
         ]
-    }
-
-    private resolveCredentials(
-        secrets: Record<string, string | null>
-    ): PolymarketCredentials {
-        const privateKey = requireResolvedSecret(secrets, "POLYMARKET_PRIVATE_KEY")
-        const apiKey = requireResolvedSecret(secrets, "POLYMARKET_API_KEY")
-        const apiSecret = requireResolvedSecret(secrets, "POLYMARKET_API_SECRET")
-        const apiPassphrase = requireResolvedSecret(secrets, "POLYMARKET_API_PASSPHRASE")
-
-        return {
-            privateKey,
-            apiKey,
-            apiSecret,
-            apiPassphrase,
-            host: secrets.POLYMARKET_HOST ?? undefined,
-            chainId: secrets.POLYMARKET_CHAIN_ID
-                ? Number(secrets.POLYMARKET_CHAIN_ID)
-                : undefined,
-            funderAddress: requireResolvedSecret(secrets, "POLYMARKET_FUNDER_ADDRESS"),
-        }
     }
 }

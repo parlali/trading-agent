@@ -2,7 +2,7 @@ import { query } from "../../_generated/server"
 import { v } from "convex/values"
 import { VENUE_APPS, type EventType, type OrderAction, type OrderStatus, type OrderSide } from "@valiq-trading/core"
 import type { Doc } from "../../_generated/dataModel"
-import { requireUser } from "../authGuards"
+import { requireUser, requireUserOrServiceToken } from "../authGuards"
 import { venueAppV } from "../validators"
 
 const PORTFOLIO_STALE_AFTER_MS = 10 * 60 * 1000
@@ -17,10 +17,11 @@ const equityTimeRangeV = v.union(
 
 export const getPortfolioFreshness = query({
     args: {
+        serviceToken: v.optional(v.string()),
         app: v.optional(venueAppV),
     },
     handler: async (ctx, args) => {
-        await requireUser(ctx)
+        await requireUserOrServiceToken(ctx, args.serviceToken)
 
         const apps = args.app ? [args.app] : VENUE_APPS
         const rows = await Promise.all(
@@ -38,11 +39,12 @@ export const getPortfolioFreshness = query({
 
 export const getPortfolioPositions = query({
     args: {
+        serviceToken: v.optional(v.string()),
         app: v.optional(venueAppV),
         strategyId: v.optional(v.id("strategies")),
     },
     handler: async (ctx, args) => {
-        await requireUser(ctx)
+        await requireUserOrServiceToken(ctx, args.serviceToken)
 
         const [rows, strategies] = await Promise.all([
             args.app
@@ -85,11 +87,12 @@ export const getPortfolioPositions = query({
 
 export const getPortfolioPendingOrders = query({
     args: {
+        serviceToken: v.optional(v.string()),
         app: v.optional(venueAppV),
         strategyId: v.optional(v.id("strategies")),
     },
     handler: async (ctx, args) => {
-        await requireUser(ctx)
+        await requireUserOrServiceToken(ctx, args.serviceToken)
 
         const [rows, strategies] = await Promise.all([
             args.app

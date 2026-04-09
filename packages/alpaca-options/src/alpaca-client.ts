@@ -8,13 +8,7 @@ import {
     type ExecutionResult,
     type OrderIntent,
 } from "@valiq-trading/core"
-
-export interface AlpacaCredentials {
-    apiKey: string
-    secretKey: string
-    accountId: string
-    baseUrl?: string
-}
+import type { AlpacaRuntimeConfig } from "./runtime-config"
 
 export interface AlpacaAccountResponse {
     id: string
@@ -196,22 +190,21 @@ export class AlpacaApiError extends Error {
     }
 }
 
-const DEFAULT_BASE_URL = "https://paper-api.alpaca.markets"
 const ALPACA_REQUEST_TIMEOUT_MS = 30_000
 
 export class AlpacaClient {
     private readonly apiKey: string
     private readonly secretKey: string
     private readonly accountId: string
-    private readonly baseUrl: string
+    private readonly tradingBaseUrl: string
     private readonly marketDataBaseUrl: string
 
-    constructor(credentials: AlpacaCredentials) {
-        this.apiKey = credentials.apiKey
-        this.secretKey = credentials.secretKey
-        this.accountId = credentials.accountId
-        this.baseUrl = normalizeBaseUrl(credentials.baseUrl)
-        this.marketDataBaseUrl = normalizeMarketDataBaseUrl(credentials.baseUrl)
+    constructor(config: AlpacaRuntimeConfig) {
+        this.apiKey = config.credentials.apiKey
+        this.secretKey = config.credentials.secretKey
+        this.accountId = config.credentials.accountId
+        this.tradingBaseUrl = config.tradingBaseUrl
+        this.marketDataBaseUrl = config.marketDataBaseUrl
     }
 
     async getAccount(): Promise<AlpacaAccountResponse> {
@@ -233,7 +226,7 @@ export class AlpacaClient {
         query.set("underlying_symbols", params.underlyingSymbol.toUpperCase())
         applyOptionChainQueryParams(query, params)
 
-        const response = await this.dataRequest<unknown>(
+        const response = await this.request<unknown>(
             `/v2/options/contracts?${query.toString()}`
         )
 
@@ -359,7 +352,7 @@ export class AlpacaClient {
     }
 
     private async request<T = unknown>(path: string, init: RequestInit = {}): Promise<T> {
-        return await this.requestAgainstBaseUrl<T>(this.baseUrl, path, init)
+        return await this.requestAgainstBaseUrl<T>(this.tradingBaseUrl, path, init)
     }
 
     private async dataRequest<T = unknown>(path: string, init: RequestInit = {}): Promise<T> {
@@ -454,21 +447,6 @@ function mapOrderResponse(order: AlpacaOrderResponse): ExecutionResult {
         errorDetail,
         intentUpdates: Object.keys(intentUpdates).length > 0 ? intentUpdates : undefined,
     }
-}
-
-function normalizeBaseUrl(baseUrl?: string): string {
-    const resolved = (baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, "")
-    return resolved.endsWith("/v2") ? resolved.slice(0, -3) : resolved
-}
-
-function normalizeMarketDataBaseUrl(baseUrl?: string): string {
-    const resolved = normalizeBaseUrl(baseUrl)
-
-    if (resolved.includes("sandbox")) {
-        return "https://data.sandbox.alpaca.markets"
-    }
-
-    return "https://data.alpaca.markets"
 }
 
 function applyOptionChainQueryParams(

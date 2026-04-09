@@ -3,16 +3,15 @@ import type { ExecutionPipeline, Position } from "@valiq-trading/core"
 import type { MT5VenueAdapter } from "@valiq-trading/mt5"
 import type { BinanceVenueAdapter } from "@valiq-trading/binance"
 import type { ToolDefinition } from "../tool-registry"
+import {
+    closeParamsSchema,
+    createToolDefinition,
+} from "../tool-contracts"
 import { toExecutionToolResult } from "./execution-response"
 import {
     resolveEstimatedPrice as resolvePolymarketEstimatedPrice,
     type PolymarketPriceProvider,
 } from "./polymarket-order-helpers"
-
-const closeParamsSchema = z.object({
-    instrument: z.string(),
-    reason: z.string(),
-})
 
 interface ClosePriceResolverContext {
     instrument: string
@@ -29,18 +28,9 @@ export function createProposeCloseTool(
     pipeline: ExecutionPipeline,
     options: CreateProposeCloseToolOptions = {}
 ): ToolDefinition {
-    return {
+    return createToolDefinition({
         name: "propose_close",
-        description: "Propose closing an entire position for a given instrument. Provide the instrument and a reason for closing.",
-        parameters: closeParamsSchema,
-        jsonSchema: {
-            type: "object",
-            properties: {
-                instrument: { type: "string", description: "The instrument to close the position for" },
-                reason: { type: "string", description: "Why the position is being closed" },
-            },
-            required: ["instrument", "reason"],
-        },
+        venue: "alpaca-options",
         handler: async (params) => {
             const validated = params as z.infer<typeof closeParamsSchema>
             const positions = await pipeline.getPositions()
@@ -62,16 +52,20 @@ export function createProposeCloseTool(
 
             return toExecutionToolResult(result, { validation })
         },
-    }
+    })
 }
 
 export function createPolymarketProposeCloseTool(
     pipeline: ExecutionPipeline,
     venue: PolymarketPriceProvider
 ): ToolDefinition {
-    return createProposeCloseTool(pipeline, {
-        resolveEstimatedPrice: async ({ instrument, closeSide }) =>
-            await resolvePolymarketEstimatedPrice(venue, instrument, closeSide),
+    return createToolDefinition({
+        name: "propose_close",
+        venue: "polymarket",
+        handler: createProposeCloseTool(pipeline, {
+            resolveEstimatedPrice: async ({ instrument, closeSide }) =>
+                await resolvePolymarketEstimatedPrice(venue, instrument, closeSide),
+        }).handler,
     })
 }
 
@@ -79,15 +73,19 @@ export function createMT5ProposeCloseTool(
     pipeline: ExecutionPipeline,
     venue: MT5VenueAdapter
 ): ToolDefinition {
-    return createProposeCloseTool(pipeline, {
-        resolveEstimatedPrice: async ({ instrument, closeSide }) => {
-            const symbolInfo = await venue.getSymbolInfo(instrument)
-            if (!symbolInfo) {
-                return undefined
-            }
+    return createToolDefinition({
+        name: "propose_close",
+        venue: "mt5",
+        handler: createProposeCloseTool(pipeline, {
+            resolveEstimatedPrice: async ({ instrument, closeSide }) => {
+                const symbolInfo = await venue.getSymbolInfo(instrument)
+                if (!symbolInfo) {
+                    return undefined
+                }
 
-            return closeSide === "buy" ? symbolInfo.ask : symbolInfo.bid
-        },
+                return closeSide === "buy" ? symbolInfo.ask : symbolInfo.bid
+            },
+        }).handler,
     })
 }
 
@@ -95,9 +93,13 @@ export function createBinanceProposeCloseTool(
     pipeline: ExecutionPipeline,
     venue: BinanceVenueAdapter
 ): ToolDefinition {
-    return createProposeCloseTool(pipeline, {
-        resolveEstimatedPrice: async ({ instrument }) => {
-            return await venue.getCurrentMarkPrice(instrument)
-        },
+    return createToolDefinition({
+        name: "propose_close",
+        venue: "binance-futures",
+        handler: createProposeCloseTool(pipeline, {
+            resolveEstimatedPrice: async ({ instrument }) => {
+                return await venue.getCurrentMarkPrice(instrument)
+            },
+        }).handler,
     })
 }

@@ -1,6 +1,6 @@
 import { query } from "../../_generated/server"
 import { v } from "convex/values"
-import { requireUser, requireServiceToken } from "../authGuards"
+import { requireUser, requireServiceToken, requireUserOrServiceToken } from "../authGuards"
 
 export const getRunHistory = query({
     args: {
@@ -41,9 +41,12 @@ export const getLastCompletedRunSummary = query({
 })
 
 export const getActiveRun = query({
-    args: { strategyId: v.id("strategies") },
+    args: {
+        serviceToken: v.optional(v.string()),
+        strategyId: v.id("strategies"),
+    },
     handler: async (ctx, args) => {
-        await requireUser(ctx)
+        await requireUserOrServiceToken(ctx, args.serviceToken)
         return await ctx.db
             .query("strategy_runs")
             .withIndex("by_strategy_status", (q) =>

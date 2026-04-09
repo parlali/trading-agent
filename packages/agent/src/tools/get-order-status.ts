@@ -7,26 +7,17 @@ import {
     type ExecutionPipeline,
 } from "@valiq-trading/core"
 import type { ToolDefinition } from "../tool-registry"
+import {
+    createToolDefinition,
+    orderIdParamsSchema,
+} from "../tool-contracts"
 import { toExecutionToolResult } from "./execution-response"
 
-const paramsSchema = z.object({
-    orderId: z.string(),
-})
-
 export function createGetOrderStatusTool(pipeline: ExecutionPipeline): ToolDefinition {
-    return {
+    return createToolDefinition({
         name: "get_order_status",
-        description: "Check the current fill status of a tracked order. Returns the latest status, fill progress, and lifecycle snapshot.",
-        parameters: paramsSchema,
-        jsonSchema: {
-            type: "object",
-            properties: {
-                orderId: { type: "string", description: "The order ID to check" },
-            },
-            required: ["orderId"],
-        },
         handler: async (params) => {
-            const validated = params as z.infer<typeof paramsSchema>
+            const validated = params as z.infer<typeof orderIdParamsSchema>
             try {
                 const result = await pipeline.getOrderStatus(validated.orderId)
                 const trackedOrder = await pipeline.getOrderSnapshot(validated.orderId)
@@ -42,5 +33,5 @@ export function createGetOrderStatusTool(pipeline: ExecutionPipeline): ToolDefin
                 }
             }
         },
-    }
+    })
 }

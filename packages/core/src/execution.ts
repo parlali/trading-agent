@@ -395,8 +395,9 @@ export class ExecutionPipeline {
         } catch (error) {
             result = createRejectedExecutionResultFromUnknownError(orderId, error, existing?.filledQuantity ?? 0, existing?.avgFillPrice)
         }
+        const normalizedResult = normalizeModifyExecutionResult(result, existing, orderId)
         const resultWithIntentUpdates: ExecutionResult = {
-            ...result,
+            ...normalizedResult,
             intentUpdates: shouldPersistModifyIntentUpdates(result)
                 ? mergeExecutionIntentUpdates(changes, result.intentUpdates)
                 : undefined,
@@ -801,6 +802,36 @@ function shouldPersistModifyIntentUpdates(result: ExecutionResult): boolean {
         result.status === "partially_filled" ||
         result.status === "filled"
     )
+}
+
+function normalizeModifyExecutionResult(
+    result: ExecutionResult,
+    existing: OrderSnapshot | null,
+    orderId: string
+): ExecutionResult {
+    if (!existing) {
+        return {
+            ...result,
+            orderId: result.orderId || orderId,
+        }
+    }
+
+    const preserveFilledState = existing.status === "filled" &&
+        result.status === "filled" &&
+        result.filledQuantity === 0 &&
+        result.fillPrice === undefined
+
+    return {
+        ...result,
+        orderId: result.orderId || orderId,
+        status: preserveFilledState ? existing.status : result.status,
+        filledQuantity: preserveFilledState
+            ? existing.filledQuantity
+            : result.filledQuantity,
+        fillPrice: preserveFilledState
+            ? existing.avgFillPrice
+            : result.fillPrice ?? existing.avgFillPrice,
+    }
 }
 
 function resolvePriceVerificationConfig(

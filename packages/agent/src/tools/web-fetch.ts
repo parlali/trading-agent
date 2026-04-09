@@ -1,28 +1,18 @@
 import { z } from "zod"
 import type { ToolDefinition } from "../tool-registry"
-
-const paramsSchema = z.object({
-    url: z.string().url(),
-    maxLength: z.number().int().positive().default(10000),
-})
+import {
+    createToolDefinition,
+    webFetchParamsSchema,
+} from "../tool-contracts"
 
 const FETCH_TIMEOUT_MS = 15_000
 
 export function createWebFetchTool(): ToolDefinition {
-    return {
+    return createToolDefinition({
         name: "web_fetch",
-        description: "Fetch the content of a specific URL and return it as text. HTML tags are stripped. Content is truncated to maxLength characters.",
-        parameters: paramsSchema,
-        jsonSchema: {
-            type: "object",
-            properties: {
-                url: { type: "string", description: "The URL to fetch" },
-                maxLength: { type: "number", description: "Maximum characters to return (default 10000)" },
-            },
-            required: ["url"],
-        },
+        venue: "polymarket",
         handler: async (params) => {
-            const validated = params as z.infer<typeof paramsSchema>
+            const validated = params as z.infer<typeof webFetchParamsSchema>
 
             const controller = new AbortController()
             const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS)
@@ -73,7 +63,7 @@ export function createWebFetchTool(): ToolDefinition {
                 }
             }
         },
-    }
+    })
 }
 
 function stripHtml(html: string): string {

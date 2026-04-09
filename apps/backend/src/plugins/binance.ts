@@ -1,30 +1,32 @@
 import type { ToolDefinition } from "@valiq-trading/agent"
 import {
-    createValiqBreakingNewsTool,
-    createValiqDataTool,
-    createValiqResearchTool,
-    createOAuthTokenProvider,
-    ValiqClient,
-    ValiqDataAdapter,
-    ValiqDataClient,
-    ValiqResearchAdapter,
-} from "@valiq-trading/valiq"
-import {
-    binancePolicySchema,
-    getCurrentTimeInTimezone,
-    padTime,
-    requireResolvedSecret,
-    type BinancePolicy,
-    type RiskValidator,
-    type VenueAdapter,
-} from "@valiq-trading/core"
-import {
+    BINANCE_RUNTIME_SECRET_KEYS,
     BinanceClient,
     BinanceVenueAdapter,
     binanceRiskValidators,
     createBinanceMarketContextLine,
-    type BinanceCredentials,
+    resolveBinanceCredentials,
 } from "@valiq-trading/binance"
+import {
+    createValiqBreakingNewsTool,
+    createValiqDataTool,
+    createValiqResearchTool,
+    createOAuthTokenProvider,
+    getMissingValiqDataApiSecrets,
+    ValiqClient,
+    ValiqDataAdapter,
+    ValiqDataClient,
+    ValiqResearchAdapter,
+    resolveValiqDataApiConfig,
+} from "@valiq-trading/valiq"
+import {
+    getCurrentTimeInTimezone,
+    padTime,
+    binancePolicySchema,
+    type BinancePolicy,
+    type RiskValidator,
+    type VenueAdapter,
+} from "@valiq-trading/core"
 import type {
     VenuePlugin,
     ExtraToolsConfig,
@@ -39,16 +41,14 @@ export class BinancePlugin implements VenuePlugin {
 
     resolveSecretKeys(): string[] {
         return [
-            "BINANCE_API_KEY",
-            "BINANCE_API_SECRET",
-            "BINANCE_BASE_URL",
+            ...BINANCE_RUNTIME_SECRET_KEYS,
             "VALIQ_API_URL",
             "VALIQ_AUTH_URL",
             "VALIQ_OAUTH_CLIENT_ID",
             "VALIQ_OAUTH_CLIENT_SECRET",
             "VALIQ_OAUTH_USER_UUID",
             "VALIQ_DATA_API_URL",
-            "VALIQ_DATA_API_KEY",
+            "VALIQ_DATA_API",
         ]
     }
 
@@ -57,7 +57,7 @@ export class BinancePlugin implements VenuePlugin {
     }
 
     async validateEnvironment(secrets: Record<string, string | null>): Promise<void> {
-        const credentials = this.resolveCredentials(secrets)
+        const credentials = resolveBinanceCredentials(secrets)
         const client = new BinanceClient(credentials)
         await client.ping()
         await client.getAccount()
@@ -67,7 +67,7 @@ export class BinancePlugin implements VenuePlugin {
         _policy: Record<string, unknown>,
         secrets: Record<string, string | null>
     ): VenueAdapter {
-        const credentials = this.resolveCredentials(secrets)
+        const credentials = resolveBinanceCredentials(secrets)
         const client = new BinanceClient(credentials)
         return new BinanceVenueAdapter(client)
     }
@@ -103,18 +103,25 @@ export class BinancePlugin implements VenuePlugin {
             tools.push(createValiqResearchTool(research))
         }
 
-        const dataApiUrl = config.secrets.VALIQ_DATA_API_URL
-        const dataApiKey = config.secrets.VALIQ_DATA_API_KEY
+        const dataApi = resolveValiqDataApiConfig(config.secrets)
 
-        if (dataApiUrl && dataApiKey) {
+        if (dataApi) {
             const dataClient = new ValiqDataClient({
-                apiUrl: dataApiUrl,
-                apiKey: dataApiKey,
+                apiUrl: dataApi.apiUrl,
+                apiKey: dataApi.apiKey,
                 logger: config.runLogger,
             })
             const data = new ValiqDataAdapter(dataClient)
             tools.push(createValiqDataTool(data))
             tools.push(createValiqBreakingNewsTool(data))
+        } else {
+            const missing = getMissingValiqDataApiSecrets(config.secrets)
+            if (missing.length > 0) {
+                config.runLogger.warn(
+                    "Valiq data tools NOT registered: missing secrets",
+                    { missing }
+                )
+            }
         }
 
         return tools
@@ -259,13 +266,4 @@ export class BinancePlugin implements VenuePlugin {
         }
     }
 
-    private resolveCredentials(
-        secrets: Record<string, string | null>
-    ): BinanceCredentials {
-        return {
-            apiKey: requireResolvedSecret(secrets, "BINANCE_API_KEY"),
-            apiSecret: requireResolvedSecret(secrets, "BINANCE_API_SECRET"),
-            baseUrl: secrets.BINANCE_BASE_URL ?? undefined,
-        }
-    }
 }

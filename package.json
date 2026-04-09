@@ -11,6 +11,7 @@
         "dev": "turbo dev --filter=@valiq-trading/backend --filter=dashboard",
         "dev:backend": "bun --watch apps/backend/src/index.ts",
         "dev:dashboard": "cd apps/dashboard && bun run dev",
+        "test": "bunx vitest run",
         "strategies:diff": "cd apps/backend && bun run strategies:diff",
         "strategies:list": "cd apps/backend && bun run strategies:list",
         "strategies:add": "cd apps/backend && bun run strategies:add",

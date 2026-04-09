@@ -49,7 +49,7 @@ export interface TradingBackendClientConfig {
 export interface StoredStrategy {
     _id: Id<"strategies">
     _creationTime: number
-    app: App
+    app: Exclude<App, "backend">
     name: string
     enabled: boolean
     schedule: string
@@ -103,6 +103,11 @@ export interface CascadeDeleteCounts {
     positions: number
     instrumentClaims: number
     positionSyncs: number
+    providerPositions: number
+    providerWorkingOrders: number
+    providerSyncStates: number
+    accountSnapshots: number
+    appHeartbeats: number
     manualRunRequests: number
     alerts: number
 }
@@ -127,9 +132,63 @@ export interface ProviderPortfolioReconciliationResult {
     driftSummary?: string
 }
 
+export interface PortfolioFreshnessRow {
+    app: Exclude<App, "backend">
+    accountScope: "single-account-per-venue"
+    lastSyncedAt?: number
+    lastVerifiedAt?: number
+    providerStatus: "healthy" | "degraded" | "stale"
+    stale: boolean
+    driftDetected: boolean
+    lastError?: string
+    lastDriftSummary?: string
+    positionCount: number
+    pendingOrderCount: number
+}
+
+export interface ProviderPositionRow {
+    app: Exclude<App, "backend">
+    strategyId?: string
+    strategyName?: string
+    ownershipStatus: "owned" | "unowned" | "orphaned"
+    instrument: string
+    side: "long" | "short"
+    quantity: number
+    entryPrice: number
+    currentPrice?: number
+    unrealizedPnl?: number
+    stopLoss?: number
+    takeProfit?: number
+    syncedAt: number
+    metadata?: Record<string, unknown>
+}
+
+export interface ProviderPendingOrderRow {
+    app: Exclude<App, "backend">
+    strategyId?: string
+    strategyName?: string
+    ownershipStatus: "owned" | "unowned" | "orphaned"
+    orderId: string
+    instrument: string
+    venue: string
+    status: OrderSnapshot["status"]
+    action?: OrderSnapshot["action"]
+    quantity: number
+    filledQuantity: number
+    remainingQuantity: number
+    side?: "buy" | "sell"
+    limitPrice?: number
+    stopPrice?: number
+    avgFillPrice?: number
+    submittedAt: number
+    updatedAt: number
+    metadata?: Record<string, unknown>
+}
+
 export interface TradingBackendClient extends TradeEventLoggerMethods {
     getStrategyConfigs(app: App): Promise<StoredStrategy[]>
     getStrategyById(id: Id<"strategies">): Promise<StoredStrategy | null>
+    getActiveRun(strategyId: Id<"strategies">): Promise<StoredRun | null>
     getLastCompletedRunSummary(strategyId: Id<"strategies">): Promise<{ summary: string; endedAt: number } | null>
     recoverRunningRuns(): Promise<number>
     recoverStaleRunningRuns(olderThanMs?: number): Promise<number>
@@ -160,6 +219,9 @@ export interface TradingBackendClient extends TradeEventLoggerMethods {
     reportHeartbeat(app: App, status: "healthy" | "degraded" | "unhealthy", metadata?: Record<string, unknown>): Promise<void>
     snapshotAccountState(app: App, venue: string, state: AccountState): Promise<void>
     getSystemState(): Promise<KillSwitchState>
+    getPortfolioFreshness(app?: Exclude<App, "backend">): Promise<PortfolioFreshnessRow[]>
+    getPortfolioPositions(app?: Exclude<App, "backend">, strategyId?: Id<"strategies">): Promise<ProviderPositionRow[]>
+    getPortfolioPendingOrders(app?: Exclude<App, "backend">, strategyId?: Id<"strategies">): Promise<ProviderPendingOrderRow[]>
     getManualRunRequests(app: Exclude<App, "backend">): Promise<ManualRunRequest[]>
     clearManualRunRequest(requestId: Id<"manual_run_requests">): Promise<void>
     createAlert(args: { strategyId?: string; app?: App; severity: "critical" | "warning" | "info"; message: string }): Promise<void>
@@ -170,6 +232,7 @@ export interface TradingBackendClient extends TradeEventLoggerMethods {
     getLatestPositions(strategyId: Id<"strategies">): Promise<Position[]>
     getAllStrategies(): Promise<StoredStrategy[]>
     addStrategy(config: StrategyConfig): Promise<Id<"strategies">>
+    disableStrategy(id: Id<"strategies">): Promise<void>
     deleteStrategy(id: Id<"strategies">): Promise<DeleteStrategyResult>
     deleteAllStrategies(): Promise<DeleteAllStrategiesResult>
     replaceAllStrategies(strategies: StrategyConfig[]): Promise<ReplaceAllStrategiesResult>
@@ -208,6 +271,15 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
             return await runWithTimeout(
                 "Convex query getStrategyById",
                 async () => await client.query(api.queries.getStrategyById, { ...requireMachineAuth(), id } as never) as StoredStrategy | null
+            )
+        },
+        async getActiveRun(strategyId: Id<"strategies">): Promise<StoredRun | null> {
+            return await runWithTimeout(
+                "Convex query getActiveRun",
+                async () => await client.query(api.queries.getActiveRun, {
+                    ...requireMachineAuth(),
+                    strategyId,
+                } as never) as StoredRun | null
             )
         },
         async getLastCompletedRunSummary(strategyId: Id<"strategies">): Promise<{ summary: string; endedAt: number } | null> {
@@ -344,8 +416,13 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
             result: ExecutionResult,
             intent: OrderIntent
         ): Promise<void> {
+            const action = intent.metadata?.action
             const eventType =
-                result.status === "filled"
+                action === "modify"
+                    ? result.status === "rejected"
+                        ? "rejected"
+                        : "submission"
+                    : result.status === "filled"
                     ? "filled"
                     : result.status === "cancelled"
                         ? "cancelled"
@@ -502,6 +579,41 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
                 async () => await client.query(api.queries.getSystemState, { ...requireMachineAuth() }) as KillSwitchState
             )
         },
+        async getPortfolioFreshness(app?: Exclude<App, "backend">): Promise<PortfolioFreshnessRow[]> {
+            return await runWithTimeout(
+                "Convex query getPortfolioFreshness",
+                async () => await client.query(api.queries.getPortfolioFreshness, {
+                    ...requireMachineAuth(),
+                    app,
+                } as never) as PortfolioFreshnessRow[]
+            )
+        },
+        async getPortfolioPositions(
+            app?: Exclude<App, "backend">,
+            strategyId?: Id<"strategies">
+        ): Promise<ProviderPositionRow[]> {
+            return await runWithTimeout(
+                "Convex query getPortfolioPositions",
+                async () => await client.query(api.queries.getPortfolioPositions, {
+                    ...requireMachineAuth(),
+                    app,
+                    strategyId,
+                } as never) as ProviderPositionRow[]
+            )
+        },
+        async getPortfolioPendingOrders(
+            app?: Exclude<App, "backend">,
+            strategyId?: Id<"strategies">
+        ): Promise<ProviderPendingOrderRow[]> {
+            return await runWithTimeout(
+                "Convex query getPortfolioPendingOrders",
+                async () => await client.query(api.queries.getPortfolioPendingOrders, {
+                    ...requireMachineAuth(),
+                    app,
+                    strategyId,
+                } as never) as ProviderPendingOrderRow[]
+            )
+        },
         async getManualRunRequests(app: Exclude<App, "backend">): Promise<ManualRunRequest[]> {
             return await runWithTimeout(
                 "Convex query getManualRunRequests",
@@ -594,6 +706,15 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
                     policy: config.policy,
                     context: config.context,
                 } as never) as Id<"strategies">
+            )
+        },
+        async disableStrategy(id: Id<"strategies">): Promise<void> {
+            await runWithTimeout(
+                "Convex mutation disableStrategy",
+                async () => await client.mutation(api.mutations.disableStrategy, {
+                    ...requireMachineAuth(),
+                    strategyId: id,
+                } as never)
             )
         },
         async deleteStrategy(id: Id<"strategies">): Promise<DeleteStrategyResult> {

@@ -2,11 +2,57 @@
 
 import { action } from "./_generated/server"
 import { v } from "convex/values"
-import { createHmac } from "crypto"
 import { requireUser } from "./lib/authGuards"
+import {
+    ALPACA_RUNTIME_SECRET_KEYS,
+    AlpacaClient,
+    AlpacaOptionsVenueAdapter,
+    resolveAlpacaRuntimeConfig,
+} from "@valiq-trading/alpaca-options"
+import {
+    BINANCE_RUNTIME_SECRET_KEYS,
+    BinanceClient,
+    BinanceVenueAdapter,
+    resolveBinanceCredentials,
+} from "@valiq-trading/binance"
+import {
+    MT5_RUNTIME_SECRET_KEYS,
+    MT5Client,
+    MT5VenueAdapter,
+    resolveMT5RuntimeConfig,
+} from "@valiq-trading/mt5"
+import {
+    POLYMARKET_RUNTIME_SECRET_KEYS,
+    PolymarketClient,
+    PolymarketVenueAdapter,
+    resolvePolymarketCredentials,
+} from "@valiq-trading/polymarket"
+
+type StepResult = {
+    name: string
+    ok: boolean
+    data?: unknown
+    error?: string
+}
 
 function env(key: string): string | null {
     return process.env[key]?.trim() || null
+}
+
+function getSecrets(
+    keys: readonly string[]
+): Record<string, string | null> {
+    const secrets: Record<string, string | null> = {}
+
+    for (const key of keys) {
+        secrets[key] = env(key)
+    }
+
+    return secrets
+}
+
+function getErrorMessage(error: unknown): string {
+    return error instanceof Error ? error.message : String(error)
 }
 
 async function fetchJson(
@@ -28,63 +74,9 @@ async function fetchJson(
 
         const data = await res.json()
         return { ok: true, status: res.status, data }
-    } catch (e: unknown) {
-        const message = e instanceof Error ? e.message : String(e)
-        return { ok: false, status: 0, error: message }
+    } catch (error: unknown) {
+        return { ok: false, status: 0, error: getErrorMessage(error) }
     }
-}
-
-function normalizeBase64(value: string): string {
-    return value.replace(/-/g, "+").replace(/_/g, "/").replace(/[^A-Za-z0-9+/=]/g, "")
-}
-
-function toUrlSafeBase64(value: string): string {
-    return value.replace(/\+/g, "-").replace(/\//g, "_")
-}
-
-function buildPolymarketAuthHeaders(params: {
-    address: string
-    apiKey: string
-    apiSecret: string
-    apiPassphrase: string
-    method: string
-    path: string
-    body?: string
-}): Record<string, string> {
-    const timestamp = Math.floor(Date.now() / 1000).toString()
-    const message = `${timestamp}${params.method}${params.path}${params.body ?? ""}`
-    const hmacKey = Buffer.from(normalizeBase64(params.apiSecret), "base64")
-    const signature = toUrlSafeBase64(
-        createHmac("sha256", hmacKey).update(message).digest("base64")
-    )
-
-    return {
-        "Content-Type": "application/json",
-        POLY_ADDRESS: params.address,
-        POLY_SIGNATURE: signature,
-        POLY_TIMESTAMP: timestamp,
-        POLY_API_KEY: params.apiKey,
-        POLY_PASSPHRASE: params.apiPassphrase,
-    }
-}
-
-async function fetchPolymarketAuthenticatedJson(
-    host: string,
-    headers: Record<string, string>,
-    path: string,
-    query?: Record<string, string | number | undefined>
-): Promise<{ ok: boolean; status: number; data?: unknown; error?: string }> {
-    const searchParams = new URLSearchParams()
-
-    for (const [key, value] of Object.entries(query ?? {})) {
-        if (value !== undefined) {
-            searchParams.set(key, String(value))
-        }
-    }
-
-    const url = `${host}${path}${searchParams.toString() ? `?${searchParams.toString()}` : ""}`
-
-    return fetchJson(url, { headers })
 }
 
 export const testBackendHealth = action({
@@ -109,62 +101,84 @@ export const testMT5Connection = action({
     args: {},
     handler: async (ctx) => {
         await requireUser(ctx)
-        const workerUrl = env("MT5_WORKER_URL")?.replace(/\/$/, "")
-        const accessKey = env("MT5_WORKER_ACCESS_KEY")
 
-        if (!workerUrl) {
-            return { ok: false, error: "MT5_WORKER_URL not configured", steps: [] }
-        }
+        const steps: StepResult[] = []
+        let runtimeConfig: ReturnType<typeof resolveMT5RuntimeConfig>
 
-        const steps: Array<{ name: string; ok: boolean; data?: unknown; error?: string }> = []
-        const headers: Record<string, string> = { "Content-Type": "application/json" }
-        if (accessKey) headers["x-worker-key"] = accessKey
-
-        const health = await fetchJson(`${workerUrl}/health`, { headers })
-        if (!health.ok) {
-            steps.push({ name: "Worker Health", ok: false, error: health.error })
-            return { ok: false, steps }
-        }
-        steps.push({ name: "Worker Health", ok: true, data: health.data })
-
-        const login = env("MT5_PRIMARY_LOGIN")
-        const password = env("MT5_PRIMARY_PASSWORD")
-        const server = env("MT5_PRIMARY_SERVER")
-
-        if (!login || !password || !server) {
+        try {
+            runtimeConfig = resolveMT5RuntimeConfig(getSecrets(MT5_RUNTIME_SECRET_KEYS))
+        } catch (error) {
             steps.push({
-                name: "Connect",
+                name: "Runtime Config",
                 ok: false,
-                error: "MT5 trading credentials not configured (MT5_PRIMARY_LOGIN, MT5_PRIMARY_PASSWORD, MT5_PRIMARY_SERVER)",
+                error: getErrorMessage(error),
             })
             return { ok: false, steps }
         }
 
-        const connect = await fetchJson(`${workerUrl}/connect`, {
-            method: "POST",
-            headers,
-            body: JSON.stringify({ login: Number(login), password, server }),
-        })
-        if (!connect.ok) {
-            steps.push({ name: "Connect", ok: false, error: connect.error })
-            return { ok: false, steps }
-        }
-        const connectData = connect.data as { success: boolean; accountInfo?: unknown; error?: string }
-        if (!connectData.success) {
-            steps.push({ name: "Connect", ok: false, error: connectData.error ?? "Connection failed" })
-            return { ok: false, steps }
-        }
-        steps.push({ name: "Connect", ok: true, data: connectData.accountInfo })
-
-        const positions = await fetchJson(`${workerUrl}/positions`, { headers })
         steps.push({
-            name: "Positions",
-            ok: positions.ok,
-            data: positions.data,
-            error: positions.ok ? undefined : positions.error,
+            name: "Runtime Config",
+            ok: true,
+            data: {
+                workerUrl: runtimeConfig.workerUrl,
+                login: runtimeConfig.credentials.login,
+                server: runtimeConfig.credentials.server,
+            },
         })
 
-        return { ok: steps.every((s) => s.ok), steps }
+        const client = new MT5Client({
+            workerUrl: runtimeConfig.workerUrl,
+            accessKey: runtimeConfig.accessKey,
+        })
+
+        try {
+            const health = await client.getHealth()
+            steps.push({ name: "Worker Health", ok: true, data: health })
+        } catch (error) {
+            steps.push({ name: "Worker Health", ok: false, error: getErrorMessage(error) })
+            return { ok: false, steps }
+        }
+
+        const venue = new MT5VenueAdapter(client, runtimeConfig.credentials)
+
+        try {
+            const accountState = await venue.getAccountState()
+            steps.push({ name: "Account", ok: true, data: accountState })
+        } catch (error) {
+            steps.push({ name: "Account", ok: false, error: getErrorMessage(error) })
+            return { ok: false, steps }
+        }
+
+        try {
+            const positions = await venue.getPositions()
+            steps.push({
+                name: "Positions",
+                ok: true,
+                data: {
+                    count: positions.length,
+                    positions,
+                },
+            })
+        } catch (error) {
+            steps.push({ name: "Positions", ok: false, error: getErrorMessage(error) })
+            return { ok: false, steps }
+        }
+
+        try {
+            const workingOrders = await venue.getWorkingOrders()
+            steps.push({
+                name: "Working Orders",
+                ok: true,
+                data: {
+                    count: workingOrders.length,
+                    orders: workingOrders,
+                },
+            })
+        } catch (error) {
+            steps.push({ name: "Working Orders", ok: false, error: getErrorMessage(error) })
+        }
+
+        return { ok: steps.every((step) => step.ok), steps }
     },
 })
 
@@ -172,52 +186,92 @@ export const testAlpacaConnection = action({
     args: {},
     handler: async (ctx) => {
         await requireUser(ctx)
-        const apiKey = env("ALPACA_PRIMARY_API_KEY") ?? env("ALPACA_API_KEY")
-        const secretKey = env("ALPACA_PRIMARY_SECRET_KEY") ?? env("ALPACA_SECRET_KEY")
-        const rawBaseUrl = env("ALPACA_BASE_URL") ?? "https://paper-api.alpaca.markets"
-        const baseUrl = rawBaseUrl.replace(/\/+$/, "").replace(/\/v2$/, "")
-        const accountId = env("ALPACA_ACCOUNT_ID")
 
-        if (!apiKey || !secretKey) {
-            return {
+        const steps: StepResult[] = []
+        let runtimeConfig: ReturnType<typeof resolveAlpacaRuntimeConfig>
+
+        try {
+            runtimeConfig = resolveAlpacaRuntimeConfig(getSecrets(ALPACA_RUNTIME_SECRET_KEYS))
+        } catch (error) {
+            steps.push({
+                name: "Runtime Config",
                 ok: false,
-                error: "Alpaca API credentials not configured (ALPACA_PRIMARY_API_KEY, ALPACA_PRIMARY_SECRET_KEY)",
-                steps: [],
-            }
-        }
-
-        const steps: Array<{ name: string; ok: boolean; data?: unknown; error?: string }> = []
-        const headers: Record<string, string> = {
-            "APCA-API-KEY-ID": apiKey,
-            "APCA-API-SECRET-KEY": secretKey,
-            "Content-Type": "application/json",
-        }
-        if (accountId) headers["APCA-ACCOUNT-ID"] = accountId
-
-        const account = await fetchJson(`${baseUrl}/v2/account`, { headers })
-        if (!account.ok) {
-            steps.push({ name: "Account", ok: false, error: account.error })
+                error: getErrorMessage(error),
+            })
             return { ok: false, steps }
         }
-        steps.push({ name: "Account", ok: true, data: account.data })
 
-        const positions = await fetchJson(`${baseUrl}/v2/positions`, { headers })
         steps.push({
-            name: "Positions",
-            ok: positions.ok,
-            data: positions.data,
-            error: positions.ok ? undefined : positions.error,
-        })
-
-        const allPositions = (positions.data ?? []) as Array<{ asset_class?: string }>
-        const optionsOnly = allPositions.filter((p) => p.asset_class === "us_option")
-        steps.push({
-            name: "Options Positions",
+            name: "Runtime Config",
             ok: true,
-            data: optionsOnly,
+            data: {
+                environment: runtimeConfig.environment,
+                tradingBaseUrl: runtimeConfig.tradingBaseUrl,
+                marketDataBaseUrl: runtimeConfig.marketDataBaseUrl,
+                accountId: runtimeConfig.credentials.accountId || null,
+            },
         })
 
-        return { ok: steps.every((s) => s.ok), steps }
+        const client = new AlpacaClient(runtimeConfig)
+        const venue = new AlpacaOptionsVenueAdapter(client)
+
+        try {
+            const accountState = await venue.getAccountState()
+            steps.push({ name: "Account", ok: true, data: accountState })
+        } catch (error) {
+            steps.push({ name: "Account", ok: false, error: getErrorMessage(error) })
+            return { ok: false, steps }
+        }
+
+        try {
+            const positions = await venue.getPositions()
+            steps.push({
+                name: "Positions",
+                ok: true,
+                data: {
+                    count: positions.length,
+                    positions,
+                },
+            })
+        } catch (error) {
+            steps.push({ name: "Positions", ok: false, error: getErrorMessage(error) })
+            return { ok: false, steps }
+        }
+
+        try {
+            const contracts = await venue.getOptionContracts({
+                underlyingSymbol: "SPY",
+                limit: 1,
+            })
+            steps.push({
+                name: "Options Contracts",
+                ok: true,
+                data: {
+                    underlyingSymbol: "SPY",
+                    contractCount: contracts.contracts.length,
+                    nextPageToken: contracts.nextPageToken,
+                },
+            })
+        } catch (error) {
+            steps.push({ name: "Options Contracts", ok: false, error: getErrorMessage(error) })
+            return { ok: false, steps }
+        }
+
+        try {
+            const quote = await venue.getQuote("SPY")
+            steps.push({
+                name: "Market Data",
+                ok: true,
+                data: {
+                    symbol: "SPY",
+                    quote,
+                },
+            })
+        } catch (error) {
+            steps.push({ name: "Market Data", ok: false, error: getErrorMessage(error) })
+        }
+
+        return { ok: steps.every((step) => step.ok), steps }
     },
 })
 
@@ -225,227 +279,183 @@ export const testPolymarketConnection = action({
     args: {},
     handler: async (ctx) => {
         await requireUser(ctx)
-        const privateKey = env("POLYMARKET_PRIVATE_KEY")
-        const apiKey = env("POLYMARKET_API_KEY")
-        const apiSecret = env("POLYMARKET_API_SECRET")
-        const apiPassphrase = env("POLYMARKET_API_PASSPHRASE")
-        const host = (env("POLYMARKET_HOST") ?? "https://clob.polymarket.com").replace(/\/+$/, "")
 
-        const steps: Array<{ name: string; ok: boolean; data?: unknown; error?: string }> = []
+        const steps: StepResult[] = []
+        let credentials: ReturnType<typeof resolvePolymarketCredentials>
 
-        const markets = await fetchJson(`${host}/markets?limit=1`)
-        if (!markets.ok) {
-            steps.push({ name: "Public API", ok: false, error: markets.error })
-            return { ok: false, steps }
-        }
-        const marketsData = markets.data as { data?: unknown[] } | undefined
-        steps.push({
-            name: "Public API",
-            ok: true,
-            data: { reachable: true, marketsReturned: Array.isArray(marketsData?.data) ? marketsData.data.length : 0 },
-        })
-
-        if (!privateKey || !apiKey || !apiSecret || !apiPassphrase) {
+        try {
+            credentials = resolvePolymarketCredentials(getSecrets(POLYMARKET_RUNTIME_SECRET_KEYS))
+        } catch (error) {
             steps.push({
-                name: "Balance",
+                name: "Runtime Config",
                 ok: false,
-                error: "Polymarket credentials not fully configured (POLYMARKET_PRIVATE_KEY, POLYMARKET_API_KEY, POLYMARKET_API_SECRET, POLYMARKET_API_PASSPHRASE)",
+                error: getErrorMessage(error),
             })
             return { ok: false, steps }
         }
 
-        let address: string
-        try {
-            const { privateKeyToAccount } = await import("viem/accounts")
-            const pk = (privateKey.startsWith("0x") ? privateKey : `0x${privateKey}`) as `0x${string}`
-            address = privateKeyToAccount(pk).address
-        } catch (e: unknown) {
-            const message = e instanceof Error ? e.message : String(e)
-            steps.push({ name: "Balance", ok: false, error: `Failed to derive wallet address: ${message}` })
-            return { ok: false, steps }
-        }
+        const client = new PolymarketClient(credentials)
+        const venue = new PolymarketVenueAdapter(client)
 
-        const USDC_DECIMALS = 1_000_000
-        const authHeaders = buildPolymarketAuthHeaders({
-            address,
-            apiKey,
-            apiSecret,
-            apiPassphrase,
-            method: "GET",
-            path: "/balance-allowance",
+        steps.push({
+            name: "Runtime Config",
+            ok: true,
+            data: {
+                signerAddress: client.getAddress(),
+                funderAddress: client.getFunderAddress(),
+                signatureType: client.getSignatureType(),
+                host: credentials.host ?? null,
+                chainId: credentials.chainId ?? null,
+                orderOwner: "Orders will be created with POLYMARKET_FUNDER_ADDRESS as maker or owner",
+            },
         })
 
-        const balanceResult = await fetchPolymarketAuthenticatedJson(
-            host,
-            authHeaders,
-            "/balance-allowance",
-            {
-                asset_type: "COLLATERAL",
-                signature_type: 1,
-            }
-        )
-        if (!balanceResult.ok) {
-            steps.push({ name: "Balance", ok: false, error: balanceResult.error })
+        try {
+            const markets = await client.getMarkets({ limit: 1, active: true })
+            steps.push({
+                name: "Public API",
+                ok: true,
+                data: {
+                    reachable: true,
+                    marketsReturned: markets.data.length,
+                },
+            })
+        } catch (error) {
+            steps.push({ name: "Public API", ok: false, error: getErrorMessage(error) })
             return { ok: false, steps }
         }
-        const balanceData = balanceResult.data as { balance?: string; allowances?: Record<string, string> } | undefined
-        const balanceRaw = Number(balanceData?.balance ?? "0")
-        steps.push({ name: "Balance", ok: true, data: { ...balanceData, balanceUsd: balanceRaw / USDC_DECIMALS } })
 
-        const openOrders = await fetchPolymarketAuthenticatedJson(
-            host,
-            buildPolymarketAuthHeaders({
-                address,
-                apiKey,
-                apiSecret,
-                apiPassphrase,
-                method: "GET",
-                path: "/data/orders",
-            }),
-            "/data/orders"
-        )
-        if (openOrders.ok) {
-            const orders = Array.isArray(openOrders.data) ? openOrders.data : []
+        try {
+            const [balance, openOrders] = await Promise.all([
+                client.getBalance(),
+                client.getOpenOrders(),
+            ])
+            steps.push({
+                name: "Authenticated Runtime Path",
+                ok: true,
+                data: {
+                    balance,
+                    openOrderCount: openOrders.length,
+                    note: "Matches the backend plugin startup validation path",
+                },
+            })
+        } catch (error) {
+            steps.push({
+                name: "Authenticated Runtime Path",
+                ok: false,
+                error: getErrorMessage(error),
+            })
+            return { ok: false, steps }
+        }
+
+        try {
+            const accountState = await venue.getAccountState()
+            steps.push({ name: "Account", ok: true, data: accountState })
+        } catch (error) {
+            steps.push({ name: "Account", ok: false, error: getErrorMessage(error) })
+            return { ok: false, steps }
+        }
+
+        try {
+            const positions = await venue.getPositions()
+            steps.push({
+                name: "Positions",
+                ok: true,
+                data: {
+                    count: positions.length,
+                    positions,
+                },
+            })
+        } catch (error) {
+            steps.push({ name: "Positions", ok: false, error: getErrorMessage(error) })
+            return { ok: false, steps }
+        }
+
+        try {
+            const workingOrders = await venue.getWorkingOrders()
             steps.push({
                 name: "Open Bets",
                 ok: true,
                 data: {
-                    count: orders.length,
-                    orders,
+                    count: workingOrders.length,
+                    orders: workingOrders,
                 },
             })
-        } else {
-            steps.push({
-                name: "Open Bets",
-                ok: false,
-                error: openOrders.error,
-            })
+        } catch (error) {
+            steps.push({ name: "Open Bets", ok: false, error: getErrorMessage(error) })
         }
 
-        return { ok: steps.every((s) => s.ok), steps }
+        return { ok: steps.every((step) => step.ok), steps }
     },
 })
-
-function buildBinanceSignature(secret: string, query: string): string {
-    return createHmac("sha256", secret).update(query).digest("hex")
-}
-
-function buildBinanceSignedUrl(
-    baseUrl: string,
-    path: string,
-    params: Record<string, string | number | boolean | undefined>,
-    secret: string
-): string {
-    const searchParams = new URLSearchParams()
-
-    for (const [key, value] of Object.entries(params)) {
-        if (value !== undefined) {
-            searchParams.set(key, String(value))
-        }
-    }
-
-    const query = searchParams.toString()
-    const signature = buildBinanceSignature(secret, query)
-    return `${baseUrl}${path}?${query}&signature=${signature}`
-}
 
 export const testBinanceConnection = action({
     args: {},
     handler: async (ctx) => {
         await requireUser(ctx)
 
-        const apiKey = env("BINANCE_API_KEY")
-        const apiSecret = env("BINANCE_API_SECRET")
-        const baseUrl = (env("BINANCE_BASE_URL") ?? "https://fapi.binance.com").replace(/\/+$/, "")
-        const steps: Array<{ name: string; ok: boolean; data?: unknown; error?: string }> = []
+        const steps: StepResult[] = []
+        let credentials: ReturnType<typeof resolveBinanceCredentials>
 
-        const ping = await fetchJson(`${baseUrl}/fapi/v1/ping`)
-        if (!ping.ok) {
-            steps.push({ name: "Public API", ok: false, error: ping.error })
-            return { ok: false, steps }
-        }
-        steps.push({ name: "Public API", ok: true, data: { reachable: true } })
-
-        if (!apiKey || !apiSecret) {
+        try {
+            credentials = resolveBinanceCredentials(getSecrets(BINANCE_RUNTIME_SECRET_KEYS))
+        } catch (error) {
             steps.push({
-                name: "Credentials",
+                name: "Runtime Config",
                 ok: false,
-                error: "BINANCE_API_KEY and BINANCE_API_SECRET must be configured in Convex environment variables",
+                error: getErrorMessage(error),
             })
             return { ok: false, steps }
         }
 
-        const timestamp = Date.now()
-        const recvWindow = 5000
-
-        const accountUrl = buildBinanceSignedUrl(
-            baseUrl,
-            "/fapi/v2/account",
-            { timestamp, recvWindow },
-            apiSecret
-        )
-        const account = await fetchJson(accountUrl, {
-            headers: {
-                "X-MBX-APIKEY": apiKey,
-                "Content-Type": "application/json",
+        steps.push({
+            name: "Runtime Config",
+            ok: true,
+            data: {
+                baseUrl: credentials.baseUrl ?? null,
             },
         })
-        if (!account.ok) {
-            steps.push({ name: "Account", ok: false, error: account.error })
+
+        const client = new BinanceClient(credentials)
+        const venue = new BinanceVenueAdapter(client)
+
+        try {
+            await client.ping()
+            steps.push({ name: "Public API", ok: true, data: { reachable: true } })
+        } catch (error) {
+            steps.push({ name: "Public API", ok: false, error: getErrorMessage(error) })
             return { ok: false, steps }
         }
 
-        const accountData = account.data as {
-            availableBalance?: string
-            totalWalletBalance?: string
-            totalUnrealizedProfit?: string
-        }
-        steps.push({
-            name: "Account",
-            ok: true,
-            data: {
-                availableBalance: Number(accountData.availableBalance ?? "0"),
-                totalWalletBalance: Number(accountData.totalWalletBalance ?? "0"),
-                totalUnrealizedProfit: Number(accountData.totalUnrealizedProfit ?? "0"),
-            },
-        })
-
-        const positionsUrl = buildBinanceSignedUrl(
-            baseUrl,
-            "/fapi/v2/positionRisk",
-            { timestamp: Date.now(), recvWindow },
-            apiSecret
-        )
-        const positions = await fetchJson(positionsUrl, {
-            headers: {
-                "X-MBX-APIKEY": apiKey,
-                "Content-Type": "application/json",
-            },
-        })
-        if (!positions.ok) {
-            steps.push({ name: "Positions", ok: false, error: positions.error })
+        try {
+            const accountState = await venue.getAccountState()
+            steps.push({ name: "Account", ok: true, data: accountState })
+        } catch (error) {
+            steps.push({ name: "Account", ok: false, error: getErrorMessage(error) })
             return { ok: false, steps }
         }
 
-        const positionRows = (positions.data as Array<{ symbol?: string; positionAmt?: string }> | undefined) ?? []
-        const openPositions = positionRows.filter((entry) => Math.abs(Number(entry.positionAmt ?? "0")) > 0)
-        steps.push({
-            name: "Positions",
-            ok: true,
-            data: {
-                total: positionRows.length,
-                open: openPositions.length,
-                symbols: openPositions.map((entry) => entry.symbol).filter(Boolean),
-            },
-        })
+        try {
+            const positions = await venue.getPositions()
+            steps.push({
+                name: "Positions",
+                ok: true,
+                data: {
+                    count: positions.length,
+                    positions,
+                },
+            })
+        } catch (error) {
+            steps.push({ name: "Positions", ok: false, error: getErrorMessage(error) })
+            return { ok: false, steps }
+        }
 
-        const marketData = await fetchJson(`${baseUrl}/fapi/v1/premiumIndex?symbol=BTCUSDT`)
-        steps.push({
-            name: "Market Data",
-            ok: marketData.ok,
-            data: marketData.ok ? marketData.data : undefined,
-            error: marketData.ok ? undefined : marketData.error,
-        })
+        try {
+            const marketPrice = await venue.getMarketPrice("BTCUSDT")
+            steps.push({ name: "Market Data", ok: true, data: marketPrice })
+        } catch (error) {
+            steps.push({ name: "Market Data", ok: false, error: getErrorMessage(error) })
+        }
 
         return { ok: steps.every((step) => step.ok), steps }
     },
@@ -488,9 +498,8 @@ async function acquireValiqToken(
 
         const data = await res.json() as { access_token: string; token_type: string; expires_in: number }
         return { ok: true, token: data.access_token, expiresIn: data.expires_in }
-    } catch (e: unknown) {
-        const message = e instanceof Error ? e.message : String(e)
-        return { ok: false, error: message }
+    } catch (error: unknown) {
+        return { ok: false, error: getErrorMessage(error) }
     }
 }
 
@@ -518,7 +527,7 @@ export const testValiqConnection = action({
             }
         }
 
-        const steps: Array<{ name: string; ok: boolean; data?: unknown; error?: string }> = []
+        const steps: StepResult[] = []
 
         const authResult = await acquireValiqToken(authUrl, clientId, clientSecret, userUuid)
         if (!authResult.ok || !authResult.token) {
@@ -558,69 +567,38 @@ export const testValiqConnection = action({
             clearTimeout(timeoutId)
 
             if (!res.ok) {
-                const text = await res.text().catch(() => "")
-                steps.push({ name: "Research", ok: false, error: `HTTP ${res.status}: ${text.slice(0, 500)}` })
+                const body = await res.text().catch(() => "")
+                steps.push({
+                    name: "Send Prompt",
+                    ok: false,
+                    error: `HTTP ${res.status}: ${body.slice(0, 500)}`,
+                })
                 return { ok: false, steps }
             }
 
-            if (!res.body) {
-                steps.push({ name: "Research", ok: false, error: "No response body" })
-                return { ok: false, steps }
-            }
+            const text = await res.text()
+            const lines = text
+                .split("\n")
+                .map((line) => line.trim())
+                .filter(Boolean)
 
-            const reader = res.body.getReader()
-            const decoder = new TextDecoder()
-            let buffer = ""
-            let finalContent = ""
-
-            // eslint-disable-next-line no-constant-condition
-            while (true) {
-                const { done, value } = await reader.read()
-                if (done) break
-
-                buffer += decoder.decode(value, { stream: true })
-                const lines = buffer.split("\n")
-                buffer = lines.pop() ?? ""
-
-                for (const line of lines) {
-                    const trimmed = line.trim()
-                    if (!trimmed.startsWith("data: ") || trimmed === "data: [DONE]") continue
-
-                    try {
-                        const event = JSON.parse(trimmed.slice(6)) as {
-                            type: string
-                            data?: { content?: string; finalContent?: string; message?: string }
-                        }
-                        if (event.type === "final_response") {
-                            finalContent += event.data?.content ?? ""
-                        } else if (event.type === "completion" && event.data?.finalContent) {
-                            finalContent = event.data.finalContent
-                        } else if (event.type === "error") {
-                            steps.push({ name: "Research", ok: false, error: event.data?.message ?? "Unknown SSE error" })
-                            return { ok: false, steps }
-                        }
-                    } catch {
-                        // skip malformed events
-                    }
-                }
-            }
+            const dataLines = lines
+                .filter((line) => line.startsWith("data:"))
+                .map((line) => line.slice(5).trim())
+                .filter((line) => line && line !== "[DONE]")
 
             steps.push({
-                name: "Research",
-                ok: true,
-                data: { contentLength: finalContent.length, preview: finalContent.slice(0, 2000) },
+                name: "Send Prompt",
+                ok: dataLines.length > 0,
+                data: {
+                    prompt: args.prompt,
+                    events: dataLines.slice(0, 5),
+                    totalEvents: dataLines.length,
+                },
+                error: dataLines.length > 0 ? undefined : "No SSE data events received",
             })
-        } catch (e: unknown) {
-            const message = e instanceof Error ? e.message : String(e)
-            steps.push({ name: "Research", ok: false, error: message })
-            return { ok: false, steps }
-        }
-
-        try {
-            await fetch(`${apiUrl}/chats/${chatId}`, { method: "DELETE", headers })
-            steps.push({ name: "Cleanup", ok: true })
-        } catch {
-            steps.push({ name: "Cleanup", ok: false, error: "Failed to clean up chat" })
+        } catch (error: unknown) {
+            steps.push({ name: "Send Prompt", ok: false, error: getErrorMessage(error) })
         }
 
         return { ok: steps.every((s) => s.ok), steps }

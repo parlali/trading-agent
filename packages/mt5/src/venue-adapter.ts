@@ -98,15 +98,33 @@ export class MT5VenueAdapter implements VenueAdapter, PriceVerifier {
     }
 
     async cancelOrder(orderId: string): Promise<ExecutionResult> {
-        // MT5 market orders fill immediately; pending orders are rare for this use case.
-        // If needed, this would modify/delete a pending order via the worker.
-        return {
-            orderId,
-            status: "cancelled",
-            filledQuantity: 0,
-            timestamp: Date.now(),
-            error: "Cancel not applicable for MT5 market orders",
+        await this.ensureConnected()
+
+        const ticket = Number(orderId)
+        if (Number.isNaN(ticket)) {
+            const errorDetail = createExecutionErrorDetail("pre_validation", "Invalid MT5 ticket number", {
+                code: "INVALID_ORDER_ID",
+                retryable: false,
+                details: {
+                    orderId,
+                },
+            })
+            return {
+                orderId,
+                status: "rejected",
+                filledQuantity: 0,
+                timestamp: Date.now(),
+                error: formatExecutionError(errorDetail),
+                errorDetail,
+            }
         }
+
+        const result = await this.client.cancelOrder({ ticket })
+        return this.client.mapOrderResultToExecution(result, {
+            fallbackOrderId: orderId,
+            successStatus: "cancelled",
+            filledQuantity: 0,
+        })
     }
 
     async modifyOrder(orderId: string, changes: Partial<OrderIntent>): Promise<ExecutionResult> {
@@ -132,13 +150,36 @@ export class MT5VenueAdapter implements VenueAdapter, PriceVerifier {
             }
         }
 
+        const stopLoss = changes.stopPrice ?? (changes.metadata?.stopLoss as number | undefined)
+        const takeProfit = changes.limitPrice ?? (changes.metadata?.takeProfit as number | undefined)
+
+        if (stopLoss === undefined && takeProfit === undefined) {
+            const errorDetail = createExecutionErrorDetail("pre_validation", "Provide newStopLoss, newTakeProfit, or both", {
+                code: "MISSING_MODIFICATION_FIELDS",
+                retryable: false,
+                details: {
+                    orderId,
+                },
+            })
+            return {
+                orderId,
+                status: "rejected",
+                filledQuantity: 0,
+                timestamp: Date.now(),
+                error: formatExecutionError(errorDetail),
+                errorDetail,
+            }
+        }
+
         const result = await this.client.modifyPosition({
             ticket,
-            stopLoss: changes.stopPrice ?? (changes.metadata?.stopLoss as number | undefined),
-            takeProfit: changes.limitPrice ?? (changes.metadata?.takeProfit as number | undefined),
+            stopLoss,
+            takeProfit,
         })
 
-        return this.client.mapOrderResultToExecution(result)
+        return this.client.mapOrderResultToExecution(result, {
+            fallbackOrderId: orderId,
+        })
     }
 
     async closePosition(instrument: string): Promise<ExecutionResult> {

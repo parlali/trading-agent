@@ -5,6 +5,7 @@ import {
     printDeleteCounts,
     runScript,
 } from "./lib/strategy-cli"
+import { resetStrategySafely } from "./lib/safe-strategy-reset"
 
 runScript(async () => {
     const strategies = await loadStrategiesFromDocument()
@@ -22,20 +23,28 @@ runScript(async () => {
         positions: 0,
         instrumentClaims: 0,
         positionSyncs: 0,
+        providerPositions: 0,
+        providerWorkingOrders: 0,
+        providerSyncStates: 0,
+        accountSnapshots: 0,
+        appHeartbeats: 0,
         manualRunRequests: 0,
         alerts: 0,
     }
 
     if (existing.length > 0) {
-        console.log(`Deleting ${existing.length} existing strategies...`)
+        console.log(`Safely resetting ${existing.length} existing strategies...`)
 
         for (const strategy of existing) {
-            console.log(`  Deleting ${strategy.name}...`)
-            const result = await client.deleteStrategy(strategy._id)
+            console.log(`  Resetting ${strategy.name}...`)
+            const result = await resetStrategySafely(client, strategy._id)
             totals.strategies++
-            for (const key of Object.keys(result) as Array<keyof typeof result>) {
+            console.log(`    cancelled orders: ${result.cancelledOrders}`)
+            console.log(`    closed positions: ${result.closedPositions}`)
+            for (const key of Object.keys(result.deleted) as Array<keyof typeof result.deleted>) {
                 if (key in totals) {
-                    (totals as Record<string, number>)[key] += result[key] as number
+                    const numericTotals = totals as Record<string, number>
+                    numericTotals[key] += result.deleted[key] as number
                 }
             }
         }

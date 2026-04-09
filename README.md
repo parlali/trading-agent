@@ -40,6 +40,7 @@ Configure these secrets before starting the backend:
 - `CONVEX_URL` in the backend runtime
 - `BACKEND_SERVICE_TOKEN` in both Convex env vars and the backend runtime
 - `MT5_WORKER_ACCESS_KEY` in both Convex env vars and the MT5 worker runtime
+- `POLYMARKET_PRIVATE_KEY`, `POLYMARKET_API_KEY`, `POLYMARKET_API_SECRET`, `POLYMARKET_API_PASSPHRASE`, and `POLYMARKET_FUNDER_ADDRESS` in Convex env vars for Polymarket
 - `BINANCE_API_KEY` and `BINANCE_API_SECRET` in Convex env vars for Binance Futures
 - `BINANCE_BASE_URL` in Convex env vars only when you want a non-default endpoint (`https://fapi.binance.com` for production, `https://testnet.binancefuture.com` for testnet)
 
@@ -61,6 +62,19 @@ After auth is deployed, create the single dashboard user from the Convex dashboa
 ```
 
 The password should be entered in plain text there. It is hashed automatically by the action before anything is stored.
+
+### Polymarket Funder Address
+
+`POLYMARKET_FUNDER_ADDRESS` is required and must be set explicitly. The runtime does not derive it from the private key and does not fall back to any other wallet address.
+
+Operator workflow:
+
+1. Run `bun run packages/polymarket/src/derive-api-key.ts <private-key>` to derive the L2 API credentials from the signer key you exported for Polymarket.
+2. Copy `POLYMARKET_API_KEY`, `POLYMARKET_API_SECRET`, `POLYMARKET_API_PASSPHRASE`, and `POLYMARKET_PRIVATE_KEY` into Convex env vars.
+3. In Polymarket, copy the profile or proxy wallet address shown in the account UI and set that exact value as `POLYMARKET_FUNDER_ADDRESS`.
+4. Open Dashboard > Test > Polymarket and verify the `Runtime Config` step shows the expected signer and funder addresses, then verify `Authenticated Runtime Path` is green before enabling scheduled runs.
+
+If the signer address is correct but order placement later fails, re-check `POLYMARKET_FUNDER_ADDRESS` first. The runtime signs requests with `POLYMARKET_PRIVATE_KEY`, but Polymarket orders are created with `POLYMARKET_FUNDER_ADDRESS` as the maker or owner.
 
 ### Development
 
