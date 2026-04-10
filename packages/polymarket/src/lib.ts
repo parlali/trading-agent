@@ -2,6 +2,7 @@ export { PolymarketClient, PolymarketApiError } from "./polymarket-client"
 export type {
     PolymarketBalanceAllowance,
     PolymarketCredentials,
+    PolymarketCurrentPosition,
     PolymarketMarket,
     PolymarketOrderBook,
 } from "./polymarket-client"

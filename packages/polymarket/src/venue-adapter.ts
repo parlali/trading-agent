@@ -12,10 +12,10 @@ import {
 } from "@valiq-trading/core"
 import type {
     PolymarketClient,
+    PolymarketCurrentPosition,
     PolymarketMarket,
     PolymarketOpenOrder,
     PolymarketOrderBook,
-    PolymarketTrade,
 } from "./polymarket-client"
 
 export interface PolymarketMarketPrice {
@@ -144,55 +144,10 @@ export class PolymarketVenueAdapter implements VenueAdapter, PriceVerifier {
             return this.positionsCache.positions
         }
 
-        const [trades, openOrders] = await Promise.all([
-            this.client.getTrades(),
-            this.client.getOpenOrders(),
-        ])
-
-        const tokenIds = new Set<string>()
-        for (const trade of trades) tokenIds.add(trade.asset_id)
-        for (const order of openOrders) tokenIds.add(order.asset_id)
-
-        const tokenArray = Array.from(tokenIds)
-        const results = await Promise.all(
-            tokenArray.map(async (tokenId) => {
-                const balance = await this.client.getTokenBalance(tokenId)
-                if (balance <= 0) return null
-
-                let midPrice: number
-                try {
-                    midPrice = await this.client.getMidpoint(tokenId)
-                } catch {
-                    midPrice = 0
-                }
-
-                return { tokenId, balance, midPrice }
-            })
-        )
-
-        const positions: Position[] = []
-
-        for (const result of results.filter(Boolean)) {
-            const { tokenId, balance, midPrice } = result!
-            const tokenTrades = trades.filter((t) => t.asset_id === tokenId)
-            const avgEntryPrice = calculateAvgEntryPrice(tokenTrades)
-            const unrealizedPnl = midPrice > 0 ? (midPrice - avgEntryPrice) * balance : 0
-            const latestTrade = tokenTrades[0]
-
-            positions.push({
-                instrument: tokenId,
-                side: "long",
-                quantity: balance,
-                entryPrice: avgEntryPrice,
-                currentPrice: midPrice > 0 ? midPrice : undefined,
-                unrealizedPnl,
-                metadata: {
-                    venue: "polymarket",
-                    market: latestTrade?.market,
-                    outcome: latestTrade?.outcome,
-                },
-            })
-        }
+        const positions = (await this.client.getCurrentPositions())
+            .filter((position) => position.size > 0)
+            .filter((position) => !position.redeemable && !position.mergeable)
+            .map((position) => mapCurrentPosition(position))
 
         this.positionsCache = { positions, fetchedAt: Date.now() }
         return positions
@@ -535,25 +490,6 @@ export class PolymarketVenueAdapter implements VenueAdapter, PriceVerifier {
 // Helpers
 // ---------------------------------------------------------------------------
 
-function calculateAvgEntryPrice(trades: PolymarketTrade[]): number {
-    // Only consider BUY trades for entry price
-    const buys = trades.filter((t) => t.side === "BUY")
-
-    if (buys.length === 0) return 0
-
-    let totalCost = 0
-    let totalSize = 0
-
-    for (const trade of buys) {
-        const size = Number(trade.size)
-        const price = Number(trade.price)
-        totalCost += size * price
-        totalSize += size
-    }
-
-    return totalSize > 0 ? totalCost / totalSize : 0
-}
-
 function mapOrderType(intent: OrderIntent): "GTC" | "GTD" | "FOK" | "FAK" {
     if (intent.orderType === "market") {
         return "FOK"
@@ -632,4 +568,25 @@ function matchesMarketQuery(
         .toLowerCase()
 
     return haystack.includes(query)
+}
+
+function mapCurrentPosition(position: PolymarketCurrentPosition): Position {
+    return {
+        instrument: position.asset,
+        side: "long",
+        quantity: position.size,
+        entryPrice: position.avgPrice,
+        currentPrice: position.curPrice > 0 ? position.curPrice : undefined,
+        unrealizedPnl: position.cashPnl,
+        metadata: {
+            venue: "polymarket",
+            market: position.conditionId,
+            question: position.title,
+            outcome: position.outcome,
+            slug: position.slug,
+            redeemable: position.redeemable,
+            mergeable: position.mergeable,
+            endDate: position.endDate,
+        },
+    }
 }

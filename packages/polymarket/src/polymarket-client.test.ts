@@ -83,3 +83,33 @@ describe("PolymarketClient.searchMarkets", () => {
         expect(url.searchParams.get("limit")).toBeNull()
     })
 })
+
+describe("PolymarketClient.getCurrentPositions", () => {
+    const fetchMock = vi.fn<typeof fetch>()
+    const originalFetch = globalThis.fetch
+
+    beforeEach(() => {
+        fetchMock.mockReset()
+        globalThis.fetch = fetchMock as typeof fetch
+    })
+
+    afterEach(() => {
+        globalThis.fetch = originalFetch
+    })
+
+    it("uses the Polymarket data API positions endpoint with the configured funder address", async () => {
+        fetchMock.mockResolvedValue(createJsonResponse([]))
+
+        await createClient().getCurrentPositions()
+
+        expect(fetchMock).toHaveBeenCalledTimes(1)
+
+        const [requestUrl] = fetchMock.mock.calls[0] ?? []
+        expect(typeof requestUrl).toBe("string")
+
+        const url = new URL(String(requestUrl))
+        expect(url.origin).toBe("https://data-api.polymarket.com")
+        expect(url.pathname).toBe("/positions")
+        expect(url.searchParams.get("user")).toBe("0x1111111111111111111111111111111111111111")
+    })
+})

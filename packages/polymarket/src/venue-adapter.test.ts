@@ -38,6 +38,7 @@ function createClient() {
     const getTopLiquidMarketsForCategory = vi.fn()
     const searchMarkets = vi.fn()
     const getMarket = vi.fn()
+    const getCurrentPositions = vi.fn()
     const getMidpoint = vi.fn().mockResolvedValue(0.52)
     const getSpread = vi.fn().mockResolvedValue({
         bid: 0.51,
@@ -51,6 +52,7 @@ function createClient() {
             getTopLiquidMarketsForCategory,
             searchMarkets,
             getMarket,
+            getCurrentPositions,
             getMidpoint,
             getSpread,
             getPrice,
@@ -58,6 +60,7 @@ function createClient() {
         getTopLiquidMarketsForCategory,
         searchMarkets,
         getMarket,
+        getCurrentPositions,
         getMidpoint,
         getSpread,
     }
@@ -151,6 +154,81 @@ describe("PolymarketVenueAdapter.searchMarkets", () => {
         expect(client.getSpread).toHaveBeenCalledTimes(
             POLYMARKET_SEARCH_MARKETS_MAX_LIVE_PRICE_TOKENS
         )
+    })
+})
+
+describe("PolymarketVenueAdapter.getPositions", () => {
+    it("uses current positions and excludes redeemable and mergeable balances", async () => {
+        const client = createClient()
+        client.getCurrentPositions.mockResolvedValue([
+            {
+                asset: "token-active",
+                conditionId: "condition-active",
+                size: 64.5161,
+                avgPrice: 0.3099,
+                cashPnl: -9.3548,
+                curPrice: 0.165,
+                redeemable: false,
+                mergeable: false,
+                title: "Will the US acquire part of Greenland in 2026?",
+                slug: "will-the-us-acquire-any-part-of-greenland-in-2026",
+                outcome: "Yes",
+                endDate: "2026-12-31",
+            },
+            {
+                asset: "token-redeemable",
+                conditionId: "condition-redeemable",
+                size: 29.4117,
+                avgPrice: 0.3399,
+                cashPnl: -9.9999,
+                curPrice: 0,
+                redeemable: true,
+                mergeable: false,
+                title: "Redeemable position",
+                slug: "redeemable-position",
+                outcome: "Yes",
+                endDate: "2026-02-11",
+            },
+            {
+                asset: "token-mergeable",
+                conditionId: "condition-mergeable",
+                size: 10,
+                avgPrice: 0.5,
+                cashPnl: 0,
+                curPrice: 0.5,
+                redeemable: false,
+                mergeable: true,
+                title: "Mergeable position",
+                slug: "mergeable-position",
+                outcome: "No",
+                endDate: "2026-02-11",
+            },
+        ])
+
+        const venue = new PolymarketVenueAdapter(client.client)
+        const positions = await venue.getPositions()
+
+        expect(client.getCurrentPositions).toHaveBeenCalledOnce()
+        expect(positions).toEqual([
+            {
+                instrument: "token-active",
+                side: "long",
+                quantity: 64.5161,
+                entryPrice: 0.3099,
+                currentPrice: 0.165,
+                unrealizedPnl: -9.3548,
+                metadata: {
+                    venue: "polymarket",
+                    market: "condition-active",
+                    question: "Will the US acquire part of Greenland in 2026?",
+                    outcome: "Yes",
+                    slug: "will-the-us-acquire-any-part-of-greenland-in-2026",
+                    redeemable: false,
+                    mergeable: false,
+                    endDate: "2026-12-31",
+                },
+            },
+        ])
     })
 })
 

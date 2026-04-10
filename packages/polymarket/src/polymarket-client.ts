@@ -18,6 +18,7 @@ const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000" as const
 
 const DEFAULT_HOST = "https://clob.polymarket.com"
 const DEFAULT_GAMMA_HOST = "https://gamma-api.polymarket.com"
+const DEFAULT_DATA_HOST = "https://data-api.polymarket.com"
 const DEFAULT_CHAIN_ID = 137
 const POLYMARKET_REQUEST_TIMEOUT_MS = 30_000
 
@@ -63,6 +64,8 @@ export interface PolymarketCredentials {
     host?: string
     /** Gamma API host. Defaults to https://gamma-api.polymarket.com */
     gammaHost?: string
+    /** Data API host. Defaults to https://data-api.polymarket.com */
+    dataHost?: string
     /** Chain ID. 137 for Polygon mainnet, 80002 for Amoy testnet */
     chainId?: number
     /** Polymarket profile or funder address for proxy wallet (type 1) */
@@ -147,6 +150,35 @@ export interface PolymarketBalanceAllowance {
     allowances?: Record<string, string>
 }
 
+export interface PolymarketCurrentPosition {
+    proxyWallet: string
+    asset: string
+    conditionId: string
+    size: number
+    avgPrice: number
+    initialValue: number
+    currentValue: number
+    cashPnl: number
+    percentPnl: number
+    totalBought: number
+    realizedPnl: number
+    percentRealizedPnl: number
+    curPrice: number
+    redeemable: boolean
+    mergeable: boolean
+    title: string
+    slug: string
+    icon?: string
+    eventId?: string
+    eventSlug?: string
+    outcome: string
+    outcomeIndex?: number
+    oppositeOutcome?: string
+    oppositeAsset?: string
+    endDate: string
+    negativeRisk?: boolean
+}
+
 export interface CreateOrderParams {
     tokenId: string
     side: "buy" | "sell"
@@ -205,6 +237,7 @@ export class PolymarketClient {
     private readonly apiPassphrase: string
     private readonly host: string
     private readonly gammaHost: string
+    private readonly dataHost: string
     private readonly chainId: number
     private readonly signatureType: PolymarketSignatureType
     private readonly funderAddress: `0x${string}`
@@ -226,6 +259,7 @@ export class PolymarketClient {
         this.apiPassphrase = credentials.apiPassphrase
         this.host = (credentials.host ?? DEFAULT_HOST).replace(/\/+$/, "")
         this.gammaHost = (credentials.gammaHost ?? DEFAULT_GAMMA_HOST).replace(/\/+$/, "")
+        this.dataHost = (credentials.dataHost ?? DEFAULT_DATA_HOST).replace(/\/+$/, "")
         this.chainId = credentials.chainId ?? DEFAULT_CHAIN_ID
         this.signatureType = 1
 
@@ -579,6 +613,21 @@ export class PolymarketClient {
         return allTrades
     }
 
+    async getCurrentPositions(params?: {
+        user?: string
+        sizeThreshold?: number
+    }): Promise<PolymarketCurrentPosition[]> {
+        const query = new URLSearchParams()
+        query.set("user", params?.user ?? this.funderAddress)
+        if (params?.sizeThreshold !== undefined) {
+            query.set("sizeThreshold", String(params.sizeThreshold))
+        }
+
+        return await this.requestData<PolymarketCurrentPosition[]>(
+            `/positions?${query.toString()}`
+        )
+    }
+
     /** Get USDC balance (converted from raw 6-decimal integer to USD) */
     async getBalance(): Promise<number> {
         const balance = await this.getBalanceAllowance({
@@ -624,6 +673,10 @@ export class PolymarketClient {
 
     private async requestGamma<T>(path: string): Promise<T> {
         return await this.requestPublicAgainstBaseUrl(this.gammaHost, path)
+    }
+
+    private async requestData<T>(path: string): Promise<T> {
+        return await this.requestPublicAgainstBaseUrl(this.dataHost, path)
     }
 
     private async requestPublicAgainstBaseUrl<T>(
