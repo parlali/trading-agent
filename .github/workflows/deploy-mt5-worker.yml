@@ -1,25 +1,102 @@
 name: Deploy MT5 Worker
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'apps/mt5-worker/**'
-  workflow_dispatch:
+    push:
+        branches: [main]
+        paths:
+            - "apps/mt5-worker/**"
+    workflow_dispatch:
 
 jobs:
-  deploy:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Deploy to Windows VM
-        uses: appleboy/ssh-action@v1
-        with:
-          host: ${{ secrets.MT5_WORKER_VM_HOST }}
-          port: 2227
-          username: ${{ secrets.VM_USER }}
-          password: ${{ secrets.VM_PASSWORD }}
-          script_stop: true
-          script: |
-            cd /d "${{ secrets.MT5_WORKER_REPO_DIR }}"
-            git pull
-            nssm restart trading-mt5-worker
+    deploy:
+        runs-on: ubuntu-latest
+        steps:
+            - name: Deploy to Windows VM
+              uses: appleboy/ssh-action@v1
+              with:
+                  host: ${{ secrets.MT5_WORKER_VM_HOST }}
+                  port: 2227
+                  username: ${{ secrets.VM_USER }}
+                  password: ${{ secrets.VM_PASSWORD }}
+                  script_stop: true
+                  script: |
+                      echo "========== DEPLOY START =========="
+                      echo "Timestamp: %DATE% %TIME%"
+                      echo "User: %USERNAME%"
+                      echo "Working directory before cd:"
+                      cd
+                      echo.
+
+                      echo "--- Step 1: Navigate to repo ---"
+                      cd /d "${{ secrets.MT5_WORKER_REPO_DIR }}"
+                      if %ERRORLEVEL% NEQ 0 (
+                          echo "FATAL: Could not cd to trading directory"
+                          exit /b 1
+                      )
+                      echo "Current directory:"
+                      cd
+                      echo "Directory contents:"
+                      dir /b
+                      echo.
+
+                      echo "--- Step 2: Git status before pull ---"
+                      git status
+                      git log --oneline -3
+                      echo.
+
+                      echo "--- Step 3: Git pull ---"
+                      git pull 2>&1
+                      if %ERRORLEVEL% NEQ 0 (
+                          echo "FATAL: git pull failed with exit code %ERRORLEVEL%"
+                          exit /b 1
+                      )
+                      echo "Git pull succeeded"
+                      echo "Latest commits after pull:"
+                      git log --oneline -3
+                      echo.
+
+                      echo "--- Step 4: Check NSSM exists ---"
+                      where nssm
+                      if %ERRORLEVEL% NEQ 0 (
+                          echo "FATAL: nssm not found in PATH"
+                          echo "PATH is: %PATH%"
+                          exit /b 1
+                      )
+                      echo.
+
+                      echo "--- Step 5: Check service status before restart ---"
+                      nssm status trading-mt5-worker
+                      echo.
+
+                      echo "--- Step 6: Restart service ---"
+                      nssm restart trading-mt5-worker 2>&1
+                      if %ERRORLEVEL% NEQ 0 (
+                          echo "WARNING: nssm restart exited with code %ERRORLEVEL%"
+                          echo "Attempting stop then start instead..."
+                          nssm stop trading-mt5-worker 2>&1
+                          timeout /t 3 /nobreak
+                          nssm start trading-mt5-worker 2>&1
+                          if %ERRORLEVEL% NEQ 0 (
+                              echo "FATAL: Could not start service"
+                              exit /b 1
+                          )
+                      )
+                      echo.
+
+                      echo "--- Step 7: Verify service is running ---"
+                      timeout /t 5 /nobreak
+                      nssm status trading-mt5-worker
+                      echo.
+
+                      echo "--- Step 8: Check worker health endpoint ---"
+                      timeout /t 3 /nobreak
+                      curl -s -o NUL -w "Health check HTTP status: %%{http_code}\n" http://localhost:8090/health -H "X-Worker-Key: %MT5_WORKER_ACCESS_KEY%"
+                      echo.
+
+                      echo "--- Step 9: Check recent service logs ---"
+                      nssm get trading-mt5-worker AppStdout
+                      nssm get trading-mt5-worker AppStderr
+                      echo.
+
+                      echo "========== DEPLOY COMPLETE =========="
+                      echo "Timestamp: %DATE% %TIME%"

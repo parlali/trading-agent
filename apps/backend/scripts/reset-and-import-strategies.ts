@@ -1,12 +1,13 @@
 import {
-    addDeleteCounts,
     createClient,
     createDeleteTotals,
-    flushOrphanedStrategyHistory,
+    finalizeFullResetCleanup,
     getStrategyModel,
     loadStrategiesFromDocument,
     printDeleteCounts,
     runScript,
+    addDeleteCounts,
+    assertFullResetAuditClean,
 } from "./lib/strategy-cli"
 import { resetStrategySafely } from "./lib/safe-strategy-reset"
 
@@ -30,15 +31,20 @@ runScript(async () => {
             addDeleteCounts(totals, result.deleted)
         }
 
-        const orphaned = await flushOrphanedStrategyHistory(client, {
-            log: (message) => console.log(`  ${message}`),
-        })
-        addDeleteCounts(totals, orphaned)
-
-        console.log("Deleted:")
-        printDeleteCounts(totals)
-        console.log("")
+    } else {
+        console.log("No existing strategies found. Running full reset cleanup and audit before import...")
     }
+
+    const cleanup = await finalizeFullResetCleanup(client, {
+        log: (message) => console.log(`  ${message}`),
+    })
+    addDeleteCounts(totals, cleanup.deleted)
+
+    console.log("Deleted:")
+    printDeleteCounts(totals)
+    assertFullResetAuditClean(cleanup.audit)
+    console.log("Full reset audit passed")
+    console.log("")
 
     console.log(`Importing ${strategies.length} strategies...`)
 

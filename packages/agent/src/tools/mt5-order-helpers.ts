@@ -65,14 +65,6 @@ export const mt5OrderJsonSchema = {
         reason: { type: "string", description: "Why this trade is being taken" },
     },
     required: ["instrument", "side", "orderType", "stopLoss", "reason"],
-    oneOf: [
-        {
-            required: ["takeProfit"],
-        },
-        {
-            required: ["riskRewardRatio"],
-        },
-    ],
 } as const
 
 export interface MT5OrderResult {

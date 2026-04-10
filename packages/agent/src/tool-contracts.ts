@@ -1,5 +1,6 @@
 import { VENUE_APPS, type VenueApp } from "@valiq-trading/core"
 import { z } from "zod"
+import { POLYMARKET_SEARCH_MARKETS_MAX_LIVE_PRICE_TOKENS } from "@valiq-trading/polymarket"
 import {
     binanceOrderJsonSchema,
     binanceOrderParamsSchema,
@@ -137,7 +138,7 @@ export const alpacaOrderJsonSchema = {
             enum: ["limit"],
             description: "Only net-credit limit entries are supported for this strategy path",
         },
-        limitPrice: { type: "number", description: "Net credit limit price for the full 4-leg structure" },
+        limitPrice: { type: "number", description: "Positive net credit limit price for the full 4-leg structure. The system translates it to Alpaca's signed `mleg` wire value." },
         timeInForce: {
             type: "string",
             enum: ["day"],
@@ -255,7 +256,7 @@ export const alpacaModifyOrderJsonSchema = {
     type: "object",
     properties: {
         orderId: { type: "string", description: "The order ID to modify" },
-        limitPrice: { type: "number", description: "New net limit price for the full structure" },
+        limitPrice: { type: "number", description: "New positive net limit price for the full structure. The system handles Alpaca's signed `mleg` wire value." },
         quantity: { type: "number", description: "Optional new structure quantity" },
         reason: { type: "string", description: "Why the order is being modified" },
     },
@@ -284,10 +285,6 @@ export const mt5ModifyOrderJsonSchema = {
         reason: { type: "string", description: "Why the protective levels are changing" },
     },
     required: ["orderId"],
-    anyOf: [
-        { required: ["newStopLoss"] },
-        { required: ["newTakeProfit"] },
-    ],
 } satisfies Record<string, unknown>
 
 export const getOptionsChainParamsSchema = z.object({
@@ -439,17 +436,28 @@ export const binanceOrderBookJsonSchema = {
 } satisfies Record<string, unknown>
 
 export const searchMarketsParamsSchema = z.object({
+    category: z.string().optional(),
     query: z.string().optional(),
     conditionId: z.string().optional(),
     limit: z.number().int().positive().max(25).optional(),
+    includeLivePrices: z.boolean().optional(),
+    livePriceTokenLimit: z.number()
+        .int()
+        .positive()
+        .max(POLYMARKET_SEARCH_MARKETS_MAX_LIVE_PRICE_TOKENS)
+        .optional(),
 })
 
 export const searchMarketsJsonSchema = {
     type: "object",
     properties: {
+        category: {
+            type: "string",
+            description: "Polymarket category/tag slug such as politics, crypto, finance, or world",
+        },
         query: {
             type: "string",
-            description: "Search text matching the question, description, category, or outcomes",
+            description: "Optional search text to narrow the Gamma category or public-search results",
         },
         conditionId: {
             type: "string",
@@ -458,6 +466,14 @@ export const searchMarketsJsonSchema = {
         limit: {
             type: "number",
             description: "Maximum number of markets to return",
+        },
+        includeLivePrices: {
+            type: "boolean",
+            description: "Opt-in live Polymarket CLOB price enrichment for returned token IDs. Leave unset for Gamma-only discovery.",
+        },
+        livePriceTokenLimit: {
+            type: "number",
+            description: `Maximum number of token IDs to enrich with live prices when includeLivePrices is true. Hard capped at ${POLYMARKET_SEARCH_MARKETS_MAX_LIVE_PRICE_TOKENS}.`,
         },
     },
 } satisfies Record<string, unknown>
@@ -489,6 +505,43 @@ export const webFetchJsonSchema = {
     },
     required: ["url"],
 } satisfies Record<string, unknown>
+
+const OPENROUTER_UNSUPPORTED_TOP_LEVEL_JSON_SCHEMA_KEYS = [
+    "oneOf",
+    "anyOf",
+    "allOf",
+    "enum",
+    "not",
+] as const
+
+function validateOpenRouterToolJsonSchema(
+    schema: Record<string, unknown>,
+    label: string
+): void {
+    for (const key of OPENROUTER_UNSUPPORTED_TOP_LEVEL_JSON_SCHEMA_KEYS) {
+        if (key in schema) {
+            throw new Error(
+                `Tool schema ${label} uses unsupported top-level JSON Schema keyword ${key}`
+            )
+        }
+    }
+}
+
+function validateToolContractJsonSchemas(contract: ToolContractDefinition): void {
+    if (contract.defaultVariant) {
+        validateOpenRouterToolJsonSchema(
+            contract.defaultVariant.jsonSchema,
+            `${contract.name} default`
+        )
+    }
+
+    for (const [venue, variant] of Object.entries(contract.variants ?? {})) {
+        validateOpenRouterToolJsonSchema(
+            variant.jsonSchema,
+            `${contract.name} variant:${venue}`
+        )
+    }
+}
 
 const toolContracts = createToolContractCatalog([
     {
@@ -589,7 +642,7 @@ const toolContracts = createToolContractCatalog([
         compatibleVenues: VENUE_APPS,
         variants: {
             "alpaca-options": {
-                description: "Propose a new 4-leg iron condor entry. Use net-credit limit pricing, `day` time in force, and four OCC option legs with explicit open semantics.",
+                description: "Propose a new 4-leg iron condor entry. Use a positive net-credit `limitPrice`, `day` time in force, and four OCC option legs with explicit open semantics. The system converts the price to Alpaca's signed `mleg` wire format.",
                 parameters: alpacaOrderParamsSchema,
                 jsonSchema: alpacaOrderJsonSchema,
                 outputDescription: "Returns the normalized execution result, risk validation, and tracked order snapshot for the structure.",
@@ -695,7 +748,7 @@ const toolContracts = createToolContractCatalog([
         compatibleVenues: ["alpaca-options", "polymarket", "mt5"],
         variants: {
             "alpaca-options": {
-                description: "Modify a working Alpaca iron condor order. Supported changes are the net limit price and, if truly necessary, the structure quantity.",
+                description: "Modify a working Alpaca iron condor order. Supported changes are the positive net limit price and, if truly necessary, the structure quantity. The system handles Alpaca's signed `mleg` wire price.",
                 parameters: alpacaModifyOrderParamsSchema,
                 jsonSchema: alpacaModifyOrderJsonSchema,
                 outputDescription: "Returns the normalized order modification result plus the refreshed tracked order snapshot.",
@@ -812,10 +865,10 @@ const toolContracts = createToolContractCatalog([
         owner: "polymarket",
         compatibleVenues: ["polymarket"],
         defaultVariant: {
-            description: "Search active Polymarket markets by query or fetch a specific market by condition ID. Returns market metadata plus current token pricing and basic liquidity indicators.",
+            description: "Discover active Polymarket markets via Gamma. Use this to get a top-liquid candidate list and token IDs first, then request live prices or order books only for your best candidate markets.",
             parameters: searchMarketsParamsSchema,
             jsonSchema: searchMarketsJsonSchema,
-            outputDescription: "Returns normalized Polymarket market search results.",
+            outputDescription: "Returns normalized Polymarket market discovery results. By default this is Gamma-only metadata plus token IDs; live price enrichment is explicit and tightly capped.",
             errorSemantics: "Invalid empty requests throw before venue lookup.",
         },
     },
@@ -873,6 +926,8 @@ export function createToolContractCatalog(
                 }
             }
         }
+
+        validateToolContractJsonSchemas(contract)
 
         catalog.set(contract.name, contract)
     }

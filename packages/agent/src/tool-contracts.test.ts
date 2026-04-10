@@ -4,7 +4,16 @@ import {
     getToolBoundary,
     getToolCategory,
     getToolContract,
+    listToolContracts,
 } from "./tool-contracts"
+
+const unsupportedTopLevelSchemaKeys = [
+    "oneOf",
+    "anyOf",
+    "allOf",
+    "enum",
+    "not",
+] as const
 
 describe("tool contracts", () => {
     it("rejects duplicate contract names", () => {
@@ -54,5 +63,13 @@ describe("tool contracts", () => {
         expect(mt5Order.description).toContain("MT5")
         expect(binanceOrder.description).toContain("Binance futures")
         expect(polymarketMarketPrice.description).toContain("Polymarket")
+    })
+
+    it("keeps every cataloged tool schema OpenRouter-compatible", () => {
+        for (const contract of listToolContracts()) {
+            for (const key of unsupportedTopLevelSchemaKeys) {
+                expect(contract.jsonSchema).not.toHaveProperty(key)
+            }
+        }
     })
 })

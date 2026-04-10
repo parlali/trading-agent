@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { ValiqDataClient } from "./client"
 import { ValiqDataAdapter } from "./data"
 import { createValiqBreakingNewsTool, createValiqDataTool } from "./tools"
@@ -26,6 +26,10 @@ const MOCK_BREAKING_NEWS: BreakingNewsResponse = {
     },
 }
 
+function getMockRequest(client: ValiqDataClient): ReturnType<typeof vi.fn> {
+    return client.request as unknown as ReturnType<typeof vi.fn>
+}
+
 describe("createValiqBreakingNewsTool", () => {
     let mockClient: ValiqDataClient
     let adapter: ValiqDataAdapter
@@ -49,7 +53,7 @@ describe("createValiqBreakingNewsTool", () => {
     })
 
     it("calls the breaking news endpoint with no params", async () => {
-        vi.mocked(mockClient.request).mockResolvedValue(MOCK_BREAKING_NEWS)
+        getMockRequest(mockClient).mockResolvedValue(MOCK_BREAKING_NEWS)
 
         const tool = createValiqBreakingNewsTool(adapter)
         const result = await tool.handler({})
@@ -59,7 +63,7 @@ describe("createValiqBreakingNewsTool", () => {
     })
 
     it("passes window parameter to the endpoint", async () => {
-        vi.mocked(mockClient.request).mockResolvedValue(MOCK_BREAKING_NEWS)
+        getMockRequest(mockClient).mockResolvedValue(MOCK_BREAKING_NEWS)
 
         const tool = createValiqBreakingNewsTool(adapter)
         await tool.handler({ window: "1h" })
@@ -68,7 +72,7 @@ describe("createValiqBreakingNewsTool", () => {
     })
 
     it("passes source parameter to the endpoint", async () => {
-        vi.mocked(mockClient.request).mockResolvedValue(MOCK_BREAKING_NEWS)
+        getMockRequest(mockClient).mockResolvedValue(MOCK_BREAKING_NEWS)
 
         const tool = createValiqBreakingNewsTool(adapter)
         await tool.handler({ source: "fmp-crypto" })
@@ -77,12 +81,12 @@ describe("createValiqBreakingNewsTool", () => {
     })
 
     it("passes both parameters to the endpoint", async () => {
-        vi.mocked(mockClient.request).mockResolvedValue(MOCK_BREAKING_NEWS)
+        getMockRequest(mockClient).mockResolvedValue(MOCK_BREAKING_NEWS)
 
         const tool = createValiqBreakingNewsTool(adapter)
         await tool.handler({ window: "7d", source: "fmp-general" })
 
-        const call = vi.mocked(mockClient.request).mock.calls[0]![0] as string
+        const call = getMockRequest(mockClient).mock.calls[0]![0] as string
         expect(call).toContain("window=7d")
         expect(call).toContain("source=fmp-general")
     })
@@ -98,7 +102,7 @@ describe("createValiqBreakingNewsTool", () => {
     })
 
     it("propagates API errors", async () => {
-        vi.mocked(mockClient.request).mockRejectedValue(
+        getMockRequest(mockClient).mockRejectedValue(
             new Error("Val-iQ Data API error: 500 Internal Server Error")
         )
 
@@ -128,7 +132,7 @@ describe("createValiqDataTool", () => {
     })
 
     it("routes getBreakingNews endpoint", async () => {
-        vi.mocked(mockClient.request).mockResolvedValue(MOCK_BREAKING_NEWS)
+        getMockRequest(mockClient).mockResolvedValue(MOCK_BREAKING_NEWS)
 
         const tool = createValiqDataTool(adapter)
         await tool.handler({ endpoint: "getBreakingNews" })
@@ -167,12 +171,18 @@ describe("createValiqDataTool", () => {
 })
 
 describe("ValiqDataClient", () => {
+    const originalFetch = globalThis.fetch
+
+    afterEach(() => {
+        globalThis.fetch = originalFetch
+    })
+
     it("sends X-API-Key header", async () => {
         const fetchSpy = vi.fn().mockResolvedValue({
             ok: true,
             json: () => Promise.resolve({ articles: [], summary: {} }),
         })
-        vi.stubGlobal("fetch", fetchSpy)
+        globalThis.fetch = fetchSpy as typeof fetch
 
         const client = new ValiqDataClient({
             apiUrl: "https://data.example.com",
@@ -189,8 +199,6 @@ describe("ValiqDataClient", () => {
                 }),
             })
         )
-
-        vi.unstubAllGlobals()
     })
 
     it("throws on non-ok responses", async () => {
@@ -200,7 +208,7 @@ describe("ValiqDataClient", () => {
             statusText: "Unauthorized",
             text: () => Promise.resolve("Invalid API key"),
         })
-        vi.stubGlobal("fetch", fetchSpy)
+        globalThis.fetch = fetchSpy as typeof fetch
 
         const client = new ValiqDataClient({
             apiUrl: "https://data.example.com",
@@ -208,8 +216,6 @@ describe("ValiqDataClient", () => {
         })
 
         await expect(client.request("/breaking-news")).rejects.toThrow("401")
-
-        vi.unstubAllGlobals()
     })
 })
 

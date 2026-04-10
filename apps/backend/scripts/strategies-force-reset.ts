@@ -1,10 +1,11 @@
 import {
-    addDeleteCounts,
     createDeleteTotals,
-    flushOrphanedStrategyHistory,
+    finalizeFullResetCleanup,
     printDeleteCounts,
     createClient,
     runScript,
+    addDeleteCounts,
+    assertFullResetAuditClean,
 } from "./lib/strategy-cli"
 import {
     createVenue,
@@ -22,102 +23,103 @@ runScript(async () => {
     const client = createClient()
     const strategies = await client.getAllStrategies()
     const representativeStrategies = getRepresentativeStrategiesByApp(strategies)
-
-    if (strategies.length === 0) {
-        console.log("No strategies to reset")
-        return
-    }
-
-    console.log("Destructive force reset requested")
-    console.log("Expecting backend schedulers and workers to already be stopped before this runs")
-
-    await preflightForceReset(client, representativeStrategies)
-
-    const recoveredBeforeDisable = await client.recoverRunningRuns()
-    console.log(`Recovered running runs before disable: ${recoveredBeforeDisable}`)
-
-    for (const strategy of strategies) {
-        await client.disableStrategy(strategy._id)
-    }
-
-    console.log(`Disabled ${strategies.length} strategies`)
-
-    let cancelledOrders = 0
-    let closedPositions = 0
-
-    for (const strategy of representativeStrategies) {
-        console.log(`  Flattening ${strategy.app} provider account using ${strategy.name}...`)
-
-        if (isDryRunStrategy(strategy)) {
-            console.log("    skipping venue flatten because this strategy is dry-run only")
-            continue
-        }
-
-        for (let attempt = 1; attempt <= FORCE_RESET_FLATTEN_ATTEMPTS; attempt++) {
-            const { venue } = await createVenue(strategy, client)
-            const [positions, workingOrders] = await Promise.all([
-                venue.getPositions(),
-                venue.getWorkingOrders ? venue.getWorkingOrders() : Promise.resolve([]),
-            ])
-
-            if (positions.length === 0 && workingOrders.length === 0) {
-                break
-            }
-
-            console.log(
-                `    attempt ${attempt}/${FORCE_RESET_FLATTEN_ATTEMPTS}: ${positions.length} live position(s), ${workingOrders.length} live working order(s)`
-            )
-
-            const result =
-                venue instanceof MT5VenueAdapter && workingOrders.length > 0
-                    ? await flattenMT5Exposure(venue, positions, workingOrders)
-                    : await flattenVenueExposure(venue, {
-                        positions,
-                        workingOrders,
-                    })
-
-            cancelledOrders += result.cancelledOrders
-            closedPositions += result.closedPositions
-
-            for (const failure of result.orderFailures) {
-                console.log(`      ${failure}`)
-            }
-
-            for (const failure of result.positionFailures) {
-                console.log(`      ${failure}`)
-            }
-
-            if (attempt < FORCE_RESET_FLATTEN_ATTEMPTS) {
-                await sleep(FORCE_RESET_FLATTEN_DELAY_MS)
-            }
-        }
-
-        await reconcileAndVerifyReset(client, strategy, undefined, {
-            requireHealthyState: false,
-        })
-    }
-
-    const recoveredBeforeDelete = await client.recoverRunningRuns()
-    console.log(`Recovered running runs before delete: ${recoveredBeforeDelete}`)
-
     const deleted = createDeleteTotals()
 
-    for (const strategy of strategies) {
-        const result = await client.deleteStrategy(strategy._id)
-        deleted.strategies++
-        addDeleteCounts(deleted, result)
+    if (strategies.length === 0) {
+        console.log("No strategies found. Running full reset cleanup and audit...")
+    } else {
+        console.log("Destructive force reset requested")
+        console.log("Expecting backend schedulers and workers to already be stopped before this runs")
+
+        await preflightForceReset(client, representativeStrategies)
+
+        const recoveredBeforeDisable = await client.recoverRunningRuns()
+        console.log(`Recovered running runs before disable: ${recoveredBeforeDisable}`)
+
+        for (const strategy of strategies) {
+            await client.disableStrategy(strategy._id)
+        }
+
+        console.log(`Disabled ${strategies.length} strategies`)
+
+        let cancelledOrders = 0
+        let closedPositions = 0
+
+        for (const strategy of representativeStrategies) {
+            console.log(`  Flattening ${strategy.app} provider account using ${strategy.name}...`)
+
+            if (isDryRunStrategy(strategy)) {
+                console.log("    skipping venue flatten because this strategy is dry-run only")
+                continue
+            }
+
+            for (let attempt = 1; attempt <= FORCE_RESET_FLATTEN_ATTEMPTS; attempt++) {
+                const { venue } = await createVenue(strategy, client)
+                const [positions, workingOrders] = await Promise.all([
+                    venue.getPositions(),
+                    venue.getWorkingOrders ? venue.getWorkingOrders() : Promise.resolve([]),
+                ])
+
+                if (positions.length === 0 && workingOrders.length === 0) {
+                    break
+                }
+
+                console.log(
+                    `    attempt ${attempt}/${FORCE_RESET_FLATTEN_ATTEMPTS}: ${positions.length} live position(s), ${workingOrders.length} live working order(s)`
+                )
+
+                const result =
+                    venue instanceof MT5VenueAdapter && workingOrders.length > 0
+                        ? await flattenMT5Exposure(venue, positions, workingOrders)
+                        : await flattenVenueExposure(venue, {
+                            positions,
+                            workingOrders,
+                        })
+
+                cancelledOrders += result.cancelledOrders
+                closedPositions += result.closedPositions
+
+                for (const failure of result.orderFailures) {
+                    console.log(`      ${failure}`)
+                }
+
+                for (const failure of result.positionFailures) {
+                    console.log(`      ${failure}`)
+                }
+
+                if (attempt < FORCE_RESET_FLATTEN_ATTEMPTS) {
+                    await sleep(FORCE_RESET_FLATTEN_DELAY_MS)
+                }
+            }
+
+            await reconcileAndVerifyReset(client, strategy, undefined, {
+                requireHealthyState: false,
+            })
+        }
+
+        const recoveredBeforeDelete = await client.recoverRunningRuns()
+        console.log(`Recovered running runs before delete: ${recoveredBeforeDelete}`)
+
+        for (const strategy of strategies) {
+            const result = await client.deleteStrategy(strategy._id)
+            deleted.strategies++
+            addDeleteCounts(deleted, result)
+        }
+
+        console.log("Provider cleanup:")
+        console.log(`  cancelled orders: ${cancelledOrders}`)
+        console.log(`  closed positions: ${closedPositions}`)
     }
 
-    const orphaned = await flushOrphanedStrategyHistory(client, {
+    const cleanup = await finalizeFullResetCleanup(client, {
         log: (message) => console.log(`  ${message}`),
     })
-    addDeleteCounts(deleted, orphaned)
+    addDeleteCounts(deleted, cleanup.deleted)
 
-    console.log("Provider cleanup:")
-    console.log(`  cancelled orders: ${cancelledOrders}`)
-    console.log(`  closed positions: ${closedPositions}`)
     console.log("Deleted:")
     printDeleteCounts(deleted)
+    assertFullResetAuditClean(cleanup.audit)
+    console.log("Full reset audit passed")
 })
 
 async function preflightForceReset(

@@ -59,3 +59,67 @@ export const getManualRunRequests = query({
             .collect()
     },
 })
+
+export const getFullResetAudit = query({
+    args: {
+        serviceToken: v.string(),
+    },
+    handler: async (ctx, args) => {
+        requireServiceToken(args.serviceToken)
+
+        const [
+            strategies,
+            runs,
+            agentLogs,
+            tradeEvents,
+            orders,
+            orderTransitions,
+            positions,
+            instrumentClaims,
+            positionSyncs,
+            providerPositions,
+            providerWorkingOrders,
+            providerSyncStates,
+            accountSnapshots,
+            appHeartbeats,
+            manualRunRequests,
+            alerts,
+        ] = await Promise.all([
+            ctx.db.query("strategies").collect(),
+            ctx.db.query("strategy_runs").collect(),
+            ctx.db.query("agent_logs").collect(),
+            ctx.db.query("trade_events").collect(),
+            ctx.db.query("orders").collect(),
+            ctx.db.query("order_transitions").collect(),
+            ctx.db.query("positions").collect(),
+            ctx.db.query("instrument_claims").collect(),
+            ctx.db.query("position_syncs").collect(),
+            ctx.db.query("provider_positions").collect(),
+            ctx.db.query("provider_working_orders").collect(),
+            ctx.db.query("provider_sync_state").collect(),
+            ctx.db.query("account_snapshots").collect(),
+            ctx.db.query("app_heartbeats").collect(),
+            ctx.db.query("manual_run_requests").collect(),
+            ctx.db.query("alerts").collect(),
+        ])
+
+        return {
+            strategies: strategies.length,
+            runs: runs.length,
+            agentLogs: agentLogs.length,
+            tradeEvents: tradeEvents.length,
+            orders: orders.length,
+            orderTransitions: orderTransitions.length,
+            positions: positions.length,
+            instrumentClaims: instrumentClaims.length,
+            positionSyncs: positionSyncs.length,
+            providerPositions: providerPositions.length,
+            providerWorkingOrders: providerWorkingOrders.length,
+            providerSyncStates: providerSyncStates.length,
+            accountSnapshots: accountSnapshots.length,
+            appHeartbeats: appHeartbeats.length,
+            manualRunRequests: manualRunRequests.length,
+            alerts: alerts.length,
+        }
+    },
+})

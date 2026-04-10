@@ -15,29 +15,36 @@ import {
     setPeriodicSyncInFlight,
     setPeriodicSyncTimer,
 } from "./state"
-import { reconcileProviderPortfolio, getProviderSyncEntry, recordProviderSyncFailure } from "./provider-sync"
-import { registerStrategyWithScheduler } from "./scheduler"
-import type { VenueApp } from "./types"
+import { getRequiredVenueApps } from "./required-apps"
+import { resolveAllSecrets, validateAllEnvironments } from "./plugins/init"
+import { reconcileProviderPortfolio, getProviderSyncConfig, recordProviderSyncFailure } from "./provider-sync"
+import {
+    registerStrategyWithScheduler,
+    resolveStrategyRuntimeState,
+    syncStrategyEntryChanged,
+    upsertSyncStrategyEntry,
+} from "./scheduler"
 
 export async function performStartupSync(): Promise<void> {
     logger.info("Performing startup sync for validated venues")
 
-    for (const app of ALL_APPS) {
+    const requiredApps = getRequiredVenueApps(
+        ALL_APPS,
+        syncStrategies,
+        await backend.getPortfolioFreshness()
+    )
+
+    for (const app of requiredApps) {
         if (!healthState.venues[app]?.validated) {
             logger.warn(`Skipping startup sync for ${app}: environment not validated`)
-            continue
-        }
-
-        const entry = getProviderSyncEntry(app)
-        if (!entry) {
-            logger.info("Skipping startup sync for app with no registered strategies", { app })
             continue
         }
 
         try {
             const plugin = plugins[app]
             if (!plugin) continue
-            const venue = plugin.createVenueAdapter(entry.policy, entry.secrets)
+            const syncConfig = getProviderSyncConfig(app)
+            const venue = plugin.createVenueAdapter(syncConfig.policy, syncConfig.secrets)
             const result = await reconcileProviderPortfolio({
                 app,
                 venueName: plugin.venueName,
@@ -81,7 +88,9 @@ export async function performStartupSync(): Promise<void> {
     }
 }
 
-async function reconcileStrategies(scheduler: Scheduler): Promise<void> {
+export async function reconcileStrategies(scheduler: Scheduler): Promise<void> {
+    await resolveAllSecrets()
+
     const registered = new Set(scheduler.getRegisteredStrategies())
 
     for (const app of ALL_APPS) {
@@ -110,7 +119,47 @@ async function reconcileStrategies(scheduler: Scheduler): Promise<void> {
                     name: strategy.name,
                     app,
                 })
+                continue
             }
+
+            const currentEntry = syncStrategies[app]?.find(
+                (entry) => entry.strategy._id === strategy._id
+            )
+            const nextEntry = await resolveStrategyRuntimeState(app, strategy)
+
+            if (!currentEntry) {
+                upsertSyncStrategyEntry(app, nextEntry)
+                logger.info("Restored missing in-memory runtime state for registered strategy", {
+                    strategyId: strategy._id,
+                    name: strategy.name,
+                    app,
+                })
+                continue
+            }
+
+            if (!syncStrategyEntryChanged(currentEntry, nextEntry)) {
+                continue
+            }
+
+            upsertSyncStrategyEntry(app, nextEntry)
+
+            if (currentEntry.strategy.schedule !== nextEntry.strategy.schedule) {
+                await registerStrategyWithScheduler(scheduler, app, strategy)
+                logger.info("Refreshed registered strategy after schedule change", {
+                    strategyId: strategy._id,
+                    name: strategy.name,
+                    app,
+                    previousSchedule: currentEntry.strategy.schedule,
+                    nextSchedule: nextEntry.strategy.schedule,
+                })
+                continue
+            }
+
+            logger.info("Refreshed registered strategy runtime state", {
+                strategyId: strategy._id,
+                name: strategy.name,
+                app,
+            })
         }
 
         healthState.strategyCount = scheduler.getRegisteredStrategies().length
@@ -133,6 +182,7 @@ export function startPeriodicSync(scheduler: Scheduler): void {
                 })
             }
             await reconcileStrategies(scheduler)
+            await validateAllEnvironments(ALL_APPS)
             await performPeriodicSync()
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error)
@@ -151,20 +201,22 @@ export function stopPeriodicSync(): void {
 }
 
 export async function performPeriodicSync(): Promise<void> {
-    for (const app of ALL_APPS) {
-        if (!healthState.venues[app]?.validated) {
-            continue
-        }
+    const requiredApps = getRequiredVenueApps(
+        ALL_APPS,
+        syncStrategies,
+        await backend.getPortfolioFreshness()
+    )
 
-        const entry = getProviderSyncEntry(app)
-        if (!entry) {
+    for (const app of requiredApps) {
+        if (!healthState.venues[app]?.validated) {
             continue
         }
 
         try {
             const plugin = plugins[app]
             if (!plugin) continue
-            const venue = plugin.createVenueAdapter(entry.policy, entry.secrets)
+            const syncConfig = getProviderSyncConfig(app)
+            const venue = plugin.createVenueAdapter(syncConfig.policy, syncConfig.secrets)
             const result = await reconcileProviderPortfolio({
                 app,
                 venueName: plugin.venueName,

@@ -3,6 +3,7 @@ import {
     createTradingBackendClient,
     type CascadeDeleteCounts,
     type DeleteOrphanedStrategyHistoryBatchResult,
+    type FullResetAudit,
     type TradingBackendClient,
     type DeleteAllStrategiesResult,
 } from "@valiq-trading/convex"
@@ -186,6 +187,85 @@ export async function flushOrphanedStrategyHistory(
     }
 
     return totals
+}
+
+export async function finalizeFullResetCleanup(
+    client: TradingBackendClient,
+    options?: {
+        batchSize?: number
+        log?: (message: string) => void
+    }
+): Promise<{
+    deleted: DeleteAllStrategiesResult
+    audit: FullResetAudit
+}> {
+    const deleted = createDeleteTotals()
+    const log = options?.log
+
+    await assertNoProviderExposureBeforeCleanup(client)
+
+    const orphaned = await flushOrphanedStrategyHistory(client, options)
+    addDeleteCounts(deleted, orphaned)
+
+    const cleared = await client.clearFullResetState()
+    addDeleteCounts(deleted, cleared)
+
+    const clearedCount =
+        cleared.providerSyncStates +
+        cleared.accountSnapshots +
+        cleared.appHeartbeats +
+        cleared.alerts
+
+    if (clearedCount > 0) {
+        log?.(`Full-reset operational cleanup: removed ${clearedCount} document(s)`)
+    }
+
+    const audit = await client.getFullResetAudit()
+
+    return {
+        deleted,
+        audit,
+    }
+}
+
+export async function assertNoProviderExposureBeforeCleanup(
+    client: TradingBackendClient
+): Promise<void> {
+    const [positions, orders] = await Promise.all([
+        client.getPortfolioPositions(),
+        client.getPortfolioPendingOrders(),
+    ])
+
+    if (positions.length === 0 && orders.length === 0) {
+        return
+    }
+
+    const positionSummary = positions
+        .slice(0, 5)
+        .map((position) => `${position.app}:${position.instrument}:${position.ownershipStatus}`)
+        .join(", ")
+    const orderSummary = orders
+        .slice(0, 5)
+        .map((order) => `${order.app}:${order.orderId}:${order.instrument}:${order.ownershipStatus}`)
+        .join(", ")
+
+    throw new Error(
+        `Refusing to clear provider state while live provider exposure remains in Convex. Positions=${positions.length}${positionSummary ? ` [${positionSummary}${positions.length > 5 ? ", ..." : ""}]` : ""}. Orders=${orders.length}${orderSummary ? ` [${orderSummary}${orders.length > 5 ? ", ..." : ""}]` : ""}. Resolve or flatten the venue first.`
+    )
+}
+
+export function assertFullResetAuditClean(audit: FullResetAudit): void {
+    const remaining = Object.entries(audit).filter(([, count]) => count > 0)
+
+    if (remaining.length === 0) {
+        return
+    }
+
+    const details = remaining
+        .map(([key, count]) => `  - ${key}: ${count}`)
+        .join("\n")
+
+    throw new Error(`Full reset audit failed. Residual Convex state remains:\n${details}`)
 }
 
 function sumDeleteCounts(

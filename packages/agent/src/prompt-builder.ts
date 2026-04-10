@@ -220,7 +220,8 @@ function buildPolicySection(context: StrategyRunContext): string {
             "- Use quantity as the number of full structures and leg quantity `1` for each leg",
             "- Supported order type: `limit` only",
             "- Supported time in force: `day` only",
-            "- `limitPrice` is the net credit for the full structure, not a per-leg price",
+            "- `limitPrice` is the positive net price for the full structure, not a per-leg price",
+            "- For entries, pass the net credit as a positive number. The system handles Alpaca's signed `mleg` wire `limit_price` internally",
             "",
             "Lifecycle expectations:",
             "- Use `modify_order` only to improve or reduce the limit price on a still-working entry order",
@@ -228,6 +229,17 @@ function buildPolicySection(context: StrategyRunContext): string {
             "- Use `get_order_status` and `wait_for_order_update` to supervise working orders",
             "- Use `propose_close` to close an already-filled iron condor structure",
             "- Do not submit single-leg options, partial structures, stop orders, or duplicate replacement entries",
+        )
+    } else if (context.app === "polymarket") {
+        lines.push(
+            "",
+            "## Polymarket Discovery Requirements",
+            "",
+            "Use `search_markets` as a Gamma-backed discovery pass only. Treat the returned list as candidate metadata plus token IDs, not execution-grade pricing.",
+            "- Start with the top-liquid market list for the category or query you care about",
+            "- Narrow to only your top candidate markets before requesting live venue data",
+            "- Call `get_market_price` and `get_order_book` individually for only those top candidate token IDs before sizing or placing any trade",
+            "- Only opt into `search_markets` live price enrichment if you have a specific reason, and keep the token count tightly bounded",
         )
     }
 

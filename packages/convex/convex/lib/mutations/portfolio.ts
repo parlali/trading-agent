@@ -2,7 +2,10 @@ import { mutation } from "../../_generated/server"
 import type { MutationCtx } from "../../_generated/server"
 import type { Doc, Id } from "../../_generated/dataModel"
 import { v } from "convex/values"
-import { isTerminalOrderStatus } from "@valiq-trading/core"
+import {
+    isTerminalOrderStatus,
+    resolveProviderAdoptionInstruments,
+} from "@valiq-trading/core"
 import { requireServiceToken } from "../authGuards"
 import { reconcileOrderInstrumentClaim, replacePositionClaims } from "../instrumentClaims"
 import {
@@ -375,6 +378,148 @@ export const recordProviderSyncFailure = mutation({
     },
 })
 
+export const adoptProviderPositions = mutation({
+    args: {
+        serviceToken: v.string(),
+        app: venueAppV,
+        strategyId: v.id("strategies"),
+        instruments: v.array(v.string()),
+    },
+    handler: async (ctx, args) => {
+        requireServiceToken(args.serviceToken)
+
+        const strategy = await ctx.db.get(args.strategyId)
+        if (!strategy) {
+            throw new Error(`Strategy not found: ${args.strategyId}`)
+        }
+
+        if (strategy.app !== args.app) {
+            throw new Error(`Strategy ${args.strategyId} does not belong to ${args.app}`)
+        }
+
+        const requestedInstruments = Array.from(
+            new Set(
+                args.instruments
+                    .map((instrument) => instrument.trim())
+                    .filter((instrument) => instrument.length > 0)
+            )
+        )
+
+        if (requestedInstruments.length === 0) {
+            return {
+                adoptedPositions: 0,
+                adoptedOrders: 0,
+            }
+        }
+
+        const instrumentSet = new Set(requestedInstruments)
+        const appStrategies = await ctx.db
+            .query("strategies")
+            .withIndex("by_app", (q) => q.eq("app", args.app))
+            .collect()
+        const activeOrders = await listActiveOrdersForApp(ctx, appStrategies)
+        const conflictingOrders = activeOrders.filter(
+            (order) =>
+                instrumentSet.has(order.instrument) &&
+                order.strategyId !== args.strategyId
+        )
+
+        if (conflictingOrders.length > 0) {
+            throw new Error(
+                `Cannot adopt instruments with active Convex-tracked orders owned by another strategy: ${conflictingOrders.map((order) => `${order.instrument}:${order.orderId}`).join(", ")}`
+            )
+        }
+
+        const [claims, providerPositions, providerWorkingOrders] = await Promise.all([
+            ctx.db
+                .query("instrument_claims")
+                .withIndex("by_app", (q) => q.eq("app", args.app))
+                .collect(),
+            ctx.db
+                .query("provider_positions")
+                .withIndex("by_app", (q) => q.eq("app", args.app))
+                .collect(),
+            ctx.db
+                .query("provider_working_orders")
+                .withIndex("by_app", (q) => q.eq("app", args.app))
+                .collect(),
+        ])
+
+        const instruments = resolveProviderAdoptionInstruments({
+            targetStrategyId: String(args.strategyId),
+            requestedInstruments,
+            rows: [
+                ...providerPositions.map((position) => ({
+                    instrument: position.instrument,
+                    ownershipStatus: position.ownershipStatus,
+                    strategyId: position.strategyId ? String(position.strategyId) : undefined,
+                })),
+                ...providerWorkingOrders.map((order) => ({
+                    instrument: order.instrument,
+                    ownershipStatus: order.ownershipStatus,
+                    strategyId: order.strategyId ? String(order.strategyId) : undefined,
+                })),
+            ],
+            claims: claims.map((claim) => ({
+                instrument: claim.instrument,
+                strategyId: String(claim.strategyId),
+            })),
+        })
+
+        const now = Date.now()
+
+        for (const claim of claims) {
+            if (instrumentSet.has(claim.instrument)) {
+                await ctx.db.delete(claim._id)
+            }
+        }
+
+        for (const instrument of instruments) {
+            await ctx.db.insert("instrument_claims", {
+                strategyId: args.strategyId,
+                app: args.app,
+                instrument,
+                source: "position",
+                sourceId: instrument,
+                updatedAt: now,
+            })
+        }
+
+        let adoptedPositions = 0
+        for (const position of providerPositions) {
+            if (!instrumentSet.has(position.instrument)) {
+                continue
+            }
+
+            await ctx.db.patch(position._id, {
+                strategyId: args.strategyId,
+                ownershipStatus: "owned",
+            })
+            adoptedPositions++
+        }
+
+        let adoptedOrders = 0
+        for (const order of providerWorkingOrders) {
+            if (!instrumentSet.has(order.instrument)) {
+                continue
+            }
+
+            await ctx.db.patch(order._id, {
+                strategyId: args.strategyId,
+                ownershipStatus: "owned",
+            })
+            adoptedOrders++
+        }
+
+        await updateProviderSyncStateFromCurrentRows(ctx, args.app, now)
+
+        return {
+            adoptedPositions,
+            adoptedOrders,
+        }
+    },
+})
+
 function buildClaimsByInstrument(
     claims: Array<Doc<"instrument_claims">>,
     strategyMap: Map<string, StrategyDoc>
@@ -392,6 +537,56 @@ function buildClaimsByInstrument(
     }
 
     return claimsByInstrument
+}
+
+async function updateProviderSyncStateFromCurrentRows(
+    ctx: PortfolioMutationCtx,
+    app: Doc<"strategies">["app"],
+    now: number
+): Promise<void> {
+    const [state, positions, orders] = await Promise.all([
+        ctx.db
+            .query("provider_sync_state")
+            .withIndex("by_app", (q) => q.eq("app", app))
+            .first(),
+        ctx.db
+            .query("provider_positions")
+            .withIndex("by_app", (q) => q.eq("app", app))
+            .collect(),
+        ctx.db
+            .query("provider_working_orders")
+            .withIndex("by_app", (q) => q.eq("app", app))
+            .collect(),
+    ])
+
+    if (!state) {
+        return
+    }
+
+    const unownedPositionCount = positions.filter((position) => position.ownershipStatus !== "owned").length
+    const unownedOrderCount = orders.filter((order) => order.ownershipStatus !== "owned").length
+    const driftSummary = createDriftSummary({
+        unownedPositionCount,
+        unownedOrderCount,
+        closedPersistedOrders: [],
+        statusMismatches: [],
+    })
+    const driftDetected = driftSummary !== undefined
+    const stale = isStale(state.lastVerifiedAt, now)
+
+    await ctx.db.patch(state._id, {
+        providerStatus: stale
+            ? "stale"
+            : driftDetected
+                ? "degraded"
+                : "healthy",
+        stale,
+        driftDetected,
+        lastDriftSummary: driftSummary,
+        positionCount: positions.length,
+        pendingOrderCount: orders.length,
+        updatedAt: now,
+    })
 }
 
 async function listActiveOrdersForApp(

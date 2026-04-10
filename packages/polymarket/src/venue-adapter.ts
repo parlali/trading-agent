@@ -52,9 +52,21 @@ export interface PolymarketMarketSearchResult {
     }>
 }
 
+export const POLYMARKET_SEARCH_MARKETS_MAX_LIVE_PRICE_TOKENS = 4
+export const POLYMARKET_SEARCH_MARKETS_LIVE_PRICE_REQUEST_BUDGET =
+    POLYMARKET_SEARCH_MARKETS_MAX_LIVE_PRICE_TOKENS * 2
+
+interface PolymarketSearchMarketsLivePriceBudget {
+    remainingTokens: number
+    remainingRequests: number
+}
+
 export class PolymarketVenueAdapter implements VenueAdapter, PriceVerifier {
     private positionsCache: { positions: Position[]; fetchedAt: number } | null = null
     private readonly POSITIONS_CACHE_TTL = 5000
+    private readonly marketPriceCacheTtlMs = 15_000
+    private readonly marketPriceCache = new Map<string, { value: PolymarketMarketPrice; fetchedAt: number }>()
+    private readonly inFlightMarketPriceLookups = new Map<string, Promise<PolymarketMarketPrice>>()
 
     constructor(private readonly client: PolymarketClient) {}
 
@@ -88,26 +100,39 @@ export class PolymarketVenueAdapter implements VenueAdapter, PriceVerifier {
     }
 
     async searchMarkets(params: {
+        category?: string
         query?: string
         conditionId?: string
         limit?: number
+        includeLivePrices?: boolean
+        livePriceTokenLimit?: number
     }): Promise<PolymarketMarketSearchResult[]> {
+        const livePriceBudget = this.createSearchMarketsLivePriceBudget(params)
+
         if (params.conditionId) {
             const market = await this.client.getMarket(params.conditionId)
-            return [await this.buildMarketSearchResult(market)]
+            return [await this.buildMarketSearchResult(market, livePriceBudget)]
         }
 
-        const query = params.query?.trim().toLowerCase()
         const limit = params.limit ?? 10
-        const markets = await this.client.getAllActiveMarkets()
-        const filtered = query
+        const category = params.category?.trim().toLowerCase()
+        const query = params.query?.trim().toLowerCase()
+
+        if (!category && !query) {
+            throw new Error("search_markets requires category, query, or conditionId")
+        }
+
+        const markets = category
+            ? await this.client.getTopLiquidMarketsForCategory(category, limit)
+            : await this.client.searchMarkets(query!, limit)
+        const filtered = query && category
             ? markets.filter((market) => matchesMarketQuery(market, query))
             : markets
 
         return await Promise.all(
             filtered
                 .slice(0, limit)
-                .map(async (market) => await this.buildMarketSearchResult(market))
+                .map(async (market) => await this.buildMarketSearchResult(market, livePriceBudget))
         )
     }
 
@@ -381,25 +406,20 @@ export class PolymarketVenueAdapter implements VenueAdapter, PriceVerifier {
     }
 
     private async buildMarketSearchResult(
-        market: PolymarketMarket
+        market: PolymarketMarket,
+        livePriceBudget?: PolymarketSearchMarketsLivePriceBudget
     ): Promise<PolymarketMarketSearchResult> {
         const tokens = await Promise.all(
             market.tokens.map(async (token) => {
-                try {
-                    const price = await this.getMarketPrice(token.tokenId)
-                    return {
-                        tokenId: token.tokenId,
-                        outcome: token.outcome,
-                        midpoint: price.midpoint,
-                        bestBid: price.bestBid,
-                        bestAsk: price.bestAsk,
-                        spread: price.spread,
-                    }
-                } catch {
-                    return {
-                        tokenId: token.tokenId,
-                        outcome: token.outcome,
-                    }
+                const price = await this.maybeGetSearchMarketsLivePrice(token.tokenId, livePriceBudget)
+
+                return {
+                    tokenId: token.tokenId,
+                    outcome: token.outcome,
+                    midpoint: price?.midpoint,
+                    bestBid: price?.bestBid,
+                    bestAsk: price?.bestAsk,
+                    spread: price?.spread,
                 }
             })
         )
@@ -420,6 +440,94 @@ export class PolymarketVenueAdapter implements VenueAdapter, PriceVerifier {
             endDateIso: market.endDateIso,
             tokens,
         }
+    }
+
+    private createSearchMarketsLivePriceBudget(params: {
+        includeLivePrices?: boolean
+        livePriceTokenLimit?: number
+    }): PolymarketSearchMarketsLivePriceBudget | undefined {
+        if (params.includeLivePrices !== true) {
+            return undefined
+        }
+
+        const requestedTokenLimit = params.livePriceTokenLimit ?? POLYMARKET_SEARCH_MARKETS_MAX_LIVE_PRICE_TOKENS
+        const boundedTokenLimit = Math.min(
+            requestedTokenLimit,
+            POLYMARKET_SEARCH_MARKETS_MAX_LIVE_PRICE_TOKENS
+        )
+
+        return {
+            remainingTokens: boundedTokenLimit,
+            remainingRequests: boundedTokenLimit * 2,
+        }
+    }
+
+    private async maybeGetSearchMarketsLivePrice(
+        tokenId: string,
+        livePriceBudget?: PolymarketSearchMarketsLivePriceBudget
+    ): Promise<PolymarketMarketPrice | undefined> {
+        if (!livePriceBudget) {
+            return undefined
+        }
+
+        const cached = this.readCachedMarketPrice(tokenId)
+        if (cached) {
+            return cached
+        }
+
+        if (livePriceBudget.remainingTokens <= 0 || livePriceBudget.remainingRequests < 2) {
+            return undefined
+        }
+
+        livePriceBudget.remainingTokens -= 1
+        livePriceBudget.remainingRequests -= 2
+
+        try {
+            return await this.getCachedMarketPrice(tokenId)
+        } catch {
+            return undefined
+        }
+    }
+
+    private readCachedMarketPrice(tokenId: string): PolymarketMarketPrice | undefined {
+        const cached = this.marketPriceCache.get(tokenId)
+        if (!cached) {
+            return undefined
+        }
+
+        if (Date.now() - cached.fetchedAt >= this.marketPriceCacheTtlMs) {
+            this.marketPriceCache.delete(tokenId)
+            return undefined
+        }
+
+        return cached.value
+    }
+
+    private async getCachedMarketPrice(tokenId: string): Promise<PolymarketMarketPrice> {
+        const cached = this.readCachedMarketPrice(tokenId)
+        if (cached) {
+            return cached
+        }
+
+        const inFlight = this.inFlightMarketPriceLookups.get(tokenId)
+        if (inFlight) {
+            return await inFlight
+        }
+
+        const lookup = this.getMarketPrice(tokenId)
+            .then((price) => {
+                this.marketPriceCache.set(tokenId, {
+                    value: price,
+                    fetchedAt: Date.now(),
+                })
+                return price
+            })
+            .finally(() => {
+                this.inFlightMarketPriceLookups.delete(tokenId)
+            })
+
+        this.inFlightMarketPriceLookups.set(tokenId, lookup)
+        return await lookup
     }
 }
 

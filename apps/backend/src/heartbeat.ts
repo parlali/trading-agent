@@ -1,4 +1,5 @@
 import {
+    ALL_APPS,
     APP_NAME,
     HEARTBEAT_INTERVAL_MS,
     backend,
@@ -6,8 +7,9 @@ import {
     logger,
     heartbeatTimer,
     setHeartbeatTimer,
+    syncStrategies,
 } from "./state"
-import type { VenueApp } from "./types"
+import { getRequiredVenueApps } from "./required-apps"
 
 export function startHeartbeat(): void {
     setHeartbeatTimer(setInterval(async () => {
@@ -20,7 +22,14 @@ export function startHeartbeat(): void {
                 uptime: Date.now() - healthState.startedAt,
             })
 
-            for (const [app, venueState] of Object.entries(healthState.venues) as [VenueApp, typeof healthState.venues[string]][]) {
+            const requiredApps = getRequiredVenueApps(
+                ALL_APPS,
+                syncStrategies,
+                await backend.getPortfolioFreshness()
+            )
+
+            for (const app of requiredApps) {
+                const venueState = healthState.venues[app]
                 const status = venueState?.providerStatus === "healthy" && venueState?.validated
                     ? "healthy"
                     : "degraded"

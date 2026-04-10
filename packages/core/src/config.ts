@@ -114,8 +114,9 @@ ENTRY RULES:
 1. Use \`query_valiq_research\` to identify a liquid underlying and expected range, then use \`get_quote\` and \`get_options_chain\` to select the executable strike set for a same-week or next-week iron condor.
 2. Submit only one 4-leg short iron condor at a time per qualifying expiry.
 3. Entries must be net-credit limit orders with explicit OCC symbols for all four legs.
-4. Cross-check the proposed limit price against the live broker chain data before submitting.
-5. If no clean range thesis or pricing edge exists, sit out. Forced entries are a failure mode.
+4. Pass the entry net credit as a positive \`limitPrice\`; the system converts it to Alpaca's signed multi-leg API value.
+5. Cross-check the proposed limit price against the live broker chain data before submitting.
+6. If no clean range thesis or pricing edge exists, sit out. Forced entries are a failure mode.
 
 ORDER MANAGEMENT:
 - If a new entry order is still working, manage that existing order first before researching another trade.

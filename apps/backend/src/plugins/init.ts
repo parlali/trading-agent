@@ -7,6 +7,11 @@ import {
     setResolvedSecrets,
     syncStrategies,
 } from "../state"
+import {
+    validateVenueEnvironments,
+    type EnvironmentValidationDependencies,
+} from "../environment-validation"
+import { getRequiredVenueApps } from "../required-apps"
 import type { VenueApp } from "../types"
 
 export async function resolveAllSecrets(): Promise<void> {
@@ -41,34 +46,25 @@ export async function resolveAllSecrets(): Promise<void> {
     }
 }
 
-export async function validateAllEnvironments(apps: VenueApp[]): Promise<void> {
-    for (const app of apps) {
-        const plugin = plugins[app]
-        if (!plugin) continue
-        const validationSecrets = syncStrategies[app]?.[0]?.secrets ?? resolvedSecrets
-        try {
-            await plugin.validateEnvironment(validationSecrets)
-            healthState.venues[app] = { validated: true }
-            logger.info(`${app} environment validated`)
+const defaultValidationDependencies: EnvironmentValidationDependencies = {
+    createAlert: backend.createAlert.bind(backend),
+    getPlugin(app) {
+        return plugins[app]
+    },
+    async getRequiredApps(apps) {
+        return getRequiredVenueApps(apps, syncStrategies, await backend.getPortfolioFreshness())
+    },
+    getValidationSecrets(app) {
+        return syncStrategies[app]?.[0]?.secrets ?? resolvedSecrets
+    },
+    healthState,
+    logger,
+    reportHeartbeat: backend.reportHeartbeat.bind(backend),
+}
 
-            await backend.reportHeartbeat(app, "healthy", {
-                source: "environment_validation",
-            })
-        } catch (error) {
-            const message = error instanceof Error ? error.message : String(error)
-            healthState.venues[app] = { validated: false, error: message }
-            logger.error(`${app} environment validation failed`, { error: message })
-
-            await backend.reportHeartbeat(app, "degraded", {
-                source: "environment_validation",
-                error: message,
-            })
-
-            await backend.createAlert({
-                app,
-                severity: "critical",
-                message: `${app} environment validation failed at startup: ${message}`,
-            })
-        }
-    }
+export async function validateAllEnvironments(
+    apps: VenueApp[],
+    dependencies: EnvironmentValidationDependencies = defaultValidationDependencies
+): Promise<void> {
+    await validateVenueEnvironments(apps, dependencies)
 }

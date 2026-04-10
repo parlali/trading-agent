@@ -47,14 +47,15 @@ describe("resolveAlpacaRuntimeConfig", () => {
 
 describe("AlpacaClient host routing", () => {
     const fetchMock = vi.fn<typeof fetch>()
+    const originalFetch = globalThis.fetch
 
     beforeEach(() => {
         fetchMock.mockReset()
-        vi.stubGlobal("fetch", fetchMock)
+        globalThis.fetch = fetchMock as typeof fetch
     })
 
     afterEach(() => {
-        vi.unstubAllGlobals()
+        globalThis.fetch = originalFetch
     })
 
     it("uses the trading host for option contract discovery", async () => {

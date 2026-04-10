@@ -17,6 +17,7 @@ const NEG_RISK_CTF_EXCHANGE = "0xC5d563A36AE78145C45a50134d48A1215220f80a" as co
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000" as const
 
 const DEFAULT_HOST = "https://clob.polymarket.com"
+const DEFAULT_GAMMA_HOST = "https://gamma-api.polymarket.com"
 const DEFAULT_CHAIN_ID = 137
 const POLYMARKET_REQUEST_TIMEOUT_MS = 30_000
 
@@ -60,6 +61,8 @@ export interface PolymarketCredentials {
     apiPassphrase: string
     /** CLOB API host. Defaults to https://clob.polymarket.com */
     host?: string
+    /** Gamma API host. Defaults to https://gamma-api.polymarket.com */
+    gammaHost?: string
     /** Chain ID. 137 for Polygon mainnet, 80002 for Amoy testnet */
     chainId?: number
     /** Polymarket profile or funder address for proxy wallet (type 1) */
@@ -201,6 +204,7 @@ export class PolymarketClient {
     private readonly apiSecret: string
     private readonly apiPassphrase: string
     private readonly host: string
+    private readonly gammaHost: string
     private readonly chainId: number
     private readonly signatureType: PolymarketSignatureType
     private readonly funderAddress: `0x${string}`
@@ -221,6 +225,7 @@ export class PolymarketClient {
         this.apiSecret = credentials.apiSecret
         this.apiPassphrase = credentials.apiPassphrase
         this.host = (credentials.host ?? DEFAULT_HOST).replace(/\/+$/, "")
+        this.gammaHost = (credentials.gammaHost ?? DEFAULT_GAMMA_HOST).replace(/\/+$/, "")
         this.chainId = credentials.chainId ?? DEFAULT_CHAIN_ID
         this.signatureType = 1
 
@@ -282,6 +287,53 @@ export class PolymarketClient {
         } while (cursor)
 
         return all
+    }
+
+    async getTopLiquidMarketsForCategory(
+        category: string,
+        limit: number = 10
+    ): Promise<PolymarketMarket[]> {
+        const normalizedCategory = category.trim().toLowerCase()
+        if (!normalizedCategory) {
+            return []
+        }
+
+        const eventLimit = clampGammaEventLimit(limit * 3)
+        const query = new URLSearchParams()
+        query.set("tag_slug", normalizedCategory)
+        query.set("active", "true")
+        query.set("closed", "false")
+        query.set("archived", "false")
+        query.set("order", "liquidity")
+        query.set("limit", String(eventLimit))
+
+        const events = await this.requestGamma<RawGammaEvent[]>(
+            `/events?${query.toString()}`
+        )
+
+        return collectGammaMarkets(events, normalizedCategory).slice(0, limit)
+    }
+
+    async searchMarkets(query: string, limit: number = 10): Promise<PolymarketMarket[]> {
+        const normalizedQuery = query.trim()
+        if (!normalizedQuery) {
+            return []
+        }
+
+        const eventLimit = clampGammaEventLimit(limit * 3)
+        const params = new URLSearchParams()
+        params.set("q", normalizedQuery)
+        params.set("limit_per_type", String(eventLimit))
+        params.set("page", "1")
+        params.set("search_tags", "false")
+        params.set("search_profiles", "false")
+        params.set("optimized", "true")
+
+        const response = await this.requestGamma<GammaSearchResponse>(
+            `/public-search?${params.toString()}`
+        )
+
+        return collectGammaMarkets(response.events).slice(0, limit)
     }
 
     async getMarket(conditionId: string): Promise<PolymarketMarket> {
@@ -567,8 +619,19 @@ export class PolymarketClient {
     // -----------------------------------------------------------------------
 
     private async requestPublic<T>(path: string): Promise<T> {
+        return await this.requestPublicAgainstBaseUrl(this.host, path)
+    }
+
+    private async requestGamma<T>(path: string): Promise<T> {
+        return await this.requestPublicAgainstBaseUrl(this.gammaHost, path)
+    }
+
+    private async requestPublicAgainstBaseUrl<T>(
+        baseUrl: string,
+        path: string
+    ): Promise<T> {
         return retryWithBackoff(async () => {
-            const response = await fetchWithTimeout(`${this.host}${path}`, {
+            const response = await fetchWithTimeout(`${baseUrl}${path}`, {
                 headers: { "Content-Type": "application/json" },
             }, POLYMARKET_REQUEST_TIMEOUT_MS, `Polymarket request ${path}`)
 
@@ -666,6 +729,42 @@ interface RawMarket {
     market_slug: string
 }
 
+interface RawGammaEvent {
+    title?: string
+    description?: string
+    category?: string
+    tags?: Array<{
+        label?: string
+        slug?: string
+    }>
+    markets?: RawGammaMarket[]
+}
+
+interface RawGammaMarket {
+    conditionId?: string
+    questionID?: string
+    question?: string
+    description?: string
+    outcomes?: string
+    clobTokenIds?: string
+    active?: boolean
+    closed?: boolean
+    negRisk?: boolean
+    orderMinSize?: number
+    orderPriceMinTickSize?: number
+    volume?: number | string
+    liquidity?: number | string
+    liquidityNum?: number
+    volumeNum?: number
+    endDateIso?: string
+    endDate?: string
+    slug?: string
+}
+
+interface GammaSearchResponse {
+    events: RawGammaEvent[]
+}
+
 function mapRawMarket(raw: RawMarket): PolymarketMarket {
     return {
         conditionId: raw.condition_id,
@@ -683,6 +782,62 @@ function mapRawMarket(raw: RawMarket): PolymarketMarket {
         liquidity: typeof raw.liquidity === "number" ? raw.liquidity : raw.liquidity ? Number(raw.liquidity) : undefined,
         endDateIso: raw.end_date_iso,
         marketSlug: raw.market_slug,
+    }
+}
+
+function collectGammaMarkets(
+    events: RawGammaEvent[],
+    fallbackCategory?: string
+): PolymarketMarket[] {
+    const markets = events.flatMap((event) =>
+        (event.markets ?? [])
+            .map((market) => mapGammaMarket(event, market, fallbackCategory))
+            .filter((market): market is PolymarketMarket => market !== null)
+    )
+
+    return markets
+        .filter((market) => market.active && !market.closed)
+        .sort((left, right) => (right.liquidity ?? 0) - (left.liquidity ?? 0))
+        .filter((market, index, all) =>
+            all.findIndex((candidate) => candidate.conditionId === market.conditionId) === index
+        )
+}
+
+function mapGammaMarket(
+    event: RawGammaEvent,
+    market: RawGammaMarket,
+    fallbackCategory?: string
+): PolymarketMarket | null {
+    const conditionId = asNonEmptyString(market.conditionId)
+    const question = asNonEmptyString(market.question)
+
+    if (!conditionId || !question) {
+        return null
+    }
+
+    const category = resolveGammaCategory(event, fallbackCategory)
+    const outcomes = parseJsonStringArray(market.outcomes)
+    const tokenIds = parseJsonStringArray(market.clobTokenIds)
+
+    return {
+        conditionId,
+        questionId: asNonEmptyString(market.questionID) ?? conditionId,
+        question,
+        description: asNonEmptyString(market.description) ?? asNonEmptyString(event.description) ?? question,
+        category,
+        tokens: outcomes.map((outcome, index) => ({
+            tokenId: tokenIds[index] ?? "",
+            outcome,
+        })).filter((token) => token.tokenId.length > 0),
+        active: market.active === true,
+        closed: market.closed === true,
+        negRisk: market.negRisk === true,
+        minimumOrderSize: typeof market.orderMinSize === "number" ? market.orderMinSize : 0,
+        minimumTickSize: typeof market.orderPriceMinTickSize === "number" ? market.orderPriceMinTickSize : 0.01,
+        volume: coerceNumber(market.volumeNum ?? market.volume),
+        liquidity: coerceNumber(market.liquidityNum ?? market.liquidity),
+        endDateIso: asNonEmptyString(market.endDateIso) ?? toIsoDate(market.endDate),
+        marketSlug: asNonEmptyString(market.slug) ?? conditionId,
     }
 }
 
@@ -775,6 +930,70 @@ function appendQueryParams(
 
     const queryString = searchParams.toString()
     return queryString ? `${url}?${queryString}` : url
+}
+
+function clampGammaEventLimit(limit: number): number {
+    return Math.max(1, Math.min(Math.ceil(limit), 50))
+}
+
+function parseJsonStringArray(value: string | undefined): string[] {
+    if (!value) {
+        return []
+    }
+
+    try {
+        const parsed = JSON.parse(value) as unknown
+        return Array.isArray(parsed)
+            ? parsed.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
+            : []
+    } catch {
+        return []
+    }
+}
+
+function resolveGammaCategory(
+    event: RawGammaEvent,
+    fallbackCategory?: string
+): string {
+    return (
+        asNonEmptyString(event.category) ??
+        event.tags?.find((tag) => asNonEmptyString(tag.slug) === fallbackCategory)?.label ??
+        event.tags?.find((tag) => asNonEmptyString(tag.label))?.label ??
+        fallbackCategory ??
+        "unknown"
+    )
+}
+
+function asNonEmptyString(value: unknown): string | undefined {
+    return typeof value === "string" && value.trim().length > 0
+        ? value.trim()
+        : undefined
+}
+
+function coerceNumber(value: number | string | undefined): number | undefined {
+    if (typeof value === "number") {
+        return Number.isFinite(value) ? value : undefined
+    }
+
+    if (typeof value === "string" && value.trim().length > 0) {
+        const parsed = Number(value)
+        return Number.isFinite(parsed) ? parsed : undefined
+    }
+
+    return undefined
+}
+
+function toIsoDate(value: string | undefined): string {
+    if (!value) {
+        return ""
+    }
+
+    const parsed = Date.parse(value)
+    if (!Number.isFinite(parsed)) {
+        return ""
+    }
+
+    return new Date(parsed).toISOString().slice(0, 10)
 }
 
 function normalizeBase64(value: string): string {

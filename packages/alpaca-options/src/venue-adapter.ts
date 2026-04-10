@@ -473,7 +473,8 @@ function mapWorkingOrder(order: Awaited<ReturnType<AlpacaClient["getOpenOrders"]
         remainingQuantity: Math.max(quantity - filledQuantity, 0),
         submittedAt,
         updatedAt: submittedAt,
-        limitPrice: order.limit_price ? Number(order.limit_price) : undefined,
+        side: order.side === "buy" || order.side === "sell" ? order.side : undefined,
+        limitPrice: order.limit_price ? roundPrice(Math.abs(Number(order.limit_price))) : undefined,
         stopPrice: order.stop_price ? Number(order.stop_price) : undefined,
         avgFillPrice: order.filled_avg_price ? Number(order.filled_avg_price) : undefined,
         metadata: {
@@ -537,20 +538,33 @@ function computeAlpacaStructurePrices(
         return {}
     }
 
-    const bid = legs.every((leg) => leg.bid !== undefined && leg.ask !== undefined)
+    const rawBid = legs.every((leg) => leg.bid !== undefined && leg.ask !== undefined)
         ? roundPrice(legs.reduce((sum, leg) => {
             return sum + (leg.side.startsWith("sell") ? (leg.bid ?? 0) : -(leg.ask ?? 0))
         }, 0))
         : undefined
-    const ask = legs.every((leg) => leg.bid !== undefined && leg.ask !== undefined)
+    const rawAsk = legs.every((leg) => leg.bid !== undefined && leg.ask !== undefined)
         ? roundPrice(legs.reduce((sum, leg) => {
             return sum + (leg.side.startsWith("sell") ? (leg.ask ?? 0) : -(leg.bid ?? 0))
         }, 0))
         : undefined
-    const mid = legs.every((leg) => leg.midpoint !== undefined)
+    const rawMid = legs.every((leg) => leg.midpoint !== undefined)
         ? roundPrice(legs.reduce((sum, leg) => {
             return sum + (leg.side.startsWith("sell") ? 1 : -1) * (leg.midpoint ?? 0)
         }, 0))
+        : undefined
+    const bid = rawBid !== undefined && rawAsk !== undefined
+        ? roundPrice(Math.min(Math.abs(rawBid), Math.abs(rawAsk)))
+        : rawBid !== undefined
+            ? roundPrice(Math.abs(rawBid))
+            : undefined
+    const ask = rawBid !== undefined && rawAsk !== undefined
+        ? roundPrice(Math.max(Math.abs(rawBid), Math.abs(rawAsk)))
+        : rawAsk !== undefined
+            ? roundPrice(Math.abs(rawAsk))
+            : undefined
+    const mid = rawMid !== undefined
+        ? roundPrice(Math.abs(rawMid))
         : undefined
     const spread = bid !== undefined && ask !== undefined
         ? roundPrice(Math.abs(ask - bid))

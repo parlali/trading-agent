@@ -38,6 +38,8 @@ export interface AlpacaPositionResponse {
 export interface AlpacaOrderResponse {
     id: string
     status: string
+    order_class?: string
+    side?: "buy" | "sell"
     submitted_at?: string
     updated_at?: string
     qty?: string
@@ -48,6 +50,7 @@ export interface AlpacaOrderResponse {
     legs?: Array<{
         symbol: string
         side: "buy" | "sell" | "buy_to_open" | "sell_to_open" | "buy_to_close" | "sell_to_close"
+        position_intent?: "buy_to_open" | "sell_to_open" | "buy_to_close" | "sell_to_close"
         ratio_qty?: string | number
     }>
 }
@@ -314,12 +317,17 @@ export class AlpacaClient {
 
     async replaceOrder(orderId: string, changes: Partial<OrderIntent>): Promise<ExecutionResult> {
         const payload: Record<string, unknown> = {}
+        let existingOrder: AlpacaOrderResponse | null = null
 
         if (changes.quantity !== undefined) {
             payload.qty = changes.quantity
         }
         if (changes.limitPrice !== undefined) {
-            payload.limit_price = changes.limitPrice
+            existingOrder = await this.request<AlpacaOrderResponse>(`/v2/orders/${orderId}`)
+            payload.limit_price = toSignedAlpacaMlegLimitPrice(
+                changes.limitPrice,
+                resolveAlpacaMlegOrderSide(existingOrder)
+            )
         }
 
         if (changes.stopPrice !== undefined) {
@@ -416,7 +424,10 @@ function mapOrderStatus(status: string): ExecutionResult["status"] {
 function mapOrderResponse(order: AlpacaOrderResponse): ExecutionResult {
     const status = mapOrderStatus(order.status)
     const quantity = order.qty ? Number(order.qty) : undefined
-    const limitPrice = order.limit_price ? Number(order.limit_price) : undefined
+    const limitPrice = normalizeAlpacaMlegLimitPrice(
+        order.limit_price ? Number(order.limit_price) : undefined,
+        order
+    )
     const intentUpdates: Partial<OrderIntent> = {}
     const errorDetail = status === "rejected"
         ? createExecutionErrorDetail("venue", order.status, {
@@ -716,7 +727,7 @@ function asOptionalNumber(value: unknown): number | undefined {
     return undefined
 }
 
-function buildCreateOrderPayload(intent: OrderIntent): Record<string, unknown> {
+export function buildCreateOrderPayload(intent: OrderIntent): Record<string, unknown> {
     if (!intent.legs || intent.legs.length !== 4) {
         throw createExecutionError("pre_validation", "Alpaca options orders must be submitted as exactly 4 legs", {
             code: "INVALID_LEG_COUNT",
@@ -771,12 +782,39 @@ function buildCreateOrderPayload(intent: OrderIntent): Record<string, unknown> {
         type: mapOrderType(intent.orderType),
         time_in_force: intent.timeInForce,
         qty: intent.quantity,
-        limit_price: intent.limitPrice,
+        limit_price: toSignedAlpacaMlegLimitPrice(intent.limitPrice, intent.side),
         legs: intent.legs.map((leg) => ({
             symbol: leg.instrument,
             ratio_qty: leg.quantity,
-            side: leg.side,
+            ...mapAlpacaLegSide(leg.side),
         })),
+    }
+}
+
+function mapAlpacaLegSide(
+    side: NonNullable<OrderIntent["legs"]>[number]["side"]
+): {
+    side: "buy" | "sell"
+    position_intent: "buy_to_open" | "sell_to_open" | "buy_to_close" | "sell_to_close"
+} {
+    switch (side) {
+        case "buy_to_open":
+        case "buy_to_close":
+            return {
+                side: "buy",
+                position_intent: side,
+            }
+        case "sell_to_open":
+        case "sell_to_close":
+            return {
+                side: "sell",
+                position_intent: side,
+            }
+        default:
+            throw createExecutionError("pre_validation", `Unsupported Alpaca leg side: ${String(side)}`, {
+                code: "INVALID_LEG_SIDE",
+                retryable: false,
+            })
     }
 }
 
@@ -816,4 +854,84 @@ async function toAlpacaApiError(response: Response): Promise<AlpacaApiError> {
         code,
         details,
     })
+}
+
+function toSignedAlpacaMlegLimitPrice(
+    limitPrice: number,
+    side: "buy" | "sell" | null
+): number {
+    const normalizedLimitPrice = roundPrice(Math.abs(limitPrice))
+
+    if (side === "sell") {
+        return -normalizedLimitPrice
+    }
+
+    if (side === "buy") {
+        return normalizedLimitPrice
+    }
+
+    throw createExecutionError("pre_validation", "Could not determine Alpaca multi-leg order side for signed limit price conversion", {
+        code: "ALPACA_MLEG_SIDE_UNKNOWN",
+        retryable: false,
+    })
+}
+
+function normalizeAlpacaMlegLimitPrice(
+    limitPrice: number | undefined,
+    order: Pick<AlpacaOrderResponse, "order_class" | "legs">
+): number | undefined {
+    if (limitPrice === undefined) {
+        return undefined
+    }
+
+    if (!isAlpacaMlegOrder(order)) {
+        return limitPrice
+    }
+
+    return roundPrice(Math.abs(limitPrice))
+}
+
+function resolveAlpacaMlegOrderSide(
+    order: Pick<AlpacaOrderResponse, "order_class" | "side" | "limit_price" | "legs">
+): "buy" | "sell" | null {
+    if (!isAlpacaMlegOrder(order)) {
+        return order.side ?? null
+    }
+
+    if (order.side === "buy" || order.side === "sell") {
+        return order.side
+    }
+
+    const signedLimitPrice = asOptionalNumber(order.limit_price)
+    if (signedLimitPrice !== undefined && signedLimitPrice !== 0) {
+        return signedLimitPrice < 0 ? "sell" : "buy"
+    }
+
+    const positionIntents = (order.legs ?? [])
+        .map((leg) => leg.position_intent)
+        .filter((value): value is NonNullable<typeof value> => Boolean(value))
+
+    if (positionIntents.length === 0) {
+        return null
+    }
+
+    if (positionIntents.every((positionIntent) => positionIntent.endsWith("_open"))) {
+        return "sell"
+    }
+
+    if (positionIntents.every((positionIntent) => positionIntent.endsWith("_close"))) {
+        return "buy"
+    }
+
+    return null
+}
+
+function isAlpacaMlegOrder(
+    order: Pick<AlpacaOrderResponse, "order_class" | "legs">
+): boolean {
+    return order.order_class === "mleg" || Boolean(order.legs && order.legs.length > 0)
+}
+
+function roundPrice(price: number): number {
+    return Math.round(price * 100) / 100
 }

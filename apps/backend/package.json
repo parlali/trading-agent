@@ -16,7 +16,8 @@
         "strategies:delete": "bun scripts/strategies-delete.ts",
         "strategies:reset": "bun scripts/strategies-reset.ts",
         "strategies:force-reset": "bun scripts/strategies-force-reset.ts",
-        "strategies:reset-import": "bun scripts/reset-and-import-strategies.ts"
+        "strategies:reset-import": "bun scripts/reset-and-import-strategies.ts",
+        "positions:unowned": "bun scripts/positions-unowned.ts"
     },
     "dependencies": {
         "@valiq-trading/core": "workspace:*",

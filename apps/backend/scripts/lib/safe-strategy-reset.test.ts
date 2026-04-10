@@ -166,7 +166,7 @@ describe("resetStrategySafely", () => {
     })
 
     it("retries reset verification until provider exposure clears", async () => {
-        vi.useFakeTimers()
+        const setTimeoutSpy = stubImmediateTimeout()
 
         const strategy = createStrategy("binance-futures")
         const deleteResult = createDeleteResult()
@@ -245,13 +245,12 @@ describe("resetStrategySafely", () => {
 
         const resetPromise = resetStrategySafely(client, strategy._id)
 
-        await vi.runAllTimersAsync()
-
         await expect(resetPromise).resolves.toMatchObject({
             deleted: deleteResult,
         })
 
         expect(client.reconcileProviderPortfolio).toHaveBeenCalledTimes(2)
+        setTimeoutSpy.mockRestore()
     })
 
     it("allows destructive verification when exposure is flat but drift state remains degraded", async () => {
@@ -343,7 +342,7 @@ describe("resetStrategySafely", () => {
     })
 
     it("includes remaining exposure identifiers in verification failures", async () => {
-        vi.useFakeTimers()
+        const setTimeoutSpy = stubImmediateTimeout()
 
         const strategy = createStrategy("alpaca-options")
         const venue = {
@@ -424,7 +423,20 @@ describe("resetStrategySafely", () => {
             "positions=SPY-IC-1:1, SPY-IC-2:2; orders=alpaca-order-1:SPY-IC-1"
         )
 
-        await vi.runAllTimersAsync()
         await assertion
+        setTimeoutSpy.mockRestore()
     })
 })
+
+function stubImmediateTimeout() {
+    return vi.spyOn(globalThis, "setTimeout").mockImplementation((
+        ((handler: TimerHandler) => {
+            queueMicrotask(() => {
+                if (typeof handler === "function") {
+                    handler()
+                }
+            })
+            return 0 as ReturnType<typeof setTimeout>
+        }) as typeof setTimeout
+    ))
+}

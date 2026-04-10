@@ -64,6 +64,8 @@ import { MT5VenueAdapter } from "@valiq-trading/mt5"
 import { PolymarketVenueAdapter } from "@valiq-trading/polymarket"
 import type { RunTrigger } from "@valiq-trading/convex"
 import type { VenueApp, VenuePlugin } from "./types"
+import { getCronStartDelayMs } from "./schedule-stagger"
+import type { SyncStrategyEntry } from "./state"
 
 export const pendingManualTriggers = new Set<string>()
 import {
@@ -592,33 +594,13 @@ export async function registerStrategyWithScheduler(
         logger.warn("No plugin registered for app, skipping strategy", { app, strategyId: strategy._id })
         return
     }
-    const policy = validatePolicy(app, strategy.policy)
-    const additionalSecretKeys = plugin.resolveAdditionalSecretKeys?.(policy) ?? []
-    const additionalSecrets =
-        additionalSecretKeys.length > 0
-            ? await backend.resolveSecrets(additionalSecretKeys)
-            : {}
-    const strategySecrets = {
-        ...resolvedSecrets,
-        ...additionalSecrets,
-    }
-
-    syncStrategies[app] ??= []
-    const alreadyTracked = syncStrategies[app].some(
-        (e) => e.strategy._id === strategy._id
-    )
-    if (!alreadyTracked) {
-        syncStrategies[app].push({
-            strategy,
-            policy,
-            secrets: strategySecrets,
-        })
-    }
+    const runtimeEntry = await resolveStrategyRuntimeState(app, strategy)
+    upsertSyncStrategyEntry(app, runtimeEntry)
 
     scheduler.register({
         strategyId: strategy._id,
         scheduleType: "cron",
-        cronExpression: strategy.schedule,
+        cronExpression: runtimeEntry.strategy.schedule,
         handler: async () => {
             const latestStrategy = await backend.getStrategyById(strategy._id)
 
@@ -640,9 +622,94 @@ export async function registerStrategyWithScheduler(
                 return
             }
 
+            const latestRuntimeEntry = await resolveStrategyRuntimeState(app, latestStrategy)
+            upsertSyncStrategyEntry(app, latestRuntimeEntry)
+
             const isManual = pendingManualTriggers.delete(strategy._id)
-            await runStrategy(app, plugin, strategy, policy, strategySecrets, scheduler, isManual ? "manual" : "cron")
+            const trigger = isManual ? "manual" : "cron"
+            const runAt = new Date()
+            const startDelayMs = trigger === "cron"
+                ? getCronStartDelayMs(app, latestRuntimeEntry.strategy, syncStrategies[app] ?? [], runAt)
+                : 0
+
+            if (startDelayMs > 0) {
+                logger.info("Delaying cron start to stagger same-minute strategy runs", {
+                    strategyId: latestRuntimeEntry.strategy._id,
+                    app,
+                    delayMs: startDelayMs,
+                    schedule: latestRuntimeEntry.strategy.schedule,
+                })
+                await sleep(startDelayMs)
+            }
+
+            await runStrategy(
+                app,
+                plugin,
+                latestRuntimeEntry.strategy,
+                latestRuntimeEntry.policy,
+                latestRuntimeEntry.secrets,
+                scheduler,
+                trigger
+            )
         },
+    })
+}
+
+export async function resolveStrategyRuntimeState(
+    app: VenueApp,
+    strategy: StoredStrategy
+): Promise<SyncStrategyEntry> {
+    const plugin = plugins[app]
+    if (!plugin) {
+        throw new Error(`No plugin registered for ${app}`)
+    }
+
+    const policy = validatePolicy(app, strategy.policy)
+    const additionalSecretKeys = plugin.resolveAdditionalSecretKeys?.(policy) ?? []
+    const additionalSecrets =
+        additionalSecretKeys.length > 0
+            ? await backend.resolveSecrets(additionalSecretKeys)
+            : {}
+
+    return {
+        strategy,
+        policy,
+        secrets: {
+            ...resolvedSecrets,
+            ...additionalSecrets,
+        },
+    }
+}
+
+export function upsertSyncStrategyEntry(
+    app: VenueApp,
+    entry: SyncStrategyEntry
+): void {
+    syncStrategies[app] ??= []
+    const existingIndex = syncStrategies[app].findIndex(
+        (candidate) => candidate.strategy._id === entry.strategy._id
+    )
+
+    if (existingIndex === -1) {
+        syncStrategies[app].push(entry)
+        return
+    }
+
+    syncStrategies[app][existingIndex] = entry
+}
+
+export function syncStrategyEntryChanged(
+    current: SyncStrategyEntry,
+    next: SyncStrategyEntry
+): boolean {
+    return stableStringify({
+        strategy: current.strategy,
+        policy: current.policy,
+        secrets: current.secrets,
+    }) !== stableStringify({
+        strategy: next.strategy,
+        policy: next.policy,
+        secrets: next.secrets,
     })
 }
 
@@ -780,7 +847,7 @@ export async function runStrategy(
 
     try {
         await withTimeout(async () => {
-            if (!resolvedSecrets.OPENROUTER_API_KEY) {
+            if (!strategySecrets.OPENROUTER_API_KEY) {
                 throw new Error("Cannot run strategy: OPENROUTER_API_KEY is not set in Convex environment variables")
             }
 
@@ -824,7 +891,7 @@ export async function runStrategy(
                 },
                 {
                     llm: {
-                        apiKey: resolvedSecrets.OPENROUTER_API_KEY,
+                        apiKey: strategySecrets.OPENROUTER_API_KEY,
                         model: policy.model as string,
                     },
                     tools,
@@ -941,4 +1008,28 @@ export async function runStrategy(
     } finally {
         pipeline.stopAllTracking()
     }
+}
+
+async function sleep(delayMs: number): Promise<void> {
+    await new Promise((resolve) => setTimeout(resolve, delayMs))
+}
+
+function stableStringify(value: unknown): string {
+    return JSON.stringify(sortJsonValue(value))
+}
+
+function sortJsonValue(value: unknown): unknown {
+    if (Array.isArray(value)) {
+        return value.map((entry) => sortJsonValue(entry))
+    }
+
+    if (value && typeof value === "object") {
+        return Object.fromEntries(
+            Object.entries(value)
+                .sort(([left], [right]) => left.localeCompare(right))
+                .map(([key, entry]) => [key, sortJsonValue(entry)])
+        )
+    }
+
+    return value
 }

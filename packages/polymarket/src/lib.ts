@@ -15,3 +15,7 @@ export type {
     PolymarketMarketPrice,
     PolymarketMarketSearchResult,
 } from "./venue-adapter"
+export {
+    POLYMARKET_SEARCH_MARKETS_MAX_LIVE_PRICE_TOKENS,
+    POLYMARKET_SEARCH_MARKETS_LIVE_PRICE_REQUEST_BUDGET,
+} from "./venue-adapter"

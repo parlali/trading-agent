@@ -20,6 +20,7 @@
         "strategies:reset": "cd apps/backend && bun run strategies:reset",
         "strategies:force-reset": "cd apps/backend && bun run strategies:force-reset",
         "strategies:reset-import": "cd apps/backend && bun run strategies:reset-import",
+        "positions:unowned": "cd apps/backend && bun run positions:unowned",
         "build": "turbo build",
         "lint": "turbo lint",
         "deploy:convex": "cd packages/convex && bun run deploy",

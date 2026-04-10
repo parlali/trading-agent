@@ -3,6 +3,7 @@ import {
     backend,
     healthState,
     logger,
+    resolvedSecrets,
     syncStrategies,
 } from "./state"
 import type { SyncStrategyEntry } from "./state"
@@ -20,6 +21,29 @@ export function getProviderSyncEntry(app: VenueApp): SyncStrategyEntry | null {
         })
     }
     return entries[0] ?? null
+}
+
+export function getProviderSyncConfig(app: VenueApp): {
+    policy: Record<string, unknown>
+    secrets: Record<string, string | null>
+} {
+    const entry = getProviderSyncEntry(app)
+    if (entry) {
+        return {
+            policy: entry.policy,
+            secrets: entry.secrets,
+        }
+    }
+
+    logger.info("Provider sync is using runtime venue secrets without a strategy entry", {
+        app,
+        accountScope: ACCOUNT_SCOPE,
+    })
+
+    return {
+        policy: {},
+        secrets: resolvedSecrets,
+    }
 }
 
 export async function reconcileProviderPortfolio(args: {

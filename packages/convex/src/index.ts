@@ -118,6 +118,8 @@ export interface DeleteAllStrategiesResult extends CascadeDeleteCounts {
     strategies: number
 }
 
+export interface FullResetAudit extends DeleteAllStrategiesResult {}
+
 export interface DeleteOrphanedStrategyHistoryBatchResult extends CascadeDeleteCounts {
     hasMore: boolean
 }
@@ -125,6 +127,11 @@ export interface DeleteOrphanedStrategyHistoryBatchResult extends CascadeDeleteC
 export interface ReplaceAllStrategiesResult {
     importedStrategies: number
     deleted: DeleteAllStrategiesResult
+}
+
+export interface AdoptProviderPositionsResult {
+    adoptedPositions: number
+    adoptedOrders: number
 }
 
 export interface ProviderPortfolioReconciliationResult {
@@ -226,6 +233,11 @@ export interface TradingBackendClient extends TradeEventLoggerMethods {
     getPortfolioFreshness(app?: Exclude<App, "backend">): Promise<PortfolioFreshnessRow[]>
     getPortfolioPositions(app?: Exclude<App, "backend">, strategyId?: Id<"strategies">): Promise<ProviderPositionRow[]>
     getPortfolioPendingOrders(app?: Exclude<App, "backend">, strategyId?: Id<"strategies">): Promise<ProviderPendingOrderRow[]>
+    adoptProviderPositions(
+        app: Exclude<App, "backend">,
+        strategyId: Id<"strategies">,
+        instruments: string[]
+    ): Promise<AdoptProviderPositionsResult>
     getManualRunRequests(app: Exclude<App, "backend">): Promise<ManualRunRequest[]>
     clearManualRunRequest(requestId: Id<"manual_run_requests">): Promise<void>
     createAlert(args: { strategyId?: string; app?: App; severity: "critical" | "warning" | "info"; message: string }): Promise<void>
@@ -240,6 +252,8 @@ export interface TradingBackendClient extends TradeEventLoggerMethods {
     deleteStrategy(id: Id<"strategies">): Promise<DeleteStrategyResult>
     deleteAllStrategies(): Promise<DeleteAllStrategiesResult>
     deleteOrphanedStrategyHistoryBatch(batchSize?: number): Promise<DeleteOrphanedStrategyHistoryBatchResult>
+    clearFullResetState(): Promise<CascadeDeleteCounts>
+    getFullResetAudit(): Promise<FullResetAudit>
     replaceAllStrategies(strategies: StrategyConfig[]): Promise<ReplaceAllStrategiesResult>
 }
 
@@ -619,6 +633,21 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
                 } as never) as ProviderPendingOrderRow[]
             )
         },
+        async adoptProviderPositions(
+            app: Exclude<App, "backend">,
+            strategyId: Id<"strategies">,
+            instruments: string[]
+        ): Promise<AdoptProviderPositionsResult> {
+            return await runWithTimeout(
+                "Convex mutation adoptProviderPositions",
+                async () => await client.mutation(api.mutations.adoptProviderPositions, {
+                    ...requireMachineAuth(),
+                    app,
+                    strategyId,
+                    instruments,
+                } as never) as AdoptProviderPositionsResult
+            )
+        },
         async getManualRunRequests(app: Exclude<App, "backend">): Promise<ManualRunRequest[]> {
             return await runWithTimeout(
                 "Convex query getManualRunRequests",
@@ -748,6 +777,22 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
                     ...requireMachineAuth(),
                     batchSize,
                 } as never) as DeleteOrphanedStrategyHistoryBatchResult
+            )
+        },
+        async clearFullResetState(): Promise<CascadeDeleteCounts> {
+            return await runWithTimeout(
+                "Convex mutation clearFullResetState",
+                async () => await client.mutation(api.mutations.clearFullResetState, {
+                    ...requireMachineAuth(),
+                } as never) as CascadeDeleteCounts
+            )
+        },
+        async getFullResetAudit(): Promise<FullResetAudit> {
+            return await runWithTimeout(
+                "Convex query getFullResetAudit",
+                async () => await client.query(api.queries.getFullResetAudit, {
+                    ...requireMachineAuth(),
+                } as never) as FullResetAudit
             )
         },
         async replaceAllStrategies(strategies: StrategyConfig[]): Promise<ReplaceAllStrategiesResult> {

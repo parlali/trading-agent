@@ -192,3 +192,56 @@ export const clearManualRunRequest = mutation({
         await ctx.db.delete(args.requestId)
     },
 })
+
+export const clearFullResetState = mutation({
+    args: {
+        serviceToken: v.string(),
+    },
+    handler: async (ctx, args) => {
+        requireServiceToken(args.serviceToken)
+
+        const deleted = {
+            runs: 0,
+            agentLogs: 0,
+            tradeEvents: 0,
+            orders: 0,
+            orderTransitions: 0,
+            positions: 0,
+            instrumentClaims: 0,
+            positionSyncs: 0,
+            providerPositions: 0,
+            providerWorkingOrders: 0,
+            providerSyncStates: 0,
+            accountSnapshots: 0,
+            appHeartbeats: 0,
+            manualRunRequests: 0,
+            alerts: 0,
+        }
+
+        const providerSyncStates = await ctx.db.query("provider_sync_state").collect()
+        for (const state of providerSyncStates) {
+            await ctx.db.delete(state._id)
+            deleted.providerSyncStates++
+        }
+
+        const snapshots = await ctx.db.query("account_snapshots").collect()
+        for (const snapshot of snapshots) {
+            await ctx.db.delete(snapshot._id)
+            deleted.accountSnapshots++
+        }
+
+        const heartbeats = await ctx.db.query("app_heartbeats").collect()
+        for (const heartbeat of heartbeats) {
+            await ctx.db.delete(heartbeat._id)
+            deleted.appHeartbeats++
+        }
+
+        const alerts = await ctx.db.query("alerts").collect()
+        for (const alert of alerts) {
+            await ctx.db.delete(alert._id)
+            deleted.alerts++
+        }
+
+        return deleted
+    },
+})
