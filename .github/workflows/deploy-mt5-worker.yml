@@ -20,8 +20,6 @@ jobs:
                   password: ${{ secrets.VM_PASSWORD }}
                   command_timeout: 10m
                   script: |
-                      $ErrorActionPreference = 'Stop'
-
                       Write-Host "========== DEPLOY START =========="
                       Write-Host "Timestamp: $(Get-Date)"
                       Write-Host "User: $env:USERNAME"
@@ -33,18 +31,18 @@ jobs:
 
                       Write-Host ""
                       Write-Host "--- Step 2: Git status before pull ---"
-                      git status
-                      git log --oneline -3
+                      git status 2>&1 | Out-String | Write-Host
+                      git log --oneline -3 2>&1 | Out-String | Write-Host
 
                       Write-Host ""
                       Write-Host "--- Step 3: Git pull ---"
-                      git pull
+                      git pull 2>&1 | Out-String | Write-Host
                       if ($LASTEXITCODE -ne 0) {
                           Write-Host "FATAL: git pull failed with exit code $LASTEXITCODE"
                           exit 1
                       }
                       Write-Host "Git pull succeeded"
-                      git log --oneline -3
+                      git log --oneline -3 2>&1 | Out-String | Write-Host
 
                       Write-Host ""
                       Write-Host "--- Step 4: Check NSSM exists ---"
@@ -57,16 +55,16 @@ jobs:
 
                       Write-Host ""
                       Write-Host "--- Step 5: Service status before restart ---"
-                      nssm status trading-mt5-worker
+                      nssm status trading-mt5-worker 2>&1 | Out-String | Write-Host
 
                       Write-Host ""
                       Write-Host "--- Step 6: Restart service ---"
-                      nssm restart trading-mt5-worker
+                      nssm restart trading-mt5-worker 2>&1 | Out-String | Write-Host
                       if ($LASTEXITCODE -ne 0) {
                           Write-Host "WARNING: nssm restart exited $LASTEXITCODE, trying stop then start"
-                          nssm stop trading-mt5-worker
+                          nssm stop trading-mt5-worker 2>&1 | Out-String | Write-Host
                           Start-Sleep -Seconds 3
-                          nssm start trading-mt5-worker
+                          nssm start trading-mt5-worker 2>&1 | Out-String | Write-Host
                           if ($LASTEXITCODE -ne 0) {
                               Write-Host "FATAL: Could not start trading-mt5-worker"
                               exit 1
@@ -76,7 +74,7 @@ jobs:
                       Write-Host ""
                       Write-Host "--- Step 7: Verify service is running ---"
                       Start-Sleep -Seconds 5
-                      nssm status trading-mt5-worker
+                      nssm status trading-mt5-worker 2>&1 | Out-String | Write-Host
 
                       Write-Host ""
                       Write-Host "--- Step 8: Health endpoint ---"
@@ -90,9 +88,10 @@ jobs:
 
                       Write-Host ""
                       Write-Host "--- Step 9: Log paths ---"
-                      nssm get trading-mt5-worker AppStdout
-                      nssm get trading-mt5-worker AppStderr
+                      nssm get trading-mt5-worker AppStdout 2>&1 | Out-String | Write-Host
+                      nssm get trading-mt5-worker AppStderr 2>&1 | Out-String | Write-Host
 
                       Write-Host ""
                       Write-Host "========== DEPLOY COMPLETE =========="
                       Write-Host "Timestamp: $(Get-Date)"
+                      exit 0
