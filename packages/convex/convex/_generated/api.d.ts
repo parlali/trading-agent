@@ -13,6 +13,7 @@ import type * as auth from "../auth.js";
 import type * as connectionTests from "../connectionTests.js";
 import type * as http from "../http.js";
 import type * as lib_authGuards from "../lib/authGuards.js";
+import type * as lib_dryRunLedger from "../lib/dryRunLedger.js";
 import type * as lib_instrumentClaims from "../lib/instrumentClaims.js";
 import type * as lib_mutations_orders from "../lib/mutations/orders.js";
 import type * as lib_mutations_portfolio from "../lib/mutations/portfolio.js";
@@ -46,6 +47,7 @@ declare const fullApi: ApiFromModules<{
   connectionTests: typeof connectionTests;
   http: typeof http;
   "lib/authGuards": typeof lib_authGuards;
+  "lib/dryRunLedger": typeof lib_dryRunLedger;
   "lib/instrumentClaims": typeof lib_instrumentClaims;
   "lib/mutations/orders": typeof lib_mutations_orders;
   "lib/mutations/portfolio": typeof lib_mutations_portfolio;

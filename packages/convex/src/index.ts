@@ -114,6 +114,11 @@ export interface CascadeDeleteCounts {
 
 export interface DeleteStrategyResult extends CascadeDeleteCounts {}
 
+export interface DeleteStrategyBatchResult extends CascadeDeleteCounts {
+    strategyDeleted: boolean
+    hasMore: boolean
+}
+
 export interface DeleteAllStrategiesResult extends CascadeDeleteCounts {
     strategies: number
 }
@@ -121,6 +126,10 @@ export interface DeleteAllStrategiesResult extends CascadeDeleteCounts {
 export interface FullResetAudit extends DeleteAllStrategiesResult {}
 
 export interface DeleteOrphanedStrategyHistoryBatchResult extends CascadeDeleteCounts {
+    hasMore: boolean
+}
+
+export interface ClearFullResetStateBatchResult extends CascadeDeleteCounts {
     hasMore: boolean
 }
 
@@ -250,9 +259,14 @@ export interface TradingBackendClient extends TradeEventLoggerMethods {
     addStrategy(config: StrategyConfig): Promise<Id<"strategies">>
     disableStrategy(id: Id<"strategies">): Promise<void>
     deleteStrategy(id: Id<"strategies">): Promise<DeleteStrategyResult>
+    deleteStrategyBatch(id: Id<"strategies">, batchSize?: number): Promise<DeleteStrategyBatchResult>
     deleteAllStrategies(): Promise<DeleteAllStrategiesResult>
     deleteOrphanedStrategyHistoryBatch(batchSize?: number): Promise<DeleteOrphanedStrategyHistoryBatchResult>
     clearFullResetState(): Promise<CascadeDeleteCounts>
+    clearFullResetStateBatch(
+        batchSize?: number,
+        preserveApps?: App[]
+    ): Promise<ClearFullResetStateBatchResult>
     getFullResetAudit(): Promise<FullResetAudit>
     replaceAllStrategies(strategies: StrategyConfig[]): Promise<ReplaceAllStrategiesResult>
 }
@@ -760,6 +774,19 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
                 } as never) as DeleteStrategyResult
             )
         },
+        async deleteStrategyBatch(
+            id: Id<"strategies">,
+            batchSize?: number
+        ): Promise<DeleteStrategyBatchResult> {
+            return await runWithTimeout(
+                "Convex mutation deleteStrategyBatch",
+                async () => await client.mutation(api.mutations.deleteStrategyBatch, {
+                    ...requireMachineAuth(),
+                    strategyId: id,
+                    batchSize,
+                } as never) as DeleteStrategyBatchResult
+            )
+        },
         async deleteAllStrategies(): Promise<DeleteAllStrategiesResult> {
             return await runWithTimeout(
                 "Convex mutation deleteAllStrategies",
@@ -785,6 +812,19 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
                 async () => await client.mutation(api.mutations.clearFullResetState, {
                     ...requireMachineAuth(),
                 } as never) as CascadeDeleteCounts
+            )
+        },
+        async clearFullResetStateBatch(
+            batchSize?: number,
+            preserveApps?: App[]
+        ): Promise<ClearFullResetStateBatchResult> {
+            return await runWithTimeout(
+                "Convex mutation clearFullResetStateBatch",
+                async () => await client.mutation(api.mutations.clearFullResetStateBatch, {
+                    ...requireMachineAuth(),
+                    batchSize,
+                    preserveApps,
+                } as never) as ClearFullResetStateBatchResult
             )
         },
         async getFullResetAudit(): Promise<FullResetAudit> {

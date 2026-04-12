@@ -8,7 +8,10 @@ import {
     type DeleteAllStrategiesResult,
 } from "@valiq-trading/convex"
 import { parseStrategyMarkdownDocument } from "@valiq-trading/core"
-import type { StrategyConfig } from "@valiq-trading/core"
+import type { App, StrategyConfig } from "@valiq-trading/core"
+
+const FULL_RESET_CLEAR_BATCH_SIZE = 20
+const FULL_RESET_CLEAR_MAX_BATCHES = 10000
 
 export function resolveArg(name: string): string | undefined {
     const prefix = `--${name}=`
@@ -194,6 +197,7 @@ export async function finalizeFullResetCleanup(
     options?: {
         batchSize?: number
         log?: (message: string) => void
+        allowedProviderExposureApps?: Array<Exclude<App, "backend">>
     }
 ): Promise<{
     deleted: DeleteAllStrategiesResult
@@ -202,12 +206,23 @@ export async function finalizeFullResetCleanup(
     const deleted = createDeleteTotals()
     const log = options?.log
 
-    await assertNoProviderExposureBeforeCleanup(client)
+    await assertNoProviderExposureBeforeCleanup(client, {
+        allowedApps: options?.allowedProviderExposureApps,
+    })
 
-    const orphaned = await flushOrphanedStrategyHistory(client, options)
-    addDeleteCounts(deleted, orphaned)
+    if ((options?.allowedProviderExposureApps ?? []).length > 0) {
+        log?.(
+            `Orphan history cleanup deferred while provider exposure remains for ${options?.allowedProviderExposureApps?.join(", ")}`
+        )
+    } else {
+        const orphaned = await flushOrphanedStrategyHistory(client, options)
+        addDeleteCounts(deleted, orphaned)
+    }
 
-    const cleared = await client.clearFullResetState()
+    const cleared = await clearFullResetStateInBatches(client, {
+        preserveApps: options?.allowedProviderExposureApps,
+        log,
+    })
     addDeleteCounts(deleted, cleared)
 
     const clearedCount =
@@ -228,29 +243,63 @@ export async function finalizeFullResetCleanup(
     }
 }
 
+async function clearFullResetStateInBatches(
+    client: TradingBackendClient,
+    options?: {
+        preserveApps?: Array<Exclude<App, "backend">>
+        log?: (message: string) => void
+    }
+): Promise<CascadeDeleteCounts> {
+    const totals = createDeleteTotals()
+
+    for (let batch = 1; batch <= FULL_RESET_CLEAR_MAX_BATCHES; batch++) {
+        const result = await client.clearFullResetStateBatch(
+            FULL_RESET_CLEAR_BATCH_SIZE,
+            options?.preserveApps
+        )
+        addDeleteCounts(totals, result)
+
+        if (!result.hasMore) {
+            return totals
+        }
+
+        if (batch % 25 === 0) {
+            options?.log?.(`Full-reset operational cleanup completed ${batch} batch(es)`)
+        }
+    }
+
+    throw new Error(`Exceeded ${FULL_RESET_CLEAR_MAX_BATCHES} full-reset cleanup batches`)
+}
+
 export async function assertNoProviderExposureBeforeCleanup(
-    client: TradingBackendClient
+    client: TradingBackendClient,
+    options?: {
+        allowedApps?: Array<Exclude<App, "backend">>
+    }
 ): Promise<void> {
+    const allowedApps = new Set(options?.allowedApps ?? [])
     const [positions, orders] = await Promise.all([
         client.getPortfolioPositions(),
         client.getPortfolioPendingOrders(),
     ])
+    const blockingPositions = positions.filter((position) => !allowedApps.has(position.app))
+    const blockingOrders = orders.filter((order) => !allowedApps.has(order.app))
 
-    if (positions.length === 0 && orders.length === 0) {
+    if (blockingPositions.length === 0 && blockingOrders.length === 0) {
         return
     }
 
-    const positionSummary = positions
+    const positionSummary = blockingPositions
         .slice(0, 5)
         .map((position) => `${position.app}:${position.instrument}:${position.ownershipStatus}`)
         .join(", ")
-    const orderSummary = orders
+    const orderSummary = blockingOrders
         .slice(0, 5)
         .map((order) => `${order.app}:${order.orderId}:${order.instrument}:${order.ownershipStatus}`)
         .join(", ")
 
     throw new Error(
-        `Refusing to clear provider state while live provider exposure remains in Convex. Positions=${positions.length}${positionSummary ? ` [${positionSummary}${positions.length > 5 ? ", ..." : ""}]` : ""}. Orders=${orders.length}${orderSummary ? ` [${orderSummary}${orders.length > 5 ? ", ..." : ""}]` : ""}. Resolve or flatten the venue first.`
+        `Refusing to clear provider state while live provider exposure remains in Convex. Positions=${blockingPositions.length}${positionSummary ? ` [${positionSummary}${blockingPositions.length > 5 ? ", ..." : ""}]` : ""}. Orders=${blockingOrders.length}${orderSummary ? ` [${orderSummary}${blockingOrders.length > 5 ? ", ..." : ""}]` : ""}. Resolve or flatten the venue first.`
     )
 }
 

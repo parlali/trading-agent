@@ -16,17 +16,21 @@ import {
     type MarketClosedResetBlock,
     reconcileAndVerifyReset,
 } from "./lib/safe-strategy-reset"
-import type { StoredStrategy, TradingBackendClient } from "@valiq-trading/convex"
+import type { DeleteStrategyResult, StoredStrategy, TradingBackendClient } from "@valiq-trading/convex"
 import { MT5VenueAdapter } from "@valiq-trading/mt5"
 
 const FORCE_RESET_FLATTEN_ATTEMPTS = 5
 const FORCE_RESET_FLATTEN_DELAY_MS = 1500
+const STRATEGY_DELETE_BATCH_SIZE = 50
+const STRATEGY_DELETE_MAX_BATCHES = 10000
 
 runScript(async () => {
     const client = createClient()
     const strategies = await client.getAllStrategies()
     const representativeStrategies = getRepresentativeStrategiesByApp(strategies)
     const deleted = createDeleteTotals()
+    const deferredStrategyIds = new Set<string>()
+    const deferredProviderApps = new Set<StoredStrategy["app"]>()
 
     if (strategies.length === 0) {
         console.log("No strategies found. Running full reset cleanup and audit...")
@@ -73,7 +77,9 @@ runScript(async () => {
                 })
                 if (preExistingMarketCloseBlock) {
                     printMarketClosedResetBlock(strategy, preExistingMarketCloseBlock)
-                    return
+                    deferredStrategyIds.add(String(strategy._id))
+                    deferredProviderApps.add(strategy.app)
+                    break
                 }
 
                 console.log(
@@ -105,13 +111,17 @@ runScript(async () => {
                 ].find((failure) => isMarketClosedExecutionFailure(strategy.app, failure))
                 if (marketClosedFailure) {
                     printMarketClosedExecutionFailure(strategy, marketClosedFailure)
-                    return
+                    deferredStrategyIds.add(String(strategy._id))
+                    deferredProviderApps.add(strategy.app)
+                    break
                 }
 
                 const marketCloseBlock = await detectMarketClosedResetBlock(strategy.app, venue)
                 if (marketCloseBlock) {
                     printMarketClosedResetBlock(strategy, marketCloseBlock)
-                    return
+                    deferredStrategyIds.add(String(strategy._id))
+                    deferredProviderApps.add(strategy.app)
+                    break
                 }
 
                 if (attempt < FORCE_RESET_FLATTEN_ATTEMPTS) {
@@ -119,18 +129,28 @@ runScript(async () => {
                 }
             }
 
-            await reconcileAndVerifyReset(client, strategy, undefined, {
-                requireHealthyState: false,
-            })
+            if (!deferredStrategyIds.has(String(strategy._id))) {
+                await reconcileAndVerifyReset(client, strategy, undefined, {
+                    requireHealthyState: false,
+                })
+            }
         }
 
         const recoveredBeforeDelete = await client.recoverRunningRuns()
         console.log(`Recovered running runs before delete: ${recoveredBeforeDelete}`)
 
         for (const strategy of strategies) {
-            const result = await client.deleteStrategy(strategy._id)
-            deleted.strategies++
-            addDeleteCounts(deleted, result)
+            if (deferredProviderApps.has(strategy.app)) {
+                console.log(`Keeping disabled strategy with deferred provider exposure: ${strategy.name} (${strategy.app})`)
+                continue
+            }
+
+            console.log(`Deleting reset strategy: ${strategy.name} (${strategy.app})`)
+            const result = await deleteStrategyWithContext(client, strategy)
+            if (result.strategyDeleted) {
+                deleted.strategies++
+            }
+            addDeleteCounts(deleted, result.deleted)
         }
 
         console.log("Provider cleanup:")
@@ -139,14 +159,23 @@ runScript(async () => {
     }
 
     const cleanup = await finalizeFullResetCleanup(client, {
+        allowedProviderExposureApps: Array.from(deferredProviderApps),
         log: (message) => console.log(`  ${message}`),
     })
     addDeleteCounts(deleted, cleanup.deleted)
 
     console.log("Deleted:")
     printDeleteCounts(deleted)
-    assertFullResetAuditClean(cleanup.audit)
-    console.log("Full reset audit passed")
+    if (deferredProviderApps.size > 0) {
+        console.log("Full reset audit deferred for provider exposure:")
+        for (const app of deferredProviderApps) {
+            console.log(`  ${app}: provider market closed; live provider rows intentionally preserved`)
+        }
+        console.log("Backend reset completed with deferred provider cleanup")
+    } else {
+        assertFullResetAuditClean(cleanup.audit)
+        console.log("Full reset audit passed")
+    }
 })
 
 async function preflightForceReset(
@@ -204,12 +233,12 @@ function printMarketClosedResetBlock(
     block: MarketClosedResetBlock
 ): void {
     console.log(
-        `    reset paused: ${block.provider} market is closed and ${block.positions.length} provider position(s) still have ${block.workingOrders.length} matching working close order(s).`
+        `    warning: ${block.provider} market is closed and ${block.positions.length} provider position(s) still have ${block.workingOrders.length} matching working close order(s).`
     )
     if (block.nextOpen) {
         console.log(`    next provider open: ${block.nextOpen}`)
     }
-    console.log("    no Convex provider evidence was deleted; strategies remain disabled. Re-run force reset after the provider opens or close/cancel manually at the broker.")
+    console.log("    backend reset will continue for other provider apps. Deferred provider rows remain preserved until the broker fills, cancels, or the market opens.")
     console.log(`    strategy: ${strategy.name}`)
 }
 
@@ -217,10 +246,47 @@ function printMarketClosedExecutionFailure(
     strategy: StoredStrategy,
     failure: string
 ): void {
-    console.log(`    reset paused: ${strategy.app} market is closed and provider rejected the flatten attempt.`)
+    console.log(`    warning: ${strategy.app} market is closed and provider rejected the flatten attempt.`)
     console.log(`    provider response: ${failure}`)
-    console.log("    no Convex provider evidence was deleted; strategies remain disabled. Re-run force reset after the provider opens or close/cancel manually at the broker.")
+    console.log("    backend reset will continue for other provider apps. Deferred provider rows remain preserved until the broker fills, cancels, or the market opens.")
     console.log(`    strategy: ${strategy.name}`)
+}
+
+async function deleteStrategyWithContext(
+    client: TradingBackendClient,
+    strategy: StoredStrategy
+): Promise<{
+    deleted: DeleteStrategyResult
+    strategyDeleted: boolean
+}> {
+    const deleted = createDeleteTotals()
+    let strategyDeleted = false
+
+    try {
+        for (let batch = 1; batch <= STRATEGY_DELETE_MAX_BATCHES; batch++) {
+            const result = await client.deleteStrategyBatch(strategy._id, STRATEGY_DELETE_BATCH_SIZE)
+            addDeleteCounts(deleted, result)
+            strategyDeleted = strategyDeleted || result.strategyDeleted
+
+            if (!result.hasMore) {
+                return {
+                    deleted,
+                    strategyDeleted,
+                }
+            }
+
+            if (batch % 25 === 0) {
+                console.log(
+                    `  deleted ${batch} batch(es) for ${strategy.name}: runs=${deleted.runs}, logs=${deleted.agentLogs}, events=${deleted.tradeEvents}, orders=${deleted.orders}, transitions=${deleted.orderTransitions}`
+                )
+            }
+        }
+
+        throw new Error(`Exceeded ${STRATEGY_DELETE_MAX_BATCHES} delete batches`)
+    } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        throw new Error(`Failed deleting reset strategy ${strategy.name} (${strategy.app}, ${strategy._id}): ${message}`)
+    }
 }
 
 async function sleep(delayMs: number): Promise<void> {

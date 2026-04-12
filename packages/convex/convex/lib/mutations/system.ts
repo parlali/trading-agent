@@ -1,6 +1,8 @@
 import { mutation } from "../../_generated/server"
 import { v } from "convex/values"
 import { requireUser, requireServiceToken } from "../authGuards"
+import { appV } from "../validators"
+import type { App } from "@valiq-trading/core"
 
 export const createAlert = mutation({
     args: {
@@ -245,3 +247,148 @@ export const clearFullResetState = mutation({
         return deleted
     },
 })
+
+export const clearFullResetStateBatch = mutation({
+    args: {
+        serviceToken: v.string(),
+        batchSize: v.optional(v.number()),
+        preserveApps: v.optional(v.array(appV)),
+    },
+    handler: async (ctx, args) => {
+        requireServiceToken(args.serviceToken)
+
+        const batchSize = Math.max(1, Math.min(args.batchSize ?? 20, 50))
+        const preserveApps = new Set<App>(args.preserveApps ?? [])
+        const deleted = createEmptyCascadeDeleteCounts()
+        const venueApps = [
+            "alpaca-options",
+            "polymarket",
+            "mt5",
+            "binance-futures",
+        ] as const
+        const apps = [
+            ...venueApps,
+            "backend",
+        ] as const
+
+        for (const app of venueApps) {
+            if (preserveApps.has(app)) {
+                continue
+            }
+
+            const providerSyncState = await ctx.db
+                .query("provider_sync_state")
+                .withIndex("by_app", (q) => q.eq("app", app))
+                .first()
+
+            if (providerSyncState) {
+                await ctx.db.delete(providerSyncState._id)
+                deleted.providerSyncStates++
+                return {
+                    ...deleted,
+                    hasMore: true,
+                }
+            }
+        }
+
+        for (const app of apps) {
+            if (preserveApps.has(app)) {
+                continue
+            }
+
+            const snapshots = await ctx.db
+                .query("account_snapshots")
+                .withIndex("by_app", (q) => q.eq("app", app))
+                .take(batchSize)
+
+            if (snapshots.length > 0) {
+                for (const snapshot of snapshots) {
+                    await ctx.db.delete(snapshot._id)
+                    deleted.accountSnapshots++
+                }
+
+                return {
+                    ...deleted,
+                    hasMore: true,
+                }
+            }
+        }
+
+        for (const app of apps) {
+            if (preserveApps.has(app)) {
+                continue
+            }
+
+            const heartbeat = await ctx.db
+                .query("app_heartbeats")
+                .withIndex("by_app", (q) => q.eq("app", app))
+                .first()
+
+            if (heartbeat) {
+                await ctx.db.delete(heartbeat._id)
+                deleted.appHeartbeats++
+                return {
+                    ...deleted,
+                    hasMore: true,
+                }
+            }
+        }
+
+        if (preserveApps.size === 0) {
+            const alerts = await ctx.db.query("alerts").order("asc").take(batchSize)
+
+            if (alerts.length > 0) {
+                for (const alert of alerts) {
+                    await ctx.db.delete(alert._id)
+                    deleted.alerts++
+                }
+
+                return {
+                    ...deleted,
+                    hasMore: true,
+                }
+            }
+        }
+
+        return {
+            ...deleted,
+            hasMore: false,
+        }
+    },
+})
+
+function createEmptyCascadeDeleteCounts(): {
+    runs: number
+    agentLogs: number
+    tradeEvents: number
+    orders: number
+    orderTransitions: number
+    positions: number
+    instrumentClaims: number
+    positionSyncs: number
+    providerPositions: number
+    providerWorkingOrders: number
+    providerSyncStates: number
+    accountSnapshots: number
+    appHeartbeats: number
+    manualRunRequests: number
+    alerts: number
+} {
+    return {
+        runs: 0,
+        agentLogs: 0,
+        tradeEvents: 0,
+        orders: 0,
+        orderTransitions: 0,
+        positions: 0,
+        instrumentClaims: 0,
+        positionSyncs: 0,
+        providerPositions: 0,
+        providerWorkingOrders: 0,
+        providerSyncStates: 0,
+        accountSnapshots: 0,
+        appHeartbeats: 0,
+        manualRunRequests: 0,
+        alerts: 0,
+    }
+}

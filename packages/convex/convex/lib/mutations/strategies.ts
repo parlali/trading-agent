@@ -124,6 +124,82 @@ export const deleteStrategy = mutation({
     },
 })
 
+export const deleteStrategyBatch = mutation({
+    args: {
+        strategyId: v.id("strategies"),
+        serviceToken: v.optional(v.string()),
+        batchSize: v.optional(v.number()),
+    },
+    handler: async (ctx, args) => {
+        if (args.serviceToken) {
+            requireServiceToken(args.serviceToken)
+        } else {
+            await requireUser(ctx)
+        }
+
+        const deleted = createEmptyCascadeDeleteCounts()
+        const strategy = await ctx.db.get(args.strategyId)
+
+        if (!strategy) {
+            return {
+                ...deleted,
+                strategyDeleted: false,
+                hasMore: false,
+            }
+        }
+
+        await assertStrategyDeletionSafe(ctx, strategy)
+
+        const batchSize = Math.max(1, Math.min(args.batchSize ?? 20, 50))
+        let remainingBudget = batchSize
+        let deletedRunRows = 0
+
+        while (remainingBudget > 0) {
+            const strategyRun = await ctx.db
+                .query("strategy_runs")
+                .withIndex("by_strategy", (q) => q.eq("strategyId", args.strategyId))
+                .first()
+
+            if (!strategyRun) {
+                break
+            }
+
+            const deletedThisRun = await deleteRunBatch(ctx, strategyRun._id, deleted, remainingBudget)
+
+            if (deletedThisRun === 0) {
+                break
+            }
+
+            remainingBudget -= deletedThisRun
+            deletedRunRows += deletedThisRun
+        }
+
+        if (deletedRunRows > 0) {
+            return {
+                ...deleted,
+                strategyDeleted: false,
+                hasMore: true,
+            }
+        }
+
+        if (await deleteStrategyTableBatch(ctx, args.strategyId, strategy.app, deleted, batchSize)) {
+            return {
+                ...deleted,
+                strategyDeleted: false,
+                hasMore: true,
+            }
+        }
+
+        await ctx.db.delete(args.strategyId)
+
+        return {
+            ...deleted,
+            strategyDeleted: true,
+            hasMore: false,
+        }
+    },
+})
+
 export const deleteAllStrategies = mutation({
     args: {
         serviceToken: v.string(),
@@ -524,6 +600,297 @@ export const triggerManualRun = mutation({
         })
     },
 })
+
+type MutableCascadeDeleteCounts = ReturnType<typeof createEmptyCascadeDeleteCounts>
+
+function createEmptyCascadeDeleteCounts(): {
+    runs: number
+    agentLogs: number
+    tradeEvents: number
+    orders: number
+    orderTransitions: number
+    positions: number
+    instrumentClaims: number
+    positionSyncs: number
+    providerPositions: number
+    providerWorkingOrders: number
+    providerSyncStates: number
+    accountSnapshots: number
+    appHeartbeats: number
+    manualRunRequests: number
+    alerts: number
+} {
+    return {
+        runs: 0,
+        agentLogs: 0,
+        tradeEvents: 0,
+        orders: 0,
+        orderTransitions: 0,
+        positions: 0,
+        instrumentClaims: 0,
+        positionSyncs: 0,
+        providerPositions: 0,
+        providerWorkingOrders: 0,
+        providerSyncStates: 0,
+        accountSnapshots: 0,
+        appHeartbeats: 0,
+        manualRunRequests: 0,
+        alerts: 0,
+    }
+}
+
+async function deleteRunBatch(
+    ctx: { db: DatabaseWriter },
+    runId: Id<"strategy_runs">,
+    deleted: MutableCascadeDeleteCounts,
+    batchSize: number
+): Promise<number> {
+    let deletedDocuments = 0
+    let remainingBudget = batchSize
+
+    const logs = await ctx.db
+        .query("agent_logs")
+        .withIndex("by_run", (q) => q.eq("runId", runId))
+        .take(remainingBudget)
+
+    if (logs.length > 0) {
+        for (const log of logs) {
+            await ctx.db.delete(log._id)
+            deleted.agentLogs++
+            deletedDocuments++
+            remainingBudget--
+        }
+
+        if (remainingBudget === 0) {
+            return deletedDocuments
+        }
+    }
+
+    const events = await ctx.db
+        .query("trade_events")
+        .withIndex("by_run", (q) => q.eq("runId", runId))
+        .take(remainingBudget)
+
+    if (events.length > 0) {
+        for (const event of events) {
+            await ctx.db.delete(event._id)
+            deleted.tradeEvents++
+            deletedDocuments++
+            remainingBudget--
+        }
+
+        if (remainingBudget === 0) {
+            return deletedDocuments
+        }
+    }
+
+    while (remainingBudget > 0) {
+        const order = await ctx.db
+            .query("orders")
+            .withIndex("by_run", (q) => q.eq("runId", runId))
+            .first()
+
+        if (!order) {
+            break
+        }
+
+        const transitions = await ctx.db
+            .query("order_transitions")
+            .withIndex("by_order_sequence", (q) => q.eq("orderId", order.orderId))
+            .take(remainingBudget)
+
+        if (transitions.length > 0) {
+            for (const transition of transitions) {
+                await ctx.db.delete(transition._id)
+                deleted.orderTransitions++
+                deletedDocuments++
+                remainingBudget--
+            }
+
+            if (remainingBudget === 0) {
+                return deletedDocuments
+            }
+        }
+
+        await ctx.db.delete(order._id)
+        deleted.orders++
+        deletedDocuments++
+        remainingBudget--
+    }
+
+    if (remainingBudget === 0) {
+        return deletedDocuments
+    }
+
+    await ctx.db.delete(runId)
+    deleted.runs++
+    deletedDocuments++
+
+    return deletedDocuments
+}
+
+async function deleteStrategyTableBatch(
+    ctx: { db: DatabaseWriter },
+    strategyId: Id<"strategies">,
+    app: Doc<"strategies">["app"],
+    deleted: MutableCascadeDeleteCounts,
+    batchSize: number
+): Promise<boolean> {
+    const positions = await ctx.db
+        .query("positions")
+        .withIndex("by_strategy", (q) => q.eq("strategyId", strategyId))
+        .take(batchSize)
+
+    if (positions.length > 0) {
+        for (const position of positions) {
+            await ctx.db.delete(position._id)
+            deleted.positions++
+        }
+        return true
+    }
+
+    const claims = await ctx.db
+        .query("instrument_claims")
+        .withIndex("by_strategy", (q) => q.eq("strategyId", strategyId))
+        .take(batchSize)
+
+    if (claims.length > 0) {
+        for (const claim of claims) {
+            await ctx.db.delete(claim._id)
+            deleted.instrumentClaims++
+        }
+        return true
+    }
+
+    const syncs = await ctx.db
+        .query("position_syncs")
+        .withIndex("by_strategy_synced_at", (q) => q.eq("strategyId", strategyId))
+        .take(batchSize)
+
+    if (syncs.length > 0) {
+        for (const sync of syncs) {
+            await ctx.db.delete(sync._id)
+            deleted.positionSyncs++
+        }
+        return true
+    }
+
+    const providerPositions = await ctx.db
+        .query("provider_positions")
+        .withIndex("by_app_strategy", (q) =>
+            q.eq("app", app).eq("strategyId", strategyId)
+        )
+        .take(batchSize)
+
+    if (providerPositions.length > 0) {
+        for (const position of providerPositions) {
+            await ctx.db.delete(position._id)
+            deleted.providerPositions++
+        }
+        return true
+    }
+
+    const providerWorkingOrders = await ctx.db
+        .query("provider_working_orders")
+        .withIndex("by_app_strategy", (q) =>
+            q.eq("app", app).eq("strategyId", strategyId)
+        )
+        .take(batchSize)
+
+    if (providerWorkingOrders.length > 0) {
+        for (const order of providerWorkingOrders) {
+            await ctx.db.delete(order._id)
+            deleted.providerWorkingOrders++
+        }
+        return true
+    }
+
+    const manualRunRequests = await ctx.db
+        .query("manual_run_requests")
+        .withIndex("by_strategy", (q) => q.eq("strategyId", strategyId))
+        .take(batchSize)
+
+    if (manualRunRequests.length > 0) {
+        for (const request of manualRunRequests) {
+            await ctx.db.delete(request._id)
+            deleted.manualRunRequests++
+        }
+        return true
+    }
+
+    const appStrategies = await ctx.db
+        .query("strategies")
+        .withIndex("by_app", (q) => q.eq("app", app))
+        .take(2)
+    const isLastStrategyForApp = appStrategies.length === 1
+
+    if (!isLastStrategyForApp) {
+        return false
+    }
+
+    const remainingProviderPositions = await ctx.db
+        .query("provider_positions")
+        .withIndex("by_app", (q) => q.eq("app", app))
+        .take(batchSize)
+
+    if (remainingProviderPositions.length > 0) {
+        for (const position of remainingProviderPositions) {
+            await ctx.db.delete(position._id)
+            deleted.providerPositions++
+        }
+        return true
+    }
+
+    const remainingProviderWorkingOrders = await ctx.db
+        .query("provider_working_orders")
+        .withIndex("by_app", (q) => q.eq("app", app))
+        .take(batchSize)
+
+    if (remainingProviderWorkingOrders.length > 0) {
+        for (const order of remainingProviderWorkingOrders) {
+            await ctx.db.delete(order._id)
+            deleted.providerWorkingOrders++
+        }
+        return true
+    }
+
+    const providerSyncState = await ctx.db
+        .query("provider_sync_state")
+        .withIndex("by_app", (q) => q.eq("app", app))
+        .first()
+
+    if (providerSyncState) {
+        await ctx.db.delete(providerSyncState._id)
+        deleted.providerSyncStates++
+        return true
+    }
+
+    const snapshots = await ctx.db
+        .query("account_snapshots")
+        .withIndex("by_app", (q) => q.eq("app", app))
+        .take(batchSize)
+
+    if (snapshots.length > 0) {
+        for (const snapshot of snapshots) {
+            await ctx.db.delete(snapshot._id)
+            deleted.accountSnapshots++
+        }
+        return true
+    }
+
+    const heartbeat = await ctx.db
+        .query("app_heartbeats")
+        .withIndex("by_app", (q) => q.eq("app", app))
+        .first()
+
+    if (heartbeat) {
+        await ctx.db.delete(heartbeat._id)
+        deleted.appHeartbeats++
+        return true
+    }
+
+    return false
+}
 
 async function cascadeDeleteRun(
     ctx: { db: DatabaseWriter },

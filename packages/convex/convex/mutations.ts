@@ -14,6 +14,7 @@ export {
     upsertStrategy,
     disableStrategy,
     deleteStrategy,
+    deleteStrategyBatch,
     deleteOrphanedStrategyHistoryBatch,
     triggerManualRun,
     stopRun,
@@ -33,6 +34,7 @@ export {
     setKillSwitch,
     clearManualRunRequest,
     clearFullResetState,
+    clearFullResetStateBatch,
 } from "./lib/mutations/system"
 
 export {
