@@ -55,6 +55,13 @@ export interface AlpacaOrderResponse {
     }>
 }
 
+export interface AlpacaClockResponse {
+    timestamp?: string
+    isOpen: boolean
+    nextOpen?: string
+    nextClose?: string
+}
+
 export interface AlpacaOptionContract {
     symbol: string
     name?: string
@@ -220,6 +227,11 @@ export class AlpacaClient {
 
     async getOpenOrders(): Promise<AlpacaOrderResponse[]> {
         return await this.request<AlpacaOrderResponse[]>("/v2/orders?status=open&nested=true&direction=desc&limit=500")
+    }
+
+    async getClock(): Promise<AlpacaClockResponse> {
+        const response = await this.request<unknown>("/v2/clock")
+        return normalizeClockResponse(response)
     }
 
     async getOptionContracts(
@@ -505,6 +517,17 @@ function normalizeOptionContractsResponse(
     return {
         contracts: rawContracts.filter(isRecord).map((contract) => normalizeOptionContract(contract)).filter(isDefined),
         nextPageToken: asOptionalString(record?.next_page_token ?? record?.nextPageToken),
+    }
+}
+
+function normalizeClockResponse(payload: unknown): AlpacaClockResponse {
+    const record = asRecord(payload)
+
+    return {
+        timestamp: asOptionalString(record?.timestamp),
+        isOpen: record?.is_open === true || record?.isOpen === true,
+        nextOpen: asOptionalString(record?.next_open ?? record?.nextOpen),
+        nextClose: asOptionalString(record?.next_close ?? record?.nextClose),
     }
 }
 

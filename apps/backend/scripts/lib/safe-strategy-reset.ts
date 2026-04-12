@@ -45,6 +45,19 @@ export interface VenueExposureResetResult {
     positionFailures: string[]
 }
 
+export interface VenueMarketClock {
+    isOpen: boolean
+    nextOpen?: string
+    nextClose?: string
+}
+
+export interface MarketClosedResetBlock {
+    provider: string
+    positions: Array<Pick<ProviderPositionRow, "instrument"> | Pick<Position, "instrument">>
+    workingOrders: Array<Pick<ProviderPendingOrderRow, "orderId" | "instrument" | "metadata"> | Pick<WorkingOrder, "orderId" | "instrument" | "metadata">>
+    nextOpen?: string
+}
+
 const RESET_VERIFICATION_ATTEMPTS = 6
 const RESET_VERIFICATION_DELAY_MS = 1000
 
@@ -171,6 +184,67 @@ export async function flattenVenueExposure(
         orderFailures: cancelledOrders.failures,
         positionFailures: closedPositions.failures,
     }
+}
+
+export async function detectMarketClosedResetBlock(
+    provider: string,
+    venue: VenueAdapter,
+    exposure?: {
+        positions: Array<Pick<ProviderPositionRow, "instrument"> | Pick<Position, "instrument">>
+        workingOrders: Array<Pick<ProviderPendingOrderRow, "orderId" | "instrument" | "metadata"> | Pick<WorkingOrder, "orderId" | "instrument" | "metadata">>
+    }
+): Promise<MarketClosedResetBlock | null> {
+    if (!hasMarketClock(venue)) {
+        return null
+    }
+
+    const clock = await venue.getMarketClock()
+    if (clock.isOpen) {
+        return null
+    }
+
+    const [positions, workingOrders] = exposure
+        ? [exposure.positions, exposure.workingOrders]
+        : await Promise.all([
+            venue.getPositions(),
+            venue.getWorkingOrders ? venue.getWorkingOrders() : Promise.resolve([]),
+        ])
+
+    if (positions.length === 0 || workingOrders.length === 0) {
+        return null
+    }
+
+    const positionInstruments = new Set(positions.map((position) => position.instrument))
+    const matchingWorkingOrders = workingOrders.filter((order) =>
+        positionInstruments.has(order.instrument) && isCloseWorkingOrder(order)
+    )
+
+    if (matchingWorkingOrders.length === 0) {
+        return null
+    }
+
+    return {
+        provider,
+        positions,
+        workingOrders: matchingWorkingOrders,
+        nextOpen: clock.nextOpen,
+    }
+}
+
+export function isMarketClosedExecutionFailure(
+    provider: string,
+    message: string
+): boolean {
+    if (provider !== "alpaca-options") {
+        return false
+    }
+
+    const normalized = message.toLowerCase()
+    return normalized.includes("market closed") ||
+        normalized.includes("market is closed") ||
+        normalized.includes("market is not open") ||
+        normalized.includes("outside market hours") ||
+        normalized.includes("option market has closed")
 }
 
 async function cancelOrders(
@@ -356,6 +430,33 @@ function formatList(values: string[]): string {
     }
 
     return `${values.slice(0, 5).join(", ")}, ... (+${values.length - 5} more)`
+}
+
+function hasMarketClock(
+    venue: VenueAdapter
+): venue is VenueAdapter & { getMarketClock(): Promise<VenueMarketClock> } {
+    return typeof (venue as Partial<{ getMarketClock(): Promise<VenueMarketClock> }>).getMarketClock === "function"
+}
+
+function isCloseWorkingOrder(
+    order: Pick<ProviderPendingOrderRow, "metadata"> | Pick<WorkingOrder, "metadata">
+): boolean {
+    const legs = order.metadata?.legs
+    if (!Array.isArray(legs) || legs.length === 0) {
+        return false
+    }
+
+    return legs.every((leg) => {
+        if (!leg || typeof leg !== "object") {
+            return false
+        }
+
+        const record = leg as Record<string, unknown>
+        return record.position_intent === "buy_to_close" ||
+            record.position_intent === "sell_to_close" ||
+            record.side === "buy_to_close" ||
+            record.side === "sell_to_close"
+    })
 }
 
 async function sleep(delayMs: number): Promise<void> {

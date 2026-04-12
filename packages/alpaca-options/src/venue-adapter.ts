@@ -17,6 +17,7 @@ import {
     type AlpacaOptionContractsParams,
     type AlpacaOptionChainParams,
     type AlpacaOptionSnapshotsResponse,
+    type AlpacaClockResponse,
     type AlpacaPositionResponse,
 } from "./alpaca-client"
 import { buildIronCondorInstrumentFromLegs, parseOptionContractSymbol } from "./risk-rules"
@@ -116,6 +117,10 @@ export class AlpacaOptionsVenueAdapter implements VenueAdapter, PriceVerifier {
     async getWorkingOrders(): Promise<WorkingOrder[]> {
         const orders = await this.client.getOpenOrders()
         return orders.map((order) => mapWorkingOrder(order))
+    }
+
+    async getMarketClock(): Promise<AlpacaClockResponse> {
+        return await this.client.getClock()
     }
 
     async submitOrder(intent: OrderIntent): Promise<ExecutionResult> {

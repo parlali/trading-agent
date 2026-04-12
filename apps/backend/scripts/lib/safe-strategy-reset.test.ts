@@ -9,6 +9,8 @@ import { AlpacaPlugin } from "../../src/plugins/alpaca"
 import { BinancePlugin } from "../../src/plugins/binance"
 import {
     isDryRunStrategy,
+    detectMarketClosedResetBlock,
+    isMarketClosedExecutionFailure,
     reconcileAndVerifyReset,
     resetStrategySafely,
 } from "./safe-strategy-reset.ts"
@@ -425,6 +427,99 @@ describe("resetStrategySafely", () => {
 
         await assertion
         setTimeoutSpy.mockRestore()
+    })
+
+    it("detects a closed provider market with a matching working close order without flatten churn", async () => {
+        const venue = {
+            getMarketClock: vi.fn().mockResolvedValue({
+                isOpen: false,
+                nextOpen: "2026-04-13T13:30:00Z",
+            }),
+            getPositions: vi.fn(),
+            getWorkingOrders: vi.fn(),
+            getAccountState: vi.fn(),
+            cancelOrder: vi.fn(),
+            modifyOrder: vi.fn(),
+            closePosition: vi.fn(),
+            submitOrder: vi.fn(),
+            getOrderStatus: vi.fn(),
+        }
+
+        const block = await detectMarketClosedResetBlock("alpaca-options", venue, {
+            positions: [
+                {
+                    instrument: "IC:SPY:2026-04-24:SPY260424C00705000|SPY260424C00706000|SPY260424P00649000|SPY260424P00650000",
+                },
+            ],
+            workingOrders: [
+                {
+                    orderId: "close-order-1",
+                    instrument: "IC:SPY:2026-04-24:SPY260424C00705000|SPY260424C00706000|SPY260424P00649000|SPY260424P00650000",
+                    metadata: {
+                        legs: [
+                            { symbol: "SPY260424C00705000", position_intent: "sell_to_close" },
+                            { symbol: "SPY260424C00706000", position_intent: "buy_to_close" },
+                            { symbol: "SPY260424P00649000", position_intent: "buy_to_close" },
+                            { symbol: "SPY260424P00650000", position_intent: "sell_to_close" },
+                        ],
+                    },
+                },
+            ],
+        })
+
+        expect(block).toMatchObject({
+            provider: "alpaca-options",
+            nextOpen: "2026-04-13T13:30:00Z",
+        })
+        expect(venue.cancelOrder).not.toHaveBeenCalled()
+        expect(venue.closePosition).not.toHaveBeenCalled()
+    })
+
+    it("does not treat a matching open-intent order as a market-closed reset block", async () => {
+        const venue = {
+            getMarketClock: vi.fn().mockResolvedValue({
+                isOpen: false,
+            }),
+            getPositions: vi.fn(),
+            getWorkingOrders: vi.fn(),
+            getAccountState: vi.fn(),
+            cancelOrder: vi.fn(),
+            modifyOrder: vi.fn(),
+            closePosition: vi.fn(),
+            submitOrder: vi.fn(),
+            getOrderStatus: vi.fn(),
+        }
+
+        const block = await detectMarketClosedResetBlock("alpaca-options", venue, {
+            positions: [
+                {
+                    instrument: "IC:SPY:2026-04-24:SPY260424C00705000|SPY260424C00706000|SPY260424P00649000|SPY260424P00650000",
+                },
+            ],
+            workingOrders: [
+                {
+                    orderId: "entry-order-1",
+                    instrument: "IC:SPY:2026-04-24:SPY260424C00705000|SPY260424C00706000|SPY260424P00649000|SPY260424P00650000",
+                    metadata: {
+                        legs: [
+                            { symbol: "SPY260424C00705000", position_intent: "sell_to_open" },
+                            { symbol: "SPY260424C00706000", position_intent: "buy_to_open" },
+                            { symbol: "SPY260424P00649000", position_intent: "buy_to_open" },
+                            { symbol: "SPY260424P00650000", position_intent: "sell_to_open" },
+                        ],
+                    },
+                },
+            ],
+        })
+
+        expect(block).toBeNull()
+    })
+
+    it("classifies Alpaca market-closed execution failures without weakening other venues", () => {
+        expect(isMarketClosedExecutionFailure("alpaca-options", "position SPY: market is not open")).toBe(true)
+        expect(isMarketClosedExecutionFailure("alpaca-options", "position SPY: outside market hours")).toBe(true)
+        expect(isMarketClosedExecutionFailure("mt5", "position XAUUSD: market is not open")).toBe(false)
+        expect(isMarketClosedExecutionFailure("alpaca-options", "position SPY: insufficient buying power")).toBe(false)
     })
 })
 

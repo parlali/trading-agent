@@ -9,8 +9,11 @@ import {
 } from "./lib/strategy-cli"
 import {
     createVenue,
+    detectMarketClosedResetBlock,
     flattenVenueExposure,
     isDryRunStrategy,
+    isMarketClosedExecutionFailure,
+    type MarketClosedResetBlock,
     reconcileAndVerifyReset,
 } from "./lib/safe-strategy-reset"
 import type { StoredStrategy, TradingBackendClient } from "@valiq-trading/convex"
@@ -64,6 +67,15 @@ runScript(async () => {
                     break
                 }
 
+                const preExistingMarketCloseBlock = await detectMarketClosedResetBlock(strategy.app, venue, {
+                    positions,
+                    workingOrders,
+                })
+                if (preExistingMarketCloseBlock) {
+                    printMarketClosedResetBlock(strategy, preExistingMarketCloseBlock)
+                    return
+                }
+
                 console.log(
                     `    attempt ${attempt}/${FORCE_RESET_FLATTEN_ATTEMPTS}: ${positions.length} live position(s), ${workingOrders.length} live working order(s)`
                 )
@@ -85,6 +97,21 @@ runScript(async () => {
 
                 for (const failure of result.positionFailures) {
                     console.log(`      ${failure}`)
+                }
+
+                const marketClosedFailure = [
+                    ...result.orderFailures,
+                    ...result.positionFailures,
+                ].find((failure) => isMarketClosedExecutionFailure(strategy.app, failure))
+                if (marketClosedFailure) {
+                    printMarketClosedExecutionFailure(strategy, marketClosedFailure)
+                    return
+                }
+
+                const marketCloseBlock = await detectMarketClosedResetBlock(strategy.app, venue)
+                if (marketCloseBlock) {
+                    printMarketClosedResetBlock(strategy, marketCloseBlock)
+                    return
                 }
 
                 if (attempt < FORCE_RESET_FLATTEN_ATTEMPTS) {
@@ -170,6 +197,30 @@ function getRepresentativeStrategiesByApp(
     }
 
     return Array.from(strategiesByApp.values())
+}
+
+function printMarketClosedResetBlock(
+    strategy: StoredStrategy,
+    block: MarketClosedResetBlock
+): void {
+    console.log(
+        `    reset paused: ${block.provider} market is closed and ${block.positions.length} provider position(s) still have ${block.workingOrders.length} matching working close order(s).`
+    )
+    if (block.nextOpen) {
+        console.log(`    next provider open: ${block.nextOpen}`)
+    }
+    console.log("    no Convex provider evidence was deleted; strategies remain disabled. Re-run force reset after the provider opens or close/cancel manually at the broker.")
+    console.log(`    strategy: ${strategy.name}`)
+}
+
+function printMarketClosedExecutionFailure(
+    strategy: StoredStrategy,
+    failure: string
+): void {
+    console.log(`    reset paused: ${strategy.app} market is closed and provider rejected the flatten attempt.`)
+    console.log(`    provider response: ${failure}`)
+    console.log("    no Convex provider evidence was deleted; strategies remain disabled. Re-run force reset after the provider opens or close/cancel manually at the broker.")
+    console.log(`    strategy: ${strategy.name}`)
 }
 
 async function sleep(delayMs: number): Promise<void> {
