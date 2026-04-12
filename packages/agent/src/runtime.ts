@@ -86,6 +86,8 @@ export async function executeAgentRun(
 
     let consecutiveErrors = 0
     let iteration = 0
+    const repeatedToolErrors = new Map<string, number>()
+    const maxRepeatedToolErrors = 3
 
     const openRouterTools = tools.toOpenRouterTools()
 
@@ -180,7 +182,7 @@ export async function executeAgentRun(
                     response.content ?? "",
                 )
 
-                    const valid: Array<{
+                const valid: Array<{
                     toolCall: typeof response.toolCalls[number]
                     toolDef: ReturnType<typeof tools.get> & {}
                     parsedArgs: unknown
@@ -199,6 +201,10 @@ export async function executeAgentRun(
                             conversation.getSequence(), "tool",
                             errorResult, toolName, toolCall.function.arguments
                         )
+                        const repeatedError = recordRepeatedToolError(repeatedToolErrors, toolName, errorResult)
+                        if (repeatedError >= maxRepeatedToolErrors) {
+                            return repeatedToolErrorResult(context.runId, toolName, errorResult, iteration, aggregatedUsage)
+                        }
                         continue
                     }
 
@@ -214,6 +220,10 @@ export async function executeAgentRun(
                             conversation.getSequence(), "tool",
                             errorResult, toolName, toolCall.function.arguments
                         )
+                        const repeatedError = recordRepeatedToolError(repeatedToolErrors, toolName, errorResult)
+                        if (repeatedError >= maxRepeatedToolErrors) {
+                            return repeatedToolErrorResult(context.runId, toolName, errorResult, iteration, aggregatedUsage)
+                        }
                         continue
                     }
 
@@ -227,6 +237,10 @@ export async function executeAgentRun(
                             conversation.getSequence(), "tool",
                             errorResult, toolName, toolCall.function.arguments
                         )
+                        const repeatedError = recordRepeatedToolError(repeatedToolErrors, toolName, normalizeToolErrorSignature(errorResult))
+                        if (repeatedError >= maxRepeatedToolErrors) {
+                            return repeatedToolErrorResult(context.runId, toolName, errorResult, iteration, aggregatedUsage)
+                        }
                         continue
                     }
 
@@ -264,11 +278,22 @@ export async function executeAgentRun(
                         if (result.status === "fulfilled") {
                             const val = (result as PromiseFulfilledResult<unknown>).value
                             toolResult = typeof val === "string" ? val : JSON.stringify(val)
+                            clearRepeatedToolErrors(repeatedToolErrors, toolName)
                         } else {
                             const reason = (result as PromiseRejectedResult).reason
                             const errorMsg = reason instanceof Error ? reason.message : String(reason)
                             toolResult = JSON.stringify({ error: `Tool execution failed: ${errorMsg}` })
                             logger.error("Tool execution error", { toolName, error: errorMsg })
+                            const repeatedError = recordRepeatedToolError(repeatedToolErrors, toolName, toolResult)
+                            if (repeatedError >= maxRepeatedToolErrors) {
+                                conversation.addToolResult(toolCall.id, toolName, toolResult)
+                                void agentLogger?.log(
+                                    context.runId, context.strategyId,
+                                    conversation.getSequence(), "tool",
+                                    toolResult, toolName, toolCall.function.arguments, toolResult
+                                )
+                                return repeatedToolErrorResult(context.runId, toolName, toolResult, iteration, aggregatedUsage)
+                            }
                         }
 
                         conversation.addToolResult(toolCall.id, toolName, toolResult)
@@ -330,5 +355,49 @@ export async function executeAgentRun(
                 }
             }
         }
+    }
+}
+
+function recordRepeatedToolError(
+    repeatedToolErrors: Map<string, number>,
+    toolName: string,
+    errorResult: string
+): number {
+    const key = `${toolName}:${normalizeToolErrorSignature(errorResult)}`
+    const count = (repeatedToolErrors.get(key) ?? 0) + 1
+    repeatedToolErrors.set(key, count)
+    return count
+}
+
+function clearRepeatedToolErrors(
+    repeatedToolErrors: Map<string, number>,
+    toolName: string
+): void {
+    for (const key of Array.from(repeatedToolErrors.keys())) {
+        if (key.startsWith(`${toolName}:`)) {
+            repeatedToolErrors.delete(key)
+        }
+    }
+}
+
+function normalizeToolErrorSignature(errorResult: string): string {
+    return errorResult
+        .replace(/"stack":"[^"]+"/g, "")
+        .replace(/\d{4}-\d{2}-\d{2}T[^"]+/g, "timestamp")
+        .slice(0, 1000)
+}
+
+function repeatedToolErrorResult(
+    runId: string,
+    toolName: string,
+    toolResult: string,
+    iteration: number,
+    usage: LLMUsage
+): AgentRunResult {
+    return {
+        summary: "",
+        error: `Circuit breaker: repeated identical ${toolName} tool error in run ${runId}: ${toolResult}`,
+        iterations: iteration,
+        usage,
     }
 }

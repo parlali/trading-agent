@@ -33,6 +33,10 @@ export type PolymarketMaxBet = z.infer<typeof polymarketMaxBetSchema>
 
 export const polymarketPolicySchema = baseStrategyPolicySchema.extend({
     maxBet: polymarketMaxBetSchema,
+    minLiquidity: z.number().nonnegative().default(0),
+    minResolutionBufferHours: z.number().nonnegative().default(0),
+    allowedCategories: z.array(z.string().trim().min(1)).default([]),
+    maxTotalExposure: z.number().positive().optional(),
 })
 
 export type PolymarketPolicy = z.infer<typeof polymarketPolicySchema>
@@ -143,6 +147,9 @@ export const POLYMARKET_POLICY_DEFAULTS: PolymarketPolicy = {
     dryRun: true,
     model: "",
     maxBet: { mode: "fixed", value: 100 },
+    minLiquidity: 0,
+    minResolutionBufferHours: 48,
+    allowedCategories: [],
 }
 
 export const MT5_POLICY_DEFAULTS: MT5Policy = {

@@ -5,11 +5,23 @@ Never use semicolons when its optional for the language.
 Never write inline comments in code.
 No Emojis anywhere.
 
-never duplicate logic
-never createmultiple sources of truth 
-always clean up redundant code
+This is financial trading software. Correctness, auditability, deterministic accounting, and provider-truth reconciliation matter more than convenience.
+
+Never duplicate logic.
+Never create multiple sources of truth.
+Always clean up redundant code.
+Use shared abstractions only when they remove real duplication without hiding provider-specific execution semantics.
+Do not chain silent fallbacks. Fallbacks must be explicit, logged, bounded, and fail closed for execution, ownership, accounting, credentials, and provider identity.
+Keep tool schemas, adapter contracts, persisted state, and provider payload mapping typed and canonical.
+Treat ownership, reconciliation, dry-run accounting, and order lifecycle bugs as safety-critical defects.
+When fixing runtime bugs, trace the full path: agent tool schema -> handler -> execution pipeline -> venue adapter -> provider API -> Convex persistence -> dashboard/read model.
+Tests must cover the real failure mode from logs or exports whenever possible; connection tests must exercise the same runtime config, credentials, and provider path as scheduled strategies.
+Do not mark safety or accounting plan items complete until a replay, export audit, or provider-sync check proves the intended behavior.
+Plan items describe intended behavior to achieve, not specific changes to follow blindly. Implement the smallest correct design that satisfies the behavior and note deviations in plan.md.
+Keep machine-specific sibling-repo paths and private operator tooling out of tracked docs.
 
 When working on plan.md tasks:
 - ALWAYS check off completed tasks: `- [ ]` becomes `- [x]`
-- Add brief notes in parentheses if task was skipped or modified
+- Add brief notes in parentheses when implementation differs from the original wording
 - The plan is the source of truth for progress tracking
+- Do not skip or gloss over plan items. Fully implement each intended behavior, then double-check direct and downstream effects for cleanliness, duplication, and bugs.

@@ -55,6 +55,7 @@ describe("AlpacaOptionsVenueAdapter", () => {
         expect(orders).toHaveLength(1)
         expect(orders[0]).toMatchObject({
             orderId: "order-entry-1",
+            instrument: "IC:SPY:2026-04-17:SPY260417C00550000|SPY260417C00555000|SPY260417P00495000|SPY260417P00500000",
             side: "sell",
             limitPrice: 1.23,
         })

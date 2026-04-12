@@ -47,6 +47,7 @@ import {
     filterPositionsByOwnership,
     binancePolicySchema,
     getNextCronFireMs,
+    isDryRunAccountLedgerPosition,
     mt5PolicySchema,
     parseSummaryMetadata,
     stripMetadataBlock,
@@ -817,6 +818,9 @@ export async function runStrategy(
         logger: runLogger,
         tradeEventLogger: backend,
         orderPersistence,
+        priceVerification: {
+            failClosedOnVerificationError: app === "polymarket",
+        },
         runId,
         strategyId: strategy._id,
         ownedInstruments,
@@ -860,18 +864,20 @@ export async function runStrategy(
             )
             runtimeContextLines = mergeRuntimeContextLines(runtimeContextLines, pendingOrderRuntimeContext)
 
-            const [allPositions, accountState, previousRunSummary] = await Promise.all([
+            const [allPositions, previousRunSummary] = await Promise.all([
                 isDryRun ? backend.getLatestPositions(strategy._id) : venue.getPositions(),
-                venue.getAccountState(),
                 backend.getLastCompletedRunSummary(strategy._id),
             ])
             const positions = isDryRun
-                ? allPositions
+                ? allPositions.filter((position) => !isDryRunAccountLedgerPosition(position))
                 : filterPositionsByOwnership(allPositions, ownedInstruments)
 
             if (isDryRun) {
-                pipeline.seedDryRunPositions(positions)
+                pipeline.seedDryRunPositions(allPositions)
             }
+            const accountState = isDryRun
+                ? await pipeline.getAccountState()
+                : await venue.getAccountState()
 
             const result = await executeAgentRun(
                 {

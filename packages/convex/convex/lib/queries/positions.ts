@@ -2,12 +2,14 @@ import { query } from "../../_generated/server"
 import { v } from "convex/values"
 import { requireUser, requireServiceToken } from "../authGuards"
 import { getLatestPositionsForStrategy } from "../instrumentClaims"
+import { isDryRunLedgerMetadata } from "../dryRunLedger"
 
 export const getOpenPositions = query({
     args: { strategyId: v.id("strategies") },
     handler: async (ctx, args) => {
         await requireUser(ctx)
-        return await getLatestPositionsForStrategy(ctx, args.strategyId)
+        const positions = await getLatestPositionsForStrategy(ctx, args.strategyId)
+        return positions.filter((position) => !isDryRunLedgerMetadata(position.metadata))
     },
 })
 

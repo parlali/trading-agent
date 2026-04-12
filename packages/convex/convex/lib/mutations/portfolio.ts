@@ -661,9 +661,9 @@ function buildPositionKey(position: {
 
 function inferClosedOrderStatus(
     order: OrderDoc,
-    livePositionInstruments: Set<string>
+    _livePositionInstruments: Set<string>
 ): Doc<"orders">["status"] {
-    if (order.filledQuantity > 0 || livePositionInstruments.has(order.instrument)) {
+    if (order.filledQuantity > 0) {
         return "filled"
     }
 
@@ -733,6 +733,10 @@ async function writeStrategyPositionSnapshots(
     }
 
     for (const strategy of args.strategies) {
+        if (isDryRunStrategy(strategy)) {
+            continue
+        }
+
         const strategyPositions = positionsByStrategy.get(String(strategy._id)) ?? []
 
         await ctx.db.insert("position_syncs", {
@@ -764,6 +768,10 @@ async function writeStrategyPositionSnapshots(
             updatedAt: args.syncedAt,
         })
     }
+}
+
+function isDryRunStrategy(strategy: StrategyDoc): boolean {
+    return Boolean((strategy.policy as Record<string, unknown>).dryRun)
 }
 
 function createDriftSummary(args: {

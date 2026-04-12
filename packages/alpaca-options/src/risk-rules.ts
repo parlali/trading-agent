@@ -37,9 +37,22 @@ export const alpacaRiskValidators: readonly RiskValidator[] = [
 export function buildIronCondorInstrument(
     underlying: string,
     expiration: string,
-    quantity: number
+    _quantity?: number
 ): string {
-    return `IC:${underlying.toUpperCase()}:${expiration}:${quantity}`
+    return `IC:${underlying.toUpperCase()}:${expiration}`
+}
+
+export function buildIronCondorInstrumentFromLegs(
+    underlying: string,
+    expiration: string,
+    legs: Array<{ instrument: string }>
+): string {
+    const normalizedLegs = legs
+        .map((leg) => leg.instrument.trim().toUpperCase())
+        .sort()
+        .join("|")
+
+    return `${buildIronCondorInstrument(underlying, expiration)}:${normalizedLegs}`
 }
 
 export function parseOptionContractSymbol(symbol: string): ParsedOptionContract | null {
@@ -201,7 +214,7 @@ function ironCondorStructureValidator(intent: OrderIntent) {
         allowed: true,
         adjustedIntent: {
             ...intent,
-            instrument: buildIronCondorInstrument(underlying, expiration, intent.quantity),
+            instrument: buildIronCondorInstrumentFromLegs(underlying, expiration, normalizedLegs),
             side: action === "close" ? "buy" : "sell",
             orderType: SUPPORTED_ALPACA_ORDER_TYPE,
             timeInForce: SUPPORTED_ALPACA_TIME_IN_FORCE,

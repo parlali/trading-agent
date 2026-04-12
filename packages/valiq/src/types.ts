@@ -284,7 +284,7 @@ export interface BreakingNewsResponse {
 }
 
 export type BreakingNewsWindow = "1h" | "6h" | "24h" | "prev_24h" | "7d"
-export type BreakingNewsSource = "fmp-general" | "fmp-forex" | "fmp-crypto"
+export type BreakingNewsSource = "general" | "forex" | "crypto"
 
 export interface BreakingNewsParams {
     window?: BreakingNewsWindow

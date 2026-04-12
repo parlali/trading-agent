@@ -19,7 +19,7 @@ import {
     type AlpacaOptionSnapshotsResponse,
     type AlpacaPositionResponse,
 } from "./alpaca-client"
-import { buildIronCondorInstrument, parseOptionContractSymbol } from "./risk-rules"
+import { buildIronCondorInstrumentFromLegs, parseOptionContractSymbol } from "./risk-rules"
 
 interface PositionGroup {
     instrument: string
@@ -358,8 +358,7 @@ function groupIronCondorPositions(positions: AlpacaPositionResponse[]): Position
             continue
         }
 
-        const quantity = Math.abs(toNumber(position.qty))
-        const key = `${parsed.underlying}:${parsed.expiration}:${quantity}`
+        const key = `${parsed.underlying}:${parsed.expiration}`
         const entry = groups.get(key)
 
         if (entry) {
@@ -376,14 +375,16 @@ function groupIronCondorPositions(positions: AlpacaPositionResponse[]): Position
             continue
         }
 
-        const [underlying, expiration, quantityString] = key.split(":")
-        const quantity = Number(quantityString)
+        const [underlying, expiration] = key.split(":")
+        const quantity = resolveGroupQuantity(groupedPositions)
         const entryPrice = groupedPositions.reduce((sum, position) => sum + toNumber(position.avg_entry_price), 0)
         const currentPrice = groupedPositions.reduce((sum, position) => sum + toNumber(position.current_price), 0)
         const unrealizedPnl = groupedPositions.reduce((sum, position) => sum + toNumber(position.unrealized_pl), 0)
 
         results.push({
-            instrument: buildIronCondorInstrument(underlying ?? "UNKNOWN", expiration ?? "", quantity),
+            instrument: buildIronCondorInstrumentFromLegs(underlying ?? "UNKNOWN", expiration ?? "", groupedPositions.map((position) => ({
+                instrument: position.symbol,
+            }))),
             underlying: underlying ?? "UNKNOWN",
             expiration: expiration ?? "",
             quantity,
@@ -500,12 +501,19 @@ function resolveOrderInstrument(
         const sharedExpiration = parsedLegs.every((leg) => leg.expiration === expiration)
 
         if (underlying && expiration && sharedExpiration) {
-            const quantity = order.qty ? Number(order.qty) : 1
-            return buildIronCondorInstrument(underlying, expiration, quantity)
+            return buildIronCondorInstrumentFromLegs(underlying, expiration, order.legs.map((leg) => ({
+                instrument: leg.symbol,
+            })))
         }
     }
 
     return order.legs.map((leg) => leg.symbol).join(" | ")
+}
+
+function resolveGroupQuantity(positions: AlpacaPositionResponse[]): number {
+    const quantities = positions.map((position) => Math.abs(toNumber(position.qty)))
+    const minQuantity = Math.min(...quantities)
+    return Number.isFinite(minQuantity) ? minQuantity : 0
 }
 
 function resolveGroupForClose(

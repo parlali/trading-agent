@@ -348,6 +348,36 @@ export class PolymarketClient {
         return collectGammaMarkets(events, normalizedCategory).slice(0, limit)
     }
 
+    async getMarketBySlug(slug: string): Promise<PolymarketMarket | null> {
+        const normalizedSlug = toSlugCandidate(slug) ?? slug.trim()
+        if (!normalizedSlug) {
+            return null
+        }
+
+        const params = new URLSearchParams()
+        params.set("slug", normalizedSlug)
+        params.set("active", "true")
+        params.set("closed", "false")
+        params.set("archived", "false")
+        params.set("limit", "1")
+
+        const markets = await this.requestGamma<RawGammaMarket[]>(
+            `/markets?${params.toString()}`
+        )
+        const mapped = markets
+            .map((market) => mapGammaMarket({}, market))
+            .filter((market): market is PolymarketMarket => market !== null)
+
+        if (mapped[0]) {
+            return mapped[0]
+        }
+
+        const events = await this.requestGamma<RawGammaEvent[]>(
+            `/events?${params.toString()}`
+        )
+        return collectGammaMarkets(events)[0] ?? null
+    }
+
     async searchMarkets(query: string, limit: number = 10): Promise<PolymarketMarket[]> {
         const normalizedQuery = query.trim()
         if (!normalizedQuery) {
@@ -367,7 +397,18 @@ export class PolymarketClient {
             `/public-search?${params.toString()}`
         )
 
-        return collectGammaMarkets(response.events).slice(0, limit)
+        const markets = collectGammaMarkets(response.events).slice(0, limit)
+        if (markets.length > 0) {
+            return markets
+        }
+
+        const slugCandidate = toSlugCandidate(normalizedQuery)
+        if (!slugCandidate) {
+            return []
+        }
+
+        const direct = await this.getMarketBySlug(slugCandidate)
+        return direct ? [direct] : []
     }
 
     async getMarket(conditionId: string): Promise<PolymarketMarket> {
@@ -1047,6 +1088,18 @@ function toIsoDate(value: string | undefined): string {
     }
 
     return new Date(parsed).toISOString().slice(0, 10)
+}
+
+function toSlugCandidate(value: string): string | null {
+    const fromUrl = value.match(/polymarket\.com\/(?:event|market)\/([^/?#]+)/i)?.[1]
+    const raw = fromUrl ?? value
+    const normalized = raw
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "")
+
+    return normalized.length > 0 ? normalized : null
 }
 
 function normalizeBase64(value: string): string {

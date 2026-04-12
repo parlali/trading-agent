@@ -8,9 +8,34 @@ import {
 } from "@valiq-trading/core"
 
 export const polymarketRiskValidators: readonly RiskValidator[] = [
+    canonicalIdentityValidator,
     maxBetValidator,
     priceBoundsValidator,
+    liquidityValidator,
+    resolutionBufferValidator,
+    categoryAllowlistValidator,
+    totalExposureValidator,
 ]
+
+function canonicalIdentityValidator(
+    intent: OrderIntent
+): { allowed: boolean; reason?: string } {
+    const metadata = intent.metadata ?? {}
+    const tokenId = readString(metadata.tokenId)
+    const conditionId = readString(metadata.conditionId)
+    const marketSlug = readString(metadata.marketSlug)
+    const question = readString(metadata.question)
+    const outcome = readString(metadata.outcome)
+
+    if (!tokenId || tokenId !== intent.instrument || !conditionId || !marketSlug || !question || !outcome) {
+        return {
+            allowed: false,
+            reason: "Polymarket orders require canonical tokenId, conditionId, marketSlug, question, and outcome from broker discovery",
+        }
+    }
+
+    return { allowed: true }
+}
 
 function maxBetValidator(
     intent: OrderIntent,
@@ -24,7 +49,7 @@ function maxBetValidator(
         return { allowed: true }
     }
 
-    const price = intent.limitPrice ?? 0
+    const price = resolveIntentPrice(intent)
     const intentCost = intent.quantity * price
 
     let maxAllowed: number
@@ -59,8 +84,8 @@ function priceBoundsValidator(
         return { allowed: true }
     }
 
-    const price = intent.limitPrice
-    if (price === undefined || price <= 0) {
+    const price = resolveIntentPrice(intent)
+    if (price <= 0) {
         return { allowed: true }
     }
 
@@ -79,4 +104,148 @@ function priceBoundsValidator(
     }
 
     return { allowed: true }
+}
+
+function liquidityValidator(
+    intent: OrderIntent,
+    rawPolicy: Record<string, unknown>
+): { allowed: boolean; reason?: string } {
+    if (intent.side === "sell") {
+        return { allowed: true }
+    }
+
+    const policy = polymarketPolicySchema.parse(rawPolicy)
+    if (policy.minLiquidity <= 0) {
+        return { allowed: true }
+    }
+
+    const liquidity = readNumber(intent.metadata?.liquidity)
+    if (liquidity === undefined) {
+        return {
+            allowed: false,
+            reason: `Polymarket liquidity is required because policy minLiquidity is ${policy.minLiquidity}`,
+        }
+    }
+
+    if (liquidity < policy.minLiquidity) {
+        return {
+            allowed: false,
+            reason: `Polymarket liquidity ${liquidity} is below policy minimum ${policy.minLiquidity}`,
+        }
+    }
+
+    return { allowed: true }
+}
+
+function resolutionBufferValidator(
+    intent: OrderIntent,
+    rawPolicy: Record<string, unknown>
+): { allowed: boolean; reason?: string } {
+    if (intent.side === "sell") {
+        return { allowed: true }
+    }
+
+    const policy = polymarketPolicySchema.parse(rawPolicy)
+    if (policy.minResolutionBufferHours <= 0) {
+        return { allowed: true }
+    }
+
+    const endDateIso = readString(intent.metadata?.endDateIso)
+    if (!endDateIso) {
+        return {
+            allowed: false,
+            reason: `Polymarket resolution date is required because policy minResolutionBufferHours is ${policy.minResolutionBufferHours}`,
+        }
+    }
+
+    const endAt = Date.parse(endDateIso)
+    if (!Number.isFinite(endAt)) {
+        return {
+            allowed: false,
+            reason: `Polymarket resolution date ${endDateIso} is invalid`,
+        }
+    }
+
+    const hoursUntilResolution = (endAt - Date.now()) / (60 * 60 * 1000)
+    if (hoursUntilResolution < policy.minResolutionBufferHours) {
+        return {
+            allowed: false,
+            reason: `Polymarket market resolves in ${hoursUntilResolution.toFixed(1)}h, below policy buffer ${policy.minResolutionBufferHours}h`,
+        }
+    }
+
+    return { allowed: true }
+}
+
+function categoryAllowlistValidator(
+    intent: OrderIntent,
+    rawPolicy: Record<string, unknown>
+): { allowed: boolean; reason?: string } {
+    if (intent.side === "sell") {
+        return { allowed: true }
+    }
+
+    const policy = polymarketPolicySchema.parse(rawPolicy)
+    if (policy.allowedCategories.length === 0) {
+        return { allowed: true }
+    }
+
+    const category = readString(intent.metadata?.category)?.toLowerCase()
+    const allowed = new Set(policy.allowedCategories.map((entry) => entry.toLowerCase()))
+    if (!category || !allowed.has(category)) {
+        return {
+            allowed: false,
+            reason: `Polymarket category ${category ?? "unknown"} is outside the policy allowlist`,
+        }
+    }
+
+    return { allowed: true }
+}
+
+function totalExposureValidator(
+    intent: OrderIntent,
+    rawPolicy: Record<string, unknown>,
+    _state: AccountState,
+    positions: Position[]
+): { allowed: boolean; reason?: string } {
+    if (intent.side === "sell") {
+        return { allowed: true }
+    }
+
+    const policy = polymarketPolicySchema.parse(rawPolicy)
+    if (policy.maxTotalExposure === undefined) {
+        return { allowed: true }
+    }
+
+    const existingExposure = positions.reduce(
+        (sum, position) => sum + position.quantity * position.entryPrice,
+        0
+    )
+    const newExposure = intent.quantity * resolveIntentPrice(intent)
+    const totalExposure = existingExposure + newExposure
+
+    if (totalExposure > policy.maxTotalExposure) {
+        return {
+            allowed: false,
+            reason: `Polymarket total exposure ${totalExposure.toFixed(2)} exceeds policy maximum ${policy.maxTotalExposure}`,
+        }
+    }
+
+    return { allowed: true }
+}
+
+function readString(value: unknown): string | undefined {
+    return typeof value === "string" && value.trim().length > 0
+        ? value.trim()
+        : undefined
+}
+
+function readNumber(value: unknown): number | undefined {
+    return typeof value === "number" && Number.isFinite(value)
+        ? value
+        : undefined
+}
+
+function resolveIntentPrice(intent: OrderIntent): number {
+    return intent.limitPrice ?? readNumber(intent.metadata?.estimatedPrice) ?? readNumber(intent.metadata?.currentPrice) ?? 0
 }

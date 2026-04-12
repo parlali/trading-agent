@@ -214,7 +214,7 @@ function buildPolicySection(context: StrategyRunContext): string {
             "## Alpaca Iron Condor Order Requirements",
             "",
             "Use `propose_order` only for new 4-leg iron condor entries.",
-            "- Top-level instrument format: `IC:UNDERLYING:YYYY-MM-DD:QUANTITY`",
+            "- Structure identity is derived from the provider order and normalized leg set. Quantity is state, not identity.",
             "- Each leg instrument must be a valid OCC option symbol",
             "- Entry leg sides must be exactly two `sell_to_open` shorts and two `buy_to_open` wings",
             "- Use quantity as the number of full structures and leg quantity `1` for each leg",
@@ -239,6 +239,7 @@ function buildPolicySection(context: StrategyRunContext): string {
             "- Start with the top-liquid market list for the category or query you care about",
             "- Narrow to only your top candidate markets before requesting live venue data",
             "- Call `get_market_price` and `get_order_book` individually for only those top candidate token IDs before sizing or placing any trade",
+            "- `propose_order` requires the exact `tokenId`, `conditionId`, `marketSlug`, `question`, and `outcome` from discovery. Never place an order using only a condition ID, event slug, or question string.",
             "- Only opt into `search_markets` live price enrichment if you have a specific reason, and keep the token count tightly bounded",
         )
     }

@@ -1,9 +1,16 @@
 import { query } from "../../_generated/server"
 import { v } from "convex/values"
-import { VENUE_APPS, type EventType, type OrderAction, type OrderStatus, type OrderSide } from "@valiq-trading/core"
+import {
+    VENUE_APPS,
+    type EventType,
+    type OrderAction,
+    type OrderStatus,
+    type OrderSide,
+} from "@valiq-trading/core"
 import type { Doc } from "../../_generated/dataModel"
 import { requireUser, requireUserOrServiceToken } from "../authGuards"
 import { venueAppV } from "../validators"
+import { isDryRunLedgerMetadata } from "../dryRunLedger"
 
 const PORTFOLIO_STALE_AFTER_MS = 10 * 60 * 1000
 
@@ -46,7 +53,7 @@ export const getPortfolioPositions = query({
     handler: async (ctx, args) => {
         await requireUserOrServiceToken(ctx, args.serviceToken)
 
-        const [rows, strategies] = await Promise.all([
+        const [rows, strategies, latestPositionSyncs] = await Promise.all([
             args.app
                 ? ctx.db
                     .query("provider_positions")
@@ -54,34 +61,99 @@ export const getPortfolioPositions = query({
                     .collect()
                 : ctx.db.query("provider_positions").collect(),
             ctx.db.query("strategies").collect(),
+            ctx.db.query("position_syncs").collect(),
         ])
 
         const strategyMap = new Map(strategies.map((strategy) => [String(strategy._id), strategy]))
+        const dryRunStrategies = strategies.filter((strategy) => {
+            if (args.app && strategy.app !== args.app) {
+                return false
+            }
+            if (args.strategyId && strategy._id !== args.strategyId) {
+                return false
+            }
+            return Boolean((strategy.policy as Record<string, unknown>).dryRun)
+        })
+        const latestDryRunSyncByStrategy = new Map<string, Doc<"position_syncs">>()
+        for (const sync of latestPositionSyncs) {
+            const strategy = strategyMap.get(String(sync.strategyId))
+            if (!strategy || !dryRunStrategies.some((candidate) => candidate._id === sync.strategyId)) {
+                continue
+            }
 
-        return rows
-            .filter((row) => {
-                if (args.strategyId && row.strategyId !== args.strategyId) {
-                    return false
-                }
-                return true
-            })
-            .sort((left, right) => left.instrument.localeCompare(right.instrument))
-            .map((row) => ({
-                app: row.app,
-                strategyId: row.strategyId ? String(row.strategyId) : undefined,
-                strategyName: row.strategyId ? strategyMap.get(String(row.strategyId))?.name : undefined,
-                ownershipStatus: row.ownershipStatus,
-                instrument: row.instrument,
-                side: row.side,
-                quantity: row.quantity,
-                entryPrice: row.entryPrice,
-                currentPrice: row.currentPrice,
-                unrealizedPnl: row.unrealizedPnl,
-                stopLoss: row.stopLoss,
-                takeProfit: row.takeProfit,
-                syncedAt: row.syncedAt,
-                metadata: parseJson(row.metadata),
-            }))
+            const existing = latestDryRunSyncByStrategy.get(String(sync.strategyId))
+            if (!existing || sync.syncedAt > existing.syncedAt) {
+                latestDryRunSyncByStrategy.set(String(sync.strategyId), sync)
+            }
+        }
+        const dryRunPositionRows = (
+            await Promise.all(
+                Array.from(latestDryRunSyncByStrategy.values()).map(async (sync) => {
+                    if (sync.positionCount === 0) {
+                        return []
+                    }
+
+                    return await ctx.db
+                        .query("positions")
+                        .withIndex("by_strategy_synced_at", (q) =>
+                            q.eq("strategyId", sync.strategyId).eq("syncedAt", sync.syncedAt)
+                        )
+                        .collect()
+                })
+            )
+        ).flat()
+
+        return [
+            ...rows
+                .filter((row) => {
+                    if (args.strategyId && row.strategyId !== args.strategyId) {
+                        return false
+                    }
+                    return true
+                })
+                .sort((left, right) => left.instrument.localeCompare(right.instrument))
+                .map((row) => ({
+                    app: row.app,
+                    strategyId: row.strategyId ? String(row.strategyId) : undefined,
+                    strategyName: row.strategyId ? strategyMap.get(String(row.strategyId))?.name : undefined,
+                    ownershipStatus: row.ownershipStatus,
+                    instrument: row.instrument,
+                    side: row.side,
+                    quantity: row.quantity,
+                    entryPrice: row.entryPrice,
+                    currentPrice: row.currentPrice,
+                    unrealizedPnl: row.unrealizedPnl,
+                    stopLoss: row.stopLoss,
+                    takeProfit: row.takeProfit,
+                    syncedAt: row.syncedAt,
+                    metadata: parseJson(row.metadata),
+                })),
+            ...dryRunPositionRows
+                .filter((row) => !isDryRunLedgerMetadata(row.metadata))
+                .map((row) => {
+                    const strategy = strategyMap.get(String(row.strategyId))
+                    return {
+                        app: row.app,
+                        strategyId: String(row.strategyId),
+                        strategyName: strategy?.name,
+                        ownershipStatus: "owned" as const,
+                        instrument: row.instrument,
+                        side: row.side,
+                        quantity: row.quantity,
+                        entryPrice: row.entryPrice,
+                        currentPrice: row.currentPrice,
+                        unrealizedPnl: row.unrealizedPnl,
+                        stopLoss: undefined,
+                        takeProfit: undefined,
+                        syncedAt: row.syncedAt,
+                        metadata: {
+                            ...(parseJson<Record<string, unknown>>(row.metadata) ?? {}),
+                            dryRun: true,
+                            source: "strategy_virtual_position",
+                        },
+                    }
+                }),
+        ].sort((left, right) => left.instrument.localeCompare(right.instrument))
     },
 })
 

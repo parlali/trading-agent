@@ -129,6 +129,30 @@ export interface ValiqDataClientConfig {
     logger?: Logger
 }
 
+export class ValiqDataApiError extends Error {
+    readonly status?: number
+    readonly code: string
+    readonly retryable: boolean
+    readonly details: Record<string, unknown>
+
+    constructor(
+        message: string,
+        options: {
+            status?: number
+            code: string
+            retryable: boolean
+            details?: Record<string, unknown>
+        }
+    ) {
+        super(message)
+        this.name = "ValiqDataApiError"
+        this.status = options.status
+        this.code = options.code
+        this.retryable = options.retryable
+        this.details = options.details ?? {}
+    }
+}
+
 export class ValiqDataClient {
     private config: ValiqDataClientConfig
     private logger?: Logger
@@ -141,21 +165,37 @@ export class ValiqDataClient {
     async request<T>(path: string, options?: RequestInit): Promise<T> {
         const url = `${this.config.apiUrl}${path}`
         this.logger?.debug("ValiqDataClient request", { method: options?.method ?? "GET", path })
+        const timeoutMs = this.config.timeout ?? 25_000
+        const attempts = resolveValiqDataRetryAttempts(timeoutMs)
 
-        const response = await retryWithBackoff(
-            () =>
-                fetch(url, {
-                    ...options,
-                    headers: {
-                        "X-API-Key": this.config.apiKey,
-                        "Content-Type": "application/json",
-                        ...options?.headers,
-                    },
-                    signal: AbortSignal.timeout(this.config.timeout ?? 30_000),
-                }),
-            3,
-            1000
-        )
+        let response: Response
+        try {
+            response = await retryWithBackoff(
+                () =>
+                    fetch(url, {
+                        ...options,
+                        headers: {
+                            "X-API-Key": this.config.apiKey,
+                            "Content-Type": "application/json",
+                            ...options?.headers,
+                        },
+                        signal: AbortSignal.timeout(timeoutMs),
+                    }),
+                attempts,
+                500
+            )
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error)
+            throw new ValiqDataApiError(`Val-iQ Data API transport error: ${message}`, {
+                code: message.toLowerCase().includes("timeout") ? "UPSTREAM_TIMEOUT" : "TRANSPORT_ERROR",
+                retryable: true,
+                details: {
+                    path,
+                    timeoutMs,
+                    attempts,
+                },
+            })
+        }
 
         if (!response.ok) {
             const body = await response.text().catch(() => "")
@@ -164,13 +204,53 @@ export class ValiqDataClient {
                 status: response.status,
                 body: body.slice(0, 500),
             })
-            throw new Error(`Val-iQ Data API error: ${response.status} ${response.statusText}`)
+            throw new ValiqDataApiError(`Val-iQ Data API error: ${response.status} ${response.statusText}`, {
+                status: response.status,
+                code: response.status === 401 || response.status === 403
+                    ? "AUTH_FAILED"
+                    : response.status === 400
+                        ? "BAD_PARAMS"
+                        : response.status === 404
+                            ? "EMPTY_DATA"
+                            : response.status === 408 || response.status === 504
+                                ? "UPSTREAM_TIMEOUT"
+                                : "UPSTREAM_ERROR",
+                retryable: response.status >= 500 || response.status === 408 || response.status === 429,
+                details: {
+                    path,
+                    body: body.slice(0, 1000),
+                },
+            })
         }
 
-        const result = (await response.json()) as T
-        this.logger?.debug("ValiqDataClient response ok", { path })
-        return result
+        try {
+            const result = (await response.json()) as T
+            this.logger?.debug("ValiqDataClient response ok", { path })
+            return result
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error)
+            throw new ValiqDataApiError(`Val-iQ Data API returned invalid JSON: ${message}`, {
+                status: response.status,
+                code: "INVALID_JSON",
+                retryable: false,
+                details: {
+                    path,
+                },
+            })
+        }
     }
+}
+
+function resolveValiqDataRetryAttempts(timeoutMs: number): number {
+    if (timeoutMs >= 60_000) {
+        return 1
+    }
+
+    if (timeoutMs >= 30_000) {
+        return 2
+    }
+
+    return 3
 }
 
 export function createStaticTokenProvider(token: string): TokenProvider {

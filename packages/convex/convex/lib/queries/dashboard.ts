@@ -3,6 +3,7 @@ import { v } from "convex/values"
 import { VENUE_APPS } from "@valiq-trading/core"
 import { requireUser } from "../authGuards"
 import { getLatestPositionsForStrategy } from "../instrumentClaims"
+import { isDryRunLedgerMetadata } from "../dryRunLedger"
 
 function isNonNullable<T>(value: T): value is NonNullable<T> {
     return value !== null && value !== undefined
@@ -46,7 +47,9 @@ export const getDashboardOverview = query({
             Promise.all(
                 strategies.map(async (strategy) => {
                     const positions = await getLatestPositionsForStrategy(ctx, strategy._id)
-                    return positions.map((position) => ({ ...position, strategy }))
+                    return positions
+                        .filter((position) => !isDryRunLedgerMetadata(position.metadata))
+                        .map((position) => ({ ...position, strategy }))
                 })
             ),
         ])

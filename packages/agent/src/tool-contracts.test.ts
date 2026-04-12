@@ -5,7 +5,7 @@ import {
     getToolCategory,
     getToolContract,
     listToolContracts,
-} from "./tool-contracts"
+} from "./tool-contracts.ts"
 
 const unsupportedTopLevelSchemaKeys = [
     "oneOf",
@@ -58,10 +58,30 @@ describe("tool contracts", () => {
     it("resolves venue-specific variants from one canonical source", () => {
         const mt5Order = getToolContract("propose_order", "mt5")
         const binanceOrder = getToolContract("propose_order", "binance-futures")
+        const polymarketOrder = getToolContract("propose_order", "polymarket")
         const polymarketMarketPrice = getToolContract("get_market_price", "polymarket")
 
         expect(mt5Order.description).toContain("MT5")
         expect(binanceOrder.description).toContain("Binance futures")
+        expect(polymarketOrder.description).toContain("canonical token ID")
+        expect(polymarketOrder.parameters.safeParse({
+            tokenId: "token-yes",
+            conditionId: "condition",
+            marketSlug: "market-slug",
+            question: "Will it happen?",
+            outcome: "Yes",
+            side: "buy",
+            quantity: 10,
+            orderType: "limit",
+            limitPrice: 0.5,
+        }).success).toBe(true)
+        expect(polymarketOrder.parameters.safeParse({
+            instrument: "condition",
+            side: "buy",
+            quantity: 10,
+            orderType: "limit",
+            limitPrice: 0.5,
+        }).success).toBe(false)
         expect(polymarketMarketPrice.description).toContain("Polymarket")
     })
 

@@ -14,14 +14,16 @@ export function createPolymarketSearchMarketsTool(
         venue: "polymarket",
         handler: async (params) => {
             const validated = params as z.infer<typeof searchMarketsParamsSchema>
-            if (!validated.category && !validated.query && !validated.conditionId) {
-                throw new Error("search_markets requires category, query, or conditionId")
-            }
-            if (validated.livePriceTokenLimit !== undefined && validated.includeLivePrices !== true) {
-                throw new Error("search_markets livePriceTokenLimit requires includeLivePrices=true")
+            if (!validated.category && !validated.query && !validated.conditionId && !validated.marketSlug) {
+                throw new Error("search_markets requires category, query, conditionId, or marketSlug")
             }
 
-            const markets = await venue.searchMarkets(validated)
+            const markets = await venue.searchMarkets({
+                ...validated,
+                livePriceTokenLimit: validated.includeLivePrices === true
+                    ? validated.livePriceTokenLimit
+                    : undefined,
+            })
             return { markets }
         },
     })

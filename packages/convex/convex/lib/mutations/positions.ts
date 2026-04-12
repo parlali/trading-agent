@@ -2,6 +2,7 @@ import { mutation } from "../../_generated/server"
 import { v } from "convex/values"
 import { requireServiceToken } from "../authGuards"
 import { replacePositionClaims } from "../instrumentClaims"
+import { isDryRunLedgerMetadata } from "../dryRunLedger"
 
 export const syncPositions = mutation({
     args: {
@@ -53,7 +54,9 @@ export const syncPositions = mutation({
         await replacePositionClaims(ctx, {
             strategyId: args.strategyId,
             app: args.app,
-            instruments: args.positions.map((position) => position.instrument),
+            instruments: args.positions
+                .filter((position) => !isDryRunLedgerMetadata(position.metadata))
+                .map((position) => position.instrument),
             updatedAt: now,
         })
     },

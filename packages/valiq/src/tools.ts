@@ -43,7 +43,7 @@ export function createValiqResearchTool(
 
 const breakingNewsParamsSchema = z.object({
     window: z.enum(["1h", "6h", "24h", "prev_24h", "7d"]).optional(),
-    source: z.enum(["fmp-general", "fmp-forex", "fmp-crypto"]).optional(),
+    source: z.enum(["general", "forex", "crypto"]).optional(),
 })
 
 export function createValiqBreakingNewsTool(
@@ -54,7 +54,7 @@ export function createValiqBreakingNewsTool(
         description:
             "Fetch the latest breaking news articles with sentiment analysis from Val-iQ. " +
             "Returns up to 5 articles with FinBERT sentiment scores plus an aggregated summary. " +
-            "Supports time windows (1h, 6h, 24h, prev_24h, 7d) and source filtering (fmp-general, fmp-forex, fmp-crypto). " +
+            "Supports time windows (1h, 6h, 24h, prev_24h, 7d) and source filtering (general, forex, crypto). " +
             "Use this to assess current market-moving events and news sentiment.",
         parameters: breakingNewsParamsSchema,
         jsonSchema: {
@@ -68,7 +68,7 @@ export function createValiqBreakingNewsTool(
                 source: {
                     type: "string",
                     description: "Filter by news source. When omitted, returns news from all sources.",
-                    enum: ["fmp-general", "fmp-forex", "fmp-crypto"],
+                    enum: ["general", "forex", "crypto"],
                 },
             },
         },

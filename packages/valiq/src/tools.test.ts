@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { ValiqDataClient } from "./client"
-import { ValiqDataAdapter } from "./data"
-import { createValiqBreakingNewsTool, createValiqDataTool } from "./tools"
-import type { BreakingNewsResponse } from "./types"
+import { ValiqDataClient } from "./client.ts"
+import { ValiqDataAdapter } from "./data.ts"
+import { createValiqBreakingNewsTool, createValiqDataTool } from "./tools.ts"
+import type { BreakingNewsResponse } from "./types.ts"
 
 const MOCK_BREAKING_NEWS: BreakingNewsResponse = {
     articles: [
@@ -21,7 +21,7 @@ const MOCK_BREAKING_NEWS: BreakingNewsResponse = {
         total_count: 1,
         avg_sentiment_finbert: 0.12,
         by_source: [
-            { source: "fmp-general", count: 1, avg_sentiment_finbert: 0.12 },
+            { source: "general", count: 1, avg_sentiment_finbert: 0.12 },
         ],
     },
 }
@@ -75,20 +75,20 @@ describe("createValiqBreakingNewsTool", () => {
         getMockRequest(mockClient).mockResolvedValue(MOCK_BREAKING_NEWS)
 
         const tool = createValiqBreakingNewsTool(adapter)
-        await tool.handler({ source: "fmp-crypto" })
+        await tool.handler({ source: "crypto" })
 
-        expect(mockClient.request).toHaveBeenCalledWith("/breaking-news?source=fmp-crypto")
+        expect(mockClient.request).toHaveBeenCalledWith("/breaking-news?source=crypto")
     })
 
     it("passes both parameters to the endpoint", async () => {
         getMockRequest(mockClient).mockResolvedValue(MOCK_BREAKING_NEWS)
 
         const tool = createValiqBreakingNewsTool(adapter)
-        await tool.handler({ window: "7d", source: "fmp-general" })
+        await tool.handler({ window: "7d", source: "general" })
 
         const call = getMockRequest(mockClient).mock.calls[0]![0] as string
         expect(call).toContain("window=7d")
-        expect(call).toContain("source=fmp-general")
+        expect(call).toContain("source=general")
     })
 
     it("validates parameters with zod schema", () => {
@@ -97,7 +97,8 @@ describe("createValiqBreakingNewsTool", () => {
         expect(tool.parameters.safeParse({}).success).toBe(true)
         expect(tool.parameters.safeParse({ window: "1h" }).success).toBe(true)
         expect(tool.parameters.safeParse({ window: "invalid" }).success).toBe(false)
-        expect(tool.parameters.safeParse({ source: "fmp-general" }).success).toBe(true)
+        expect(tool.parameters.safeParse({ source: "general" }).success).toBe(true)
+        expect(tool.parameters.safeParse({ source: "fmp-general" }).success).toBe(false)
         expect(tool.parameters.safeParse({ source: "invalid" }).success).toBe(false)
     })
 

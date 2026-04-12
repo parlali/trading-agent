@@ -27,6 +27,12 @@ import {
     getExecutionErrorDetail,
 } from "./utils"
 
+export const DRY_RUN_ACCOUNT_LEDGER_INSTRUMENT = "__DRY_RUN_ACCOUNT_LEDGER__"
+
+export function isDryRunAccountLedgerPosition(position: Pick<Position, "instrument">): boolean {
+    return position.instrument === DRY_RUN_ACCOUNT_LEDGER_INSTRUMENT
+}
+
 export const PRICE_VERIFICATION_STATUSES = ["pass", "warn", "block", "skipped"] as const
 export type PriceVerificationStatus = typeof PRICE_VERIFICATION_STATUSES[number]
 
@@ -52,6 +58,10 @@ export interface PriceVerification {
 
 export interface PriceVerifier {
     verify(intent: OrderIntent): Promise<PriceVerification>
+}
+
+export interface DryRunOrderSimulator {
+    simulateDryRunOrder(intent: OrderIntent): Promise<ExecutionResult>
 }
 
 export interface VenueAdapter {
@@ -106,6 +116,7 @@ export interface OrderLifecycleConfig {
 export interface PriceVerificationConfig {
     warningThresholdPercent?: number
     blockingThresholdPercent?: number
+    failClosedOnVerificationError?: boolean
 }
 
 export type OrderStatusCallback = (
@@ -116,6 +127,7 @@ const ALLOWED_VALIDATION: ValidationResult = { allowed: true }
 const DEFAULT_PRICE_VERIFICATION_CONFIG: Required<PriceVerificationConfig> = {
     warningThresholdPercent: 10,
     blockingThresholdPercent: 20,
+    failClosedOnVerificationError: false,
 }
 
 export class ExecutionPipeline {
@@ -132,6 +144,8 @@ export class ExecutionPipeline {
     private ownedInstruments: Set<string> | null
     private dryRun: boolean
     private dryRunPositionBook: Map<string, Position>
+    private dryRunCashAdjustment: number
+    private dryRunRealizedPnl: number
 
     constructor(config: ExecutionPipelineConfig) {
         this.venue = config.venue
@@ -146,6 +160,8 @@ export class ExecutionPipeline {
         this.ownedInstruments = config.ownedInstruments ?? null
         this.dryRun = Boolean(config.policy.dryRun)
         this.dryRunPositionBook = new Map()
+        this.dryRunCashAdjustment = 0
+        this.dryRunRealizedPnl = 0
         this.lifecycleManager = new OrderLifecycleManager(
             config.venue,
             config.logger,
@@ -230,15 +246,15 @@ export class ExecutionPipeline {
 
         if (this.policy.dryRun) {
             this.logger.info("Dry run -- order simulated", { intent: finalIntent })
-            const mockResult: ExecutionResult = {
-                orderId: `dry-run-${Date.now()}`,
-                status: "filled",
-                filledQuantity: finalIntent.quantity,
-                fillPrice: finalIntent.limitPrice ?? (finalIntent.metadata?.estimatedPrice as number) ?? 0,
-                timestamp: Date.now(),
+            const mockResult = {
+                ...(await this.simulateDryRunOrder(finalIntent)),
                 priceVerification,
             }
             void this.tradeEventLogger?.logSubmission(this.runId, this.strategyId, mockResult, finalIntent)
+            if (mockResult.status === "rejected") {
+                return { result: mockResult, validation }
+            }
+
             const handle = await this.lifecycleManager.registerSubmittedOrder(
                 finalIntent,
                 mockResult,
@@ -251,7 +267,9 @@ export class ExecutionPipeline {
                 finalIntent.side,
                 finalIntent.quantity,
                 mockResult.fillPrice ?? 0,
-                lifecycleContext.action
+                lifecycleContext.action,
+                finalIntent.metadata,
+                mockResult
             )
             return { result: mockResult, validation, handle }
         }
@@ -422,13 +440,14 @@ export class ExecutionPipeline {
             orderType: "market",
             timeInForce: "day",
             metadata: {
+                ...position?.metadata,
                 action: "close",
                 reason,
                 estimatedPrice: options.estimatedPrice,
             },
         }
 
-        if (position && this.venue.buildCloseIntent) {
+        if (position && !this.policy.dryRun && this.venue.buildCloseIntent) {
             let venueIntent: OrderIntent
             try {
                 venueIntent = await this.venue.buildCloseIntent(instrument)
@@ -453,6 +472,7 @@ export class ExecutionPipeline {
             intent = {
                 ...venueIntent,
                 metadata: {
+                    ...position.metadata,
                     ...venueIntent.metadata,
                     action: "close",
                     reason,
@@ -501,7 +521,15 @@ export class ExecutionPipeline {
             void this.tradeEventLogger?.logSubmission(this.runId, this.strategyId, result, intent)
             const handle = await this.lifecycleManager.registerSubmittedOrder(intent, result, "close", { reason })
             this.updateOwnedInstruments("close", instrument, result)
-            this.dryRunPositionBook.delete(instrument)
+            this.netDryRunPosition(
+                instrument,
+                closeSide,
+                position.quantity,
+                result.fillPrice ?? position.currentPrice ?? position.entryPrice,
+                "close",
+                intent.metadata,
+                result
+            )
             return { result, validation: ALLOWED_VALIDATION, handle }
         }
 
@@ -568,17 +596,91 @@ export class ExecutionPipeline {
 
     seedDryRunPositions(positions: Position[]): void {
         this.dryRunPositionBook.clear()
+        this.dryRunCashAdjustment = 0
+        this.dryRunRealizedPnl = 0
+        const ledger = positions.find((position) => isDryRunAccountLedgerPosition(position))
+        if (ledger) {
+            this.dryRunCashAdjustment = readNumber(ledger.metadata?.cashAdjustment) ?? 0
+            this.dryRunRealizedPnl = readNumber(ledger.metadata?.realizedPnl) ?? 0
+        }
+
         for (const position of positions) {
+            if (isDryRunAccountLedgerPosition(position)) {
+                continue
+            }
+
             this.dryRunPositionBook.set(position.instrument, position)
+            if (!ledger) {
+                this.dryRunCashAdjustment += resolveDryRunOpeningCashDelta(position)
+            }
         }
     }
 
     getDryRunPositions(): Position[] {
-        return Array.from(this.dryRunPositionBook.values())
+        return [
+            ...Array.from(this.dryRunPositionBook.values()),
+            this.createDryRunAccountLedgerPosition(),
+        ]
     }
 
     async getAccountState(): Promise<AccountState> {
+        if (this.dryRun) {
+            return this.getDryRunAccountState()
+        }
+
         return this.venue.getAccountState()
+    }
+
+    private async simulateDryRunOrder(intent: OrderIntent): Promise<ExecutionResult> {
+        if (hasDryRunOrderSimulator(this.venue)) {
+            return await this.venue.simulateDryRunOrder(intent)
+        }
+
+        return {
+            orderId: `dry-run-${Date.now()}`,
+            status: "filled",
+            filledQuantity: intent.quantity,
+            fillPrice: intent.limitPrice ?? (intent.metadata?.estimatedPrice as number) ?? 0,
+            timestamp: Date.now(),
+        }
+    }
+
+    private getDryRunAccountState(): AccountState {
+        const initialCash = typeof this.policy.dryRunInitialCash === "number"
+            ? this.policy.dryRunInitialCash
+            : typeof this.policy.virtualCash === "number"
+                ? this.policy.virtualCash
+                : 1000
+        let currentValue = 0
+        let marginUsed = 0
+        let openPnl = 0
+
+        for (const position of this.dryRunPositionBook.values()) {
+            const mark = position.currentPrice ?? position.entryPrice
+            const marketValue = position.quantity * mark
+            currentValue += position.side === "short" ? -marketValue : marketValue
+            marginUsed += Math.abs(marketValue)
+            openPnl += position.unrealizedPnl ?? resolveDryRunUnrealizedPnl(
+                position.side,
+                position.quantity,
+                position.entryPrice,
+                mark
+            ) ?? 0
+        }
+
+        const balance = initialCash + this.dryRunCashAdjustment
+        const equity = balance + currentValue
+        const dayPnl = this.dryRunRealizedPnl + openPnl
+
+        return {
+            balance,
+            equity,
+            buyingPower: Math.max(balance, 0),
+            marginUsed,
+            marginAvailable: Math.max(balance, 0),
+            openPnl,
+            dayPnl,
+        }
     }
 
     private async runPriceVerification(intent: OrderIntent): Promise<PriceVerification | undefined> {
@@ -596,6 +698,28 @@ export class ExecutionPipeline {
             return verification
         } catch (error) {
             const message = getErrorMessage(error)
+            if (this.priceVerificationConfig.failClosedOnVerificationError) {
+                const verification = finalizePriceVerification({
+                    ok: false,
+                    status: "block",
+                    livePrices: {},
+                    proposedPrice: resolveIntentProposedPrice(intent),
+                    message: `Price verification failed closed: ${message}`,
+                    details: {
+                        venue: this.venueName,
+                        verificationError: message,
+                    },
+                }, this.priceVerificationConfig)
+
+                this.logger.warn("Price verification failed closed", {
+                    venue: this.venueName,
+                    intent,
+                    error: message,
+                })
+
+                return verification
+            }
+
             const verification = finalizePriceVerification({
                 ok: true,
                 status: "warn",
@@ -658,44 +782,136 @@ export class ExecutionPipeline {
         side: "buy" | "sell",
         quantity: number,
         fillPrice: number,
-        action: string
+        action: string,
+        metadata?: Record<string, unknown>,
+        result?: ExecutionResult
     ): void {
-        if (action === "close") {
-            this.dryRunPositionBook.delete(instrument)
-            return
-        }
-        if (action !== "entry" && action !== "adjustment") {
+        if (action !== "entry" && action !== "adjustment" && action !== "close") {
             return
         }
         const positionSide = side === "buy" ? "long" : "short"
         const existing = this.dryRunPositionBook.get(instrument)
         if (!existing) {
+            if (action === "close") {
+                return
+            }
+            this.dryRunCashAdjustment += resolveDryRunCashDelta(side, quantity, fillPrice)
+            const currentPrice = resolveDryRunCurrentPrice(metadata, result) ?? fillPrice
             this.dryRunPositionBook.set(instrument, {
                 instrument,
                 side: positionSide,
                 quantity,
                 entryPrice: fillPrice,
+                currentPrice,
+                unrealizedPnl: resolveDryRunUnrealizedPnl(positionSide, quantity, fillPrice, currentPrice),
+                metadata: this.buildDryRunPositionMetadata(metadata, side, quantity, fillPrice, currentPrice, result),
             })
             return
         }
+        this.dryRunCashAdjustment += resolveDryRunCashDelta(side, quantity, fillPrice)
         if (existing.side === positionSide) {
             const totalQty = existing.quantity + quantity
             const avgEntry = (existing.quantity * existing.entryPrice + quantity * fillPrice) / totalQty
+            const currentPrice = resolveDryRunCurrentPrice(metadata, result) ?? existing.currentPrice
             this.dryRunPositionBook.set(instrument, {
                 ...existing,
                 quantity: totalQty,
                 entryPrice: avgEntry,
+                currentPrice,
+                unrealizedPnl: resolveDryRunUnrealizedPnl(existing.side, totalQty, avgEntry, currentPrice),
+                metadata: this.buildDryRunPositionMetadata(
+                    {
+                        ...existing.metadata,
+                        ...metadata,
+                    },
+                    side,
+                    totalQty,
+                    avgEntry,
+                    currentPrice,
+                    result
+                ),
             })
         } else {
+            const closedQty = Math.min(existing.quantity, quantity)
+            this.dryRunRealizedPnl += resolveDryRunRealizedPnl(existing, side, closedQty, fillPrice)
             const netQty = existing.quantity - quantity
-            if (netQty <= 0) {
+            if (netQty === 0) {
                 this.dryRunPositionBook.delete(instrument)
-            } else {
+            } else if (netQty > 0) {
+                const currentPrice = resolveDryRunCurrentPrice(metadata, result) ?? existing.currentPrice
+                const remainingSide = orderSideForPositionSide(existing.side)
                 this.dryRunPositionBook.set(instrument, {
                     ...existing,
                     quantity: netQty,
+                    currentPrice,
+                    unrealizedPnl: resolveDryRunUnrealizedPnl(existing.side, netQty, existing.entryPrice, currentPrice),
+                    metadata: this.buildDryRunPositionMetadata(
+                        {
+                            ...existing.metadata,
+                            ...metadata,
+                        },
+                        remainingSide,
+                        netQty,
+                        existing.entryPrice,
+                        currentPrice,
+                        result
+                    ),
+                })
+            } else if (action !== "close") {
+                const flippedQty = Math.abs(netQty)
+                const currentPrice = resolveDryRunCurrentPrice(metadata, result) ?? fillPrice
+                this.dryRunPositionBook.set(instrument, {
+                    instrument,
+                    side: positionSide,
+                    quantity: flippedQty,
+                    entryPrice: fillPrice,
+                    currentPrice,
+                    unrealizedPnl: resolveDryRunUnrealizedPnl(positionSide, flippedQty, fillPrice, currentPrice),
+                    metadata: this.buildDryRunPositionMetadata(metadata, side, flippedQty, fillPrice, currentPrice, result),
                 })
             }
+        }
+    }
+
+    private buildDryRunPositionMetadata(
+        metadata: Record<string, unknown> | undefined,
+        side: "buy" | "sell",
+        quantity: number,
+        entryPrice: number,
+        currentPrice: number | undefined,
+        result?: ExecutionResult
+    ): Record<string, unknown> {
+        return {
+            ...metadata,
+            side,
+            quantity,
+            entryPrice,
+            currentPrice,
+            sourceOrderId: result?.orderId,
+            sourceRunId: this.runId,
+        }
+    }
+
+    private createDryRunAccountLedgerPosition(): Position {
+        const state = this.getDryRunAccountState()
+
+        return {
+            instrument: DRY_RUN_ACCOUNT_LEDGER_INSTRUMENT,
+            side: "long",
+            quantity: 0,
+            entryPrice: 0,
+            currentPrice: 0,
+            unrealizedPnl: 0,
+            metadata: {
+                dryRunLedger: true,
+                cashAdjustment: this.dryRunCashAdjustment,
+                realizedPnl: this.dryRunRealizedPnl,
+                balance: state.balance,
+                equity: state.equity,
+                openPnl: state.openPnl,
+                dayPnl: state.dayPnl,
+                sourceRunId: this.runId,
+            },
         }
     }
 
@@ -843,11 +1059,93 @@ function resolvePriceVerificationConfig(
     return {
         warningThresholdPercent,
         blockingThresholdPercent: Math.max(blockingThresholdPercent, warningThresholdPercent),
+        failClosedOnVerificationError: config?.failClosedOnVerificationError ?? DEFAULT_PRICE_VERIFICATION_CONFIG.failClosedOnVerificationError,
     }
 }
 
 function hasPriceVerifier(venue: VenueAdapter): venue is VenueAdapter & PriceVerifier {
     return typeof (venue as Partial<PriceVerifier>).verify === "function"
+}
+
+function hasDryRunOrderSimulator(venue: VenueAdapter): venue is VenueAdapter & DryRunOrderSimulator {
+    return typeof (venue as Partial<DryRunOrderSimulator>).simulateDryRunOrder === "function"
+}
+
+function resolveDryRunCurrentPrice(
+    metadata?: Record<string, unknown>,
+    result?: ExecutionResult
+): number | undefined {
+    if (typeof result?.priceVerification?.livePrices.mid === "number") {
+        return result.priceVerification.livePrices.mid
+    }
+
+    if (typeof metadata?.currentPrice === "number") {
+        return metadata.currentPrice
+    }
+
+    if (typeof metadata?.estimatedPrice === "number") {
+        return metadata.estimatedPrice
+    }
+
+    return undefined
+}
+
+function resolveDryRunUnrealizedPnl(
+    side: Position["side"],
+    quantity: number,
+    entryPrice: number,
+    currentPrice?: number
+): number | undefined {
+    if (currentPrice === undefined) {
+        return undefined
+    }
+
+    if (side === "short") {
+        return quantity * (entryPrice - currentPrice)
+    }
+
+    return quantity * (currentPrice - entryPrice)
+}
+
+function resolveDryRunOpeningCashDelta(position: Position): number {
+    const notional = position.quantity * position.entryPrice
+    return position.side === "short" ? notional : -notional
+}
+
+function resolveDryRunCashDelta(
+    side: "buy" | "sell",
+    quantity: number,
+    fillPrice: number
+): number {
+    const notional = quantity * fillPrice
+    return side === "buy" ? -notional : notional
+}
+
+function resolveDryRunRealizedPnl(
+    existing: Position,
+    closeSide: "buy" | "sell",
+    closedQty: number,
+    fillPrice: number
+): number {
+    if (existing.side === "long" && closeSide === "sell") {
+        return closedQty * (fillPrice - existing.entryPrice)
+    }
+
+    if (existing.side === "short" && closeSide === "buy") {
+        return closedQty * (existing.entryPrice - fillPrice)
+    }
+
+    return 0
+}
+
+function orderSideForPositionSide(side: Position["side"]): "buy" | "sell" {
+    return side === "long" ? "buy" : "sell"
+}
+
+function readNumber(value: unknown): number | undefined {
+    return typeof value === "number" && Number.isFinite(value)
+        ? value
+        : undefined
 }
 
 function finalizePriceVerification(

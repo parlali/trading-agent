@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll } from "vitest"
-import { ValiqDataClient } from "./client"
-import { ValiqDataAdapter } from "./data"
-import { createValiqBreakingNewsTool } from "./tools"
+import { ValiqDataClient } from "./client.ts"
+import { ValiqDataAdapter } from "./data.ts"
+import { createValiqBreakingNewsTool } from "./tools.ts"
 
 const apiUrl = process.env.VALIQ_DATA_API_URL
 const apiKey = process.env.VALIQ_DATA_API
@@ -46,7 +46,7 @@ describe.skipIf(!canRun)("valiq breaking news -- live integration", () => {
     })
 
     it("getBreakingNews with source filter works", async () => {
-        const result = await adapter.getBreakingNews({ source: "fmp-general" })
+        const result = await adapter.getBreakingNews({ source: "general" })
 
         expect(result.articles).toBeDefined()
     })

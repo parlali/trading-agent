@@ -109,6 +109,87 @@ export const genericOrderJsonSchema = {
     required: ["instrument", "side", "quantity", "orderType"],
 } satisfies Record<string, unknown>
 
+export const polymarketOrderParamsSchema = z.object({
+    tokenId: z.string().trim().min(1),
+    conditionId: z.string().trim().min(1),
+    marketSlug: z.string().trim().min(1),
+    question: z.string().trim().min(1),
+    outcome: z.string().trim().min(1),
+    side: z.enum(["buy", "sell"]),
+    quantity: z.number().positive(),
+    orderType: z.enum(["market", "limit"]),
+    limitPrice: z.number().positive().max(1).optional(),
+    timeInForce: z.enum(["gtc", "ioc", "fok"]).default("gtc"),
+    category: z.string().optional(),
+    endDateIso: z.string().optional(),
+    liquidity: z.number().optional(),
+    volume: z.number().optional(),
+    negRisk: z.boolean().optional(),
+})
+
+export const polymarketOrderJsonSchema = {
+    type: "object",
+    properties: {
+        tokenId: {
+            type: "string",
+            description: "Canonical Polymarket token ID returned by search_markets, get_market_price, or direct market lookup",
+        },
+        conditionId: {
+            type: "string",
+            description: "Canonical Polymarket condition ID for the market",
+        },
+        marketSlug: {
+            type: "string",
+            description: "Polymarket market slug from discovery or direct lookup",
+        },
+        question: {
+            type: "string",
+            description: "Exact market question from Polymarket",
+        },
+        outcome: {
+            type: "string",
+            description: "Exact token outcome being traded, such as Yes or No",
+        },
+        side: { type: "string", enum: ["buy", "sell"] },
+        quantity: { type: "number", description: "Number of outcome shares" },
+        orderType: {
+            type: "string",
+            enum: ["market", "limit"],
+            description: "Use limit unless intentionally crossing the book with a bounded IOC/FOK order",
+        },
+        limitPrice: {
+            type: "number",
+            description: "Limit price between 0 and 1. Required for limit orders.",
+        },
+        timeInForce: {
+            type: "string",
+            enum: ["gtc", "ioc", "fok"],
+            default: "gtc",
+        },
+        category: {
+            type: "string",
+            description: "Market category from discovery, used by risk validation",
+        },
+        endDateIso: {
+            type: "string",
+            description: "Market resolution/end date from discovery",
+        },
+        liquidity: {
+            type: "number",
+            description: "Market liquidity from discovery",
+        },
+        volume: {
+            type: "number",
+            description: "Market volume from discovery",
+        },
+        negRisk: {
+            type: "boolean",
+            description: "Whether the market uses Polymarket negative-risk settlement",
+        },
+    },
+    required: ["tokenId", "conditionId", "marketSlug", "question", "outcome", "side", "quantity", "orderType"],
+} satisfies Record<string, unknown>
+
 export const alpacaOrderParamsSchema = z.object({
     instrument: z.string(),
     side: z.literal("sell"),
@@ -125,7 +206,7 @@ export const alpacaOrderJsonSchema = {
     properties: {
         instrument: {
             type: "string",
-            description: "Structure identifier in the form IC:UNDERLYING:YYYY-MM-DD:QUANTITY",
+            description: "Structure identifier in the form IC:UNDERLYING:YYYY-MM-DD plus normalized leg set. Quantity is state, not identity.",
         },
         side: {
             type: "string",
@@ -439,6 +520,7 @@ export const searchMarketsParamsSchema = z.object({
     category: z.string().optional(),
     query: z.string().optional(),
     conditionId: z.string().optional(),
+    marketSlug: z.string().optional(),
     limit: z.number().int().positive().max(25).optional(),
     includeLivePrices: z.boolean().optional(),
     livePriceTokenLimit: z.number()
@@ -462,6 +544,10 @@ export const searchMarketsJsonSchema = {
         conditionId: {
             type: "string",
             description: "Exact Polymarket condition ID",
+        },
+        marketSlug: {
+            type: "string",
+            description: "Exact Polymarket market or event slug, for example from a Polymarket URL",
         },
         limit: {
             type: "number",
@@ -649,9 +735,9 @@ const toolContracts = createToolContractCatalog([
                 errorSemantics: "Broker or policy rejections are returned in the execution payload.",
             },
             polymarket: {
-                description: "Propose a new order. The order is validated by the risk engine before execution. For multi-leg orders, provide the legs array. Returns the execution result including order ID and fill status.",
-                parameters: genericOrderParamsSchema,
-                jsonSchema: genericOrderJsonSchema,
+                description: "Propose a Polymarket order using a canonical token ID plus exact market identity from search_markets or direct lookup. Never submit a condition ID, event slug, or question as the tradable instrument.",
+                parameters: polymarketOrderParamsSchema,
+                jsonSchema: polymarketOrderJsonSchema,
                 outputDescription: "Returns the normalized execution result, risk validation, and tracked order snapshot for the proposed order.",
                 errorSemantics: "Broker or policy rejections are returned in the execution payload. Estimated execution pricing is injected from live venue data.",
             },
@@ -865,11 +951,11 @@ const toolContracts = createToolContractCatalog([
         owner: "polymarket",
         compatibleVenues: ["polymarket"],
         defaultVariant: {
-            description: "Discover active Polymarket markets via Gamma. Use this to get a top-liquid candidate list and token IDs first, then request live prices or order books only for your best candidate markets.",
+            description: "Discover active Polymarket markets via Gamma, or look up a direct condition ID or market slug. Use this to get a top-liquid candidate list and token IDs first, then request live prices or order books only for your best candidate markets.",
             parameters: searchMarketsParamsSchema,
             jsonSchema: searchMarketsJsonSchema,
             outputDescription: "Returns normalized Polymarket market discovery results. By default this is Gamma-only metadata plus token IDs; live price enrichment is explicit and tightly capped.",
-            errorSemantics: "Invalid empty requests throw before venue lookup.",
+            errorSemantics: "Empty requests throw before venue lookup. Harmless optional enrichment fields are ignored when enrichment is disabled.",
         },
     },
     {

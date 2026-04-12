@@ -46,6 +46,11 @@ function createClient() {
         spread: 0.02,
     })
     const getPrice = vi.fn()
+    const getMarketBySlug = vi.fn()
+    const getTokenBalance = vi.fn()
+    const createOrder = vi.fn()
+    const getOrder = vi.fn()
+    const cancelOrder = vi.fn()
 
     return {
         client: {
@@ -56,6 +61,11 @@ function createClient() {
             getMidpoint,
             getSpread,
             getPrice,
+            getMarketBySlug,
+            getTokenBalance,
+            createOrder,
+            getOrder,
+            cancelOrder,
         } as unknown as PolymarketClient,
         getTopLiquidMarketsForCategory,
         searchMarkets,
@@ -63,6 +73,12 @@ function createClient() {
         getCurrentPositions,
         getMidpoint,
         getSpread,
+        getPrice,
+        getMarketBySlug,
+        getTokenBalance,
+        createOrder,
+        getOrder,
+        cancelOrder,
     }
 }
 
@@ -112,6 +128,37 @@ describe("PolymarketVenueAdapter.searchMarkets", () => {
         expect(client.searchMarkets).toHaveBeenCalledWith("trump", 3)
     })
 
+    it("uses direct market slug lookup", async () => {
+        const client = createClient()
+        const market = createMarket("1")
+        client.getMarketBySlug.mockResolvedValue(market)
+
+        const venue = new PolymarketVenueAdapter(client.client)
+        const result = await venue.searchMarkets({
+            marketSlug: "will-it-happen-1",
+        })
+
+        expect(client.getMarketBySlug).toHaveBeenCalledWith("will-it-happen-1")
+        expect(result[0]?.marketSlug).toBe("will-it-happen-1")
+    })
+
+    it("keeps query results when category plus query is provided", async () => {
+        const client = createClient()
+        const market = createMarket("dhs")
+        client.searchMarkets.mockResolvedValue([market])
+        client.getTopLiquidMarketsForCategory.mockResolvedValue([])
+
+        const venue = new PolymarketVenueAdapter(client.client)
+        const result = await venue.searchMarkets({
+            category: "politics",
+            query: "How long will the DHS shutdown last?",
+            limit: 5,
+        })
+
+        expect(client.searchMarkets).toHaveBeenCalledWith("how long will the dhs shutdown last?", 5)
+        expect(result).toHaveLength(1)
+    })
+
     it("keeps concurrent live enrichment within the bounded request envelope", async () => {
         const client = createClient()
         const markets = [
@@ -154,6 +201,135 @@ describe("PolymarketVenueAdapter.searchMarkets", () => {
         expect(client.getSpread).toHaveBeenCalledTimes(
             POLYMARKET_SEARCH_MARKETS_MAX_LIVE_PRICE_TOKENS
         )
+    })
+})
+
+describe("PolymarketVenueAdapter.simulateDryRunOrder", () => {
+    it("requires canonical market identity and returns a token-bound simulated fill", async () => {
+        const client = createClient()
+        const venue = new PolymarketVenueAdapter(client.client)
+
+        const result = await venue.simulateDryRunOrder({
+            instrument: "token-1-yes",
+            side: "buy",
+            quantity: 10,
+            orderType: "limit",
+            limitPrice: 0.52,
+            timeInForce: "gtc",
+            metadata: {
+                tokenId: "token-1-yes",
+                conditionId: "condition-1",
+                marketSlug: "will-it-happen-1",
+                question: "Will it happen 1?",
+                outcome: "Yes",
+            },
+        })
+
+        expect(result).toMatchObject({
+            status: "filled",
+            filledQuantity: 10,
+            fillPrice: 0.52,
+        })
+        expect(result.orderId).toContain("dry-run-polymarket-token-1-yes")
+    })
+
+    it("fails closed when canonical metadata is missing", async () => {
+        const client = createClient()
+        const venue = new PolymarketVenueAdapter(client.client)
+
+        await expect(venue.simulateDryRunOrder({
+            instrument: "condition-1",
+            side: "buy",
+            quantity: 10,
+            orderType: "limit",
+            limitPrice: 0.52,
+            timeInForce: "gtc",
+        })).rejects.toThrow("canonical tokenId")
+    })
+})
+
+describe("PolymarketVenueAdapter.closePosition", () => {
+    it("submits live closes with canonical provider identity from current positions", async () => {
+        const client = createClient()
+        client.getTokenBalance.mockResolvedValue(10)
+        client.getCurrentPositions.mockResolvedValue([
+            {
+                asset: "token-active",
+                conditionId: "condition-active",
+                title: "Will it happen?",
+                outcome: "Yes",
+                slug: "will-it-happen",
+                size: 10,
+                avgPrice: 0.4,
+                curPrice: 0.6,
+                cashPnl: 2,
+                redeemable: false,
+                mergeable: false,
+                endDate: "2026-12-31",
+            },
+        ])
+        client.getPrice.mockResolvedValue(0.59)
+        client.getMidpoint.mockResolvedValue(0.6)
+        client.getSpread.mockResolvedValue({
+            bid: 0.58,
+            ask: 0.6,
+            spread: 0.02,
+        })
+        client.createOrder.mockResolvedValue({
+            orderID: "close-order-1",
+            status: "matched",
+        })
+
+        const venue = new PolymarketVenueAdapter(client.client)
+        const result = await venue.closePosition("token-active")
+
+        expect(result.status).toBe("filled")
+        expect(client.createOrder).toHaveBeenCalledWith(expect.objectContaining({
+            tokenId: "token-active",
+            side: "sell",
+            size: 10,
+            price: 0.59,
+        }))
+    })
+
+    it("fails closed when a live close cannot resolve canonical provider identity", async () => {
+        const client = createClient()
+        client.getTokenBalance.mockResolvedValue(10)
+        client.getCurrentPositions.mockResolvedValue([])
+
+        const venue = new PolymarketVenueAdapter(client.client)
+
+        await expect(venue.closePosition("token-active")).rejects.toThrow("provider position identity")
+        expect(client.createOrder).not.toHaveBeenCalled()
+    })
+})
+
+describe("PolymarketVenueAdapter.modifyOrder", () => {
+    it("resolves replacement identity before cancelling the existing order", async () => {
+        const client = createClient()
+        client.getOrder.mockResolvedValue({
+            id: "order-1",
+            status: "live",
+            owner: "owner",
+            market: "condition-1",
+            asset_id: "token-1-yes",
+            side: "BUY",
+            original_size: "10",
+            size_matched: "0",
+            price: "0.5",
+            outcome: "Yes",
+            order_type: "GTC",
+            created_at: "2026-04-12T00:00:00.000Z",
+            expiration: "0",
+        })
+        client.getCurrentPositions.mockResolvedValue([])
+        client.getMarket.mockRejectedValue(new Error("market lookup failed"))
+
+        const venue = new PolymarketVenueAdapter(client.client)
+
+        await expect(venue.modifyOrder("order-1", { limitPrice: 0.51 })).rejects.toThrow("market lookup failed")
+        expect(client.cancelOrder).not.toHaveBeenCalled()
+        expect(client.createOrder).not.toHaveBeenCalled()
     })
 })
 
@@ -209,7 +385,7 @@ describe("PolymarketVenueAdapter.getPositions", () => {
         const positions = await venue.getPositions()
 
         expect(client.getCurrentPositions).toHaveBeenCalledOnce()
-        expect(positions).toEqual([
+        expect(positions).toMatchObject([
             {
                 instrument: "token-active",
                 side: "long",
@@ -220,6 +396,9 @@ describe("PolymarketVenueAdapter.getPositions", () => {
                 metadata: {
                     venue: "polymarket",
                     market: "condition-active",
+                    conditionId: "condition-active",
+                    tokenId: "token-active",
+                    marketSlug: "will-the-us-acquire-any-part-of-greenland-in-2026",
                     question: "Will the US acquire part of Greenland in 2026?",
                     outcome: "Yes",
                     slug: "will-the-us-acquire-any-part-of-greenland-in-2026",

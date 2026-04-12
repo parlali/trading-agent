@@ -84,6 +84,91 @@ describe("PolymarketClient.searchMarkets", () => {
     })
 })
 
+describe("PolymarketClient.getMarketBySlug", () => {
+    const fetchMock = vi.fn<typeof fetch>()
+    const originalFetch = globalThis.fetch
+
+    beforeEach(() => {
+        fetchMock.mockReset()
+        globalThis.fetch = fetchMock as typeof fetch
+    })
+
+    afterEach(() => {
+        globalThis.fetch = originalFetch
+    })
+
+    it("falls back from market slug lookup to event slug lookup", async () => {
+        fetchMock
+            .mockResolvedValueOnce(createJsonResponse([]))
+            .mockResolvedValueOnce(createJsonResponse([
+                {
+                    title: "DHS shutdown",
+                    category: "Politics",
+                    markets: [
+                        {
+                            conditionId: "condition-dhs",
+                            questionID: "question-dhs",
+                            question: "How long will the DHS shutdown last?",
+                            description: "DHS market",
+                            outcomes: "[\"Before May\",\"After May\"]",
+                            clobTokenIds: "[\"token-before\",\"token-after\"]",
+                            active: true,
+                            closed: false,
+                            orderMinSize: 5,
+                            orderPriceMinTickSize: 0.01,
+                            liquidityNum: 5000,
+                            volumeNum: 8000,
+                            endDateIso: "2026-05-01T00:00:00Z",
+                            slug: "how-long-will-the-dhs-shutdown-last",
+                        },
+                    ],
+                },
+            ]))
+
+        const result = await createClient().getMarketBySlug("dhs-shutdown")
+
+        expect(result?.conditionId).toBe("condition-dhs")
+        expect(fetchMock).toHaveBeenCalledTimes(2)
+
+        const firstUrl = new URL(String(fetchMock.mock.calls[0]?.[0]))
+        const secondUrl = new URL(String(fetchMock.mock.calls[1]?.[0]))
+        expect(firstUrl.pathname).toBe("/markets")
+        expect(secondUrl.pathname).toBe("/events")
+        expect(secondUrl.searchParams.get("slug")).toBe("dhs-shutdown")
+        expect(secondUrl.searchParams.get("limit")).toBe("1")
+    })
+
+    it("normalizes direct Polymarket URLs into slug lookups", async () => {
+        fetchMock.mockResolvedValueOnce(createJsonResponse([
+            {
+                conditionId: "condition-url",
+                questionID: "question-url",
+                question: "Will the URL market resolve yes?",
+                description: "URL market",
+                outcomes: "[\"Yes\",\"No\"]",
+                clobTokenIds: "[\"token-url-yes\",\"token-url-no\"]",
+                active: true,
+                closed: false,
+                orderMinSize: 5,
+                orderPriceMinTickSize: 0.01,
+                liquidityNum: 5000,
+                volumeNum: 8000,
+                endDateIso: "2026-05-01T00:00:00Z",
+                slug: "will-the-url-market-resolve-yes",
+            },
+        ]))
+
+        const result = await createClient().getMarketBySlug("https://polymarket.com/event/will-the-url-market-resolve-yes?tid=123")
+
+        expect(result?.conditionId).toBe("condition-url")
+        expect(fetchMock).toHaveBeenCalledTimes(1)
+
+        const url = new URL(String(fetchMock.mock.calls[0]?.[0]))
+        expect(url.pathname).toBe("/markets")
+        expect(url.searchParams.get("slug")).toBe("will-the-url-market-resolve-yes")
+    })
+})
+
 describe("PolymarketClient.getCurrentPositions", () => {
     const fetchMock = vi.fn<typeof fetch>()
     const originalFetch = globalThis.fetch

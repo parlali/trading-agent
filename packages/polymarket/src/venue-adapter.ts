@@ -1,7 +1,9 @@
 import {
+    createExecutionError,
     createExecutionErrorDetail,
     formatExecutionError,
     type AccountState,
+    type DryRunOrderSimulator,
     type ExecutionResult,
     type OrderIntent,
     type PriceVerification,
@@ -61,7 +63,7 @@ interface PolymarketSearchMarketsLivePriceBudget {
     remainingRequests: number
 }
 
-export class PolymarketVenueAdapter implements VenueAdapter, PriceVerifier {
+export class PolymarketVenueAdapter implements VenueAdapter, PriceVerifier, DryRunOrderSimulator {
     private positionsCache: { positions: Position[]; fetchedAt: number } | null = null
     private readonly POSITIONS_CACHE_TTL = 5000
     private readonly marketPriceCacheTtlMs = 15_000
@@ -103,6 +105,7 @@ export class PolymarketVenueAdapter implements VenueAdapter, PriceVerifier {
         category?: string
         query?: string
         conditionId?: string
+        marketSlug?: string
         limit?: number
         includeLivePrices?: boolean
         livePriceTokenLimit?: number
@@ -114,23 +117,27 @@ export class PolymarketVenueAdapter implements VenueAdapter, PriceVerifier {
             return [await this.buildMarketSearchResult(market, livePriceBudget)]
         }
 
+        if (params.marketSlug) {
+            const market = await this.client.getMarketBySlug(params.marketSlug)
+            return market ? [await this.buildMarketSearchResult(market, livePriceBudget)] : []
+        }
+
         const limit = params.limit ?? 10
         const category = params.category?.trim().toLowerCase()
         const query = params.query?.trim().toLowerCase()
 
         if (!category && !query) {
-            throw new Error("search_markets requires category, query, or conditionId")
+            throw new Error("search_markets requires category, query, conditionId, or marketSlug")
         }
 
-        const markets = category
-            ? await this.client.getTopLiquidMarketsForCategory(category, limit)
-            : await this.client.searchMarkets(query!, limit)
-        const filtered = query && category
-            ? markets.filter((market) => matchesMarketQuery(market, query))
-            : markets
+        const markets = await this.resolveSearchMarkets({
+            category,
+            query,
+            limit,
+        })
 
         return await Promise.all(
-            filtered
+            markets
                 .slice(0, limit)
                 .map(async (market) => await this.buildMarketSearchResult(market, livePriceBudget))
         )
@@ -209,6 +216,7 @@ export class PolymarketVenueAdapter implements VenueAdapter, PriceVerifier {
     }
 
     async submitOrder(intent: OrderIntent): Promise<ExecutionResult> {
+        const canonical = this.resolveCanonicalOrderMetadata(intent)
         const tokenId = intent.instrument
         const polyOrderType = mapOrderType(intent)
 
@@ -228,8 +236,8 @@ export class PolymarketVenueAdapter implements VenueAdapter, PriceVerifier {
             size: intent.quantity,
             price,
             orderType: polyOrderType,
-            expiration: intent.metadata?.expiration as number | undefined,
-            negRisk: intent.metadata?.negRisk as boolean | undefined,
+            expiration: canonical.expiration,
+            negRisk: canonical.negRisk,
         })
 
         return {
@@ -237,6 +245,41 @@ export class PolymarketVenueAdapter implements VenueAdapter, PriceVerifier {
             status: mapPostOrderStatus(response.status),
             filledQuantity: response.status === "matched" ? intent.quantity : 0,
             fillPrice: response.status === "matched" ? price : undefined,
+            timestamp: Date.now(),
+        }
+    }
+
+    async simulateDryRunOrder(intent: OrderIntent): Promise<ExecutionResult> {
+        const canonical = this.resolveCanonicalOrderMetadata(intent)
+        const marketPrice = await this.getMarketPrice(canonical.tokenId, intent.side)
+        const fillPrice = intent.limitPrice ?? marketPrice.executablePrice ?? marketPrice.midpoint
+
+        if (!Number.isFinite(fillPrice) || fillPrice <= 0) {
+            const errorDetail = createExecutionErrorDetail("pre_validation", "Polymarket dry-run simulation requires a finite token price", {
+                code: "POLYMARKET_DRY_RUN_PRICE_UNAVAILABLE",
+                retryable: true,
+                details: {
+                    tokenId: canonical.tokenId,
+                    conditionId: canonical.conditionId,
+                    marketSlug: canonical.marketSlug,
+                },
+            })
+
+            return {
+                orderId: "",
+                status: "rejected",
+                filledQuantity: 0,
+                timestamp: Date.now(),
+                error: formatExecutionError(errorDetail),
+                errorDetail,
+            }
+        }
+
+        return {
+            orderId: `dry-run-polymarket-${canonical.tokenId}-${Date.now()}`,
+            status: "filled",
+            filledQuantity: intent.quantity,
+            fillPrice,
             timestamp: Date.now(),
         }
     }
@@ -260,8 +303,12 @@ export class PolymarketVenueAdapter implements VenueAdapter, PriceVerifier {
     }
 
     async modifyOrder(orderId: string, changes: Partial<OrderIntent>): Promise<ExecutionResult> {
-        // Polymarket does not support order modification — cancel and replace
         const existing = await this.client.getOrder(orderId)
+        const metadata = await this.resolveCanonicalMetadataForToken(
+            existing.asset_id,
+            existing.market,
+            existing.outcome
+        )
         await this.client.cancelOrder(orderId)
 
         const newIntent: OrderIntent = {
@@ -271,12 +318,13 @@ export class PolymarketVenueAdapter implements VenueAdapter, PriceVerifier {
             orderType: changes.orderType ?? "limit",
             limitPrice: changes.limitPrice ?? Number(existing.price),
             timeInForce: changes.timeInForce ?? "gtc",
+            metadata,
         }
 
         return this.submitOrder(newIntent)
     }
 
-    async closePosition(instrument: string): Promise<ExecutionResult> {
+    async closePosition(instrument: string, preparedIntent?: OrderIntent): Promise<ExecutionResult> {
         // instrument is the token ID — sell all held shares
         const balance = await this.client.getTokenBalance(instrument)
 
@@ -298,26 +346,49 @@ export class PolymarketVenueAdapter implements VenueAdapter, PriceVerifier {
             }
         }
 
-        let sellPrice: number
-        try {
-            sellPrice = await this.client.getPrice(instrument, "sell")
-        } catch {
-            try {
-                sellPrice = await this.client.getMidpoint(instrument)
-            } catch {
-                sellPrice = 0.01
-            }
-        }
-        sellPrice = Math.max(sellPrice, 0.01)
+        const intent = preparedIntent ?? await this.buildCloseIntent(instrument)
 
         return this.submitOrder({
+            ...intent,
+            quantity: balance,
+        })
+    }
+
+    async buildCloseIntent(instrument: string): Promise<OrderIntent> {
+        const position = await this.resolveCurrentPositionForToken(instrument)
+        if (!position) {
+            throw createExecutionError("pre_validation", `Cannot close Polymarket token ${instrument}: provider position identity is unavailable`, {
+                code: "POLYMARKET_CLOSE_IDENTITY_UNAVAILABLE",
+                retryable: true,
+                details: {
+                    instrument,
+                },
+            })
+        }
+
+        let sellPrice: number | undefined
+        try {
+            sellPrice = await this.client.getPrice(instrument, "sell")
+        } catch (error) {
+            throw createExecutionError("pre_validation", `Cannot close Polymarket token ${instrument}: sell price lookup failed`, {
+                code: "POLYMARKET_CLOSE_PRICE_UNAVAILABLE",
+                retryable: true,
+                details: {
+                    instrument,
+                    error: error instanceof Error ? error.message : String(error),
+                },
+            })
+        }
+
+        return {
             instrument,
             side: "sell",
-            quantity: balance,
+            quantity: position.quantity,
             orderType: "limit",
-            limitPrice: sellPrice,
+            limitPrice: Math.max(sellPrice, 0.01),
             timeInForce: "ioc",
-        })
+            metadata: buildCanonicalMetadataFromCurrentPosition(position),
+        }
     }
 
     async getOrderStatus(orderId: string): Promise<ExecutionResult> {
@@ -326,6 +397,7 @@ export class PolymarketVenueAdapter implements VenueAdapter, PriceVerifier {
     }
 
     async verify(intent: OrderIntent): Promise<PriceVerification> {
+        const canonical = this.resolveCanonicalOrderMetadata(intent)
         const marketPrice = await this.getMarketPrice(intent.instrument, intent.side)
         const proposedPrice = intent.orderType === "limit" || intent.orderType === "stop_limit"
             ? intent.limitPrice
@@ -353,10 +425,112 @@ export class PolymarketVenueAdapter implements VenueAdapter, PriceVerifier {
                 ? "Captured live Polymarket prices before submission. No limit price was provided for drift comparison."
                 : `Compared proposed Polymarket price ${proposedPrice} against live midpoint ${marketPrice.midpoint}.`,
             details: {
-                tokenId: intent.instrument,
+                tokenId: canonical.tokenId,
+                conditionId: canonical.conditionId,
+                marketSlug: canonical.marketSlug,
+                question: canonical.question,
+                outcome: canonical.outcome,
                 executablePrice: marketPrice.executablePrice,
                 executableSide: marketPrice.executableSide,
             },
+        }
+    }
+
+    private async resolveSearchMarkets(params: {
+        category?: string
+        query?: string
+        limit: number
+    }): Promise<PolymarketMarket[]> {
+        if (params.category && params.query) {
+            const [queryMarkets, categoryMarkets] = await Promise.all([
+                this.client.searchMarkets(params.query, params.limit),
+                this.client.getTopLiquidMarketsForCategory(params.category, params.limit),
+            ])
+
+            return dedupeAndRankMarkets([
+                ...queryMarkets,
+                ...categoryMarkets.filter((market) => matchesMarketQuery(market, params.query!)),
+            ])
+        }
+
+        if (params.category) {
+            return await this.client.getTopLiquidMarketsForCategory(params.category, params.limit)
+        }
+
+        return await this.client.searchMarkets(params.query!, params.limit)
+    }
+
+    private async resolveCurrentPositionForToken(tokenId: string): Promise<Position | null> {
+        const positions = await this.getPositions()
+        return positions.find((position) => position.instrument === tokenId) ?? null
+    }
+
+    private async resolveCanonicalMetadataForToken(
+        tokenId: string,
+        conditionId: string,
+        outcome: string
+    ): Promise<Record<string, unknown>> {
+        const position = await this.resolveCurrentPositionForToken(tokenId)
+        if (position?.metadata?.tokenId === tokenId) {
+            return position.metadata
+        }
+
+        const market = await this.client.getMarket(conditionId)
+        const token = market.tokens.find((candidate) => candidate.tokenId === tokenId)
+        if (!token) {
+            throw new Error(`Polymarket token ${tokenId} was not found in market ${conditionId}`)
+        }
+
+        return {
+            tokenId,
+            conditionId: market.conditionId,
+            marketSlug: market.marketSlug,
+            question: market.question,
+            outcome: token.outcome || outcome,
+            category: market.category,
+            endDateIso: market.endDateIso,
+            liquidity: market.liquidity,
+            volume: market.volume,
+            negRisk: market.negRisk,
+        }
+    }
+
+    private resolveCanonicalOrderMetadata(intent: OrderIntent): {
+        tokenId: string
+        conditionId: string
+        marketSlug: string
+        question: string
+        outcome: string
+        category?: string
+        endDateIso?: string
+        liquidity?: number
+        volume?: number
+        negRisk?: boolean
+        expiration?: number
+    } {
+        const metadata = intent.metadata ?? {}
+        const tokenId = readNonEmptyString(metadata.tokenId) ?? intent.instrument
+        const conditionId = readNonEmptyString(metadata.conditionId)
+        const marketSlug = readNonEmptyString(metadata.marketSlug)
+        const question = readNonEmptyString(metadata.question)
+        const outcome = readNonEmptyString(metadata.outcome)
+
+        if (!tokenId || tokenId !== intent.instrument || !conditionId || !marketSlug || !question || !outcome) {
+            throw new Error("Polymarket orders require canonical tokenId, conditionId, marketSlug, question, and outcome metadata from market discovery")
+        }
+
+        return {
+            tokenId,
+            conditionId,
+            marketSlug,
+            question,
+            outcome,
+            category: readNonEmptyString(metadata.category),
+            endDateIso: readNonEmptyString(metadata.endDateIso),
+            liquidity: readNumber(metadata.liquidity),
+            volume: readNumber(metadata.volume),
+            negRisk: typeof metadata.negRisk === "boolean" ? metadata.negRisk : undefined,
+            expiration: readNumber(metadata.expiration),
         }
     }
 
@@ -524,7 +698,6 @@ function mapPostOrderStatus(status: string): ExecutionResult["status"] {
 
 function mapOpenOrderStatus(order: PolymarketOpenOrder): ExecutionResult["status"] {
     const sizeMatched = Number(order.size_matched)
-    const originalSize = Number(order.original_size)
 
     switch (order.status) {
         case "matched":
@@ -570,6 +743,54 @@ function matchesMarketQuery(
     return haystack.includes(query)
 }
 
+function dedupeAndRankMarkets(markets: PolymarketMarket[]): PolymarketMarket[] {
+    const byConditionId = new Map<string, PolymarketMarket>()
+
+    for (const market of markets) {
+        const existing = byConditionId.get(market.conditionId)
+        if (!existing || (market.liquidity ?? 0) > (existing.liquidity ?? 0)) {
+            byConditionId.set(market.conditionId, market)
+        }
+    }
+
+    return Array.from(byConditionId.values())
+        .sort((left, right) => (right.liquidity ?? 0) - (left.liquidity ?? 0))
+}
+
+function readNonEmptyString(value: unknown): string | undefined {
+    return typeof value === "string" && value.trim().length > 0
+        ? value.trim()
+        : undefined
+}
+
+function readNumber(value: unknown): number | undefined {
+    return typeof value === "number" && Number.isFinite(value)
+        ? value
+        : undefined
+}
+
+function buildCanonicalMetadataFromCurrentPosition(position: Position): Record<string, unknown> {
+    const metadata = position.metadata ?? {}
+
+    return {
+        ...metadata,
+        tokenId: readNonEmptyString(metadata.tokenId) ?? position.instrument,
+        conditionId: readNonEmptyString(metadata.conditionId) ?? readNonEmptyString(metadata.market),
+        marketSlug: readNonEmptyString(metadata.marketSlug) ?? readNonEmptyString(metadata.slug),
+        question: readNonEmptyString(metadata.question),
+        outcome: readNonEmptyString(metadata.outcome),
+        category: readNonEmptyString(metadata.category),
+        endDateIso: readNonEmptyString(metadata.endDateIso) ?? readNonEmptyString(metadata.endDate),
+        liquidity: readNumber(metadata.liquidity),
+        volume: readNumber(metadata.volume),
+        negRisk: typeof metadata.negRisk === "boolean" ? metadata.negRisk : undefined,
+        side: "sell",
+        quantity: position.quantity,
+        entryPrice: position.entryPrice,
+        currentPrice: position.currentPrice,
+    }
+}
+
 function mapCurrentPosition(position: PolymarketCurrentPosition): Position {
     return {
         instrument: position.asset,
@@ -580,13 +801,20 @@ function mapCurrentPosition(position: PolymarketCurrentPosition): Position {
         unrealizedPnl: position.cashPnl,
         metadata: {
             venue: "polymarket",
+            conditionId: position.conditionId,
+            tokenId: position.asset,
             market: position.conditionId,
+            marketSlug: position.slug,
             question: position.title,
             outcome: position.outcome,
             slug: position.slug,
+            side: "buy",
+            entryPrice: position.avgPrice,
+            currentPrice: position.curPrice,
             redeemable: position.redeemable,
             mergeable: position.mergeable,
             endDate: position.endDate,
+            endDateIso: position.endDate,
         },
     }
 }

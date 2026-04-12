@@ -19,5 +19,10 @@ export {
     resolveAlpacaRuntimeConfig,
     resolveAlpacaTradingBaseUrl,
 } from "./runtime-config"
-export { alpacaRiskValidators, buildIronCondorInstrument, parseOptionContractSymbol } from "./risk-rules"
+export {
+    alpacaRiskValidators,
+    buildIronCondorInstrument,
+    buildIronCondorInstrumentFromLegs,
+    parseOptionContractSymbol,
+} from "./risk-rules"
 export { AlpacaOptionsVenueAdapter } from "./venue-adapter"

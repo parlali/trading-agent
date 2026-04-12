@@ -21,6 +21,7 @@ export function createPolymarketProposeAdjustmentTool(
                 pipeline.getPositions(),
                 pipeline.getAccountState(),
             ])
+            const existingPosition = positions.find((position) => position.instrument === validated.instrument)
 
             const estimatedPrice = await resolveEstimatedPrice(
                 venue,
@@ -38,9 +39,11 @@ export function createPolymarketProposeAdjustmentTool(
                 stopPrice: validated.stopPrice,
                 timeInForce: validated.timeInForce,
                 metadata: {
+                    ...existingPosition?.metadata,
                     action: "adjustment",
                     reason: validated.reason,
                     estimatedPrice,
+                    currentPrice: estimatedPrice,
                 },
             }
 
