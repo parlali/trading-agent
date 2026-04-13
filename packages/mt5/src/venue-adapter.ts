@@ -22,6 +22,7 @@ import {
 import {
     MT5Client,
     type MT5OpenOrder,
+    type MT5OrderResult,
     type MT5Position,
     type MT5SymbolInfo,
     type MT5WorkerCredentials,
@@ -94,7 +95,7 @@ export class MT5VenueAdapter implements VenueAdapter, PriceVerifier {
             comment: (intent.metadata?.comment as string) ?? "",
         })
 
-        return this.client.mapOrderResultToExecution(result)
+        return mapMT5SubmissionResult(this.client, result, intent)
     }
 
     async cancelOrder(orderId: string): Promise<ExecutionResult> {
@@ -202,11 +203,10 @@ export class MT5VenueAdapter implements VenueAdapter, PriceVerifier {
     async closePosition(instrument: string): Promise<ExecutionResult> {
         await this.ensureConnected()
 
-        // Find the position by instrument (symbol)
         const positions = await this.client.getPositions()
-        const position = positions.find((p) => p.symbol === instrument)
+        const matchingPositions = positions.filter((position) => position.symbol === instrument)
 
-        if (!position) {
+        if (matchingPositions.length === 0) {
             const errorDetail = createExecutionErrorDetail("pre_validation", `No open MT5 position found for ${instrument}`, {
                 code: "POSITION_NOT_FOUND",
                 retryable: false,
@@ -224,8 +224,16 @@ export class MT5VenueAdapter implements VenueAdapter, PriceVerifier {
             }
         }
 
-        const result = await this.client.closePosition({ ticket: position.ticket })
-        return this.client.mapOrderResultToExecution(result)
+        const results = await Promise.all(
+            matchingPositions.map(async (position) => {
+                const result = await this.client.closePosition({ ticket: position.ticket })
+                return this.client.mapOrderResultToExecution(result, {
+                    fallbackOrderId: String(position.ticket),
+                })
+            })
+        )
+
+        return aggregateMT5CloseResults(instrument, results)
     }
 
     async getOrderStatus(orderId: string): Promise<ExecutionResult> {
@@ -261,11 +269,17 @@ export class MT5VenueAdapter implements VenueAdapter, PriceVerifier {
             })
         }
 
+        const mappedStatus = mapMT5OrderState(status.state)
+        const isFilledStatus = mappedStatus === "filled" || mappedStatus === "partially_filled"
+        const filledQuantity = isFilledStatus
+            ? Math.max((status.volumeInitial ?? status.volume) - status.volume, 0) || status.volume
+            : 0
+
         return {
             orderId,
-            status: mapMT5OrderState(status.state),
-            filledQuantity: status.volume,
-            fillPrice: status.price,
+            status: mappedStatus,
+            filledQuantity,
+            fillPrice: isFilledStatus ? status.price : undefined,
             timestamp: Date.now(),
         }
     }
@@ -432,6 +446,67 @@ function mapMT5WorkingOrder(raw: MT5OpenOrder): WorkingOrder {
             magic: raw.magic,
             type: raw.type,
         },
+    }
+}
+
+function mapMT5SubmissionResult(
+    client: MT5Client,
+    result: MT5OrderResult,
+    intent: OrderIntent
+): ExecutionResult {
+    if (intent.orderType === "market") {
+        return client.mapOrderResultToExecution(result)
+    }
+
+    const execution = client.mapOrderResultToExecution(result, {
+        successStatus: "pending",
+        filledQuantity: 0,
+    })
+
+    return {
+        ...execution,
+        fillPrice: undefined,
+    }
+}
+
+function aggregateMT5CloseResults(
+    instrument: string,
+    results: ExecutionResult[]
+): ExecutionResult {
+    if (results.length === 1) {
+        return results[0]!
+    }
+
+    const filledResults = results.filter((result) => result.status === "filled")
+    const filledQuantity = filledResults.reduce((total, result) => total + result.filledQuantity, 0)
+    const fillValue = filledResults.reduce(
+        (total, result) => total + result.filledQuantity * (result.fillPrice ?? 0),
+        0
+    )
+    const failedResults = results.filter((result) => result.status !== "filled")
+    const status: ExecutionResult["status"] = failedResults.length === 0
+        ? "filled"
+        : filledResults.length > 0
+            ? "partially_filled"
+            : "rejected"
+    const errorDetail = failedResults.length > 0
+        ? createExecutionErrorDetail("venue", `Failed to close every MT5 ${instrument} position`, {
+            code: "MT5_BULK_CLOSE_INCOMPLETE",
+            retryable: false,
+            details: {
+                results,
+            },
+        })
+        : undefined
+
+    return {
+        orderId: results.map((result) => result.orderId).filter(Boolean).join(","),
+        status,
+        filledQuantity,
+        fillPrice: filledQuantity > 0 ? fillValue / filledQuantity : undefined,
+        timestamp: Date.now(),
+        error: errorDetail ? formatExecutionError(errorDetail) : undefined,
+        errorDetail,
     }
 }
 

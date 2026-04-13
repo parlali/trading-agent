@@ -575,6 +575,7 @@ class MT5Client:
                 "symbol": order.symbol,
                 "type": self._order_type_str(order.type),
                 "volume": float(order.volume_current),
+                "volumeInitial": float(order.volume_initial),
                 "price": float(order.price_open),
                 "stopLoss": float(order.sl),
                 "takeProfit": float(order.tp),
@@ -631,6 +632,7 @@ class MT5Client:
                 "symbol": order.symbol,
                 "type": self._order_type_str(order.type),
                 "volume": float(order.volume_current if hasattr(order, "volume_current") else order.volume_initial),
+                "volumeInitial": float(order.volume_initial),
                 "price": float(order.price_open),
                 "stopLoss": float(order.sl),
                 "takeProfit": float(order.tp),
@@ -687,6 +689,12 @@ class MT5Client:
 
     def _map_order_result(self, result: Any, fallback_order_id: int | None = None) -> dict[str, Any]:
         retcode = int(result.retcode)
+        success_retcodes = {
+            mt5.TRADE_RETCODE_DONE,
+            mt5.TRADE_RETCODE_PLACED,
+            mt5.TRADE_RETCODE_DONE_PARTIAL,
+        }
+
         return {
             "retcode": retcode,
             "retcodeDescription": self._retcode_description(retcode),
@@ -698,7 +706,7 @@ class MT5Client:
             "comment": result.comment if hasattr(result, "comment") else "",
             "bid": float(getattr(result, "bid", 0.0)) if hasattr(result, "bid") else None,
             "ask": float(getattr(result, "ask", 0.0)) if hasattr(result, "ask") else None,
-            "success": retcode == mt5.TRADE_RETCODE_DONE,
+            "success": retcode in success_retcodes,
         }
 
     @staticmethod

@@ -85,6 +85,16 @@ describe("tool contracts", () => {
         expect(polymarketMarketPrice.description).toContain("Polymarket")
     })
 
+    it("allows search_markets live price token limit zero to disable enrichment", () => {
+        const searchMarkets = getToolContract("search_markets", "polymarket")
+
+        expect(searchMarkets.parameters.safeParse({
+            category: "politics",
+            includeLivePrices: true,
+            livePriceTokenLimit: 0,
+        }).success).toBe(true)
+    })
+
     it("keeps every cataloged tool schema OpenRouter-compatible", () => {
         for (const contract of listToolContracts()) {
             for (const key of unsupportedTopLevelSchemaKeys) {

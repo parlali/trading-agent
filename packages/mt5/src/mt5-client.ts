@@ -221,6 +221,7 @@ export class MT5Client {
         symbol: string
         type: string
         volume: number
+        volumeInitial?: number
         price: number
         state: string
     } | null> {

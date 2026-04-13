@@ -1,6 +1,5 @@
 import { VENUE_APPS, type VenueApp } from "@valiq-trading/core"
 import { z } from "zod"
-import { POLYMARKET_SEARCH_MARKETS_MAX_LIVE_PRICE_TOKENS } from "@valiq-trading/polymarket"
 import {
     binanceOrderJsonSchema,
     binanceOrderParamsSchema,
@@ -525,8 +524,7 @@ export const searchMarketsParamsSchema = z.object({
     includeLivePrices: z.boolean().optional(),
     livePriceTokenLimit: z.number()
         .int()
-        .positive()
-        .max(POLYMARKET_SEARCH_MARKETS_MAX_LIVE_PRICE_TOKENS)
+        .nonnegative()
         .optional(),
 })
 
@@ -559,7 +557,7 @@ export const searchMarketsJsonSchema = {
         },
         livePriceTokenLimit: {
             type: "number",
-            description: `Maximum number of token IDs to enrich with live prices when includeLivePrices is true. Hard capped at ${POLYMARKET_SEARCH_MARKETS_MAX_LIVE_PRICE_TOKENS}.`,
+            description: "Maximum number of token IDs to enrich with live prices when includeLivePrices is true. Use 0 to disable live price enrichment. The venue adapter applies the hard cap.",
         },
     },
 } satisfies Record<string, unknown>
