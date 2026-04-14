@@ -520,7 +520,11 @@ export const searchMarketsParamsSchema = z.object({
     query: z.string().optional(),
     conditionId: z.string().optional(),
     marketSlug: z.string().optional(),
-    limit: z.number().int().positive().max(25).optional(),
+    limit: z.number()
+        .int()
+        .positive()
+        .transform((limit) => Math.min(limit, 25))
+        .optional(),
     includeLivePrices: z.boolean().optional(),
     livePriceTokenLimit: z.number()
         .int()

@@ -20,6 +20,10 @@ function createJsonResponse(body: unknown): Response {
     })
 }
 
+function createStatusResponse(status: number, statusText: string = ""): Response {
+    return new Response("", { status, statusText })
+}
+
 describe("PolymarketClient.searchMarkets", () => {
     const fetchMock = vi.fn<typeof fetch>()
     const originalFetch = globalThis.fetch
@@ -82,6 +86,18 @@ describe("PolymarketClient.searchMarkets", () => {
         expect(url.searchParams.get("optimized")).toBe("true")
         expect(url.searchParams.get("limit")).toBeNull()
     })
+
+    it("treats public-search 404 as no search results instead of failing the run", async () => {
+        fetchMock
+            .mockResolvedValueOnce(createStatusResponse(404, "Not Found"))
+            .mockResolvedValueOnce(createJsonResponse([]))
+            .mockResolvedValueOnce(createJsonResponse([]))
+
+        const results = await createClient().searchMarkets("missing market slug", 3)
+
+        expect(results).toEqual([])
+        expect(fetchMock).toHaveBeenCalledTimes(3)
+    })
 })
 
 describe("PolymarketClient.getMarketBySlug", () => {
@@ -136,6 +152,17 @@ describe("PolymarketClient.getMarketBySlug", () => {
         expect(secondUrl.pathname).toBe("/events")
         expect(secondUrl.searchParams.get("slug")).toBe("dhs-shutdown")
         expect(secondUrl.searchParams.get("limit")).toBe("1")
+    })
+
+    it("returns null when both market and event slug lookup return 404", async () => {
+        fetchMock
+            .mockResolvedValueOnce(createStatusResponse(404, "Not Found"))
+            .mockResolvedValueOnce(createStatusResponse(404, "Not Found"))
+
+        const result = await createClient().getMarketBySlug("missing-market")
+
+        expect(result).toBeNull()
+        expect(fetchMock).toHaveBeenCalledTimes(2)
     })
 
     it("normalizes direct Polymarket URLs into slug lookups", async () => {

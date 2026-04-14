@@ -4,6 +4,7 @@ import type { Doc, Id } from "../../_generated/dataModel"
 import { v } from "convex/values"
 import { validateStrategyConfig } from "@valiq-trading/core"
 import { requireUser, requireServiceToken } from "../authGuards"
+import { createEmptyCascadeDeleteCounts, type CascadeDeleteCounts } from "../cascadeDelete"
 
 const PORTFOLIO_STALE_AFTER_MS = 10 * 60 * 1000
 
@@ -601,43 +602,7 @@ export const triggerManualRun = mutation({
     },
 })
 
-type MutableCascadeDeleteCounts = ReturnType<typeof createEmptyCascadeDeleteCounts>
-
-function createEmptyCascadeDeleteCounts(): {
-    runs: number
-    agentLogs: number
-    tradeEvents: number
-    orders: number
-    orderTransitions: number
-    positions: number
-    instrumentClaims: number
-    positionSyncs: number
-    providerPositions: number
-    providerWorkingOrders: number
-    providerSyncStates: number
-    accountSnapshots: number
-    appHeartbeats: number
-    manualRunRequests: number
-    alerts: number
-} {
-    return {
-        runs: 0,
-        agentLogs: 0,
-        tradeEvents: 0,
-        orders: 0,
-        orderTransitions: 0,
-        positions: 0,
-        instrumentClaims: 0,
-        positionSyncs: 0,
-        providerPositions: 0,
-        providerWorkingOrders: 0,
-        providerSyncStates: 0,
-        accountSnapshots: 0,
-        appHeartbeats: 0,
-        manualRunRequests: 0,
-        alerts: 0,
-    }
-}
+type MutableCascadeDeleteCounts = CascadeDeleteCounts
 
 async function deleteRunBatch(
     ctx: { db: DatabaseWriter },

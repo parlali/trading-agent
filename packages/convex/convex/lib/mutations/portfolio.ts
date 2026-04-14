@@ -7,7 +7,12 @@ import {
     resolveProviderAdoptionInstruments,
 } from "@valiq-trading/core"
 import { requireServiceToken } from "../authGuards"
-import { reconcileOrderInstrumentClaim, replacePositionClaims } from "../instrumentClaims"
+import {
+    getClaimInstrumentsForOrder,
+    reconcileOrderInstrumentClaim,
+    replacePositionClaims,
+    upsertPositionInstrumentClaims,
+} from "../instrumentClaims"
 import {
     orderStatusV,
     venueAppV,
@@ -137,12 +142,23 @@ export const reconcileProviderPortfolio = mutation({
                     app: strategy.app,
                     orderId: existingOrder.orderId,
                     instrument: existingOrder.instrument,
+                    claimInstruments: getClaimInstrumentsForOrder(existingOrder.instrument, existingOrder.intent),
                     action: existingOrder.action,
                     status: liveOrder.status,
                     updatedAt: liveOrder.updatedAt,
                 })
             }
         }
+
+        await repairMissingLivePositionClaimsFromFilledOrders(ctx, {
+            app: args.app,
+            strategyMap,
+            liveInstruments: new Set([
+                ...args.positions.map((position) => position.instrument),
+                ...args.workingOrders.map((order) => order.instrument),
+            ]),
+            updatedAt: now,
+        })
 
         const refreshedClaims = await ctx.db
             .query("instrument_claims")
@@ -206,6 +222,7 @@ export const reconcileProviderPortfolio = mutation({
                     app: strategy.app,
                     orderId: existingOrder.orderId,
                     instrument: existingOrder.instrument,
+                    claimInstruments: getClaimInstrumentsForOrder(existingOrder.instrument, existingOrder.intent),
                     action: existingOrder.action,
                     status: inferredStatus,
                     updatedAt: now,
@@ -537,6 +554,82 @@ function buildClaimsByInstrument(
     }
 
     return claimsByInstrument
+}
+
+async function repairMissingLivePositionClaimsFromFilledOrders(
+    ctx: PortfolioMutationCtx,
+    args: {
+        app: Doc<"strategies">["app"]
+        strategyMap: Map<string, StrategyDoc>
+        liveInstruments: Set<string>
+        updatedAt: number
+    }
+): Promise<void> {
+    if (args.liveInstruments.size === 0) {
+        return
+    }
+
+    const [existingClaims, filledOrders] = await Promise.all([
+        ctx.db
+            .query("instrument_claims")
+            .withIndex("by_app", (q) => q.eq("app", args.app))
+            .collect(),
+        ctx.db
+            .query("orders")
+            .withIndex("by_app_status", (q) => q.eq("app", args.app).eq("status", "filled"))
+            .collect(),
+    ])
+
+    const claimedInstruments = new Set(existingClaims.map((claim) => claim.instrument))
+    const candidateStrategiesByInstrument = new Map<string, Set<Id<"strategies">>>()
+
+    for (const order of filledOrders) {
+        if (!isEntryLikeOrder(order) || !args.strategyMap.has(String(order.strategyId))) {
+            continue
+        }
+
+        const instruments = getClaimInstrumentsForOrder(order.instrument, order.intent)
+        for (const instrument of instruments) {
+            if (!args.liveInstruments.has(instrument) || claimedInstruments.has(instrument)) {
+                continue
+            }
+
+            const strategies = candidateStrategiesByInstrument.get(instrument) ?? new Set<Id<"strategies">>()
+            strategies.add(order.strategyId)
+            candidateStrategiesByInstrument.set(instrument, strategies)
+        }
+    }
+
+    const instrumentsByStrategy = new Map<string, { strategyId: Id<"strategies">; instruments: string[] }>()
+
+    for (const [instrument, strategies] of candidateStrategiesByInstrument) {
+        if (strategies.size !== 1) {
+            continue
+        }
+
+        const [strategyId] = Array.from(strategies)
+        if (!strategyId) {
+            continue
+        }
+
+        const key = String(strategyId)
+        const entry = instrumentsByStrategy.get(key) ?? { strategyId, instruments: [] }
+        entry.instruments.push(instrument)
+        instrumentsByStrategy.set(key, entry)
+    }
+
+    for (const entry of instrumentsByStrategy.values()) {
+        await upsertPositionInstrumentClaims(ctx, {
+            strategyId: entry.strategyId,
+            app: args.app,
+            instruments: entry.instruments,
+            updatedAt: args.updatedAt,
+        })
+    }
+}
+
+function isEntryLikeOrder(order: OrderDoc): boolean {
+    return order.action === "entry" || order.action === "adjustment"
 }
 
 async function updateProviderSyncStateFromCurrentRows(

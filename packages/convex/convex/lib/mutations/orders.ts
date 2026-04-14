@@ -4,7 +4,7 @@ import type { Id } from "../../_generated/dataModel"
 import { v } from "convex/values"
 import { DEFAULT_STALE_RUN_TIMEOUT_MS } from "@valiq-trading/core"
 import { requireServiceToken } from "../authGuards"
-import { reconcileOrderInstrumentClaim } from "../instrumentClaims"
+import { getClaimInstrumentsForOrder, reconcileOrderInstrumentClaim } from "../instrumentClaims"
 
 export const createRun = mutation({
     args: {
@@ -307,6 +307,7 @@ export const upsertOrder = mutation({
                 app: strategy.app,
                 orderId: args.orderId,
                 instrument: args.instrument,
+                claimInstruments: getClaimInstrumentsForOrder(args.instrument, args.intent),
                 action: args.action,
                 status: args.status,
                 updatedAt: args.updatedAt,
@@ -320,6 +321,7 @@ export const upsertOrder = mutation({
             app: strategy.app,
             orderId: args.orderId,
             instrument: args.instrument,
+            claimInstruments: getClaimInstrumentsForOrder(args.instrument, args.intent),
             action: args.action,
             status: args.status,
             updatedAt: args.updatedAt,

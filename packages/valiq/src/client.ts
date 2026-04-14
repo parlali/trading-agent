@@ -164,35 +164,67 @@ export class ValiqDataClient {
 
     async request<T>(path: string, options?: RequestInit): Promise<T> {
         const url = `${this.config.apiUrl}${path}`
-        this.logger?.debug("ValiqDataClient request", { method: options?.method ?? "GET", path })
+        const method = options?.method ?? "GET"
         const timeoutMs = this.config.timeout ?? 25_000
         const attempts = resolveValiqDataRetryAttempts(timeoutMs)
+        const startedAt = performance.now()
+        this.logger?.debug("ValiqDataClient request", { method, path, timeoutMs, attempts })
+
+        const requestInit = {
+            ...options,
+            headers: {
+                "X-API-Key": this.config.apiKey,
+                "Content-Type": "application/json",
+                ...options?.headers,
+            },
+            signal: AbortSignal.timeout(timeoutMs),
+        }
 
         let response: Response
+        let attempt = 0
         try {
-            response = await retryWithBackoff(
-                () =>
-                    fetch(url, {
-                        ...options,
-                        headers: {
-                            "X-API-Key": this.config.apiKey,
-                            "Content-Type": "application/json",
-                            ...options?.headers,
-                        },
-                        signal: AbortSignal.timeout(timeoutMs),
-                    }),
+            response = await fetchWithBoundedRetry(
+                url,
+                requestInit,
                 attempts,
-                500
+                500,
+                (metadata) => {
+                    attempt = metadata.attempt
+                    this.logger?.warn("ValiqDataClient transport retry", {
+                        method,
+                        path,
+                        timeoutMs,
+                        attempt: metadata.attempt,
+                        attempts,
+                        durationMs: Math.round(performance.now() - startedAt),
+                        error: metadata.error,
+                    })
+                }
             )
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error)
+            const timedOut = isTimeoutLikeError(error)
+            const durationMs = Math.round(performance.now() - startedAt)
+            this.logger?.error("ValiqDataClient transport failed", {
+                method,
+                path,
+                timeoutMs,
+                attempts,
+                attempt: attempt || 1,
+                durationMs,
+                error: message,
+                timedOut,
+            })
             throw new ValiqDataApiError(`Val-iQ Data API transport error: ${message}`, {
-                code: message.toLowerCase().includes("timeout") ? "UPSTREAM_TIMEOUT" : "TRANSPORT_ERROR",
-                retryable: true,
+                code: timedOut ? "UPSTREAM_TIMEOUT" : "TRANSPORT_ERROR",
+                retryable: !timedOut,
                 details: {
+                    method,
                     path,
                     timeoutMs,
                     attempts,
+                    attempt: attempt || 1,
+                    durationMs,
                 },
             })
         }
@@ -217,15 +249,21 @@ export class ValiqDataClient {
                                 : "UPSTREAM_ERROR",
                 retryable: response.status >= 500 || response.status === 408 || response.status === 429,
                 details: {
+                    method,
                     path,
                     body: body.slice(0, 1000),
+                    durationMs: Math.round(performance.now() - startedAt),
                 },
             })
         }
 
         try {
             const result = (await response.json()) as T
-            this.logger?.debug("ValiqDataClient response ok", { path })
+            this.logger?.debug("ValiqDataClient response ok", {
+                method,
+                path,
+                durationMs: Math.round(performance.now() - startedAt),
+            })
             return result
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error)
@@ -234,11 +272,56 @@ export class ValiqDataClient {
                 code: "INVALID_JSON",
                 retryable: false,
                 details: {
+                    method,
                     path,
+                    durationMs: Math.round(performance.now() - startedAt),
                 },
             })
         }
     }
+}
+
+async function fetchWithBoundedRetry(
+    url: string,
+    init: RequestInit,
+    attempts: number,
+    baseDelayMs: number,
+    onRetry: (metadata: { attempt: number; error: string }) => void
+): Promise<Response> {
+    let attempt = 0
+
+    while (attempt < attempts) {
+        attempt++
+        try {
+            return await fetch(url, init)
+        } catch (error) {
+            if (isTimeoutLikeError(error) || attempt >= attempts) {
+                throw error
+            }
+
+            const message = error instanceof Error ? error.message : String(error)
+            onRetry({ attempt, error: message })
+            await delay(baseDelayMs * 2 ** (attempt - 1))
+        }
+    }
+
+    throw new Error("Val-iQ Data API retry loop exited without a response")
+}
+
+function isTimeoutLikeError(error: unknown): boolean {
+    if (!(error instanceof Error)) return false
+
+    const name = error.name.toLowerCase()
+    const message = error.message.toLowerCase()
+    return name.includes("abort")
+        || name.includes("timeout")
+        || message.includes("abort")
+        || message.includes("timeout")
+        || message.includes("timed out")
+}
+
+async function delay(ms: number): Promise<void> {
+    await new Promise(resolve => setTimeout(resolve, ms))
 }
 
 function resolveValiqDataRetryAttempts(timeoutMs: number): number {

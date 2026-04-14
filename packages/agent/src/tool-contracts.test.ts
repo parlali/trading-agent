@@ -95,6 +95,18 @@ describe("tool contracts", () => {
         }).success).toBe(true)
     })
 
+    it("caps over-large search_markets limits instead of rejecting the run", () => {
+        const searchMarkets = getToolContract("search_markets", "polymarket")
+
+        const result = searchMarkets.parameters.safeParse({
+            category: "world",
+            limit: 100,
+        })
+
+        expect(result.success).toBe(true)
+        expect(result.data).toMatchObject({ limit: 25 })
+    })
+
     it("keeps every cataloged tool schema OpenRouter-compatible", () => {
         for (const contract of listToolContracts()) {
             for (const key of unsupportedTopLevelSchemaKeys) {

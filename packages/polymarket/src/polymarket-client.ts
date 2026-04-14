@@ -4,7 +4,6 @@ import {
     createExecutionError,
     createExecutionErrorDetail,
     fetchWithTimeout,
-    retryWithBackoff,
     type ExecutionErrorDetail,
 } from "@valiq-trading/core"
 
@@ -361,9 +360,9 @@ export class PolymarketClient {
         params.set("archived", "false")
         params.set("limit", "1")
 
-        const markets = await this.requestGamma<RawGammaMarket[]>(
+        const markets = await this.requestGammaOrNotFound<RawGammaMarket[]>(
             `/markets?${params.toString()}`
-        )
+        ) ?? []
         const mapped = markets
             .map((market) => mapGammaMarket({}, market))
             .filter((market): market is PolymarketMarket => market !== null)
@@ -372,9 +371,9 @@ export class PolymarketClient {
             return mapped[0]
         }
 
-        const events = await this.requestGamma<RawGammaEvent[]>(
+        const events = await this.requestGammaOrNotFound<RawGammaEvent[]>(
             `/events?${params.toString()}`
-        )
+        ) ?? []
         return collectGammaMarkets(events)[0] ?? null
     }
 
@@ -393,9 +392,18 @@ export class PolymarketClient {
         params.set("search_profiles", "false")
         params.set("optimized", "true")
 
-        const response = await this.requestGamma<GammaSearchResponse>(
+        const response = await this.requestGammaOrNotFound<GammaSearchResponse>(
             `/public-search?${params.toString()}`
         )
+        if (!response) {
+            const slugCandidate = toSlugCandidate(normalizedQuery)
+            if (!slugCandidate) {
+                return []
+            }
+
+            const direct = await this.getMarketBySlug(slugCandidate)
+            return direct ? [direct] : []
+        }
 
         const markets = collectGammaMarkets(response.events).slice(0, limit)
         if (markets.length > 0) {
@@ -716,6 +724,18 @@ export class PolymarketClient {
         return await this.requestPublicAgainstBaseUrl(this.gammaHost, path)
     }
 
+    private async requestGammaOrNotFound<T>(path: string): Promise<T | null> {
+        try {
+            return await this.requestGamma<T>(path)
+        } catch (error) {
+            if (error instanceof PolymarketApiError && error.status === 404) {
+                return null
+            }
+
+            throw error
+        }
+    }
+
     private async requestData<T>(path: string): Promise<T> {
         return await this.requestPublicAgainstBaseUrl(this.dataHost, path)
     }
@@ -724,7 +744,7 @@ export class PolymarketClient {
         baseUrl: string,
         path: string
     ): Promise<T> {
-        return retryWithBackoff(async () => {
+        return await this.withPolymarketRetry(async () => {
             const response = await fetchWithTimeout(`${baseUrl}${path}`, {
                 headers: { "Content-Type": "application/json" },
             }, POLYMARKET_REQUEST_TIMEOUT_MS, `Polymarket request ${path}`)
@@ -734,7 +754,7 @@ export class PolymarketClient {
             }
 
             return (await response.json()) as T
-        }, 3, 1000)
+        })
     }
 
     private async requestAuthenticated<T>(
@@ -743,7 +763,7 @@ export class PolymarketClient {
         body?: unknown,
         query?: Record<string, string | number | boolean | undefined>
     ): Promise<T | undefined> {
-        return retryWithBackoff(async () => {
+        return await this.withPolymarketRetry(async () => {
             const bodyString = body ? JSON.stringify(body) : ""
             const headers = this.buildL2Headers(method, path, bodyString)
             const url = appendQueryParams(`${this.host}${path}`, query)
@@ -776,7 +796,27 @@ export class PolymarketClient {
             }
 
             return (await response.json()) as T
-        }, 3, 1000)
+        })
+    }
+
+    private async withPolymarketRetry<T>(operation: () => Promise<T>): Promise<T> {
+        let lastError: unknown
+        for (let attempt = 0; attempt <= 3; attempt++) {
+            try {
+                return await operation()
+            } catch (error) {
+                lastError = error
+                if (error instanceof PolymarketApiError && !error.retryable) {
+                    throw error
+                }
+
+                if (attempt < 3) {
+                    await new Promise((resolve) => setTimeout(resolve, 1000 * Math.pow(2, attempt)))
+                }
+            }
+        }
+
+        throw lastError
     }
 
     private buildL2Headers(

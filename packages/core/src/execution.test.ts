@@ -108,15 +108,19 @@ describe("ExecutionPipeline dry-run accounting", () => {
         expect(state.equity).toBeCloseTo(1002)
         expect(state.dayPnl).toBeCloseTo(2)
         expect(state.openPnl).toBeCloseTo(0)
-        const syncedPositions = pipeline.getDryRunPositions()
+        const agentPositions = pipeline.getDryRunPositions()
+        expect(agentPositions).toHaveLength(0)
+
+        const syncedPositions = pipeline.getDryRunPositionsForSync()
         expect(syncedPositions).toHaveLength(1)
-        expect(syncedPositions[0]).toMatchObject({
+        const ledger = syncedPositions[0]!
+        expect(ledger).toMatchObject({
             instrument: DRY_RUN_ACCOUNT_LEDGER_INSTRUMENT,
             metadata: expect.objectContaining({
                 cashAdjustment: 2,
+                realizedPnl: expect.closeTo(2),
             }),
         })
-        expect(syncedPositions[0]?.metadata?.realizedPnl as number).toBeCloseTo(2)
 
         const submission = tradeLogger.logSubmission.mock.calls.at(-1) as unknown as [
             string,

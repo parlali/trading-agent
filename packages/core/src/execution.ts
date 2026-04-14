@@ -617,8 +617,12 @@ export class ExecutionPipeline {
     }
 
     getDryRunPositions(): Position[] {
+        return Array.from(this.dryRunPositionBook.values())
+    }
+
+    getDryRunPositionsForSync(): Position[] {
         return [
-            ...Array.from(this.dryRunPositionBook.values()),
+            ...this.getDryRunPositions(),
             this.createDryRunAccountLedgerPosition(),
         ]
     }

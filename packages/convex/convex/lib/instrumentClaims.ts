@@ -18,7 +18,13 @@ const POSITION_CLAIM_SOURCE: ClaimSource = "position"
 const ORDER_CLAIM_SOURCE: ClaimSource = "order"
 
 function uniqueInstruments(instruments: string[]): string[] {
-    return Array.from(new Set(instruments))
+    return Array.from(
+        new Set(
+            instruments
+                .map((instrument) => instrument.trim())
+                .filter((instrument) => instrument.length > 0)
+        )
+    )
 }
 
 function compareStrategiesForBootstrap(left: Doc<"strategies">, right: Doc<"strategies">): number {
@@ -79,19 +85,43 @@ async function upsertClaim(
     })
 }
 
-async function deleteClaim(
+async function deleteOrderClaims(
     ctx: MutationDbCtx,
     strategyId: Id<"strategies">,
-    source: ClaimSource,
-    sourceId: string
+    orderId: string
 ): Promise<void> {
-    const existing = await getClaimBySource(ctx, strategyId, source, sourceId)
+    const claims = await ctx.db
+        .query("instrument_claims")
+        .withIndex("by_strategy_source", (q) =>
+            q.eq("strategyId", strategyId).eq("source", ORDER_CLAIM_SOURCE)
+        )
+        .collect()
 
-    if (!existing) {
-        return
+    for (const claim of claims) {
+        if (claim.sourceId === orderId || claim.sourceId.startsWith(`${orderId}:`)) {
+            await ctx.db.delete(claim._id)
+        }
+    }
+}
+
+function buildOrderClaimSourceId(orderId: string, instrument: string): string {
+    return `${orderId}:${instrument}`
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === "object" && value !== null
+}
+
+export function getClaimInstrumentsForOrder(instrument: string, intent?: unknown): string[] {
+    if (!isRecord(intent) || !Array.isArray(intent.legs)) {
+        return uniqueInstruments([instrument])
     }
 
-    await ctx.db.delete(existing._id)
+    const legInstruments = intent.legs
+        .filter(isRecord)
+        .map((leg) => typeof leg.instrument === "string" ? leg.instrument : "")
+
+    return uniqueInstruments([instrument, ...legInstruments])
 }
 
 export async function getLatestPositionsForStrategy(
@@ -235,6 +265,27 @@ export async function replacePositionClaims(
     }
 }
 
+export async function upsertPositionInstrumentClaims(
+    ctx: MutationDbCtx,
+    args: {
+        strategyId: Id<"strategies">
+        app: VenueApp
+        instruments: string[]
+        updatedAt: number
+    }
+): Promise<void> {
+    for (const instrument of uniqueInstruments(args.instruments)) {
+        await upsertClaim(ctx, {
+            strategyId: args.strategyId,
+            app: args.app,
+            instrument,
+            source: POSITION_CLAIM_SOURCE,
+            sourceId: instrument,
+            updatedAt: args.updatedAt,
+        })
+    }
+}
+
 export async function reconcileOrderInstrumentClaim(
     ctx: MutationDbCtx,
     args: {
@@ -242,38 +293,42 @@ export async function reconcileOrderInstrumentClaim(
         app: VenueApp
         orderId: string
         instrument: string
+        claimInstruments?: string[]
         action: OrderAction
         status: OrderStatus
         updatedAt: number
     }
 ): Promise<void> {
+    const instruments = uniqueInstruments(args.claimInstruments ?? [args.instrument])
+
     if (isEntryLikeAction(args.action)) {
         if (isActiveEntryOrderStatus(args.status)) {
-            await upsertClaim(ctx, {
-                strategyId: args.strategyId,
-                app: args.app,
-                instrument: args.instrument,
-                source: ORDER_CLAIM_SOURCE,
-                sourceId: args.orderId,
-                updatedAt: args.updatedAt,
-            })
+            await deleteOrderClaims(ctx, args.strategyId, args.orderId)
+            for (const instrument of instruments) {
+                await upsertClaim(ctx, {
+                    strategyId: args.strategyId,
+                    app: args.app,
+                    instrument,
+                    source: ORDER_CLAIM_SOURCE,
+                    sourceId: buildOrderClaimSourceId(args.orderId, instrument),
+                    updatedAt: args.updatedAt,
+                })
+            }
             return
         }
 
-        await deleteClaim(ctx, args.strategyId, ORDER_CLAIM_SOURCE, args.orderId)
+        await deleteOrderClaims(ctx, args.strategyId, args.orderId)
 
         if (args.status === "filled") {
-            await upsertClaim(ctx, {
+            await upsertPositionInstrumentClaims(ctx, {
                 strategyId: args.strategyId,
                 app: args.app,
-                instrument: args.instrument,
-                source: POSITION_CLAIM_SOURCE,
-                sourceId: args.instrument,
+                instruments,
                 updatedAt: args.updatedAt,
             })
         }
         return
     }
 
-    await deleteClaim(ctx, args.strategyId, ORDER_CLAIM_SOURCE, args.orderId)
+    await deleteOrderClaims(ctx, args.strategyId, args.orderId)
 }

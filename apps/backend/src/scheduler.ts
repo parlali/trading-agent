@@ -47,7 +47,6 @@ import {
     filterPositionsByOwnership,
     binancePolicySchema,
     getNextCronFireMs,
-    isDryRunAccountLedgerPosition,
     mt5PolicySchema,
     parseSummaryMetadata,
     stripMetadataBlock,
@@ -868,13 +867,14 @@ export async function runStrategy(
                 isDryRun ? backend.getLatestPositions(strategy._id) : venue.getPositions(),
                 backend.getLastCompletedRunSummary(strategy._id),
             ])
-            const positions = isDryRun
-                ? allPositions.filter((position) => !isDryRunAccountLedgerPosition(position))
-                : filterPositionsByOwnership(allPositions, ownedInstruments)
 
             if (isDryRun) {
                 pipeline.seedDryRunPositions(allPositions)
             }
+
+            const positions = isDryRun
+                ? pipeline.getDryRunPositions()
+                : filterPositionsByOwnership(allPositions, ownedInstruments)
             const accountState = isDryRun
                 ? await pipeline.getAccountState()
                 : await venue.getAccountState()
@@ -922,7 +922,7 @@ export async function runStrategy(
             }
 
             if (isDryRun) {
-                const syncedPositions = pipeline.getDryRunPositions()
+                const syncedPositions = pipeline.getDryRunPositionsForSync()
                 await backend.syncPositions(strategy._id, app, syncedPositions)
             } else {
                 await reconcileProviderPortfolio({
@@ -994,7 +994,7 @@ export async function runStrategy(
 
         try {
             if (Boolean(policy.dryRun)) {
-                await backend.syncPositions(strategy._id, app, pipeline.getDryRunPositions())
+                await backend.syncPositions(strategy._id, app, pipeline.getDryRunPositionsForSync())
             } else {
                 await reconcileProviderPortfolio({
                     app,
