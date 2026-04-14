@@ -751,15 +751,8 @@ function asOptionalNumber(value: unknown): number | undefined {
 }
 
 export function buildCreateOrderPayload(intent: OrderIntent): Record<string, unknown> {
-    if (!intent.legs || intent.legs.length !== 4) {
-        throw createExecutionError("pre_validation", "Alpaca options orders must be submitted as exactly 4 legs", {
-            code: "INVALID_LEG_COUNT",
-            retryable: false,
-        })
-    }
-
     if (!Number.isInteger(intent.quantity) || intent.quantity <= 0) {
-        throw createExecutionError("pre_validation", "Alpaca options orders require a positive integer structure quantity", {
+        throw createExecutionError("pre_validation", "Alpaca options orders require a positive integer quantity", {
             code: "INVALID_QUANTITY",
             retryable: false,
         })
@@ -789,6 +782,13 @@ export function buildCreateOrderPayload(intent: OrderIntent): Record<string, unk
     if (intent.stopPrice !== undefined) {
         throw createExecutionError("pre_validation", "Alpaca options orders do not support stop prices", {
             code: "STOP_PRICE_UNSUPPORTED",
+            retryable: false,
+        })
+    }
+
+    if (!intent.legs || intent.legs.length !== 4) {
+        throw createExecutionError("pre_validation", "Alpaca multi-leg options orders must be submitted as exactly 4 legs", {
+            code: "INVALID_LEG_COUNT",
             retryable: false,
         })
     }

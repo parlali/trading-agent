@@ -220,6 +220,17 @@ describe("buildCreateOrderPayload", () => {
             limit_price: 0.67,
         })
     })
+
+    it("rejects single-leg options orders", () => {
+        expect(() => buildCreateOrderPayload({
+            instrument: "SPY260424C00690000",
+            side: "buy",
+            quantity: 1,
+            orderType: "limit",
+            limitPrice: 4.55,
+            timeInForce: "day",
+        })).toThrow("Alpaca multi-leg options orders must be submitted as exactly 4 legs")
+    })
 })
 
 describe("AlpacaClient multileg signed limit prices", () => {
