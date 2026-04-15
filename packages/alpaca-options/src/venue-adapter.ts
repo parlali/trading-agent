@@ -1,4 +1,5 @@
 import {
+    ACTIVE_ORDER_STATUSES,
     createExecutionError,
     type AccountState,
     type ExecutionResult,
@@ -136,7 +137,9 @@ export class AlpacaOptionsVenueAdapter implements VenueAdapter, PriceVerifier {
 
     async getWorkingOrders(): Promise<WorkingOrder[]> {
         const orders = await this.client.getOpenOrders()
-        return orders.map((order) => mapWorkingOrder(order))
+        return orders
+            .map((order) => mapWorkingOrder(order))
+            .filter((order) => ACTIVE_ORDER_STATUSES.includes(order.status))
     }
 
     async getMarketClock(): Promise<AlpacaClockResponse> {

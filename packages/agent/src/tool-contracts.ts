@@ -908,10 +908,10 @@ const toolContracts = createToolContractCatalog([
         compatibleVenues: ["polymarket", "binance-futures"],
         variants: {
             polymarket: {
-                description: "Fetch the current Polymarket midpoint, best bid, best ask, spread, and optional executable price for a token.",
+                description: "Fetch the current Polymarket midpoint, best bid, best ask, spread, optional executable price, and liquidityWarning derived from one /book snapshot.",
                 parameters: polymarketMarketPriceParamsSchema,
                 jsonSchema: polymarketMarketPriceJsonSchema,
-                outputDescription: "Returns normalized Polymarket pricing and spread information for the requested token.",
+                outputDescription: "Returns normalized Polymarket pricing, spread, and liquidity warning information for the requested token.",
                 errorSemantics: "Venue lookup failures throw.",
             },
             "binance-futures": {

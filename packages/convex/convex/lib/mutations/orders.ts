@@ -5,6 +5,7 @@ import { v } from "convex/values"
 import { DEFAULT_STALE_RUN_TIMEOUT_MS } from "@valiq-trading/core"
 import { requireServiceToken } from "../authGuards"
 import { getClaimInstrumentsForOrder, reconcileOrderInstrumentClaim } from "../instrumentClaims"
+import { incrementControlPlaneMetric } from "../controlPlaneMetrics"
 
 export const createRun = mutation({
     args: {
@@ -66,23 +67,24 @@ export const recoverStaleRunningRuns = mutation({
     args: {
         serviceToken: v.string(),
         olderThanMs: v.optional(v.number()),
+        maxBatch: v.optional(v.number()),
     },
     handler: async (ctx, args) => {
         requireServiceToken(args.serviceToken)
 
         const olderThanMs = args.olderThanMs ?? DEFAULT_STALE_RUN_TIMEOUT_MS
-        const runningRuns = (await ctx.db.query("strategy_runs").collect()).filter(
-            (run) => run.status === "running"
-        )
-
         const endedAt = Date.now()
+        const staleBefore = endedAt - olderThanMs
+        const maxBatch = Math.max(1, Math.min(args.maxBatch ?? 500, 5_000))
+        const runningRuns = await ctx.db
+            .query("strategy_runs")
+            .withIndex("by_status_started_at", (q) =>
+                q.eq("status", "running").lt("startedAt", staleBefore)
+            )
+            .take(maxBatch)
         let recovered = 0
 
         for (const run of runningRuns) {
-            if (endedAt - run.startedAt <= olderThanMs) {
-                continue
-            }
-
             await ctx.db.patch(run._id, {
                 status: "failed",
                 error: "Recovered stale running record during periodic recovery",
@@ -91,6 +93,15 @@ export const recoverStaleRunningRuns = mutation({
             recovered++
         }
 
+        await incrementControlPlaneMetric(ctx, {
+            metric: "recover_stale_running_runs.candidates",
+            delta: runningRuns.length,
+        })
+        await incrementControlPlaneMetric(ctx, {
+            metric: "recover_stale_running_runs.recovered",
+            delta: recovered,
+        })
+
         return { recovered }
     },
 })
@@ -98,13 +109,17 @@ export const recoverStaleRunningRuns = mutation({
 export const recoverRunningRuns = mutation({
     args: {
         serviceToken: v.string(),
+        maxBatch: v.optional(v.number()),
     },
     handler: async (ctx, args) => {
         requireServiceToken(args.serviceToken)
 
-        const runningRuns = (await ctx.db.query("strategy_runs").collect()).filter(
-            (run) => run.status === "running"
-        )
+        const maxBatch = Math.max(1, Math.min(args.maxBatch ?? 5_000, 10_000))
+        const runningRuns = await ctx.db
+            .query("strategy_runs")
+            .withIndex("by_status_started_at", (q) => q.eq("status", "running"))
+            .order("asc")
+            .take(maxBatch)
 
         const endedAt = Date.now()
 
@@ -115,6 +130,11 @@ export const recoverRunningRuns = mutation({
                 endedAt,
             })
         }
+
+        await incrementControlPlaneMetric(ctx, {
+            metric: "recover_running_runs.recovered",
+            delta: runningRuns.length,
+        })
 
         return {
             recovered: runningRuns.length,

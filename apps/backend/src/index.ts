@@ -12,6 +12,7 @@ import { registerStrategyWithScheduler } from "./scheduler"
 import { startHeartbeat, stopHeartbeat } from "./heartbeat"
 import { startManualRunPolling, stopManualRunPolling } from "./manual-runs"
 import { performStartupSync, startPeriodicSync, stopPeriodicSync } from "./sync"
+import { writeHeartbeatSnapshot } from "./health-write"
 
 declare const Bun: {
     env: Record<string, string | undefined>
@@ -67,10 +68,15 @@ async function main(): Promise<void> {
     scheduler.start()
     healthState.ready = true
 
-    await backend.reportHeartbeat(APP_NAME, "healthy", {
-        strategyCount: totalStrategies,
-        startedAt: healthState.startedAt,
-        venues: Object.keys(healthState.venues),
+    await writeHeartbeatSnapshot({
+        app: APP_NAME,
+        status: "healthy",
+        metadata: {
+            source: "startup",
+            strategyCount: totalStrategies,
+            startedAt: healthState.startedAt,
+            venues: Object.keys(healthState.venues),
+        },
     })
 
     logger.info("Backend started", {

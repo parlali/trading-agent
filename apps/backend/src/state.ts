@@ -16,6 +16,9 @@ import type { HealthState, VenueApp, VenuePlugin } from "./types"
 export const APP_NAME: App = "backend"
 export const HEARTBEAT_INTERVAL_MS = 30_000
 export const MANUAL_RUN_POLL_INTERVAL_MS = 5_000
+export const MANUAL_RUN_LEASE_MS = 30_000
+export const MANUAL_RUN_MAX_ATTEMPTS = 5
+export const MANUAL_RUN_CLAIM_LIMIT = 25
 export const PERIODIC_SYNC_INTERVAL_MS = 5 * 60 * 1000
 
 declare const Bun: {
@@ -121,3 +124,4 @@ export interface SyncStrategyEntry {
 export const syncStrategies: Partial<Record<VenueApp, SyncStrategyEntry[]>> = {}
 
 export const ALL_APPS: VenueApp[] = ["alpaca-options", "polymarket", "mt5"]
+export const MANUAL_RUN_WORKER_ID = `backend-${healthState.startedAt}`

@@ -67,6 +67,13 @@ async function upsertClaim(
     const existing = await getClaimBySource(ctx, args.strategyId, args.source, args.sourceId)
 
     if (existing) {
+        if (
+            existing.app === args.app &&
+            existing.instrument === args.instrument
+        ) {
+            return
+        }
+
         await ctx.db.patch(existing._id, {
             app: args.app,
             instrument: args.instrument,

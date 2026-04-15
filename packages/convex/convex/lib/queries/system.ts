@@ -54,9 +54,21 @@ export const getManualRunRequests = query({
         requireServiceToken(args.serviceToken)
         return await ctx.db
             .query("manual_run_requests")
-            .withIndex("by_app", (q) => q.eq("app", args.app))
-            .order("desc")
+            .withIndex("by_app_terminal_requested_at", (q) =>
+                q.eq("app", args.app).eq("terminalAt", undefined)
+            )
+            .order("asc")
             .collect()
+    },
+})
+
+export const getControlPlaneMetrics = query({
+    args: {
+        serviceToken: v.string(),
+    },
+    handler: async (ctx, args) => {
+        requireServiceToken(args.serviceToken)
+        return await ctx.db.query("control_plane_metrics").collect()
     },
 })
 

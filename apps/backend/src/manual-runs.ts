@@ -1,6 +1,10 @@
 import type { Scheduler } from "@valiq-trading/core"
 import {
     MANUAL_RUN_POLL_INTERVAL_MS,
+    MANUAL_RUN_LEASE_MS,
+    MANUAL_RUN_MAX_ATTEMPTS,
+    MANUAL_RUN_CLAIM_LIMIT,
+    MANUAL_RUN_WORKER_ID,
     ALL_APPS,
     backend,
     logger,
@@ -39,11 +43,33 @@ export function stopManualRunPolling(): void {
 
 export async function pollManualRunRequests(scheduler: Scheduler): Promise<void> {
     for (const app of ALL_APPS) {
-        const requests = await backend.getManualRunRequests(app)
+        const claimResult = await backend.claimManualRunRequests({
+            app,
+            workerId: MANUAL_RUN_WORKER_ID,
+            leaseMs: MANUAL_RUN_LEASE_MS,
+            maxClaims: MANUAL_RUN_CLAIM_LIMIT,
+            maxAttempts: MANUAL_RUN_MAX_ATTEMPTS,
+        })
 
-        for (const request of requests) {
-            let shouldClearRequest = false
+        if (claimResult.contentionCount > 0) {
+            logger.info("Manual run claim contention observed", {
+                app,
+                workerId: MANUAL_RUN_WORKER_ID,
+                contentionCount: claimResult.contentionCount,
+            })
+        }
 
+        if (claimResult.terminalizedCount > 0) {
+            logger.warn("Manual run requests terminalized during claim because max attempts were exceeded", {
+                app,
+                terminalizedCount: claimResult.terminalizedCount,
+                maxAttempts: claimResult.maxAttempts,
+            })
+        }
+
+        for (const request of claimResult.claimed) {
+            let ackOutcome: "completed" | "requeue" | "retryable_failure" | "terminal_failure" = "retryable_failure"
+            let ackError: string | undefined
             try {
                 const registered = scheduler.getRegisteredStrategies()
                 if (!registered.includes(request.strategyId)) {
@@ -52,14 +78,16 @@ export async function pollManualRunRequests(scheduler: Scheduler): Promise<void>
                         logger.warn("Manual run request for deleted strategy, clearing", {
                             strategyId: request.strategyId,
                         })
-                        shouldClearRequest = true
+                        ackOutcome = "terminal_failure"
+                        ackError = "Strategy no longer exists"
                         continue
                     }
                     if (!strategy.enabled) {
                         logger.warn("Manual run request for disabled strategy, clearing", {
                             strategyId: request.strategyId,
                         })
-                        shouldClearRequest = true
+                        ackOutcome = "terminal_failure"
+                        ackError = "Strategy is disabled"
                         continue
                     }
                     logger.info("Hot-registering strategy for manual run", {
@@ -75,35 +103,49 @@ export async function pollManualRunRequests(scheduler: Scheduler): Promise<void>
                         strategyId: request.strategyId,
                         app,
                     })
+                    ackOutcome = "requeue"
+                    ackError = "Strategy run already in progress"
                     continue
                 }
 
                 pendingManualTriggers.add(request.strategyId)
-                void scheduler.triggerManual(request.strategyId).catch((error) => {
-                    pendingManualTriggers.delete(request.strategyId)
-                    const message = error instanceof Error ? error.message : String(error)
-                    logger.error("Manual run dispatch failed after scheduling", {
-                        strategyId: request.strategyId,
-                        app,
-                        error: message,
-                    })
-                })
+                await scheduler.triggerManual(request.strategyId)
 
                 logger.info("Manual run dispatched", {
                     strategyId: request.strategyId,
                     app,
                 })
-                shouldClearRequest = true
+                ackOutcome = "completed"
+                ackError = undefined
             } catch (error) {
+                pendingManualTriggers.delete(request.strategyId)
                 const message = error instanceof Error ? error.message : String(error)
                 logger.error("Failed to process manual run request", {
                     strategyId: request.strategyId,
                     app,
                     error: message,
                 })
+                ackOutcome = "retryable_failure"
+                ackError = message
             } finally {
-                if (shouldClearRequest) {
-                    await backend.clearManualRunRequest(request._id)
+                try {
+                    await backend.ackManualRunRequest({
+                        requestId: request._id,
+                        workerId: MANUAL_RUN_WORKER_ID,
+                        outcome: ackOutcome,
+                        error: ackError,
+                        maxAttempts: MANUAL_RUN_MAX_ATTEMPTS,
+                    })
+                } catch (error) {
+                    const message = error instanceof Error ? error.message : String(error)
+                    logger.error("Failed to ack manual run request claim", {
+                        strategyId: request.strategyId,
+                        app,
+                        requestId: request._id,
+                        workerId: MANUAL_RUN_WORKER_ID,
+                        outcome: ackOutcome,
+                        error: message,
+                    })
                 }
             }
         }

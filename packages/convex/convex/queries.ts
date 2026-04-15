@@ -43,5 +43,6 @@ export {
     getSystemState,
     getAppHealth,
     getManualRunRequests,
+    getControlPlaneMetrics,
     getFullResetAudit,
 } from "./lib/queries/system"

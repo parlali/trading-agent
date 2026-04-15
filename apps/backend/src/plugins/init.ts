@@ -7,12 +7,14 @@ import {
     setResolvedSecrets,
     syncStrategies,
 } from "../state"
+import type { App } from "@valiq-trading/core"
 import {
     validateVenueEnvironments,
     type EnvironmentValidationDependencies,
 } from "../environment-validation"
 import { getRequiredVenueApps } from "../required-apps"
 import type { VenueApp } from "../types"
+import { writeHeartbeatSnapshot } from "../health-write"
 
 export async function resolveAllSecrets(): Promise<void> {
     logger.info("Resolving secrets from Convex environment variables")
@@ -59,7 +61,15 @@ const defaultValidationDependencies: EnvironmentValidationDependencies = {
     },
     healthState,
     logger,
-    reportHeartbeat: backend.reportHeartbeat.bind(backend),
+    reportHeartbeat: async (app, status, metadata) => {
+        await writeHeartbeatSnapshot({
+            app: app as App,
+            status,
+            metadata: metadata ?? {
+                source: "environment_validation",
+            },
+        })
+    },
 }
 
 export async function validateAllEnvironments(

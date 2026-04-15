@@ -10,16 +10,17 @@ import {
     syncStrategies,
 } from "./state"
 import { getRequiredVenueApps } from "./required-apps"
+import { writeHeartbeatLiveness } from "./health-write"
 
 export function startHeartbeat(): void {
     setHeartbeatTimer(setInterval(async () => {
         try {
-            await backend.reportHeartbeat(APP_NAME, healthState.ready ? "healthy" : "unhealthy", {
-                strategyCount: healthState.strategyCount,
-                venues: healthState.venues,
-                lastRunAt: healthState.lastRunAt,
-                lastRunStatus: healthState.lastRunStatus,
-                uptime: Date.now() - healthState.startedAt,
+            await writeHeartbeatLiveness({
+                app: APP_NAME,
+                status: healthState.ready ? "healthy" : "unhealthy",
+                metadata: {
+                    source: "periodic",
+                },
             })
 
             const requiredApps = getRequiredVenueApps(
@@ -33,15 +34,12 @@ export function startHeartbeat(): void {
                 const status = venueState?.providerStatus === "healthy" && venueState?.validated
                     ? "healthy"
                     : "degraded"
-                await backend.reportHeartbeat(app, status, {
-                    source: "periodic",
-                    lastSyncAt: venueState?.lastSyncAt,
-                    lastVerifiedAt: venueState?.lastVerifiedAt,
-                    stale: venueState?.stale,
-                    driftDetected: venueState?.driftDetected,
-                    positionCount: venueState?.positionCount,
-                    pendingOrderCount: venueState?.pendingOrderCount,
-                    error: venueState?.lastSyncError ?? venueState?.error,
+                await writeHeartbeatLiveness({
+                    app,
+                    status,
+                    metadata: {
+                        source: "periodic",
+                    },
                 })
             }
         } catch (error) {

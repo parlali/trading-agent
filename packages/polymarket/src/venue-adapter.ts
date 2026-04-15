@@ -28,6 +28,9 @@ export interface PolymarketMarketPrice {
     spread: number
     executablePrice?: number
     executableSide?: "buy" | "sell"
+    liquidityWarning?: boolean
+    minimumOrderSize?: number
+    lastTradePrice?: number
 }
 
 export interface PolymarketMarketSearchResult {
@@ -56,7 +59,7 @@ export interface PolymarketMarketSearchResult {
 
 export const POLYMARKET_SEARCH_MARKETS_MAX_LIVE_PRICE_TOKENS = 4
 export const POLYMARKET_SEARCH_MARKETS_LIVE_PRICE_REQUEST_BUDGET =
-    POLYMARKET_SEARCH_MARKETS_MAX_LIVE_PRICE_TOKENS * 2
+    POLYMARKET_SEARCH_MARKETS_MAX_LIVE_PRICE_TOKENS
 
 interface PolymarketSearchMarketsLivePriceBudget {
     remainingTokens: number
@@ -80,20 +83,64 @@ export class PolymarketVenueAdapter implements VenueAdapter, PriceVerifier, DryR
         tokenId: string,
         side?: "buy" | "sell"
     ): Promise<PolymarketMarketPrice> {
-        const [midpoint, spread, executablePrice] = await Promise.all([
-            this.client.getMidpoint(tokenId),
-            this.client.getSpread(tokenId),
-            side ? this.client.getPrice(tokenId, side) : Promise.resolve(undefined),
-        ])
+        const orderBook = await this.client.getOrderBook(tokenId)
+        const minimumOrderSize = parseOptionalNumber(orderBook.min_order_size)
+        const minimumVisibleSize = minimumOrderSize !== undefined && minimumOrderSize > 0
+            ? minimumOrderSize
+            : 0
+        const lastTradePrice = parseOptionalNumber(orderBook.last_trade_price)
+
+        const sizedBid = selectTopOfBookLevel(orderBook.bids, "bid", minimumVisibleSize)
+        const sizedAsk = selectTopOfBookLevel(orderBook.asks, "ask", minimumVisibleSize)
+        const rawBid = selectTopOfBookLevel(orderBook.bids, "bid", 0)
+        const rawAsk = selectTopOfBookLevel(orderBook.asks, "ask", 0)
+        const liquidityWarning = sizedBid === undefined || sizedAsk === undefined
+
+        let bestBid = sizedBid?.price ?? rawBid?.price
+        let bestAsk = sizedAsk?.price ?? rawAsk?.price
+
+        if ((bestBid === undefined || bestAsk === undefined) && lastTradePrice !== undefined) {
+            bestBid = bestBid ?? lastTradePrice
+            bestAsk = bestAsk ?? lastTradePrice
+        }
+
+        if (bestBid === undefined || bestAsk === undefined) {
+            throw createExecutionError(
+                "venue",
+                `Polymarket order book returned no usable top-of-book levels for token ${tokenId}`,
+                {
+                    code: "EMPTY_ORDER_BOOK",
+                    retryable: false,
+                    details: {
+                        tokenId,
+                        minimumOrderSize,
+                        bidLevels: orderBook.bids.length,
+                        askLevels: orderBook.asks.length,
+                        hasLastTradePrice: lastTradePrice !== undefined,
+                    },
+                }
+            )
+        }
+
+        const midpoint = (bestBid + bestAsk) / 2
+        const spread = Math.max(bestAsk - bestBid, 0)
+        const executablePrice = side === "buy"
+            ? bestAsk
+            : side === "sell"
+                ? bestBid
+                : undefined
 
         return {
             tokenId,
             midpoint,
-            bestBid: spread.bid,
-            bestAsk: spread.ask,
-            spread: spread.spread,
+            bestBid,
+            bestAsk,
+            spread,
             executablePrice,
             executableSide: side,
+            liquidityWarning,
+            minimumOrderSize,
+            lastTradePrice,
         }
     }
 
@@ -587,7 +634,7 @@ export class PolymarketVenueAdapter implements VenueAdapter, PriceVerifier, DryR
 
         return {
             remainingTokens: boundedTokenLimit,
-            remainingRequests: boundedTokenLimit * 2,
+            remainingRequests: boundedTokenLimit,
         }
     }
 
@@ -604,12 +651,12 @@ export class PolymarketVenueAdapter implements VenueAdapter, PriceVerifier, DryR
             return cached
         }
 
-        if (livePriceBudget.remainingTokens <= 0 || livePriceBudget.remainingRequests < 2) {
+        if (livePriceBudget.remainingTokens <= 0 || livePriceBudget.remainingRequests < 1) {
             return undefined
         }
 
         livePriceBudget.remainingTokens -= 1
-        livePriceBudget.remainingRequests -= 2
+        livePriceBudget.remainingRequests -= 1
 
         try {
             return await this.getCachedMarketPrice(tokenId)
@@ -755,6 +802,43 @@ function dedupeAndRankMarkets(markets: PolymarketMarket[]): PolymarketMarket[] {
 
     return Array.from(byConditionId.values())
         .sort((left, right) => (right.liquidity ?? 0) - (left.liquidity ?? 0))
+}
+
+function parseOptionalNumber(value: unknown): number | undefined {
+    if (typeof value === "number" && Number.isFinite(value)) {
+        return value
+    }
+
+    if (typeof value === "string" && value.trim().length > 0) {
+        const parsed = Number(value)
+        if (Number.isFinite(parsed)) {
+            return parsed
+        }
+    }
+
+    return undefined
+}
+
+function selectTopOfBookLevel(
+    levels: Array<{ price: string; size: string }>,
+    side: "bid" | "ask",
+    minimumSize: number
+): { price: number; size: number } | undefined {
+    const valid = levels
+        .map((level) => ({
+            price: Number(level.price),
+            size: Number(level.size),
+        }))
+        .filter((level) => Number.isFinite(level.price) && Number.isFinite(level.size) && level.size > 0)
+        .filter((level) => level.size >= minimumSize)
+
+    if (valid.length === 0) {
+        return undefined
+    }
+
+    return side === "bid"
+        ? valid.reduce((best, level) => (level.price > best.price ? level : best), valid[0]!)
+        : valid.reduce((best, level) => (level.price < best.price ? level : best), valid[0]!)
 }
 
 function readNonEmptyString(value: unknown): string | undefined {

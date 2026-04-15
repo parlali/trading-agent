@@ -125,6 +125,55 @@ describe("AlpacaOptionsVenueAdapter", () => {
         })
     })
 
+    it("excludes terminal transition statuses from working orders", async () => {
+        const client = createClientMock()
+        client.getOpenOrders.mockResolvedValueOnce([
+            {
+                id: "order-pending-cancel",
+                order_class: "mleg",
+                side: "sell",
+                status: "pending_cancel",
+                qty: "1",
+                filled_qty: "0",
+                limit_price: "-1.10",
+                submitted_at: "2026-04-10T10:00:00Z",
+                updated_at: "2026-04-10T10:00:01Z",
+                legs: [],
+            },
+            {
+                id: "order-cancelled",
+                order_class: "mleg",
+                side: "sell",
+                status: "cancelled",
+                qty: "1",
+                filled_qty: "0",
+                limit_price: "-1.10",
+                submitted_at: "2026-04-10T10:00:00Z",
+                updated_at: "2026-04-10T10:00:01Z",
+                legs: [],
+            },
+            {
+                id: "order-live",
+                order_class: "mleg",
+                side: "sell",
+                status: "new",
+                qty: "1",
+                filled_qty: "0",
+                limit_price: "-1.10",
+                submitted_at: "2026-04-10T10:00:00Z",
+                updated_at: "2026-04-10T10:00:01Z",
+                legs: [],
+            },
+        ])
+
+        const adapter = new AlpacaOptionsVenueAdapter(client as never)
+        const orders = await adapter.getWorkingOrders()
+
+        expect(orders).toHaveLength(1)
+        expect(orders[0]?.orderId).toBe("order-live")
+        expect(orders[0]?.status).toBe("pending")
+    })
+
     it("decomposes same-expiry provider legs into multi-leg structures", async () => {
         const client = createClientMock()
         const adapter = new AlpacaOptionsVenueAdapter(client as never)

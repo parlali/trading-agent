@@ -92,6 +92,20 @@ export interface ManualRunRequest {
     strategyId: Id<"strategies">
     app: Exclude<App, "backend">
     requestedAt: number
+    claimedBy?: string
+    leaseExpiresAt?: number
+    attemptCount: number
+    lastError?: string
+    terminalAt?: number
+}
+
+export interface ClaimedManualRunRequest {
+    _id: Id<"manual_run_requests">
+    strategyId: Id<"strategies">
+    app: Exclude<App, "backend">
+    requestedAt: number
+    attemptCount: number
+    leaseExpiresAt: number
 }
 
 export interface CascadeDeleteCounts {
@@ -124,6 +138,15 @@ export interface DeleteAllStrategiesResult extends CascadeDeleteCounts {
 }
 
 export interface FullResetAudit extends DeleteAllStrategiesResult {}
+
+export interface ControlPlaneMetricRow {
+    _id: Id<"control_plane_metrics">
+    _creationTime: number
+    metric: string
+    app?: App
+    value: number
+    updatedAt: number
+}
 
 export interface DeleteOrphanedStrategyHistoryBatchResult extends CascadeDeleteCounts {
     hasMore: boolean
@@ -236,9 +259,27 @@ export interface TradingBackendClient extends TradeEventLoggerMethods {
         toolOutput?: string
     ): Promise<void>
     resolveSecrets(keys: string[]): Promise<Record<string, string | null>>
+    reportHeartbeatLiveness(
+        app: App,
+        status: "healthy" | "degraded" | "unhealthy",
+        metadata?: Record<string, unknown>
+    ): Promise<void>
+    reportHeartbeatSnapshot(args: {
+        app: App
+        status: "healthy" | "degraded" | "unhealthy"
+        metadata: Record<string, unknown>
+        force?: boolean
+    }): Promise<{
+        written: boolean
+        suppressed: boolean
+        metadataHash: string
+        lastSnapshotAt: number
+        suppressedWrites: number
+    }>
     reportHeartbeat(app: App, status: "healthy" | "degraded" | "unhealthy", metadata?: Record<string, unknown>): Promise<void>
     snapshotAccountState(app: App, venue: string, state: AccountState): Promise<void>
     getSystemState(): Promise<KillSwitchState>
+    getControlPlaneMetrics(): Promise<ControlPlaneMetricRow[]>
     getPortfolioFreshness(app?: Exclude<App, "backend">): Promise<PortfolioFreshnessRow[]>
     getPortfolioPositions(app?: Exclude<App, "backend">, strategyId?: Id<"strategies">): Promise<ProviderPositionRow[]>
     getPortfolioPendingOrders(app?: Exclude<App, "backend">, strategyId?: Id<"strategies">): Promise<ProviderPendingOrderRow[]>
@@ -248,6 +289,27 @@ export interface TradingBackendClient extends TradeEventLoggerMethods {
         instruments: string[]
     ): Promise<AdoptProviderPositionsResult>
     getManualRunRequests(app: Exclude<App, "backend">): Promise<ManualRunRequest[]>
+    claimManualRunRequests(args: {
+        app: Exclude<App, "backend">
+        workerId: string
+        leaseMs?: number
+        maxClaims?: number
+        maxAttempts?: number
+    }): Promise<{
+        app: Exclude<App, "backend">
+        claimed: ClaimedManualRunRequest[]
+        contentionCount: number
+        terminalizedCount: number
+        maxAttempts: number
+        leaseMs: number
+    }>
+    ackManualRunRequest(args: {
+        requestId: Id<"manual_run_requests">
+        workerId: string
+        outcome: "completed" | "requeue" | "retryable_failure" | "terminal_failure"
+        error?: string
+        maxAttempts?: number
+    }): Promise<{ status: "missing" | "already_terminal" | "completed" | "requeue" | "retryable_failure" | "terminal_failure" }>
     clearManualRunRequest(requestId: Id<"manual_run_requests">): Promise<void>
     createAlert(args: { strategyId?: string; app?: App; severity: "critical" | "warning" | "info"; message: string }): Promise<void>
     triggerManualRun(strategyId: Id<"strategies">): Promise<Id<"manual_run_requests">>
@@ -589,6 +651,50 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
                 } as never)
             )
         },
+        async reportHeartbeatLiveness(
+            app: App,
+            status: "healthy" | "degraded" | "unhealthy",
+            metadata?: Record<string, unknown>
+        ): Promise<void> {
+            await runWithTimeout(
+                "Convex mutation reportHeartbeatLiveness",
+                async () => await client.mutation(api.mutations.reportHeartbeatLiveness, {
+                    ...requireMachineAuth(),
+                    app,
+                    status,
+                    metadata,
+                } as never)
+            )
+        },
+        async reportHeartbeatSnapshot(args: {
+            app: App
+            status: "healthy" | "degraded" | "unhealthy"
+            metadata: Record<string, unknown>
+            force?: boolean
+        }): Promise<{
+            written: boolean
+            suppressed: boolean
+            metadataHash: string
+            lastSnapshotAt: number
+            suppressedWrites: number
+        }> {
+            return await runWithTimeout(
+                "Convex mutation reportHeartbeatSnapshot",
+                async () => await client.mutation(api.mutations.reportHeartbeatSnapshot, {
+                    ...requireMachineAuth(),
+                    app: args.app,
+                    status: args.status,
+                    metadata: args.metadata,
+                    force: args.force,
+                } as never) as {
+                    written: boolean
+                    suppressed: boolean
+                    metadataHash: string
+                    lastSnapshotAt: number
+                    suppressedWrites: number
+                }
+            )
+        },
         async snapshotAccountState(app: App, venue: string, state: AccountState): Promise<void> {
             await runWithTimeout(
                 "Convex mutation snapshotAccountState",
@@ -610,6 +716,12 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
             return await runWithTimeout(
                 "Convex query getSystemState",
                 async () => await client.query(api.queries.getSystemState, { ...requireMachineAuth() }) as KillSwitchState
+            )
+        },
+        async getControlPlaneMetrics(): Promise<ControlPlaneMetricRow[]> {
+            return await runWithTimeout(
+                "Convex query getControlPlaneMetrics",
+                async () => await client.query(api.queries.getControlPlaneMetrics, { ...requireMachineAuth() } as never) as ControlPlaneMetricRow[]
             )
         },
         async getPortfolioFreshness(app?: Exclude<App, "backend">): Promise<PortfolioFreshnessRow[]> {
@@ -666,6 +778,58 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
             return await runWithTimeout(
                 "Convex query getManualRunRequests",
                 async () => await client.query(api.queries.getManualRunRequests, { ...requireMachineAuth(), app } as never) as ManualRunRequest[]
+            )
+        },
+        async claimManualRunRequests(args: {
+            app: Exclude<App, "backend">
+            workerId: string
+            leaseMs?: number
+            maxClaims?: number
+            maxAttempts?: number
+        }): Promise<{
+            app: Exclude<App, "backend">
+            claimed: ClaimedManualRunRequest[]
+            contentionCount: number
+            terminalizedCount: number
+            maxAttempts: number
+            leaseMs: number
+        }> {
+            return await runWithTimeout(
+                "Convex mutation claimManualRunRequests",
+                async () => await client.mutation(api.mutations.claimManualRunRequests, {
+                    ...requireMachineAuth(),
+                    app: args.app,
+                    workerId: args.workerId,
+                    leaseMs: args.leaseMs,
+                    maxClaims: args.maxClaims,
+                    maxAttempts: args.maxAttempts,
+                } as never) as {
+                    app: Exclude<App, "backend">
+                    claimed: ClaimedManualRunRequest[]
+                    contentionCount: number
+                    terminalizedCount: number
+                    maxAttempts: number
+                    leaseMs: number
+                }
+            )
+        },
+        async ackManualRunRequest(args: {
+            requestId: Id<"manual_run_requests">
+            workerId: string
+            outcome: "completed" | "requeue" | "retryable_failure" | "terminal_failure"
+            error?: string
+            maxAttempts?: number
+        }): Promise<{ status: "missing" | "already_terminal" | "completed" | "requeue" | "retryable_failure" | "terminal_failure" }> {
+            return await runWithTimeout(
+                "Convex mutation ackManualRunRequest",
+                async () => await client.mutation(api.mutations.ackManualRunRequest, {
+                    ...requireMachineAuth(),
+                    requestId: args.requestId,
+                    workerId: args.workerId,
+                    outcome: args.outcome,
+                    error: args.error,
+                    maxAttempts: args.maxAttempts,
+                } as never) as { status: "missing" | "already_terminal" | "completed" | "requeue" | "retryable_failure" | "terminal_failure" }
             )
         },
         async clearManualRunRequest(requestId: Id<"manual_run_requests">): Promise<void> {

@@ -103,6 +103,10 @@ export interface PolymarketOrderBook {
     asks: Array<{ price: string; size: string }>
     hash: string
     timestamp: string
+    min_order_size?: string
+    tick_size?: string
+    neg_risk?: boolean
+    last_trade_price?: string
 }
 
 export interface PostOrderResponse {

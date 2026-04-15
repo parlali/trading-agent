@@ -51,7 +51,8 @@ export default defineSchema({
         callbackFiresAt: v.optional(v.number()),
     })
         .index("by_strategy", ["strategyId"])
-        .index("by_strategy_status", ["strategyId", "status"]),
+        .index("by_strategy_status", ["strategyId", "status"])
+        .index("by_status_started_at", ["status", "startedAt"]),
 
     agent_logs: defineTable({
         runId: v.id("strategy_runs"),
@@ -166,6 +167,8 @@ export default defineSchema({
         app: venueAppV,
         syncedAt: v.number(),
         positionCount: v.number(),
+        snapshotHash: v.optional(v.string()),
+        decision: v.optional(v.string()),
     })
         .index("by_strategy_synced_at", ["strategyId", "syncedAt"])
         .index("by_app", ["app"]),
@@ -205,6 +208,42 @@ export default defineSchema({
         metadata: v.optional(v.any()),
     }).index("by_app", ["app"]),
 
+    app_heartbeat_liveness: defineTable({
+        app: appV,
+        status: v.union(
+            v.literal("healthy"),
+            v.literal("degraded"),
+            v.literal("unhealthy")
+        ),
+        lastHeartbeat: v.number(),
+        metadata: v.optional(v.any()),
+        updatedAt: v.number(),
+    }).index("by_app", ["app"]),
+
+    app_heartbeat_snapshots: defineTable({
+        app: appV,
+        status: v.union(
+            v.literal("healthy"),
+            v.literal("degraded"),
+            v.literal("unhealthy")
+        ),
+        metadata: v.optional(v.any()),
+        metadataHash: v.string(),
+        lastSnapshotAt: v.number(),
+        lastChangedAt: v.number(),
+        suppressedWrites: v.number(),
+        updatedAt: v.number(),
+    }).index("by_app", ["app"]),
+
+    control_plane_metrics: defineTable({
+        metric: v.string(),
+        app: v.optional(appV),
+        value: v.number(),
+        updatedAt: v.number(),
+    })
+        .index("by_metric", ["metric"])
+        .index("by_metric_app", ["metric", "app"]),
+
     account_snapshots: defineTable({
         app: appV,
         venue: v.string(),
@@ -230,6 +269,11 @@ export default defineSchema({
         driftDetected: v.boolean(),
         lastError: v.optional(v.string()),
         lastDriftSummary: v.optional(v.string()),
+        lastAccountSnapshotHash: v.optional(v.string()),
+        lastAccountSnapshotDecision: v.optional(v.string()),
+        lastPositionSnapshotHash: v.optional(v.string()),
+        lastPositionSnapshotDecision: v.optional(v.string()),
+        lastReconciliationWriteStats: v.optional(v.any()),
         positionCount: v.number(),
         pendingOrderCount: v.number(),
         updatedAt: v.number(),
@@ -284,7 +328,15 @@ export default defineSchema({
         strategyId: v.id("strategies"),
         app: venueAppV,
         requestedAt: v.number(),
+        claimedBy: v.optional(v.string()),
+        leaseExpiresAt: v.optional(v.number()),
+        attemptCount: v.number(),
+        lastError: v.optional(v.string()),
+        terminalAt: v.optional(v.number()),
     })
         .index("by_app", ["app"])
-        .index("by_strategy", ["strategyId"]),
+        .index("by_strategy", ["strategyId"])
+        .index("by_app_terminal_requested_at", ["app", "terminalAt", "requestedAt"])
+        .index("by_strategy_terminal", ["strategyId", "terminalAt"])
+        .index("by_app_lease_expires_at", ["app", "leaseExpiresAt"]),
 })

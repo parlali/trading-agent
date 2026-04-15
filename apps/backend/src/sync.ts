@@ -18,6 +18,7 @@ import {
 import { getRequiredVenueApps } from "./required-apps"
 import { resolveAllSecrets, validateAllEnvironments } from "./plugins/init"
 import { reconcileProviderPortfolio, getProviderSyncConfig, recordProviderSyncFailure } from "./provider-sync"
+import { writeHeartbeatSnapshot } from "./health-write"
 import {
     registerStrategyWithScheduler,
     resolveStrategyRuntimeState,
@@ -52,14 +53,18 @@ export async function performStartupSync(): Promise<void> {
                 venue,
             })
 
-            await backend.reportHeartbeat(app, result.driftDetected ? "degraded" : "healthy", {
-                source: "startup_sync",
-                positionCount: result.positions.length,
-                pendingOrderCount: result.workingOrders.length,
-                balance: result.accountState.balance,
-                equity: result.accountState.equity,
-                driftDetected: result.driftDetected,
-                driftSummary: result.driftSummary,
+            await writeHeartbeatSnapshot({
+                app,
+                status: result.driftDetected ? "degraded" : "healthy",
+                metadata: {
+                    source: "startup_sync",
+                    positionCount: result.positions.length,
+                    pendingOrderCount: result.workingOrders.length,
+                    balance: result.accountState.balance,
+                    equity: result.accountState.equity,
+                    driftDetected: result.driftDetected,
+                    driftSummary: result.driftSummary,
+                },
             })
 
             logger.info("Startup provider sync completed", {
@@ -79,10 +84,14 @@ export async function performStartupSync(): Promise<void> {
 
             await recordProviderSyncFailure(app, message)
 
-            await backend.reportHeartbeat(app, "degraded", {
+            await writeHeartbeatSnapshot({
                 app,
-                error: message,
-                source: "startup_sync",
+                status: "degraded",
+                metadata: {
+                    app,
+                    error: message,
+                    source: "startup_sync",
+                },
             })
         }
     }
@@ -224,14 +233,18 @@ export async function performPeriodicSync(): Promise<void> {
                 venue,
             })
 
-            await backend.reportHeartbeat(app, result.driftDetected ? "degraded" : "healthy", {
-                source: "periodic_sync",
-                positionCount: result.positions.length,
-                pendingOrderCount: result.workingOrders.length,
-                balance: result.accountState.balance,
-                equity: result.accountState.equity,
-                driftDetected: result.driftDetected,
-                driftSummary: result.driftSummary,
+            await writeHeartbeatSnapshot({
+                app,
+                status: result.driftDetected ? "degraded" : "healthy",
+                metadata: {
+                    source: "periodic_sync",
+                    positionCount: result.positions.length,
+                    pendingOrderCount: result.workingOrders.length,
+                    balance: result.accountState.balance,
+                    equity: result.accountState.equity,
+                    driftDetected: result.driftDetected,
+                    driftSummary: result.driftSummary,
+                },
             })
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error)
@@ -242,9 +255,13 @@ export async function performPeriodicSync(): Promise<void> {
 
             await recordProviderSyncFailure(app, message)
 
-            await backend.reportHeartbeat(app, "degraded", {
-                error: message,
-                source: "periodic_sync",
+            await writeHeartbeatSnapshot({
+                app,
+                status: "degraded",
+                metadata: {
+                    error: message,
+                    source: "periodic_sync",
+                },
             })
 
             await backend.createAlert({

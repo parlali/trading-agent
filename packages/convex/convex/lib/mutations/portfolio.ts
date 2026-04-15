@@ -17,6 +17,7 @@ import {
     orderStatusV,
     venueAppV,
 } from "../validators"
+import { incrementControlPlaneMetric } from "../controlPlaneMetrics"
 
 const PORTFOLIO_STALE_AFTER_MS = 10 * 60 * 1000
 
@@ -230,20 +231,7 @@ export const reconcileProviderPortfolio = mutation({
             }
         }
 
-        await ctx.db.insert("account_snapshots", {
-            app: args.app,
-            venue: args.venue,
-            balance: args.accountState.balance,
-            equity: args.accountState.equity,
-            buyingPower: args.accountState.buyingPower,
-            marginUsed: args.accountState.marginUsed,
-            marginAvailable: args.accountState.marginAvailable,
-            openPnl: args.accountState.openPnl,
-            dayPnl: args.accountState.dayPnl,
-            timestamp: now,
-        })
-
-        await replaceProviderRows(ctx, "provider_positions", args.app, resolvedPositions.map((position) => ({
+        const nextProviderPositions = resolvedPositions.map((position) => ({
             app: args.app,
             positionKey: position.positionKey,
             strategyId: position.strategyId,
@@ -258,9 +246,9 @@ export const reconcileProviderPortfolio = mutation({
             takeProfit: position.takeProfit,
             metadata: position.metadata,
             syncedAt: now,
-        })))
+        }))
 
-        await replaceProviderRows(ctx, "provider_working_orders", args.app, resolvedWorkingOrders.map((order) => ({
+        const nextProviderWorkingOrders = resolvedWorkingOrders.map((order) => ({
             app: args.app,
             orderId: order.orderId,
             strategyId: order.strategyId,
@@ -281,13 +269,97 @@ export const reconcileProviderPortfolio = mutation({
             submittedAt: order.submittedAt,
             updatedAt: order.updatedAt,
             syncedAt: now,
-        })))
+        }))
 
-        await writeStrategyPositionSnapshots(ctx, {
+        const accountSnapshotHash = computeHash({
+            venue: args.venue,
+            accountState: args.accountState,
+        })
+        const shouldWriteAccountSnapshot = previousState?.lastAccountSnapshotHash !== accountSnapshotHash
+        const accountSnapshotDecision = shouldWriteAccountSnapshot
+            ? "written:account_state_changed"
+            : "skipped:account_state_unchanged"
+
+        if (shouldWriteAccountSnapshot) {
+            await ctx.db.insert("account_snapshots", {
+                app: args.app,
+                venue: args.venue,
+                balance: args.accountState.balance,
+                equity: args.accountState.equity,
+                buyingPower: args.accountState.buyingPower,
+                marginUsed: args.accountState.marginUsed,
+                marginAvailable: args.accountState.marginAvailable,
+                openPnl: args.accountState.openPnl,
+                dayPnl: args.accountState.dayPnl,
+                timestamp: now,
+            })
+        }
+
+        const providerPositionWriteStats = await upsertProviderPositionRows(ctx, args.app, nextProviderPositions)
+        const providerWorkingOrderWriteStats = await upsertProviderWorkingOrderRows(ctx, args.app, nextProviderWorkingOrders)
+
+        const positionSnapshotResult = await writeStrategyPositionSnapshots(ctx, {
             app: args.app,
             strategies,
             positions: resolvedPositions,
             syncedAt: now,
+        })
+        const positionSnapshotHash = computeHash(positionSnapshotResult.hashInput)
+        const positionSnapshotDecision = positionSnapshotResult.decision
+
+        await incrementControlPlaneMetric(ctx, {
+            metric: shouldWriteAccountSnapshot ? "reconcile_provider_portfolio.account_snapshot_written" : "reconcile_provider_portfolio.account_snapshot_suppressed",
+            app: args.app,
+        })
+        await incrementControlPlaneMetric(ctx, {
+            metric: "reconcile_provider_portfolio.provider_positions_inserted",
+            app: args.app,
+            delta: providerPositionWriteStats.inserted,
+        })
+        await incrementControlPlaneMetric(ctx, {
+            metric: "reconcile_provider_portfolio.provider_positions_patched",
+            app: args.app,
+            delta: providerPositionWriteStats.patched,
+        })
+        await incrementControlPlaneMetric(ctx, {
+            metric: "reconcile_provider_portfolio.provider_positions_deleted",
+            app: args.app,
+            delta: providerPositionWriteStats.deleted,
+        })
+        await incrementControlPlaneMetric(ctx, {
+            metric: "reconcile_provider_portfolio.provider_positions_unchanged",
+            app: args.app,
+            delta: providerPositionWriteStats.unchanged,
+        })
+        await incrementControlPlaneMetric(ctx, {
+            metric: "reconcile_provider_portfolio.provider_orders_inserted",
+            app: args.app,
+            delta: providerWorkingOrderWriteStats.inserted,
+        })
+        await incrementControlPlaneMetric(ctx, {
+            metric: "reconcile_provider_portfolio.provider_orders_patched",
+            app: args.app,
+            delta: providerWorkingOrderWriteStats.patched,
+        })
+        await incrementControlPlaneMetric(ctx, {
+            metric: "reconcile_provider_portfolio.provider_orders_deleted",
+            app: args.app,
+            delta: providerWorkingOrderWriteStats.deleted,
+        })
+        await incrementControlPlaneMetric(ctx, {
+            metric: "reconcile_provider_portfolio.provider_orders_unchanged",
+            app: args.app,
+            delta: providerWorkingOrderWriteStats.unchanged,
+        })
+        await incrementControlPlaneMetric(ctx, {
+            metric: "reconcile_provider_portfolio.strategy_snapshots_written",
+            app: args.app,
+            delta: positionSnapshotResult.stats.written,
+        })
+        await incrementControlPlaneMetric(ctx, {
+            metric: "reconcile_provider_portfolio.strategy_snapshots_skipped",
+            app: args.app,
+            delta: positionSnapshotResult.stats.skipped,
         })
 
         const unownedPositions = resolvedPositions.filter((position) => position.ownershipStatus !== "owned")
@@ -322,6 +394,16 @@ export const reconcileProviderPortfolio = mutation({
                 driftDetected,
                 lastError: undefined,
                 lastDriftSummary: driftSummary,
+                lastAccountSnapshotHash: accountSnapshotHash,
+                lastAccountSnapshotDecision: accountSnapshotDecision,
+                lastPositionSnapshotHash: positionSnapshotHash,
+                lastPositionSnapshotDecision: positionSnapshotDecision,
+                lastReconciliationWriteStats: {
+                    accountSnapshotWritten: shouldWriteAccountSnapshot,
+                    providerPositions: providerPositionWriteStats,
+                    providerWorkingOrders: providerWorkingOrderWriteStats,
+                    strategySnapshots: positionSnapshotResult.stats,
+                },
                 positionCount: resolvedPositions.length,
                 pendingOrderCount: resolvedWorkingOrders.length,
                 updatedAt: now,
@@ -337,6 +419,16 @@ export const reconcileProviderPortfolio = mutation({
                 driftDetected,
                 lastError: undefined,
                 lastDriftSummary: driftSummary,
+                lastAccountSnapshotHash: accountSnapshotHash,
+                lastAccountSnapshotDecision: accountSnapshotDecision,
+                lastPositionSnapshotHash: positionSnapshotHash,
+                lastPositionSnapshotDecision: positionSnapshotDecision,
+                lastReconciliationWriteStats: {
+                    accountSnapshotWritten: shouldWriteAccountSnapshot,
+                    providerPositions: providerPositionWriteStats,
+                    providerWorkingOrders: providerWorkingOrderWriteStats,
+                    strategySnapshots: positionSnapshotResult.stats,
+                },
                 positionCount: resolvedPositions.length,
                 pendingOrderCount: resolvedWorkingOrders.length,
                 updatedAt: now,
@@ -763,33 +855,168 @@ function inferClosedOrderStatus(
     return "cancelled"
 }
 
-async function replaceProviderRows(
+async function upsertProviderPositionRows(
     ctx: PortfolioMutationCtx,
-    table: "provider_positions" | "provider_working_orders",
     app: Doc<"strategies">["app"],
-    rows: Array<Record<string, unknown>>
-): Promise<void> {
-    const existing = table === "provider_positions"
-        ? await ctx.db
-            .query("provider_positions")
-            .withIndex("by_app", (q) => q.eq("app", app))
-            .collect()
-        : await ctx.db
-            .query("provider_working_orders")
-            .withIndex("by_app", (q) => q.eq("app", app))
-            .collect()
+    rows: Array<Omit<Doc<"provider_positions">, "_id" | "_creationTime">>
+): Promise<{ inserted: number; patched: number; deleted: number; unchanged: number }> {
+    const existing = await ctx.db
+        .query("provider_positions")
+        .withIndex("by_app", (q) => q.eq("app", app))
+        .collect()
 
-    for (const row of existing) {
-        await ctx.db.delete(row._id)
+    const existingByKey = new Map(existing.map((row) => [row.positionKey, row]))
+    const nextKeySet = new Set(rows.map((row) => row.positionKey))
+    const stats = {
+        inserted: 0,
+        patched: 0,
+        deleted: 0,
+        unchanged: 0,
     }
 
     for (const row of rows) {
-        if (table === "provider_positions") {
-            await ctx.db.insert("provider_positions", row as never)
-        } else {
-            await ctx.db.insert("provider_working_orders", row as never)
+        const current = existingByKey.get(row.positionKey)
+        if (!current) {
+            await ctx.db.insert("provider_positions", row)
+            stats.inserted++
+            continue
         }
+
+        const changed = (
+            current.strategyId !== row.strategyId ||
+            current.ownershipStatus !== row.ownershipStatus ||
+            current.instrument !== row.instrument ||
+            current.side !== row.side ||
+            current.quantity !== row.quantity ||
+            current.entryPrice !== row.entryPrice ||
+            current.currentPrice !== row.currentPrice ||
+            current.unrealizedPnl !== row.unrealizedPnl ||
+            current.stopLoss !== row.stopLoss ||
+            current.takeProfit !== row.takeProfit ||
+            current.metadata !== row.metadata ||
+            current.syncedAt !== row.syncedAt
+        )
+
+        if (!changed) {
+            stats.unchanged++
+            continue
+        }
+
+        await ctx.db.patch(current._id, {
+            strategyId: row.strategyId,
+            ownershipStatus: row.ownershipStatus,
+            instrument: row.instrument,
+            side: row.side,
+            quantity: row.quantity,
+            entryPrice: row.entryPrice,
+            currentPrice: row.currentPrice,
+            unrealizedPnl: row.unrealizedPnl,
+            stopLoss: row.stopLoss,
+            takeProfit: row.takeProfit,
+            metadata: row.metadata,
+            syncedAt: row.syncedAt,
+        })
+        stats.patched++
     }
+
+    for (const row of existing) {
+        if (nextKeySet.has(row.positionKey)) {
+            continue
+        }
+
+        await ctx.db.delete(row._id)
+        stats.deleted++
+    }
+
+    return stats
+}
+
+async function upsertProviderWorkingOrderRows(
+    ctx: PortfolioMutationCtx,
+    app: Doc<"strategies">["app"],
+    rows: Array<Omit<Doc<"provider_working_orders">, "_id" | "_creationTime">>
+): Promise<{ inserted: number; patched: number; deleted: number; unchanged: number }> {
+    const existing = await ctx.db
+        .query("provider_working_orders")
+        .withIndex("by_app", (q) => q.eq("app", app))
+        .collect()
+
+    const existingByKey = new Map(existing.map((row) => [row.orderId, row]))
+    const nextKeySet = new Set(rows.map((row) => row.orderId))
+    const stats = {
+        inserted: 0,
+        patched: 0,
+        deleted: 0,
+        unchanged: 0,
+    }
+
+    for (const row of rows) {
+        const current = existingByKey.get(row.orderId)
+        if (!current) {
+            await ctx.db.insert("provider_working_orders", row)
+            stats.inserted++
+            continue
+        }
+
+        const changed = (
+            current.strategyId !== row.strategyId ||
+            current.runId !== row.runId ||
+            current.ownershipStatus !== row.ownershipStatus ||
+            current.venue !== row.venue ||
+            current.instrument !== row.instrument ||
+            current.status !== row.status ||
+            current.action !== row.action ||
+            current.side !== row.side ||
+            current.quantity !== row.quantity ||
+            current.filledQuantity !== row.filledQuantity ||
+            current.remainingQuantity !== row.remainingQuantity ||
+            current.limitPrice !== row.limitPrice ||
+            current.stopPrice !== row.stopPrice ||
+            current.avgFillPrice !== row.avgFillPrice ||
+            current.metadata !== row.metadata ||
+            current.submittedAt !== row.submittedAt ||
+            current.updatedAt !== row.updatedAt ||
+            current.syncedAt !== row.syncedAt
+        )
+
+        if (!changed) {
+            stats.unchanged++
+            continue
+        }
+
+        await ctx.db.patch(current._id, {
+            strategyId: row.strategyId,
+            runId: row.runId,
+            ownershipStatus: row.ownershipStatus,
+            venue: row.venue,
+            instrument: row.instrument,
+            status: row.status,
+            action: row.action,
+            side: row.side,
+            quantity: row.quantity,
+            filledQuantity: row.filledQuantity,
+            remainingQuantity: row.remainingQuantity,
+            limitPrice: row.limitPrice,
+            stopPrice: row.stopPrice,
+            avgFillPrice: row.avgFillPrice,
+            metadata: row.metadata,
+            submittedAt: row.submittedAt,
+            updatedAt: row.updatedAt,
+            syncedAt: row.syncedAt,
+        })
+        stats.patched++
+    }
+
+    for (const row of existing) {
+        if (nextKeySet.has(row.orderId)) {
+            continue
+        }
+
+        await ctx.db.delete(row._id)
+        stats.deleted++
+    }
+
+    return stats
 }
 
 async function writeStrategyPositionSnapshots(
@@ -811,8 +1038,15 @@ async function writeStrategyPositionSnapshots(
         }>
         syncedAt: number
     }
-): Promise<void> {
+): Promise<{
+    decision: string
+    stats: { written: number; skipped: number }
+    hashInput: Array<{ strategyId: string; snapshotHash: string; written: boolean }>
+}> {
     const positionsByStrategy = new Map<string, typeof args.positions>()
+    const hashInput: Array<{ strategyId: string; snapshotHash: string; written: boolean }> = []
+    let written = 0
+    let skipped = 0
 
     for (const position of args.positions) {
         if (!position.strategyId) {
@@ -831,12 +1065,51 @@ async function writeStrategyPositionSnapshots(
         }
 
         const strategyPositions = positionsByStrategy.get(String(strategy._id)) ?? []
+        const snapshotHash = computeHash(
+            strategyPositions
+                .map((position) => ({
+                    instrument: position.instrument,
+                    side: position.side,
+                    quantity: position.quantity,
+                    entryPrice: position.entryPrice,
+                    currentPrice: position.currentPrice,
+                    unrealizedPnl: position.unrealizedPnl,
+                    metadata: position.metadata,
+                }))
+                .sort((left, right) =>
+                    `${left.instrument}:${left.side}`.localeCompare(`${right.instrument}:${right.side}`)
+                )
+        )
+        const latestSync = await ctx.db
+            .query("position_syncs")
+            .withIndex("by_strategy_synced_at", (q) => q.eq("strategyId", strategy._id))
+            .order("desc")
+            .first()
+
+        const unchanged = latestSync?.snapshotHash === snapshotHash
+        if (unchanged) {
+            skipped++
+            hashInput.push({
+                strategyId: String(strategy._id),
+                snapshotHash,
+                written: false,
+            })
+            await replacePositionClaims(ctx, {
+                strategyId: strategy._id,
+                app: args.app,
+                instruments: strategyPositions.map((position) => position.instrument),
+                updatedAt: args.syncedAt,
+            })
+            continue
+        }
 
         await ctx.db.insert("position_syncs", {
             strategyId: strategy._id,
             app: args.app,
             syncedAt: args.syncedAt,
             positionCount: strategyPositions.length,
+            snapshotHash,
+            decision: "written:position_state_changed",
         })
 
         for (const position of strategyPositions) {
@@ -860,6 +1133,26 @@ async function writeStrategyPositionSnapshots(
             instruments: strategyPositions.map((position) => position.instrument),
             updatedAt: args.syncedAt,
         })
+
+        written++
+        hashInput.push({
+            strategyId: String(strategy._id),
+            snapshotHash,
+            written: true,
+        })
+    }
+
+    const decision = written > 0
+        ? `written:${written};skipped:${skipped}`
+        : `skipped_all:${skipped}`
+
+    return {
+        decision,
+        stats: {
+            written,
+            skipped,
+        },
+        hashInput,
     }
 }
 
@@ -928,6 +1221,36 @@ function buildProtectionLevels(
     }
 
     return levels
+}
+
+function computeHash(value: unknown): string {
+    const canonical = JSON.stringify(canonicalize(value))
+    let hash = 0x811c9dc5
+
+    for (let i = 0; i < canonical.length; i++) {
+        hash ^= canonical.charCodeAt(i)
+        hash = Math.imul(hash, 0x01000193)
+    }
+
+    return (hash >>> 0).toString(16).padStart(8, "0")
+}
+
+function canonicalize(value: unknown): unknown {
+    if (Array.isArray(value)) {
+        return value.map((entry) => canonicalize(entry))
+    }
+
+    if (value && typeof value === "object") {
+        const record = value as Record<string, unknown>
+        const keys = Object.keys(record).sort((left, right) => left.localeCompare(right))
+        const normalized: Record<string, unknown> = {}
+        for (const key of keys) {
+            normalized[key] = canonicalize(record[key])
+        }
+        return normalized
+    }
+
+    return value
 }
 
 function parseJson<T>(value: string | undefined): T | undefined {

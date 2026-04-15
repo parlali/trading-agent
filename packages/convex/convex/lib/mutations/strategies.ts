@@ -5,6 +5,7 @@ import { v } from "convex/values"
 import { validateStrategyConfig } from "@valiq-trading/core"
 import { requireUser, requireServiceToken } from "../authGuards"
 import { createEmptyCascadeDeleteCounts, type CascadeDeleteCounts } from "../cascadeDelete"
+import { incrementControlPlaneMetric } from "../controlPlaneMetrics"
 
 const PORTFOLIO_STALE_AFTER_MS = 10 * 60 * 1000
 
@@ -152,6 +153,15 @@ export const deleteStrategyBatch = mutation({
         await assertStrategyDeletionSafe(ctx, strategy)
 
         const batchSize = Math.max(1, Math.min(args.batchSize ?? 20, 50))
+        await incrementControlPlaneMetric(ctx, {
+            metric: "maintenance.delete_strategy_batch.invocation",
+            app: strategy.app,
+        })
+        await incrementControlPlaneMetric(ctx, {
+            metric: "maintenance.delete_strategy_batch.batch_size",
+            app: strategy.app,
+            delta: batchSize,
+        })
         let remainingBudget = batchSize
         let deletedRunRows = 0
 
@@ -176,6 +186,11 @@ export const deleteStrategyBatch = mutation({
         }
 
         if (deletedRunRows > 0) {
+            await incrementControlPlaneMetric(ctx, {
+                metric: "maintenance.delete_strategy_batch.deleted_docs",
+                app: strategy.app,
+                delta: sumDeletedCounts(deleted),
+            })
             return {
                 ...deleted,
                 strategyDeleted: false,
@@ -184,6 +199,11 @@ export const deleteStrategyBatch = mutation({
         }
 
         if (await deleteStrategyTableBatch(ctx, args.strategyId, strategy.app, deleted, batchSize)) {
+            await incrementControlPlaneMetric(ctx, {
+                metric: "maintenance.delete_strategy_batch.deleted_docs",
+                app: strategy.app,
+                delta: sumDeletedCounts(deleted),
+            })
             return {
                 ...deleted,
                 strategyDeleted: false,
@@ -192,6 +212,11 @@ export const deleteStrategyBatch = mutation({
         }
 
         await ctx.db.delete(args.strategyId)
+        await incrementControlPlaneMetric(ctx, {
+            metric: "maintenance.delete_strategy_batch.deleted_docs",
+            app: strategy.app,
+            delta: sumDeletedCounts(deleted) + 1,
+        })
 
         return {
             ...deleted,
@@ -266,6 +291,13 @@ export const deleteOrphanedStrategyHistoryBatch = mutation({
         requireServiceToken(args.serviceToken)
 
         const batchSize = Math.max(1, Math.min(args.batchSize ?? 100, 250))
+        await incrementControlPlaneMetric(ctx, {
+            metric: "maintenance.orphan_cleanup_batch.invocation",
+        })
+        await incrementControlPlaneMetric(ctx, {
+            metric: "maintenance.orphan_cleanup_batch.batch_size",
+            delta: batchSize,
+        })
         const deleted = {
             runs: 0,
             agentLogs: 0,
@@ -374,6 +406,10 @@ export const deleteOrphanedStrategyHistoryBatch = mutation({
         }
 
         if (sumDeletedCounts(deleted) > 0) {
+            await incrementControlPlaneMetric(ctx, {
+                metric: "maintenance.orphan_cleanup_batch.deleted_docs",
+                delta: sumDeletedCounts(deleted),
+            })
             return {
                 ...deleted,
                 hasMore: true,
@@ -587,7 +623,9 @@ export const triggerManualRun = mutation({
 
         const existing = await ctx.db
             .query("manual_run_requests")
-            .withIndex("by_strategy", (q) => q.eq("strategyId", args.strategyId))
+            .withIndex("by_strategy_terminal", (q) =>
+                q.eq("strategyId", args.strategyId).eq("terminalAt", undefined)
+            )
             .first()
 
         if (existing) {
@@ -598,6 +636,7 @@ export const triggerManualRun = mutation({
             strategyId: args.strategyId,
             app: strategy.app,
             requestedAt: Date.now(),
+            attemptCount: 0,
         })
     },
 })
