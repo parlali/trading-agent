@@ -6,7 +6,7 @@ Private trading monorepo. LLM agents execute strategies across multiple venues w
 
 | App | Description | Venue |
 |---|---|---|
-| `apps/backend` | Single TypeScript runtime for all venue strategies | Alpaca, Polymarket, MT5, Binance Futures |
+| `apps/backend` | Single TypeScript runtime for all venue strategies | Alpaca, Polymarket, MT5, OKX perpetual swaps |
 | `apps/mt5-worker` | Lightweight Python worker that exposes MT5 broker operations over HTTP | MetaTrader 5 |
 
 ## Packages
@@ -20,7 +20,7 @@ Private trading monorepo. LLM agents execute strategies across multiple venues w
 | `packages/alpaca-options` | Alpaca venue client, adapter, and risk rules |
 | `packages/polymarket` | Polymarket venue client, adapter, and risk rules |
 | `packages/mt5` | MT5 venue client, adapter, and risk rules |
-| `packages/binance` | Binance Futures client, adapter, and risk rules |
+| `packages/okx` | OKX perpetual swap client, adapter, and risk rules |
 
 ## Setup
 
@@ -41,8 +41,13 @@ Configure these secrets before starting the backend:
 - `BACKEND_SERVICE_TOKEN` in both Convex env vars and the backend runtime
 - `MT5_WORKER_ACCESS_KEY` in both Convex env vars and the MT5 worker runtime
 - `POLYMARKET_PRIVATE_KEY`, `POLYMARKET_API_KEY`, `POLYMARKET_API_SECRET`, `POLYMARKET_API_PASSPHRASE`, and `POLYMARKET_FUNDER_ADDRESS` in Convex env vars for Polymarket
-- `BINANCE_API_KEY` and `BINANCE_API_SECRET` in Convex env vars for Binance Futures
-- `BINANCE_BASE_URL` in Convex env vars only when you want a non-default endpoint (`https://fapi.binance.com` for production, `https://testnet.binancefuture.com` for testnet)
+- `OKX_API_KEY`, `OKX_API_SECRET`, and `OKX_API_PASSPHRASE` in Convex env vars for OKX
+- `OKX_DEMO_TRADING` in Convex env vars and set explicitly to `true` or `false`
+- `OKX_MARGIN_MODE` in Convex env vars and set explicitly to `cross` or `isolated`
+- `OKX_POSITION_MODE` in Convex env vars and set explicitly to `net_mode` or `long_short_mode`
+- `OKX_BASE_URL` in Convex env vars only when you need to override the default official host (`https://www.okx.com`)
+
+Set `OKX_DEMO_TRADING=true` to use OKX demo trading for live-order-path testing without real capital. The runtime sends OKX's `x-simulated-trading: 1` header on authenticated requests in that mode.
 
 Generate machine credentials with a high-entropy random value, for example:
 

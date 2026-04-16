@@ -184,6 +184,7 @@ export default function TestPage() {
     const testMT5 = useAction(api.connectionTests.testMT5Connection)
     const testAlpaca = useAction(api.connectionTests.testAlpacaConnection)
     const testPolymarket = useAction(api.connectionTests.testPolymarketConnection)
+    const testOKX = useAction(api.connectionTests.testOKXConnection)
     const testValiq = useAction(api.connectionTests.testValiqConnection)
 
     const [valiqPrompt, setValiqPrompt] = useState("")
@@ -224,6 +225,13 @@ export default function TestPage() {
                     description="Runtime-aligned signer and funder config, authenticated startup path, account state, positions, and open bets"
                     icon={Coins}
                     onRun={() => testPolymarket()}
+                />
+
+                <TestCard
+                    title={VENUE_META["okx-swap"].label}
+                    description="Runtime-aligned OKX account config, balance, positions, and market data"
+                    icon={TrendingUp}
+                    onRun={() => testOKX()}
                 />
 
                 <TestCard

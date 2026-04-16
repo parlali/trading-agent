@@ -18,7 +18,7 @@ export const getSystemState = query({
                     alpaca_options: false,
                     polymarket: false,
                     mt5: false,
-                    binance_futures: false,
+                    okx_swap: false,
                 },
                 updatedAt: 0,
             }
@@ -47,7 +47,7 @@ export const getManualRunRequests = query({
             v.literal("alpaca-options"),
             v.literal("polymarket"),
             v.literal("mt5"),
-            v.literal("binance-futures")
+            v.literal("okx-swap")
         ),
     },
     handler: async (ctx, args) => {

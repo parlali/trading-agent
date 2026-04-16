@@ -17,10 +17,10 @@
       "dependencies": {
         "@valiq-trading/agent": "workspace:*",
         "@valiq-trading/alpaca-options": "workspace:*",
-        "@valiq-trading/binance": "workspace:*",
         "@valiq-trading/convex": "workspace:*",
         "@valiq-trading/core": "workspace:*",
         "@valiq-trading/mt5": "workspace:*",
+        "@valiq-trading/okx": "workspace:*",
         "@valiq-trading/polymarket": "workspace:*",
         "@valiq-trading/valiq": "workspace:*",
         "viem": "^2.21.0",
@@ -63,22 +63,15 @@
       "version": "1.0.0",
       "dependencies": {
         "@valiq-trading/alpaca-options": "workspace:*",
-        "@valiq-trading/binance": "workspace:*",
         "@valiq-trading/core": "workspace:*",
         "@valiq-trading/mt5": "workspace:*",
+        "@valiq-trading/okx": "workspace:*",
         "@valiq-trading/polymarket": "workspace:*",
         "zod": "^4.3.6",
       },
     },
     "packages/alpaca-options": {
       "name": "@valiq-trading/alpaca-options",
-      "version": "1.0.0",
-      "dependencies": {
-        "@valiq-trading/core": "workspace:*",
-      },
-    },
-    "packages/binance": {
-      "name": "@valiq-trading/binance",
       "version": "1.0.0",
       "dependencies": {
         "@valiq-trading/core": "workspace:*",
@@ -91,9 +84,9 @@
         "@auth/core": "^0.37.0",
         "@convex-dev/auth": "^0.0.91",
         "@valiq-trading/alpaca-options": "workspace:*",
-        "@valiq-trading/binance": "workspace:*",
         "@valiq-trading/core": "workspace:*",
         "@valiq-trading/mt5": "workspace:*",
+        "@valiq-trading/okx": "workspace:*",
         "@valiq-trading/polymarket": "workspace:*",
         "convex": "^1.34.0",
         "lucia": "^3.2.2",
@@ -116,6 +109,13 @@
       "dependencies": {
         "@valiq-trading/core": "workspace:*",
         "date-holidays": "^3.26.12",
+      },
+    },
+    "packages/okx": {
+      "name": "@valiq-trading/okx",
+      "version": "1.0.0",
+      "dependencies": {
+        "@valiq-trading/core": "workspace:*",
       },
     },
     "packages/polymarket": {
@@ -567,13 +567,13 @@
 
     "@valiq-trading/backend": ["@valiq-trading/backend@workspace:apps/backend"],
 
-    "@valiq-trading/binance": ["@valiq-trading/binance@workspace:packages/binance"],
-
     "@valiq-trading/convex": ["@valiq-trading/convex@workspace:packages/convex"],
 
     "@valiq-trading/core": ["@valiq-trading/core@workspace:packages/core"],
 
     "@valiq-trading/mt5": ["@valiq-trading/mt5@workspace:packages/mt5"],
+
+    "@valiq-trading/okx": ["@valiq-trading/okx@workspace:packages/okx"],
 
     "@valiq-trading/polymarket": ["@valiq-trading/polymarket@workspace:packages/polymarket"],
 

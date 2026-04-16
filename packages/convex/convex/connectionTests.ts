@@ -10,11 +10,11 @@ import {
     resolveAlpacaRuntimeConfig,
 } from "@valiq-trading/alpaca-options"
 import {
-    BINANCE_RUNTIME_SECRET_KEYS,
-    BinanceClient,
-    BinanceVenueAdapter,
-    resolveBinanceCredentials,
-} from "@valiq-trading/binance"
+    OKX_RUNTIME_SECRET_KEYS,
+    OKXClient,
+    OKXVenueAdapter,
+    resolveOKXRuntimeConfig,
+} from "@valiq-trading/okx"
 import {
     MT5_RUNTIME_SECRET_KEYS,
     MT5Client,
@@ -389,16 +389,16 @@ export const testPolymarketConnection = action({
     },
 })
 
-export const testBinanceConnection = action({
+export const testOKXConnection = action({
     args: {},
     handler: async (ctx) => {
         await requireUser(ctx)
 
         const steps: StepResult[] = []
-        let credentials: ReturnType<typeof resolveBinanceCredentials>
+        let runtimeConfig: ReturnType<typeof resolveOKXRuntimeConfig>
 
         try {
-            credentials = resolveBinanceCredentials(getSecrets(BINANCE_RUNTIME_SECRET_KEYS))
+            runtimeConfig = resolveOKXRuntimeConfig(getSecrets(OKX_RUNTIME_SECRET_KEYS))
         } catch (error) {
             steps.push({
                 name: "Runtime Config",
@@ -412,16 +412,22 @@ export const testBinanceConnection = action({
             name: "Runtime Config",
             ok: true,
             data: {
-                baseUrl: credentials.baseUrl ?? null,
+                baseUrl: runtimeConfig.credentials.baseUrl ?? null,
+                demoTrading: runtimeConfig.credentials.demoTrading,
+                marginMode: runtimeConfig.marginMode,
+                positionMode: runtimeConfig.positionMode,
             },
         })
 
-        const client = new BinanceClient(credentials)
-        const venue = new BinanceVenueAdapter(client)
+        const client = new OKXClient(runtimeConfig.credentials)
+        const venue = new OKXVenueAdapter(client, {
+            marginMode: runtimeConfig.marginMode,
+            positionMode: runtimeConfig.positionMode,
+        })
 
         try {
-            await client.ping()
-            steps.push({ name: "Public API", ok: true, data: { reachable: true } })
+            const publicTime = await client.getPublicTime()
+            steps.push({ name: "Public API", ok: true, data: publicTime })
         } catch (error) {
             steps.push({ name: "Public API", ok: false, error: getErrorMessage(error) })
             return { ok: false, steps }
@@ -451,7 +457,7 @@ export const testBinanceConnection = action({
         }
 
         try {
-            const marketPrice = await venue.getMarketPrice("BTCUSDT")
+            const marketPrice = await venue.getMarketPrice("BTC-USDT-SWAP")
             steps.push({ name: "Market Data", ok: true, data: marketPrice })
         } catch (error) {
             steps.push({ name: "Market Data", ok: false, error: getErrorMessage(error) })

@@ -3,11 +3,11 @@ import {
     ToolRegistry,
     createAlpacaGetOptionsChainTool,
     createAlpacaGetQuoteTool,
-    createBinanceGetMarketPriceTool,
-    createBinanceGetOrderBookTool,
-    createBinanceProposeAdjustmentTool,
-    createBinanceProposeCloseTool,
-    createBinanceProposeOrderTool,
+    createOKXGetMarketPriceTool,
+    createOKXGetOrderBookTool,
+    createOKXProposeAdjustmentTool,
+    createOKXProposeCloseTool,
+    createOKXProposeOrderTool,
     createCancelOrderTool,
     createGetAccountTool,
     createGetOrderStatusTool,
@@ -45,7 +45,7 @@ import {
     createInstrumentConflictValidator,
     createKillSwitchGuardedVenue as createRuntimeKillSwitchGuardedVenue,
     filterPositionsByOwnership,
-    binancePolicySchema,
+    okxPolicySchema,
     getNextCronFireMs,
     mt5PolicySchema,
     parseSummaryMetadata,
@@ -59,7 +59,7 @@ import {
     type VenueAdapter,
 } from "@valiq-trading/core"
 import { AlpacaOptionsVenueAdapter } from "@valiq-trading/alpaca-options"
-import { BinanceVenueAdapter } from "@valiq-trading/binance"
+import { OKXVenueAdapter } from "@valiq-trading/okx"
 import { MT5VenueAdapter } from "@valiq-trading/mt5"
 import { PolymarketVenueAdapter } from "@valiq-trading/polymarket"
 import type { RunTrigger } from "@valiq-trading/convex"
@@ -329,16 +329,16 @@ function buildToolPool(config: {
                 return createPolymarketProposeOrderTool(pipeline, venue)
             }
 
-            if (app === "binance-futures") {
-                if (!(venue instanceof BinanceVenueAdapter)) {
-                    logVenueToolMismatch(runLogger, app, "propose_order", "BinanceVenueAdapter", venue)
+            if (app === "okx-swap") {
+                if (!(venue instanceof OKXVenueAdapter)) {
+                    logVenueToolMismatch(runLogger, app, "propose_order", "OKXVenueAdapter", venue)
                     return null
                 }
 
-                return createBinanceProposeOrderTool(
+                return createOKXProposeOrderTool(
                     pipeline,
                     venue,
-                    binancePolicySchema.parse(policy)
+                    okxPolicySchema.parse(policy)
                 )
             }
 
@@ -375,14 +375,14 @@ function buildToolPool(config: {
                 return createPolymarketProposeAdjustmentTool(pipeline, venue)
             }
 
-            if (app === "binance-futures") {
-                if (!(venue instanceof BinanceVenueAdapter)) {
-                    logVenueToolMismatch(runLogger, app, "propose_adjustment", "BinanceVenueAdapter", venue)
+            if (app === "okx-swap") {
+                if (!(venue instanceof OKXVenueAdapter)) {
+                    logVenueToolMismatch(runLogger, app, "propose_adjustment", "OKXVenueAdapter", venue)
                     return null
                 }
 
-                const parsedPolicy = binancePolicySchema.parse(policy)
-                return createBinanceProposeAdjustmentTool(pipeline, venue, {
+                const parsedPolicy = okxPolicySchema.parse(policy)
+                return createOKXProposeAdjustmentTool(pipeline, venue, {
                     dryRun: parsedPolicy.dryRun,
                 })
             }
@@ -416,13 +416,13 @@ function buildToolPool(config: {
                 return createPolymarketProposeCloseTool(pipeline, venue)
             }
 
-            if (app === "binance-futures") {
-                if (!(venue instanceof BinanceVenueAdapter)) {
-                    logVenueToolMismatch(runLogger, app, "propose_close", "BinanceVenueAdapter", venue)
+            if (app === "okx-swap") {
+                if (!(venue instanceof OKXVenueAdapter)) {
+                    logVenueToolMismatch(runLogger, app, "propose_close", "OKXVenueAdapter", venue)
                     return null
                 }
 
-                return createBinanceProposeCloseTool(pipeline, venue)
+                return createOKXProposeCloseTool(pipeline, venue)
             }
 
             return null
@@ -454,7 +454,7 @@ function buildToolPool(config: {
     })
     registerCanonicalTool(toolPool, {
         name: "get_market_price",
-        compatibleVenues: ["polymarket", "binance-futures"],
+        compatibleVenues: ["polymarket", "okx-swap"],
         create: () => {
             if (app === "polymarket") {
                 if (!(venue instanceof PolymarketVenueAdapter)) {
@@ -465,13 +465,13 @@ function buildToolPool(config: {
                 return createPolymarketGetMarketPriceTool(venue)
             }
 
-            if (app === "binance-futures") {
-                if (!(venue instanceof BinanceVenueAdapter)) {
-                    logVenueToolMismatch(runLogger, app, "get_market_price", "BinanceVenueAdapter", venue)
+            if (app === "okx-swap") {
+                if (!(venue instanceof OKXVenueAdapter)) {
+                    logVenueToolMismatch(runLogger, app, "get_market_price", "OKXVenueAdapter", venue)
                     return null
                 }
 
-                return createBinanceGetMarketPriceTool(venue)
+                return createOKXGetMarketPriceTool(venue)
             }
 
             return null
@@ -479,7 +479,7 @@ function buildToolPool(config: {
     })
     registerCanonicalTool(toolPool, {
         name: "get_order_book",
-        compatibleVenues: ["polymarket", "binance-futures"],
+        compatibleVenues: ["polymarket", "okx-swap"],
         create: () => {
             if (app === "polymarket") {
                 if (!(venue instanceof PolymarketVenueAdapter)) {
@@ -490,13 +490,13 @@ function buildToolPool(config: {
                 return createPolymarketGetOrderBookTool(venue)
             }
 
-            if (app === "binance-futures") {
-                if (!(venue instanceof BinanceVenueAdapter)) {
-                    logVenueToolMismatch(runLogger, app, "get_order_book", "BinanceVenueAdapter", venue)
+            if (app === "okx-swap") {
+                if (!(venue instanceof OKXVenueAdapter)) {
+                    logVenueToolMismatch(runLogger, app, "get_order_book", "OKXVenueAdapter", venue)
                     return null
                 }
 
-                return createBinanceGetOrderBookTool(venue)
+                return createOKXGetOrderBookTool(venue)
             }
 
             return null

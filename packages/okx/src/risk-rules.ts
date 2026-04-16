@@ -1,6 +1,6 @@
 import {
-    binancePolicySchema,
     getCurrentTimeInTimezone,
+    okxPolicySchema,
     padTime,
     type AccountState,
     type OrderIntent,
@@ -8,7 +8,7 @@ import {
     type RiskValidator,
 } from "@valiq-trading/core"
 
-export const binanceRiskValidators: readonly RiskValidator[] = [
+export const okxRiskValidators: readonly RiskValidator[] = [
     allowedInstrumentsValidator,
     slTpRequiredValidator,
     maxLeverageValidator,
@@ -26,14 +26,14 @@ function allowedInstrumentsValidator(
         return { allowed: true }
     }
 
-    const policy = binancePolicySchema.parse(rawPolicy)
-    const allowed = new Set(policy.allowedInstruments.map((instrument) => instrument.toUpperCase()))
-    const symbol = intent.instrument.toUpperCase()
+    const policy = okxPolicySchema.parse(rawPolicy)
+    const allowed = new Set(policy.allowedInstruments.map((instrument: string) => instrument.toUpperCase()))
+    const instrument = intent.instrument.toUpperCase()
 
-    if (!allowed.has(symbol)) {
+    if (!allowed.has(instrument)) {
         return {
             allowed: false,
-            reason: `Instrument ${symbol} is not in allowedInstruments: ${policy.allowedInstruments.join(", ")}`,
+            reason: `Instrument ${instrument} is not in allowedInstruments: ${policy.allowedInstruments.join(", ")}`,
         }
     }
 
@@ -50,21 +50,21 @@ function slTpRequiredValidator(
         return { allowed: true }
     }
 
-    const policy = binancePolicySchema.parse(rawPolicy)
+    const policy = okxPolicySchema.parse(rawPolicy)
     const stopLoss = intent.metadata?.stopLoss as number | undefined
     const takeProfit = intent.metadata?.takeProfit as number | undefined
 
     if (stopLoss === undefined || stopLoss === null) {
         return {
             allowed: false,
-            reason: "Binance futures entries require stopLoss",
+            reason: "OKX swap entries require stopLoss",
         }
     }
 
     if (policy.requireTakeProfit && (takeProfit === undefined || takeProfit === null)) {
         return {
             allowed: false,
-            reason: "Binance policy requires takeProfit for new entries",
+            reason: "OKX policy requires takeProfit for new entries",
         }
     }
 
@@ -79,7 +79,7 @@ function maxLeverageValidator(
         return { allowed: true }
     }
 
-    const policy = binancePolicySchema.parse(rawPolicy)
+    const policy = okxPolicySchema.parse(rawPolicy)
     const leverage = intent.metadata?.leverage as number | undefined
     if (leverage === undefined) {
         return { allowed: true }
@@ -97,15 +97,13 @@ function maxLeverageValidator(
 
 function maxRiskPercentValidator(
     intent: OrderIntent,
-    rawPolicy: Record<string, unknown>,
-    _state: AccountState,
-    _positions: Position[]
+    rawPolicy: Record<string, unknown>
 ) {
     if (isCloseAction(intent)) {
         return { allowed: true }
     }
 
-    const policy = binancePolicySchema.parse(rawPolicy)
+    const policy = okxPolicySchema.parse(rawPolicy)
     const riskPercent = intent.metadata?.riskPercent as number | undefined
     if (riskPercent === undefined) {
         return { allowed: true }
@@ -129,7 +127,7 @@ function tradingHoursValidator(
         return { allowed: true }
     }
 
-    const policy = binancePolicySchema.parse(rawPolicy)
+    const policy = okxPolicySchema.parse(rawPolicy)
     const { start, end, timezone } = policy.tradingHours
     const now = getCurrentTimeInTimezone(timezone)
     const [startHour, startMinute] = start.split(":").map(Number) as [number, number]
@@ -162,7 +160,7 @@ function emergencyFlattenValidator(
         return { allowed: true }
     }
 
-    const policy = binancePolicySchema.parse(rawPolicy)
+    const policy = okxPolicySchema.parse(rawPolicy)
 
     if (state.openPnl < 0 && Math.abs(state.openPnl) >= policy.emergencyFlattenThreshold) {
         return {
@@ -182,7 +180,7 @@ function fundingRateValidator(
         return { allowed: true }
     }
 
-    const policy = binancePolicySchema.parse(rawPolicy)
+    const policy = okxPolicySchema.parse(rawPolicy)
     const fundingRate = intent.metadata?.fundingRate as number | undefined
 
     if (fundingRate === undefined) {

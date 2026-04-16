@@ -13,7 +13,7 @@ const venueAppArg = v.union(
     v.literal("alpaca-options"),
     v.literal("polymarket"),
     v.literal("mt5"),
-    v.literal("binance-futures")
+    v.literal("okx-swap")
 )
 
 const strategyImportArg = v.object({

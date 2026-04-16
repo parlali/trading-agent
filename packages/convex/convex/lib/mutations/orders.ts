@@ -15,7 +15,7 @@ export const createRun = mutation({
             v.literal("alpaca-options"),
             v.literal("polymarket"),
             v.literal("mt5"),
-            v.literal("binance-futures")
+            v.literal("okx-swap")
         ),
         trigger: v.optional(v.union(
             v.literal("cron"),

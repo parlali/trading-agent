@@ -18,7 +18,7 @@ export const createAlert = mutation({
                 v.literal("alpaca-options"),
                 v.literal("polymarket"),
                 v.literal("mt5"),
-                v.literal("binance-futures"),
+                v.literal("okx-swap"),
                 v.literal("backend")
             )
         ),
@@ -372,7 +372,7 @@ export const snapshotAccountState = mutation({
             v.literal("alpaca-options"),
             v.literal("polymarket"),
             v.literal("mt5"),
-            v.literal("binance-futures"),
+            v.literal("okx-swap"),
             v.literal("backend")
         ),
         venue: v.string(),
@@ -408,7 +408,7 @@ export const setKillSwitch = mutation({
             v.literal("alpaca-options"),
             v.literal("polymarket"),
             v.literal("mt5"),
-            v.literal("binance-futures")
+            v.literal("okx-swap")
         ),
         enabled: v.boolean(),
         updatedBy: v.optional(v.string()),
@@ -430,7 +430,7 @@ export const setKillSwitch = mutation({
                     alpaca_options: args.scope === "alpaca-options" ? args.enabled : false,
                     polymarket: args.scope === "polymarket" ? args.enabled : false,
                     mt5: args.scope === "mt5" ? args.enabled : false,
-                    binance_futures: args.scope === "binance-futures" ? args.enabled : false,
+                    okx_swap: args.scope === "okx-swap" ? args.enabled : false,
                 },
                 updatedAt: now,
                 updatedBy: args.updatedBy,
@@ -783,7 +783,7 @@ export const clearFullResetStateBatch = mutation({
             "alpaca-options",
             "polymarket",
             "mt5",
-            "binance-futures",
+            "okx-swap",
         ] as const
         const apps = [
             ...venueApps,

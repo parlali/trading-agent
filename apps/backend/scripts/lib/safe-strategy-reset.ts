@@ -14,14 +14,14 @@ import {
     type WorkingOrder,
 } from "@valiq-trading/core"
 import { AlpacaPlugin } from "../../src/plugins/alpaca"
-import { BinancePlugin } from "../../src/plugins/binance"
+import { OKXPlugin } from "../../src/plugins/okx"
 import { MT5Plugin } from "../../src/plugins/mt5"
 import { PolymarketPlugin } from "../../src/plugins/polymarket"
 import type { VenueApp, VenuePlugin } from "../../src/types"
 
 const RESET_PLUGINS: Partial<Record<VenueApp, VenuePlugin>> = {
     "alpaca-options": new AlpacaPlugin(),
-    "binance-futures": new BinancePlugin(),
+    "okx-swap": new OKXPlugin(),
     "polymarket": new PolymarketPlugin(),
     "mt5": new MT5Plugin(),
 }

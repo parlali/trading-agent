@@ -1,9 +1,9 @@
 import { VENUE_APPS, type VenueApp } from "@valiq-trading/core"
 import { z } from "zod"
 import {
-    binanceOrderJsonSchema,
-    binanceOrderParamsSchema,
-} from "./tools/binance-order-helpers"
+    okxOrderJsonSchema,
+    okxOrderParamsSchema,
+} from "./tools/okx-order-helpers"
 import {
     mt5OrderJsonSchema,
     mt5OrderParamsSchema,
@@ -273,17 +273,17 @@ export const genericAdjustmentJsonSchema = {
     required: ["instrument", "side", "quantity", "orderType", "reason"],
 } satisfies Record<string, unknown>
 
-export const binanceAdjustmentParamsSchema = z.object({
+export const okxAdjustmentParamsSchema = z.object({
     instrument: z.string(),
     stopLoss: z.number().optional(),
     takeProfit: z.number().optional(),
     reason: z.string(),
 })
 
-export const binanceAdjustmentJsonSchema = {
+export const okxAdjustmentJsonSchema = {
     type: "object",
     properties: {
-        instrument: { type: "string", description: "Perpetual symbol, e.g. BTCUSDT or ETHUSDT" },
+        instrument: { type: "string", description: "OKX swap instrument, e.g. BTC-USDT-SWAP or ETH-USDT-SWAP" },
         stopLoss: { type: "number", description: "New stop-loss price" },
         takeProfit: { type: "number", description: "New take-profit price" },
         reason: { type: "string", description: "Why this adjustment is needed" },
@@ -464,12 +464,12 @@ export const polymarketMarketPriceJsonSchema = {
     required: ["tokenId"],
 } satisfies Record<string, unknown>
 
-export const binanceMarketPriceJsonSchema = {
+export const okxMarketPriceJsonSchema = {
     type: "object",
     properties: {
         symbol: {
             type: "string",
-            description: "Binance futures symbol such as BTCUSDT or ETHUSDT",
+            description: "OKX swap instrument such as BTC-USDT-SWAP or ETH-USDT-SWAP",
         },
     },
     required: ["symbol"],
@@ -495,21 +495,21 @@ export const polymarketOrderBookJsonSchema = {
     required: ["tokenId"],
 } satisfies Record<string, unknown>
 
-export const binanceOrderBookParamsSchema = z.object({
+export const okxOrderBookParamsSchema = z.object({
     symbol: z.string(),
     limit: z.number().int().positive().max(1000).optional(),
 })
 
-export const binanceOrderBookJsonSchema = {
+export const okxOrderBookJsonSchema = {
     type: "object",
     properties: {
         symbol: {
             type: "string",
-            description: "Binance futures symbol such as BTCUSDT or ETHUSDT",
+            description: "OKX swap instrument such as BTC-USDT-SWAP or ETH-USDT-SWAP",
         },
         limit: {
             type: "number",
-            description: "Depth limit passed to Binance",
+            description: "Depth limit passed to OKX",
         },
     },
     required: ["symbol"],
@@ -756,16 +756,17 @@ const toolContracts = createToolContractCatalog([
                 outputDescription: "Returns the normalized execution result plus computed sizing, risk, and price verification details.",
                 errorSemantics: "Pre-validation failures return a structured rejected payload instead of throwing.",
             },
-            "binance-futures": {
+            "okx-swap": {
                 description: [
-                    "Propose a Binance futures entry order for BTCUSDT or ETHUSDT.",
+                    "Propose a new OKX perpetual swap entry order for a canonical instrument such as BTC-USDT-SWAP or ETH-USDT-SWAP.",
                     "You must provide stopLoss and either takeProfit or riskRewardRatio.",
                     "Position size is calculated automatically from maxRiskPercent and stop distance.",
                     "Leverage defaults to policy maxLeverage and cannot exceed it.",
+                    "Only market and limit entries are supported in this execution path.",
                     "For filled entries, protective stop-loss and take-profit orders are attached automatically.",
                 ].join(" "),
-                parameters: binanceOrderParamsSchema,
-                jsonSchema: binanceOrderJsonSchema,
+                parameters: okxOrderParamsSchema,
+                jsonSchema: okxOrderJsonSchema,
                 outputDescription: "Returns the normalized execution result plus computed sizing, leverage, and protection-order details.",
                 errorSemantics: "Pre-validation failures return a structured rejected payload instead of throwing.",
             },
@@ -805,10 +806,10 @@ const toolContracts = createToolContractCatalog([
                 outputDescription: "Returns the normalized adjustment execution result plus computed sizing and risk details.",
                 errorSemantics: "Pre-validation failures return a structured rejected payload instead of throwing.",
             },
-            "binance-futures": {
-                description: "Update protective stop-loss and take-profit orders for an existing Binance futures position.",
-                parameters: binanceAdjustmentParamsSchema,
-                jsonSchema: binanceAdjustmentJsonSchema,
+            "okx-swap": {
+                description: "Update protective stop-loss and take-profit orders for an existing OKX perpetual swap position.",
+                parameters: okxAdjustmentParamsSchema,
+                jsonSchema: okxAdjustmentJsonSchema,
                 outputDescription: "Returns the protection-order update result including cancelled and recreated protection order IDs.",
                 errorSemantics: "Missing protection levels or missing positions return a structured rejected payload instead of throwing.",
             },
@@ -905,7 +906,7 @@ const toolContracts = createToolContractCatalog([
         category: "market-data",
         boundary: "venue-owned",
         owner: "venue-extension",
-        compatibleVenues: ["polymarket", "binance-futures"],
+        compatibleVenues: ["polymarket", "okx-swap"],
         variants: {
             polymarket: {
                 description: "Fetch the current Polymarket midpoint, best bid, best ask, spread, optional executable price, and liquidityWarning derived from one /book snapshot.",
@@ -914,11 +915,11 @@ const toolContracts = createToolContractCatalog([
                 outputDescription: "Returns normalized Polymarket pricing, spread, and liquidity warning information for the requested token.",
                 errorSemantics: "Venue lookup failures throw.",
             },
-            "binance-futures": {
-                description: "Fetch the current Binance futures mark price, index price, best bid, best ask, spread, funding rate, and next funding time for a symbol.",
+            "okx-swap": {
+                description: "Fetch the current OKX swap mark price, last price, best bid, best ask, spread, funding rate, and next funding time for an instrument.",
                 parameters: singleSymbolParamsSchema,
-                jsonSchema: binanceMarketPriceJsonSchema,
-                outputDescription: "Returns normalized Binance futures pricing, spread, and funding information for the requested symbol.",
+                jsonSchema: okxMarketPriceJsonSchema,
+                outputDescription: "Returns normalized OKX swap pricing, spread, and funding information for the requested instrument.",
                 errorSemantics: "Venue lookup failures throw.",
             },
         },
@@ -928,7 +929,7 @@ const toolContracts = createToolContractCatalog([
         category: "market-data",
         boundary: "venue-owned",
         owner: "venue-extension",
-        compatibleVenues: ["polymarket", "binance-futures"],
+        compatibleVenues: ["polymarket", "okx-swap"],
         variants: {
             polymarket: {
                 description: "Fetch the live Polymarket order book for a token. Use this to assess spread and available depth before sizing an order.",
@@ -937,11 +938,11 @@ const toolContracts = createToolContractCatalog([
                 outputDescription: "Returns normalized Polymarket order book depth for the requested token.",
                 errorSemantics: "Venue lookup failures throw.",
             },
-            "binance-futures": {
-                description: "Fetch the live Binance futures order book for a symbol. Use this to assess depth and likely slippage before sizing larger entries.",
-                parameters: binanceOrderBookParamsSchema,
-                jsonSchema: binanceOrderBookJsonSchema,
-                outputDescription: "Returns normalized Binance futures order book depth for the requested symbol.",
+            "okx-swap": {
+                description: "Fetch the live OKX swap order book for an instrument. Use this to assess depth and likely slippage before sizing larger entries.",
+                parameters: okxOrderBookParamsSchema,
+                jsonSchema: okxOrderBookJsonSchema,
+                outputDescription: "Returns normalized OKX swap order book depth for the requested instrument.",
                 errorSemantics: "Venue lookup failures throw.",
             },
         },

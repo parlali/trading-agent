@@ -508,6 +508,145 @@ export function StrategyForm({ mode, initialData }: StrategyFormProps) {
                         </>
                     ) : null}
 
+                    {app === "okx-swap" ? (
+                        <>
+                            <div className="space-y-1.5">
+                                <Label className="text-sm">
+                                    Allowed Instruments<span className="text-signal-danger ml-0.5">*</span>
+                                </Label>
+                                <Textarea
+                                    placeholder={"BTC-USDT-SWAP\nETH-USDT-SWAP"}
+                                    value={Array.isArray(policy.allowedInstruments) ? policy.allowedInstruments.join("\n") : ""}
+                                    onChange={(e) => handlePolicyFieldChange(
+                                        "allowedInstruments",
+                                        e.target.value
+                                            .split(/[\n,]+/)
+                                            .map((instrument) => instrument.trim().toUpperCase())
+                                            .filter(Boolean)
+                                    )}
+                                    rows={3}
+                                    className="font-mono text-sm"
+                                />
+                                <p className="text-xs text-muted-foreground">
+                                    One OKX swap instrument per line or comma-separated. Use canonical instrument IDs such as BTC-USDT-SWAP.
+                                </p>
+                            </div>
+
+                            <div className="space-y-1.5">
+                                <Label className="text-sm">
+                                    Max Leverage<span className="text-signal-danger ml-0.5">*</span>
+                                </Label>
+                                <Input
+                                    type="number"
+                                    step={1}
+                                    min={1}
+                                    max={5}
+                                    placeholder="3"
+                                    value={policy.maxLeverage !== undefined ? String(policy.maxLeverage) : ""}
+                                    onChange={(e) => handlePolicyFieldChange(
+                                        "maxLeverage",
+                                        e.target.value === "" ? undefined : Number(e.target.value)
+                                    )}
+                                />
+                            </div>
+
+                            <div className="space-y-1.5">
+                                <Label className="text-sm">
+                                    Max Risk Per Trade (%)<span className="text-signal-danger ml-0.5">*</span>
+                                </Label>
+                                <Input
+                                    type="number"
+                                    step="any"
+                                    min={0}
+                                    max={100}
+                                    placeholder="1"
+                                    value={policy.maxRiskPercent !== undefined ? String(policy.maxRiskPercent) : ""}
+                                    onChange={(e) => handlePolicyFieldChange(
+                                        "maxRiskPercent",
+                                        e.target.value === "" ? undefined : Number(e.target.value)
+                                    )}
+                                />
+                            </div>
+
+                            <div className="space-y-1.5">
+                                <Label className="text-sm">
+                                    Trading Hours<span className="text-signal-danger ml-0.5">*</span>
+                                </Label>
+                                <div className="flex items-center gap-2 flex-wrap">
+                                    <Input
+                                        placeholder="00:00"
+                                        value={getNestedValue(policy, "tradingHours.start") as string ?? ""}
+                                        onChange={(e) => handlePolicyFieldChange("tradingHours.start", e.target.value)}
+                                        className="w-20 sm:w-24 font-mono"
+                                    />
+                                    <span className="text-muted-foreground">to</span>
+                                    <Input
+                                        placeholder="23:59"
+                                        value={getNestedValue(policy, "tradingHours.end") as string ?? ""}
+                                        onChange={(e) => handlePolicyFieldChange("tradingHours.end", e.target.value)}
+                                        className="w-20 sm:w-24 font-mono"
+                                    />
+                                    <Input
+                                        placeholder="UTC"
+                                        value={getNestedValue(policy, "tradingHours.timezone") as string ?? ""}
+                                        onChange={(e) => handlePolicyFieldChange("tradingHours.timezone", e.target.value)}
+                                        className="w-24 sm:w-28"
+                                    />
+                                </div>
+                            </div>
+
+                            <div className="space-y-1.5">
+                                <Label className="text-sm">
+                                    Emergency Flatten Threshold ($)<span className="text-signal-danger ml-0.5">*</span>
+                                </Label>
+                                <Input
+                                    type="number"
+                                    step="any"
+                                    placeholder="1000"
+                                    value={policy.emergencyFlattenThreshold !== undefined ? String(policy.emergencyFlattenThreshold) : ""}
+                                    onChange={(e) => handlePolicyFieldChange(
+                                        "emergencyFlattenThreshold",
+                                        e.target.value === "" ? undefined : Number(e.target.value)
+                                    )}
+                                />
+                            </div>
+
+                            <div className="space-y-1.5">
+                                <Label className="text-sm">
+                                    Funding Rate Threshold<span className="text-signal-danger ml-0.5">*</span>
+                                </Label>
+                                <Input
+                                    type="number"
+                                    step="any"
+                                    min={0}
+                                    placeholder="0.003"
+                                    value={policy.fundingRateThreshold !== undefined ? String(policy.fundingRateThreshold) : ""}
+                                    onChange={(e) => handlePolicyFieldChange(
+                                        "fundingRateThreshold",
+                                        e.target.value === "" ? undefined : Number(e.target.value)
+                                    )}
+                                    className="font-mono"
+                                />
+                                <p className="text-xs text-muted-foreground">
+                                    Absolute funding-rate threshold. For example, 0.003 means 0.30%.
+                                </p>
+                            </div>
+
+                            <div className="flex items-start justify-between gap-4 rounded-lg border p-3">
+                                <div className="space-y-1">
+                                    <Label className="text-sm">Require Take Profit</Label>
+                                    <p className="text-xs text-muted-foreground">
+                                        When enabled, new OKX entries must include an explicit take-profit level.
+                                    </p>
+                                </div>
+                                <Switch
+                                    checked={Boolean(policy.requireTakeProfit)}
+                                    onCheckedChange={(checked) => handlePolicyFieldChange("requireTakeProfit", checked)}
+                                />
+                            </div>
+                        </>
+                    ) : null}
+
                 </CardContent>
             </Card>
 

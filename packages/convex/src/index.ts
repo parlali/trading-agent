@@ -555,7 +555,7 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
                 async () => await client.mutation(api.mutations.syncPositions, {
                     ...requireMachineAuth(),
                     strategyId,
-                    app: app as "alpaca-options" | "polymarket" | "mt5" | "binance-futures",
+                    app: app as "alpaca-options" | "polymarket" | "mt5" | "okx-swap",
                     positions: positions.map((position) => ({
                         instrument: position.instrument,
                         side: position.side,

@@ -57,12 +57,12 @@ describe("tool contracts", () => {
 
     it("resolves venue-specific variants from one canonical source", () => {
         const mt5Order = getToolContract("propose_order", "mt5")
-        const binanceOrder = getToolContract("propose_order", "binance-futures")
+        const okxOrder = getToolContract("propose_order", "okx-swap")
         const polymarketOrder = getToolContract("propose_order", "polymarket")
         const polymarketMarketPrice = getToolContract("get_market_price", "polymarket")
 
         expect(mt5Order.description).toContain("MT5")
-        expect(binanceOrder.description).toContain("Binance futures")
+        expect(okxOrder.description).toContain("OKX perpetual swap")
         expect(polymarketOrder.description).toContain("canonical token ID")
         expect(polymarketOrder.parameters.safeParse({
             tokenId: "token-yes",

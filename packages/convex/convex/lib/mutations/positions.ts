@@ -12,7 +12,7 @@ export const syncPositions = mutation({
             v.literal("alpaca-options"),
             v.literal("polymarket"),
             v.literal("mt5"),
-            v.literal("binance-futures")
+            v.literal("okx-swap")
         ),
         positions: v.array(
             v.object({

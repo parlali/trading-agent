@@ -27,7 +27,7 @@
         "@valiq-trading/alpaca-options": "workspace:*",
         "@valiq-trading/polymarket": "workspace:*",
         "@valiq-trading/mt5": "workspace:*",
-        "@valiq-trading/binance": "workspace:*",
+        "@valiq-trading/okx": "workspace:*",
         "viem": "^2.21.0"
     }
 }

@@ -1,47 +1,47 @@
 import type { ToolDefinition } from "@valiq-trading/agent"
 import {
-    BINANCE_RUNTIME_SECRET_KEYS,
-    BinanceClient,
-    BinanceVenueAdapter,
-    binanceRiskValidators,
-    createBinanceMarketContextLine,
-    resolveBinanceCredentials,
-} from "@valiq-trading/binance"
-import {
+    createOAuthTokenProvider,
     createValiqBreakingNewsTool,
     createValiqDataTool,
     createValiqResearchTool,
-    createOAuthTokenProvider,
     getMissingValiqDataApiSecrets,
+    resolveValiqDataApiConfig,
     ValiqClient,
     ValiqDataAdapter,
     ValiqDataClient,
     ValiqResearchAdapter,
-    resolveValiqDataApiConfig,
 } from "@valiq-trading/valiq"
 import {
     getCurrentTimeInTimezone,
+    okxPolicySchema,
     padTime,
-    binancePolicySchema,
-    type BinancePolicy,
+    type OKXPolicy,
     type RiskValidator,
     type VenueAdapter,
 } from "@valiq-trading/core"
+import {
+    createOKXMarketContextLine,
+    OKXClient,
+    OKX_RUNTIME_SECRET_KEYS,
+    okxRiskValidators,
+    OKXVenueAdapter,
+    resolveOKXRuntimeConfig,
+} from "@valiq-trading/okx"
 import type {
-    VenuePlugin,
     ExtraToolsConfig,
     PostRunHookConfig,
     PreRunHookConfig,
     PreRunHookResult,
+    VenuePlugin,
 } from "../types"
 
-export class BinancePlugin implements VenuePlugin {
-    readonly app = "binance-futures"
-    readonly venueName = "binance-futures"
+export class OKXPlugin implements VenuePlugin {
+    readonly app = "okx-swap"
+    readonly venueName = "okx"
 
     resolveSecretKeys(): string[] {
         return [
-            ...BINANCE_RUNTIME_SECRET_KEYS,
+            ...OKX_RUNTIME_SECRET_KEYS,
             "VALIQ_API_URL",
             "VALIQ_AUTH_URL",
             "VALIQ_OAUTH_CLIENT_ID",
@@ -57,23 +57,41 @@ export class BinancePlugin implements VenuePlugin {
     }
 
     async validateEnvironment(secrets: Record<string, string | null>): Promise<void> {
-        const credentials = resolveBinanceCredentials(secrets)
-        const client = new BinanceClient(credentials)
-        await client.ping()
-        await client.getAccount()
+        const runtimeConfig = resolveOKXRuntimeConfig(secrets)
+        const client = new OKXClient(runtimeConfig.credentials)
+
+        await client.getPublicTime()
+
+        const accountConfig = await client.getAccountConfig()
+        if (accountConfig.acctLv === "1") {
+            throw new Error("OKX account is in simple mode. Swap trading requires a derivatives-capable account mode.")
+        }
+
+        if (accountConfig.posMode !== runtimeConfig.positionMode) {
+            throw new Error(
+                `OKX account posMode ${accountConfig.posMode} does not match configured position mode ${runtimeConfig.positionMode}`
+            )
+        }
+
+        await client.getBalance()
+        await client.getPositions("SWAP")
     }
 
     createVenueAdapter(
         _policy: Record<string, unknown>,
         secrets: Record<string, string | null>
     ): VenueAdapter {
-        const credentials = resolveBinanceCredentials(secrets)
-        const client = new BinanceClient(credentials)
-        return new BinanceVenueAdapter(client)
+        const runtimeConfig = resolveOKXRuntimeConfig(secrets)
+        const client = new OKXClient(runtimeConfig.credentials)
+
+        return new OKXVenueAdapter(client, {
+            marginMode: runtimeConfig.marginMode,
+            positionMode: runtimeConfig.positionMode,
+        })
     }
 
     getRiskValidators(): readonly RiskValidator[] {
-        return binanceRiskValidators
+        return okxRiskValidators
     }
 
     getExtraTools(config: ExtraToolsConfig): ToolDefinition[] {
@@ -128,8 +146,8 @@ export class BinancePlugin implements VenuePlugin {
     }
 
     async preRunHooks(config: PreRunHookConfig): Promise<PreRunHookResult> {
-        const venue = config.venue as BinanceVenueAdapter
-        const policy = binancePolicySchema.parse(config.policy)
+        const venue = config.venue as OKXVenueAdapter
+        const policy = okxPolicySchema.parse(config.policy)
 
         const emergencyFlattened = await this.checkEmergencyFlatten(venue, policy, config.strategyId, config)
         if (emergencyFlattened) {
@@ -149,21 +167,21 @@ export class BinancePlugin implements VenuePlugin {
     }
 
     async postRunHooks(config: PostRunHookConfig): Promise<void> {
-        const venue = config.venue as BinanceVenueAdapter
-        const policy = binancePolicySchema.parse(config.policy)
+        const venue = config.venue as OKXVenueAdapter
+        const policy = okxPolicySchema.parse(config.policy)
         await this.checkEmergencyFlatten(venue, policy, config.strategyId, config)
     }
 
     private async checkEmergencyFlatten(
-        venue: BinanceVenueAdapter,
-        policy: BinancePolicy,
+        venue: OKXVenueAdapter,
+        policy: OKXPolicy,
         strategyId: string,
         config: { logger: PreRunHookConfig["logger"]; createAlert: PreRunHookConfig["createAlert"] }
     ): Promise<boolean> {
         const accountState = await venue.getAccountState()
 
         if (accountState.openPnl < 0 && Math.abs(accountState.openPnl) >= policy.emergencyFlattenThreshold) {
-            config.logger.error("Binance emergency flatten triggered", {
+            config.logger.error("OKX emergency flatten triggered", {
                 strategyId,
                 openPnl: accountState.openPnl,
                 threshold: policy.emergencyFlattenThreshold,
@@ -173,11 +191,11 @@ export class BinancePlugin implements VenuePlugin {
                 strategyId,
                 app: this.app,
                 severity: "critical",
-                message: `Binance emergency flatten triggered: unrealized loss ${Math.abs(accountState.openPnl).toFixed(2)} exceeds threshold ${policy.emergencyFlattenThreshold}`,
+                message: `OKX emergency flatten triggered: unrealized loss ${Math.abs(accountState.openPnl).toFixed(2)} exceeds threshold ${policy.emergencyFlattenThreshold}`,
             })
 
             const result = await venue.closeAllPositions()
-            config.logger.info("Binance emergency flatten completed", {
+            config.logger.info("OKX emergency flatten completed", {
                 strategyId,
                 closed: result.closed,
             })
@@ -189,8 +207,8 @@ export class BinancePlugin implements VenuePlugin {
     }
 
     private async checkEndOfSessionFlatten(
-        venue: BinanceVenueAdapter,
-        policy: BinancePolicy,
+        venue: OKXVenueAdapter,
+        policy: OKXPolicy,
         strategyId: string,
         config: { logger: PreRunHookConfig["logger"]; createAlert: PreRunHookConfig["createAlert"] }
     ): Promise<boolean> {
@@ -212,7 +230,7 @@ export class BinancePlugin implements VenuePlugin {
             return false
         }
 
-        config.logger.warn("Binance end-of-session flatten triggered", {
+        config.logger.warn("OKX end-of-session flatten triggered", {
             strategyId,
             currentTime: `${padTime(now.hours)}:${padTime(now.minutes)}`,
             endTime: end,
@@ -223,11 +241,11 @@ export class BinancePlugin implements VenuePlugin {
             strategyId,
             app: this.app,
             severity: "warning",
-            message: `Binance end-of-session flatten: closing ${positions.length} position(s) before ${end} ${timezone}`,
+            message: `OKX end-of-session flatten: closing ${positions.length} position(s) before ${end} ${timezone}`,
         })
 
         const result = await venue.closeAllPositions()
-        config.logger.info("Binance end-of-session flatten completed", {
+        config.logger.info("OKX end-of-session flatten completed", {
             strategyId,
             closed: result.closed,
         })
@@ -236,34 +254,33 @@ export class BinancePlugin implements VenuePlugin {
     }
 
     private async buildRuntimeContextLines(
-        venue: BinanceVenueAdapter,
-        policy: BinancePolicy,
+        venue: OKXVenueAdapter,
+        policy: OKXPolicy,
         config: { logger: PreRunHookConfig["logger"]; strategyId: string }
     ): Promise<string[] | undefined> {
         try {
             const snapshots = await venue.getMarketSnapshot(policy.allowedInstruments)
-            const contextLine = createBinanceMarketContextLine(snapshots)
+            const contextLine = createOKXMarketContextLine(snapshots)
 
             if (!contextLine) {
                 return undefined
             }
 
-            config.logger.info("Collected Binance market context", {
+            config.logger.info("Collected OKX market context", {
                 strategyId: config.strategyId,
                 contextLine,
             })
 
             return [contextLine]
         } catch (error) {
-            config.logger.warn("Failed to collect Binance market context", {
+            config.logger.warn("Failed to collect OKX market context", {
                 strategyId: config.strategyId,
                 error: error instanceof Error ? error.message : String(error),
             })
 
             return [
-                "Binance market context unavailable for this run. Manage existing positions conservatively and avoid new entries unless risk-reward is exceptional.",
+                "OKX market context unavailable for this run. Manage existing positions conservatively and avoid new entries unless risk-reward is exceptional.",
             ]
         }
     }
-
 }

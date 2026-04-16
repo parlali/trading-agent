@@ -2,15 +2,15 @@ export { createGetPositionsTool } from "./get-positions"
 export { createGetAccountTool } from "./get-account"
 export { createAlpacaGetOptionsChainTool } from "./get-options-chain"
 export { createAlpacaGetQuoteTool } from "./get-quote"
-export { createBinanceGetMarketPriceTool } from "./get-market-price-binance"
-export { createBinanceGetOrderBookTool } from "./get-order-book-binance"
+export { createOKXGetMarketPriceTool } from "./get-market-price-okx"
+export { createOKXGetOrderBookTool } from "./get-order-book-okx"
 export { createProposeOrderTool } from "./propose-order"
 export { createProposeAdjustmentTool } from "./propose-adjustment"
 export {
     createProposeCloseTool,
     createPolymarketProposeCloseTool,
     createMT5ProposeCloseTool,
-    createBinanceProposeCloseTool,
+    createOKXProposeCloseTool,
 } from "./propose-close"
 export { createGetOrderStatusTool } from "./get-order-status"
 export { createCancelOrderTool } from "./cancel-order"
@@ -28,6 +28,6 @@ export { createPolymarketGetOrderBookTool } from "./get-order-book-polymarket"
 export { createPolymarketSearchMarketsTool } from "./search-markets-polymarket"
 export { createPolymarketProposeOrderTool } from "./propose-order-polymarket"
 export { createPolymarketProposeAdjustmentTool } from "./propose-adjustment-polymarket"
-export { createBinanceProposeOrderTool } from "./propose-order-binance"
-export { createBinanceProposeAdjustmentTool } from "./propose-adjustment-binance"
+export { createOKXProposeOrderTool } from "./propose-order-okx"
+export { createOKXProposeAdjustmentTool } from "./propose-adjustment-okx"
 export { withCallBudget } from "./with-call-budget"

@@ -9,6 +9,7 @@ import {
     type StoredStrategy,
 } from "@valiq-trading/convex"
 import { AlpacaPlugin } from "./plugins/alpaca"
+import { OKXPlugin } from "./plugins/okx"
 import { PolymarketPlugin } from "./plugins/polymarket"
 import { MT5Plugin } from "./plugins/mt5"
 import type { HealthState, VenueApp, VenuePlugin } from "./types"
@@ -65,6 +66,7 @@ export const plugins: Partial<Record<VenueApp, VenuePlugin>> = {
     "alpaca-options": new AlpacaPlugin(),
     "polymarket": new PolymarketPlugin(),
     "mt5": new MT5Plugin(),
+    "okx-swap": new OKXPlugin(),
 }
 
 export let resolvedSecrets: Record<string, string | null> = {}
@@ -113,6 +115,11 @@ export const killSwitchCheckers: Partial<Record<VenueApp, (context: string) => P
         backend,
         logger,
     }),
+    "okx-swap": createKillSwitchChecker({
+        appName: "okx-swap",
+        backend,
+        logger,
+    }),
 }
 
 export interface SyncStrategyEntry {
@@ -123,5 +130,5 @@ export interface SyncStrategyEntry {
 
 export const syncStrategies: Partial<Record<VenueApp, SyncStrategyEntry[]>> = {}
 
-export const ALL_APPS: VenueApp[] = ["alpaca-options", "polymarket", "mt5"]
+export const ALL_APPS: VenueApp[] = ["alpaca-options", "polymarket", "mt5", "okx-swap"]
 export const MANUAL_RUN_WORKER_ID = `backend-${healthState.startedAt}`

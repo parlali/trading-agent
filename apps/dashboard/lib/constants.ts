@@ -43,6 +43,14 @@ export const VENUE_META: Record<string, VenueMeta> = {
         color: "var(--chart-3)",
         chartColor: "hsl(45, 60%, 55%)",
     },
+    "okx-swap": {
+        label: "OKX",
+        shortLabel: "OKX",
+        description: "Perpetual swaps",
+        icon: TrendingUp,
+        color: "var(--chart-4)",
+        chartColor: "hsl(12, 65%, 52%)",
+    },
 } as const
 
 export const STALE_THRESHOLD_MS = 2 * 60 * 1000

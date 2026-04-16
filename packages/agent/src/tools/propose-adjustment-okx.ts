@@ -1,24 +1,24 @@
 import { z } from "zod"
-import type { BinanceVenueAdapter } from "@valiq-trading/binance"
+import type { OKXVenueAdapter } from "@valiq-trading/okx"
 import { createExecutionErrorDetail, formatExecutionError, type ExecutionPipeline } from "@valiq-trading/core"
 import type { ToolDefinition } from "../tool-registry"
 import {
-    binanceAdjustmentParamsSchema,
     createToolDefinition,
+    okxAdjustmentParamsSchema,
 } from "../tool-contracts"
 
-export function createBinanceProposeAdjustmentTool(
+export function createOKXProposeAdjustmentTool(
     pipeline: ExecutionPipeline,
-    venue: BinanceVenueAdapter,
+    venue: OKXVenueAdapter,
     options?: {
         dryRun?: boolean
     }
 ): ToolDefinition {
     return createToolDefinition({
         name: "propose_adjustment",
-        venue: "binance-futures",
+        venue: "okx-swap",
         handler: async (params) => {
-            const validated = params as z.infer<typeof binanceAdjustmentParamsSchema>
+            const validated = params as z.infer<typeof okxAdjustmentParamsSchema>
 
             if (validated.stopLoss === undefined && validated.takeProfit === undefined) {
                 const errorDetail = createExecutionErrorDetail("pre_validation", "Provide stopLoss, takeProfit, or both", {
@@ -59,7 +59,7 @@ export function createBinanceProposeAdjustmentTool(
                     createdOrderIds: [],
                     reason: validated.reason,
                     dryRun: true,
-                    note: "Dry run mode: protection orders were not sent to Binance",
+                    note: "Dry run mode: protection orders were not sent to OKX",
                 }
             }
 

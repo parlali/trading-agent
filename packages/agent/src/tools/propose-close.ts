@@ -1,7 +1,7 @@
 import { z } from "zod"
 import type { ExecutionPipeline, Position } from "@valiq-trading/core"
 import type { MT5VenueAdapter } from "@valiq-trading/mt5"
-import type { BinanceVenueAdapter } from "@valiq-trading/binance"
+import type { OKXVenueAdapter } from "@valiq-trading/okx"
 import type { ToolDefinition } from "../tool-registry"
 import {
     closeParamsSchema,
@@ -89,13 +89,13 @@ export function createMT5ProposeCloseTool(
     })
 }
 
-export function createBinanceProposeCloseTool(
+export function createOKXProposeCloseTool(
     pipeline: ExecutionPipeline,
-    venue: BinanceVenueAdapter
+    venue: OKXVenueAdapter
 ): ToolDefinition {
     return createToolDefinition({
         name: "propose_close",
-        venue: "binance-futures",
+        venue: "okx-swap",
         handler: createProposeCloseTool(pipeline, {
             resolveEstimatedPrice: async ({ instrument }) => {
                 return await venue.getCurrentMarkPrice(instrument)

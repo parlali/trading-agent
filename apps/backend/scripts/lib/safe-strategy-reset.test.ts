@@ -6,7 +6,7 @@ import type {
     TradingBackendClient,
 } from "@valiq-trading/convex"
 import { AlpacaPlugin } from "../../src/plugins/alpaca"
-import { BinancePlugin } from "../../src/plugins/binance"
+import { OKXPlugin } from "../../src/plugins/okx"
 import {
     isDryRunStrategy,
     detectMarketClosedResetBlock,
@@ -38,11 +38,11 @@ function createDeleteResult(): DeleteStrategyResult {
 function createStrategy(
     app: StoredStrategy["app"]
 ): StoredStrategy {
-    const policy = app === "binance-futures"
+    const policy = app === "okx-swap"
         ? {
             dryRun: false,
             model: "openai/gpt-5.4",
-            allowedInstruments: ["BTCUSDT"],
+            allowedInstruments: ["BTC-USDT-SWAP"],
             maxLeverage: 2,
             maxRiskPercent: 1,
             tradingHours: {
@@ -92,8 +92,8 @@ describe("resetStrategySafely", () => {
         vi.restoreAllMocks()
     })
 
-    it("supports binance strategies in the safe reset flow", async () => {
-        const strategy = createStrategy("binance-futures")
+    it("supports okx strategies in the safe reset flow", async () => {
+        const strategy = createStrategy("okx-swap")
         const deleteResult = createDeleteResult()
         const venue = {
             getAccountState: vi.fn().mockResolvedValue({
@@ -114,15 +114,15 @@ describe("resetStrategySafely", () => {
             getOrderStatus: vi.fn(),
         }
 
-        vi.spyOn(BinancePlugin.prototype, "resolveSecretKeys").mockReturnValue([])
-        vi.spyOn(BinancePlugin.prototype, "createVenueAdapter").mockReturnValue(venue as never)
+        vi.spyOn(OKXPlugin.prototype, "resolveSecretKeys").mockReturnValue([])
+        vi.spyOn(OKXPlugin.prototype, "createVenueAdapter").mockReturnValue(venue as never)
 
         const client = {
             getStrategyById: vi.fn().mockResolvedValue(strategy),
             getPortfolioPositions: vi.fn().mockResolvedValue([]),
             getPortfolioPendingOrders: vi.fn().mockResolvedValue([]),
             getPortfolioFreshness: vi.fn().mockResolvedValue([{
-                app: "binance-futures",
+                app: "okx-swap",
                 accountScope: "single-account-per-venue",
                 lastSyncedAt: Date.now(),
                 lastVerifiedAt: Date.now(),
@@ -170,7 +170,7 @@ describe("resetStrategySafely", () => {
     it("retries reset verification until provider exposure clears", async () => {
         const setTimeoutSpy = stubImmediateTimeout()
 
-        const strategy = createStrategy("binance-futures")
+        const strategy = createStrategy("okx-swap")
         const deleteResult = createDeleteResult()
         const venue = {
             getAccountState: vi.fn().mockResolvedValue({
@@ -191,14 +191,14 @@ describe("resetStrategySafely", () => {
             getOrderStatus: vi.fn(),
         }
 
-        vi.spyOn(BinancePlugin.prototype, "resolveSecretKeys").mockReturnValue([])
-        vi.spyOn(BinancePlugin.prototype, "createVenueAdapter").mockReturnValue(venue as never)
+        vi.spyOn(OKXPlugin.prototype, "resolveSecretKeys").mockReturnValue([])
+        vi.spyOn(OKXPlugin.prototype, "createVenueAdapter").mockReturnValue(venue as never)
 
         const client = {
             getStrategyById: vi.fn().mockResolvedValue(strategy),
             getPortfolioPositions: vi.fn()
                 .mockResolvedValueOnce([])
-                .mockResolvedValueOnce([{ instrument: "BTCUSDT" }])
+                .mockResolvedValueOnce([{ instrument: "BTC-USDT-SWAP" }])
                 .mockResolvedValueOnce([]),
             getPortfolioPendingOrders: vi.fn()
                 .mockResolvedValueOnce([])
@@ -206,7 +206,7 @@ describe("resetStrategySafely", () => {
                 .mockResolvedValueOnce([]),
             getPortfolioFreshness: vi.fn()
                 .mockResolvedValueOnce([{
-                    app: "binance-futures",
+                    app: "okx-swap",
                     accountScope: "single-account-per-venue",
                     lastSyncedAt: Date.now(),
                     lastVerifiedAt: Date.now(),
@@ -217,7 +217,7 @@ describe("resetStrategySafely", () => {
                     pendingOrderCount: 0,
                 }])
                 .mockResolvedValueOnce([{
-                    app: "binance-futures",
+                    app: "okx-swap",
                     accountScope: "single-account-per-venue",
                     lastSyncedAt: Date.now(),
                     lastVerifiedAt: Date.now(),
@@ -228,7 +228,7 @@ describe("resetStrategySafely", () => {
                     pendingOrderCount: 0,
                 }])
                 .mockResolvedValueOnce([{
-                    app: "binance-futures",
+                    app: "okx-swap",
                     accountScope: "single-account-per-venue",
                     lastSyncedAt: Date.now(),
                     lastVerifiedAt: Date.now(),
@@ -256,7 +256,7 @@ describe("resetStrategySafely", () => {
     })
 
     it("allows destructive verification when exposure is flat but drift state remains degraded", async () => {
-        const strategy = createStrategy("binance-futures")
+        const strategy = createStrategy("okx-swap")
         const venue = {
             getAccountState: vi.fn().mockResolvedValue({
                 balance: 1000,
@@ -276,14 +276,14 @@ describe("resetStrategySafely", () => {
             getOrderStatus: vi.fn(),
         }
 
-        vi.spyOn(BinancePlugin.prototype, "resolveSecretKeys").mockReturnValue([])
-        vi.spyOn(BinancePlugin.prototype, "createVenueAdapter").mockReturnValue(venue as never)
+        vi.spyOn(OKXPlugin.prototype, "resolveSecretKeys").mockReturnValue([])
+        vi.spyOn(OKXPlugin.prototype, "createVenueAdapter").mockReturnValue(venue as never)
 
         const client = {
             resolveSecrets: vi.fn().mockResolvedValue({}),
             reconcileProviderPortfolio: vi.fn().mockResolvedValue(undefined),
             getPortfolioFreshness: vi.fn().mockResolvedValue([{
-                app: "binance-futures",
+                app: "okx-swap",
                 accountScope: "single-account-per-venue",
                 lastSyncedAt: Date.now(),
                 lastVerifiedAt: Date.now(),

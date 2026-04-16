@@ -1,4 +1,4 @@
-export interface BinanceMarketSnapshot {
+export interface OKXMarketSnapshot {
     instrument: string
     bid: number
     ask: number
@@ -7,8 +7,8 @@ export interface BinanceMarketSnapshot {
     fundingRate: number
 }
 
-export function createBinanceMarketContextLine(
-    snapshots: readonly BinanceMarketSnapshot[]
+export function createOKXMarketContextLine(
+    snapshots: readonly OKXMarketSnapshot[]
 ): string | null {
     if (snapshots.length === 0) {
         return null
@@ -22,7 +22,7 @@ export function createBinanceMarketContextLine(
             return `${snapshot.instrument} mark ${snapshot.markPrice.toFixed(2)}, spread ${spreadPct}, funding ${funding}`
         })
 
-    return `Current crypto market context: ${segments.join(" | ")}`
+    return `Current OKX swap market context: ${segments.join(" | ")}`
 }
 
 function formatFundingRate(rate: number): string {

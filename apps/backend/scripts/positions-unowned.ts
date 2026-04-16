@@ -281,12 +281,12 @@ function requireVenueApp(value: string | undefined): VenueApp {
         value === "alpaca-options" ||
         value === "polymarket" ||
         value === "mt5" ||
-        value === "binance-futures"
+        value === "okx-swap"
     ) {
         return value
     }
 
-    throw new Error("--app must be one of alpaca-options, polymarket, mt5, or binance-futures")
+    throw new Error("--app must be one of alpaca-options, polymarket, mt5, or okx-swap")
 }
 
 function resolveAction(value: string | undefined): OperatorAction {

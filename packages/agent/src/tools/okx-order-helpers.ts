@@ -1,24 +1,23 @@
 import { z } from "zod"
-import type { BinanceVenueAdapter } from "@valiq-trading/binance"
+import type { OKXVenueAdapter } from "@valiq-trading/okx"
 import {
     createExecutionErrorDetail,
     formatExecutionError,
     getRiskBudgetBase,
-    type BinancePolicy,
     type ExecutionErrorDetail,
     type ExecutionPipeline,
+    type OKXPolicy,
     type OrderIntent,
     type PriceVerification,
 } from "@valiq-trading/core"
 import { computeImpliedRR, computeTakeProfitFromRR } from "@valiq-trading/mt5"
 
-export const binanceOrderParamsSchema = z.object({
+export const okxOrderParamsSchema = z.object({
     instrument: z.string(),
     side: z.enum(["buy", "sell"]),
     leverage: z.number().int().positive().max(5).optional(),
-    orderType: z.enum(["market", "limit", "stop", "stop_limit"]).default("market"),
+    orderType: z.enum(["market", "limit"]).default("market"),
     limitPrice: z.number().optional(),
-    stopPrice: z.number().optional(),
     stopLoss: z.number(),
     takeProfit: z.number().optional(),
     riskRewardRatio: z.number().positive().optional(),
@@ -26,17 +25,16 @@ export const binanceOrderParamsSchema = z.object({
     reason: z.string(),
 })
 
-export type BinanceOrderParams = z.infer<typeof binanceOrderParamsSchema>
+export type OKXOrderParams = z.infer<typeof okxOrderParamsSchema>
 
-export const binanceOrderJsonSchema = {
+export const okxOrderJsonSchema = {
     type: "object",
     properties: {
-        instrument: { type: "string", description: "Perpetual symbol, e.g. BTCUSDT or ETHUSDT" },
+        instrument: { type: "string", description: "OKX swap instrument, e.g. BTC-USDT-SWAP or ETH-USDT-SWAP" },
         side: { type: "string", enum: ["buy", "sell"] },
         leverage: { type: "number", description: "Leverage to apply for this trade. Must be <= policy maxLeverage." },
-        orderType: { type: "string", enum: ["market", "limit", "stop", "stop_limit"], default: "market" },
-        limitPrice: { type: "number", description: "Required for limit/stop_limit entries" },
-        stopPrice: { type: "number", description: "Required for stop/stop_limit entries" },
+        orderType: { type: "string", enum: ["market", "limit"], default: "market" },
+        limitPrice: { type: "number", description: "Required for limit entries" },
         stopLoss: { type: "number", description: "Absolute stop-loss price. Always required." },
         takeProfit: { type: "number", description: "Absolute take-profit price. Provide this OR riskRewardRatio." },
         riskRewardRatio: { type: "number", description: "Risk-reward ratio used to derive takeProfit. Provide this OR takeProfit." },
@@ -46,7 +44,7 @@ export const binanceOrderJsonSchema = {
     required: ["instrument", "side", "stopLoss", "reason"],
 } as const
 
-export interface BinanceOrderResult {
+export interface OKXOrderResult {
     orderId: string
     status: string
     filledQuantity: number
@@ -76,13 +74,13 @@ export interface BinanceOrderResult {
     }
 }
 
-export async function prepareBinanceOrder(
-    params: BinanceOrderParams,
+export async function prepareOKXOrder(
+    params: OKXOrderParams,
     pipeline: ExecutionPipeline,
-    venue: BinanceVenueAdapter,
-    policy: BinancePolicy,
+    venue: OKXVenueAdapter,
+    policy: OKXPolicy,
     action: "entry" | "adjustment"
-): Promise<BinanceOrderResult> {
+): Promise<OKXOrderResult> {
     const hasTp = params.takeProfit !== undefined
     const hasRr = params.riskRewardRatio !== undefined
 
@@ -94,17 +92,23 @@ export async function prepareBinanceOrder(
         return rejected("Provide takeProfit OR riskRewardRatio, not both")
     }
 
+    if (params.orderType === "limit" && params.limitPrice === undefined) {
+        return rejected("Provide limitPrice for OKX limit orders")
+    }
+
     const leverage = params.leverage ?? policy.maxLeverage
     if (leverage > policy.maxLeverage) {
         return rejected(`Leverage ${leverage}x exceeds policy maxLeverage ${policy.maxLeverage}x`)
     }
 
-    const symbol = params.instrument.toUpperCase()
-    const markPrice = await venue.getCurrentMarkPrice(symbol)
-    const entryPrice = resolveEntryPrice(params, markPrice)
+    const instrument = params.instrument.toUpperCase()
+    const markPrice = await venue.getCurrentMarkPrice(instrument)
+    const entryPrice = params.orderType === "limit"
+        ? params.limitPrice ?? 0
+        : markPrice
 
     if (entryPrice <= 0) {
-        return rejected("Could not resolve entry price. Provide limitPrice for limit/stop_limit or stopPrice for stop.")
+        return rejected("Could not resolve entry price. Provide limitPrice for limit orders.")
     }
 
     if (params.side === "buy" && params.stopLoss >= entryPrice) {
@@ -133,11 +137,10 @@ export async function prepareBinanceOrder(
     const [account, positions, fundingRate] = await Promise.all([
         pipeline.getAccountState(),
         pipeline.getPositions(),
-        venue.getCurrentFundingRate(symbol).catch(() => undefined),
+        venue.getCurrentFundingRate(instrument).catch(() => undefined),
     ])
 
     const riskBudgetBase = getRiskBudgetBase(account)
-
     if (riskBudgetBase <= 0) {
         return rejected("Account balance is zero or negative")
     }
@@ -155,30 +158,26 @@ export async function prepareBinanceOrder(
         rawQuantity = Math.min(rawQuantity, maxNotional / entryPrice)
     }
 
-    const quantity = await venue.normalizeQuantity(symbol, rawQuantity)
-    if (quantity <= 0) {
-        return rejected(`Computed quantity ${rawQuantity} falls below minimum lot size for ${symbol}`)
+    const sizing = await venue.normalizeQuantity(instrument, rawQuantity)
+    if (sizing.baseQuantity <= 0) {
+        return rejected(`Computed quantity ${rawQuantity} falls below minimum contract size for ${instrument}`)
     }
 
-    const normalizedStopLoss = await venue.normalizePrice(symbol, params.stopLoss)
-    const normalizedTakeProfit = await venue.normalizePrice(symbol, takeProfit)
+    const normalizedStopLoss = await venue.normalizePrice(instrument, params.stopLoss)
+    const normalizedTakeProfit = await venue.normalizePrice(instrument, takeProfit)
     const normalizedLimitPrice = params.limitPrice !== undefined
-        ? await venue.normalizePrice(symbol, params.limitPrice)
-        : undefined
-    const normalizedStopPrice = params.stopPrice !== undefined
-        ? await venue.normalizePrice(symbol, params.stopPrice)
+        ? await venue.normalizePrice(instrument, params.limitPrice)
         : undefined
 
-    const actualRiskAmount = quantity * Math.abs(entryPrice - normalizedStopLoss)
+    const actualRiskAmount = sizing.baseQuantity * Math.abs(entryPrice - normalizedStopLoss)
     const actualRiskPercent = (actualRiskAmount / riskBudgetBase) * 100
 
     const intent: OrderIntent = {
-        instrument: symbol,
+        instrument,
         side: params.side,
-        quantity,
+        quantity: sizing.baseQuantity,
         orderType: params.orderType,
         limitPrice: normalizedLimitPrice,
-        stopPrice: normalizedStopPrice,
         timeInForce: params.timeInForce,
         metadata: {
             action,
@@ -204,7 +203,7 @@ export async function prepareBinanceOrder(
     const protectionOrders = action === "entry" && validation.allowed
         ? await ensureProtectionOrders({
             venue,
-            symbol,
+            instrument,
             stopLoss: normalizedStopLoss,
             takeProfit: normalizedTakeProfit,
             dryRun: policy.dryRun,
@@ -225,7 +224,7 @@ export async function prepareBinanceOrder(
             entryPrice,
             stopLoss: normalizedStopLoss,
             takeProfit: normalizedTakeProfit,
-            quantity,
+            quantity: sizing.baseQuantity,
             leverage,
             riskAmount: actualRiskAmount,
             riskPercent: actualRiskPercent,
@@ -239,26 +238,7 @@ export async function prepareBinanceOrder(
     }
 }
 
-function resolveEntryPrice(
-    params: BinanceOrderParams,
-    markPrice: number
-): number {
-    if (params.orderType === "market") {
-        return markPrice
-    }
-
-    if (params.orderType === "limit" || params.orderType === "stop_limit") {
-        return params.limitPrice ?? 0
-    }
-
-    if (params.orderType === "stop") {
-        return params.stopPrice ?? 0
-    }
-
-    return 0
-}
-
-function rejected(error: string): BinanceOrderResult {
+function rejected(error: string): OKXOrderResult {
     const errorDetail = createExecutionErrorDetail("pre_validation", error, {
         retryable: false,
     })
@@ -277,8 +257,8 @@ function rejected(error: string): BinanceOrderResult {
 }
 
 async function ensureProtectionOrders(config: {
-    venue: BinanceVenueAdapter
-    symbol: string
+    venue: OKXVenueAdapter
+    instrument: string
     stopLoss: number
     takeProfit: number
     dryRun?: boolean
@@ -292,7 +272,7 @@ async function ensureProtectionOrders(config: {
         return {
             cancelledOrderIds: [],
             createdOrderIds: [],
-            error: "Dry run mode: protection orders not sent to Binance",
+            error: "Dry run mode: protection orders not sent to OKX",
         }
     }
 
@@ -300,7 +280,7 @@ async function ensureProtectionOrders(config: {
         return {
             cancelledOrderIds: [],
             createdOrderIds: [],
-            error: "Entry order is pending. Re-run propose_adjustment after fill to attach SL/TP.",
+            error: "Entry order is pending. Re-run propose_adjustment after fill to attach or refresh SL/TP.",
         }
     }
 
@@ -313,10 +293,11 @@ async function ensureProtectionOrders(config: {
     }
 
     let lastError: string | undefined
+
     for (let attempt = 0; attempt < 3; attempt++) {
         try {
             const updated = await config.venue.updateProtectionOrders({
-                instrument: config.symbol,
+                instrument: config.instrument,
                 stopLoss: config.stopLoss,
                 takeProfit: config.takeProfit,
             })
@@ -327,7 +308,7 @@ async function ensureProtectionOrders(config: {
             }
         } catch (error) {
             lastError = error instanceof Error ? error.message : String(error)
-            const shouldRetry = lastError.includes("No open position found")
+            const shouldRetry = lastError.includes("POSITION_NOT_FOUND") || lastError.includes("No open OKX swap position found")
 
             if (!shouldRetry || attempt === 2) {
                 break

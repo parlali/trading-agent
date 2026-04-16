@@ -8,7 +8,7 @@ export const baseStrategyPolicySchema = z.object({
 export type BaseStrategyPolicy = z.infer<typeof baseStrategyPolicySchema>
 
 export const strategyConfigSchema = z.object({
-    app: z.enum(["alpaca-options", "polymarket", "mt5", "binance-futures"]),
+    app: z.enum(["alpaca-options", "polymarket", "mt5", "okx-swap"]),
     name: z.string().min(1),
     enabled: z.boolean(),
     schedule: z.string().min(1),
@@ -68,7 +68,7 @@ export const mt5PolicySchema = baseStrategyPolicySchema.extend({
 
 export type MT5Policy = z.infer<typeof mt5PolicySchema>
 
-export const binancePolicySchema = baseStrategyPolicySchema.extend({
+export const okxPolicySchema = baseStrategyPolicySchema.extend({
     allowedInstruments: z.array(z.string().trim().min(1)).min(1),
     maxLeverage: z.number().int().positive().max(5),
     maxRiskPercent: z.number().positive().max(100),
@@ -78,13 +78,13 @@ export const binancePolicySchema = baseStrategyPolicySchema.extend({
     requireTakeProfit: z.boolean().default(false),
 })
 
-export type BinancePolicy = z.infer<typeof binancePolicySchema>
+export type OKXPolicy = z.infer<typeof okxPolicySchema>
 
 const policySchemas: Record<string, z.ZodType> = {
     "alpaca-options": alpacaOptionsPolicySchema,
     "polymarket": polymarketPolicySchema,
     "mt5": mt5PolicySchema,
-    "binance-futures": binancePolicySchema,
+    "okx-swap": okxPolicySchema,
 }
 
 export function validateStrategyConfig(raw: unknown): StrategyConfig {
@@ -163,10 +163,10 @@ export const MT5_POLICY_DEFAULTS: MT5Policy = {
     allowOverlappingExposure: false,
 }
 
-export const BINANCE_POLICY_DEFAULTS: BinancePolicy = {
+export const OKX_POLICY_DEFAULTS: OKXPolicy = {
     dryRun: true,
     model: "",
-    allowedInstruments: ["BTCUSDT", "ETHUSDT"],
+    allowedInstruments: ["BTC-USDT-SWAP", "ETH-USDT-SWAP"],
     maxLeverage: 3,
     maxRiskPercent: 1,
     tradingHours: { start: "00:00", end: "23:59", timezone: "UTC" },
@@ -179,14 +179,14 @@ export const POLICY_DEFAULTS: Record<string, Record<string, unknown>> = {
     "alpaca-options": ALPACA_OPTIONS_POLICY_DEFAULTS,
     "polymarket": POLYMARKET_POLICY_DEFAULTS,
     "mt5": MT5_POLICY_DEFAULTS,
-    "binance-futures": BINANCE_POLICY_DEFAULTS,
+    "okx-swap": OKX_POLICY_DEFAULTS,
 }
 
 export const STRATEGY_CONTEXT_DEFAULTS: Record<string, string> = {
     "alpaca-options": ALPACA_OPTIONS_CONTEXT_DEFAULT,
     "polymarket": "",
     "mt5": "",
-    "binance-futures": "",
+    "okx-swap": "",
 }
 
 export function validatePolicy(app: string, rawPolicy: unknown): Record<string, unknown> {

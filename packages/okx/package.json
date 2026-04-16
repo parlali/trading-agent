@@ -1,5 +1,5 @@
 {
-    "name": "@valiq-trading/binance",
+    "name": "@valiq-trading/okx",
     "version": "1.0.0",
     "type": "module",
     "private": true,
