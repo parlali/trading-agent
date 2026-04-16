@@ -583,6 +583,22 @@ class MT5Client:
                 "timeDone": int(order.time_done) * 1000 if order.time_done else 0,
             }
 
+        positions = mt5.positions_get(ticket=order_id)
+        if positions and len(positions) > 0:
+            position = positions[0]
+            return {
+                "ticket": int(position.ticket),
+                "symbol": position.symbol,
+                "type": self._order_type_str(position.type),
+                "volume": float(position.volume),
+                "volumeInitial": float(position.volume),
+                "price": float(position.price_open),
+                "stopLoss": float(position.sl),
+                "takeProfit": float(position.tp),
+                "state": "filled",
+                "timeDone": int(position.time) * 1000 if position.time else 0,
+            }
+
         deals = mt5.history_deals_get(ticket=order_id)
         if not deals:
             epoch = datetime(2020, 1, 1, tzinfo=timezone.utc)
@@ -590,34 +606,26 @@ class MT5Client:
             deals = mt5.history_deals_get(epoch, now, ticket=order_id)
 
         if deals and len(deals) > 0:
-            deal = deals[0]
-            deal_type_map = {
-                mt5.DEAL_TYPE_BUY: "buy",
-                mt5.DEAL_TYPE_SELL: "sell",
-                mt5.DEAL_TYPE_BALANCE: "balance",
-                mt5.DEAL_TYPE_CREDIT: "credit",
-                mt5.DEAL_TYPE_CHARGE: "charge",
-                mt5.DEAL_TYPE_CORRECTION: "correction",
-                mt5.DEAL_TYPE_BONUS: "bonus",
-                mt5.DEAL_TYPE_COMMISSION: "commission",
-                mt5.DEAL_TYPE_COMMISSION_DAILY: "commission_daily",
-                mt5.DEAL_TYPE_COMMISSION_MONTHLY: "commission_monthly",
-                mt5.DEAL_TYPE_COMMISSION_AGENT_DAILY: "commission_agent_daily",
-                mt5.DEAL_TYPE_COMMISSION_AGENT_MONTHLY: "commission_agent_monthly",
-                mt5.DEAL_TYPE_INTEREST: "interest",
-                mt5.DEAL_TYPE_BUY_CANCELED: "buy_canceled",
-                mt5.DEAL_TYPE_SELL_CANCELED: "sell_canceled",
-            }
-            return {
-                "ticket": int(deal.order),
-                "symbol": deal.symbol,
-                "type": deal_type_map.get(deal.type, f"unknown_{deal.type}"),
-                "volume": float(deal.volume),
-                "price": float(deal.price),
-                "profit": float(deal.profit),
-                "state": "filled",
-                "timeDone": int(deal.time) * 1000,
-            }
+            order_deals = [
+                deal for deal in deals
+                if int(getattr(deal, "order", 0)) == order_id and deal.type in (mt5.DEAL_TYPE_BUY, mt5.DEAL_TYPE_SELL)
+            ]
+            if order_deals:
+                total_volume = sum(abs(float(deal.volume)) for deal in order_deals)
+                weighted_price = sum(abs(float(deal.volume)) * float(deal.price) for deal in order_deals)
+                latest_deal = max(order_deals, key=lambda deal: int(getattr(deal, "time", 0)))
+                if total_volume > 0:
+                    return {
+                        "ticket": int(latest_deal.order),
+                        "symbol": latest_deal.symbol,
+                        "type": "buy" if latest_deal.type == mt5.DEAL_TYPE_BUY else "sell",
+                        "volume": total_volume,
+                        "volumeInitial": total_volume,
+                        "price": weighted_price / total_volume,
+                        "profit": float(latest_deal.profit),
+                        "state": "filled",
+                        "timeDone": int(latest_deal.time) * 1000,
+                    }
 
         history_orders = mt5.history_orders_get(ticket=order_id)
         if not history_orders:

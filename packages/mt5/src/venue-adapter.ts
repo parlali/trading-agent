@@ -270,16 +270,17 @@ export class MT5VenueAdapter implements VenueAdapter, PriceVerifier {
         }
 
         const mappedStatus = mapMT5OrderState(status.state)
-        const isFilledStatus = mappedStatus === "filled" || mappedStatus === "partially_filled"
-        const filledQuantity = isFilledStatus
-            ? Math.max((status.volumeInitial ?? status.volume) - status.volume, 0) || status.volume
-            : 0
+        const filledQuantity = resolveMT5FilledQuantity(status, mappedStatus)
+        const hasFilledQuantity = filledQuantity > 0
+        const normalizedStatus = (mappedStatus === "filled" || mappedStatus === "partially_filled") && !hasFilledQuantity
+            ? "pending"
+            : mappedStatus
 
         return {
             orderId,
-            status: mappedStatus,
-            filledQuantity,
-            fillPrice: isFilledStatus ? status.price : undefined,
+            status: normalizedStatus,
+            filledQuantity: hasFilledQuantity ? filledQuantity : 0,
+            fillPrice: hasFilledQuantity && status.price > 0 ? status.price : undefined,
             timestamp: Date.now(),
         }
     }
@@ -467,6 +468,39 @@ function mapMT5SubmissionResult(
         ...execution,
         fillPrice: undefined,
     }
+}
+
+function resolveMT5FilledQuantity(
+    status: {
+        volume: number
+        volumeInitial?: number
+    },
+    mappedStatus: ExecutionResult["status"]
+): number {
+    if (mappedStatus !== "filled" && mappedStatus !== "partially_filled") {
+        return 0
+    }
+
+    const remainingVolume = Math.max(status.volume, 0)
+    const initialVolume = status.volumeInitial === undefined
+        ? undefined
+        : Math.max(status.volumeInitial, 0)
+
+    if (initialVolume !== undefined) {
+        const inferredFill = initialVolume - remainingVolume
+        if (inferredFill > 0) {
+            return inferredFill
+        }
+        if (mappedStatus === "filled" && initialVolume > 0 && remainingVolume === 0) {
+            return initialVolume
+        }
+        if (mappedStatus === "filled" && initialVolume === 0 && remainingVolume > 0) {
+            return remainingVolume
+        }
+        return 0
+    }
+
+    return remainingVolume
 }
 
 function aggregateMT5CloseResults(

@@ -102,7 +102,6 @@ export const reconcileProviderPortfolio = mutation({
         const protectionLevelsByInstrument = buildProtectionLevels(args.workingOrders)
 
         const liveWorkingOrderIds = new Set(args.workingOrders.map((order) => order.orderId))
-        const livePositionInstruments = new Set(args.positions.map((position) => position.instrument))
         const statusMismatches: string[] = []
         const closedPersistedOrders: string[] = []
 
@@ -201,11 +200,18 @@ export const reconcileProviderPortfolio = mutation({
                 continue
             }
 
-            const inferredStatus = inferClosedOrderStatus(existingOrder, livePositionInstruments)
+            const inferredResolution = inferClosedOrderStatus({
+                app: args.app,
+                order: existingOrder,
+                livePositions: args.positions,
+            })
             closedPersistedOrders.push(existingOrder.orderId)
 
             await ctx.db.patch(existingOrder._id, {
-                status: inferredStatus,
+                status: inferredResolution.status,
+                filledQuantity: inferredResolution.filledQuantity ?? existingOrder.filledQuantity,
+                remainingQuantity: inferredResolution.remainingQuantity ?? existingOrder.remainingQuantity,
+                avgFillPrice: inferredResolution.avgFillPrice ?? existingOrder.avgFillPrice,
                 updatedAt: now,
                 polling: {
                     ...existingOrder.polling,
@@ -225,7 +231,7 @@ export const reconcileProviderPortfolio = mutation({
                     instrument: existingOrder.instrument,
                     claimInstruments: getClaimInstrumentsForOrder(existingOrder.instrument, existingOrder.intent),
                     action: existingOrder.action,
-                    status: inferredStatus,
+                    status: inferredResolution.status,
                     updatedAt: now,
                 })
             }
@@ -844,15 +850,86 @@ function buildPositionKey(position: {
     return `${position.instrument}:${position.side}`
 }
 
-function inferClosedOrderStatus(
-    order: OrderDoc,
-    _livePositionInstruments: Set<string>
-): Doc<"orders">["status"] {
+function inferClosedOrderStatus(args: {
+    app: Doc<"strategies">["app"]
+    order: OrderDoc
+    livePositions: Array<{
+        instrument: string
+        side: "long" | "short"
+        quantity: number
+        entryPrice: number
+        metadata?: string
+    }>
+}): {
+    status: Doc<"orders">["status"]
+    filledQuantity?: number
+    remainingQuantity?: number
+    avgFillPrice?: number
+} {
+    const order = args.order
+
     if (order.filledQuantity > 0) {
-        return "filled"
+        return {
+            status: "filled",
+            filledQuantity: order.filledQuantity,
+            remainingQuantity: Math.max(order.quantity - order.filledQuantity, 0),
+            avgFillPrice: order.avgFillPrice,
+        }
     }
 
-    return "cancelled"
+    if (args.app === "mt5") {
+        const matchingPosition = args.livePositions.find((position) =>
+            position.instrument === order.instrument &&
+            mt5PositionMatchesOrderDirection(order, position.side) &&
+            extractMt5Ticket(position.metadata) === order.orderId
+        )
+
+        if (matchingPosition) {
+            const resolvedFilledQuantity = matchingPosition.quantity > 0
+                ? Math.min(order.quantity, matchingPosition.quantity)
+                : order.quantity
+
+            return {
+                status: "filled",
+                filledQuantity: resolvedFilledQuantity,
+                remainingQuantity: Math.max(order.quantity - resolvedFilledQuantity, 0),
+                avgFillPrice: matchingPosition.entryPrice > 0
+                    ? matchingPosition.entryPrice
+                    : order.avgFillPrice,
+            }
+        }
+    }
+
+    return {
+        status: "cancelled",
+    }
+}
+
+function mt5PositionMatchesOrderDirection(order: OrderDoc, side: "long" | "short"): boolean {
+    if (order.intent.side === "buy") {
+        return side === "long"
+    }
+    if (order.intent.side === "sell") {
+        return side === "short"
+    }
+    return true
+}
+
+function extractMt5Ticket(metadata?: string): string | undefined {
+    if (!metadata) {
+        return undefined
+    }
+
+    try {
+        const parsed = JSON.parse(metadata) as { ticket?: unknown }
+        if (typeof parsed.ticket === "number" || typeof parsed.ticket === "string") {
+            return String(parsed.ticket)
+        }
+    } catch {
+        return undefined
+    }
+
+    return undefined
 }
 
 async function upsertProviderPositionRows(

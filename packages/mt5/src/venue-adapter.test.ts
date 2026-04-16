@@ -97,6 +97,45 @@ describe("MT5VenueAdapter", () => {
         expect(result.fillPrice).toBeUndefined()
     })
 
+    it("fails closed when MT5 reports filled status with zero executable volume", async () => {
+        const client = createClient()
+        client.getOrderStatus = async () => ({
+            ticket: 1593774587,
+            symbol: "XAUUSD",
+            type: "sell_limit",
+            volume: 0,
+            price: 0,
+            state: "filled",
+        })
+
+        const adapter = new MT5VenueAdapter(client, credentials)
+        const result = await adapter.getOrderStatus("1593774587")
+
+        expect(result.status).toBe("pending")
+        expect(result.filledQuantity).toBe(0)
+        expect(result.fillPrice).toBeUndefined()
+    })
+
+    it("uses MT5 initial-minus-remaining volume for filled status", async () => {
+        const client = createClient()
+        client.getOrderStatus = async () => ({
+            ticket: 1594203775,
+            symbol: "XAUUSD",
+            type: "sell_limit",
+            volume: 0,
+            volumeInitial: 0.01,
+            price: 4798.66,
+            state: "filled",
+        })
+
+        const adapter = new MT5VenueAdapter(client, credentials)
+        const result = await adapter.getOrderStatus("1594203775")
+
+        expect(result.status).toBe("filled")
+        expect(result.filledQuantity).toBe(0.01)
+        expect(result.fillPrice).toBe(4798.66)
+    })
+
     it("closes every MT5 position for the requested symbol", async () => {
         const client = createClient()
         const closedTickets: number[] = []

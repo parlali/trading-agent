@@ -31,11 +31,27 @@ describe("mt5OrderParamsSchema", () => {
         expect(parsed.riskRewardRatio).toBe(2)
     })
 
-    it("rejects requests that provide both takeProfit and riskRewardRatio", () => {
-        expect(() => mt5OrderParamsSchema.parse({
+    it("accepts requests that include both takeProfit and riskRewardRatio", () => {
+        const parsed = mt5OrderParamsSchema.parse({
             ...baseParams,
             takeProfit: 3300,
             riskRewardRatio: 2,
-        })).toThrow("Provide exactly one of takeProfit or riskRewardRatio")
+        })
+
+        expect(parsed.takeProfit).toBe(3300)
+        expect(parsed.riskRewardRatio).toBe(2)
+    })
+
+    it("rejects requests that provide neither takeProfit nor positive riskRewardRatio", () => {
+        expect(() => mt5OrderParamsSchema.parse({
+            ...baseParams,
+        })).toThrow("Provide takeProfit or a positive riskRewardRatio")
+    })
+
+    it("rejects non-positive riskRewardRatio when takeProfit is not provided", () => {
+        expect(() => mt5OrderParamsSchema.parse({
+            ...baseParams,
+            riskRewardRatio: 0,
+        })).toThrow("riskRewardRatio must be greater than 0 when takeProfit is not provided")
     })
 })

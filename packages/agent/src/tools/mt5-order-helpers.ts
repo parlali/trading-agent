@@ -30,20 +30,28 @@ const mt5OrderBaseSchema = z.object({
     stopPrice: optionalNumberField,
     stopLoss: z.number(),
     takeProfit: optionalNumberField,
-    riskRewardRatio: optionalNumberField.pipe(z.number().positive().optional()),
+    riskRewardRatio: optionalNumberField,
     timeInForce: z.enum(["day", "gtc", "ioc", "fok"]).default("gtc"),
     reason: z.string(),
 })
 
 export const mt5OrderParamsSchema = mt5OrderBaseSchema.superRefine((value, ctx) => {
     const hasTakeProfit = value.takeProfit !== undefined
-    const hasRiskRewardRatio = value.riskRewardRatio !== undefined
+    const hasRiskRewardRatio = typeof value.riskRewardRatio === "number" && value.riskRewardRatio > 0
 
-    if (hasTakeProfit === hasRiskRewardRatio) {
+    if (!hasTakeProfit && !hasRiskRewardRatio) {
         ctx.addIssue({
             code: z.ZodIssueCode.custom,
-            message: "Provide exactly one of takeProfit or riskRewardRatio",
-            path: hasTakeProfit ? ["takeProfit"] : ["riskRewardRatio"],
+            message: "Provide takeProfit or a positive riskRewardRatio",
+            path: ["takeProfit"],
+        })
+    }
+
+    if (!hasTakeProfit && value.riskRewardRatio !== undefined && value.riskRewardRatio <= 0) {
+        ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: "riskRewardRatio must be greater than 0 when takeProfit is not provided",
+            path: ["riskRewardRatio"],
         })
     }
 })
@@ -59,8 +67,8 @@ export const mt5OrderJsonSchema = {
         limitPrice: { type: "number", description: "Entry price for limit/stop_limit orders" },
         stopPrice: { type: "number", description: "Trigger price for stop/stop_limit orders" },
         stopLoss: { type: "number", description: "Absolute price level for stop-loss. Always required." },
-        takeProfit: { type: "number", description: "Absolute price level for take-profit. Provide this OR riskRewardRatio, not both." },
-        riskRewardRatio: { type: "number", description: "Risk-reward ratio (e.g. 2.0 means TP distance is 2x SL distance). Provide this OR takeProfit, not both." },
+        takeProfit: { type: "number", description: "Absolute price level for take-profit. Preferred when provided." },
+        riskRewardRatio: { type: "number", description: "Risk-reward ratio (e.g. 2.0 means TP distance is 2x SL distance). Used when takeProfit is not provided." },
         timeInForce: { type: "string", enum: ["day", "gtc", "ioc", "fok"], default: "gtc" },
         reason: { type: "string", description: "Why this trade is being taken" },
     },
@@ -98,14 +106,14 @@ export async function prepareMT5Order(
     action: "entry" | "adjustment"
 ): Promise<MT5OrderResult> {
     const hasTP = params.takeProfit !== undefined
-    const hasRR = params.riskRewardRatio !== undefined
+    const hasRR = typeof params.riskRewardRatio === "number" && params.riskRewardRatio > 0
 
     if (!hasTP && !hasRR) {
-        return rejected("Provide either takeProfit or riskRewardRatio with your order")
+        return rejected("Provide takeProfit or a positive riskRewardRatio with your order")
     }
 
-    if (hasTP && hasRR) {
-        return rejected("Provide takeProfit OR riskRewardRatio, not both")
+    if (!hasTP && params.riskRewardRatio !== undefined && params.riskRewardRatio <= 0) {
+        return rejected("riskRewardRatio must be greater than 0 when takeProfit is not provided")
     }
 
     const symbolInfo = await venue.getSymbolInfo(params.instrument)
@@ -129,7 +137,7 @@ export async function prepareMT5Order(
     let takeProfit: number
     let impliedRR: number
 
-    if (hasRR) {
+    if (!hasTP && hasRR) {
         takeProfit = computeTakeProfitFromRR(
             entryPrice,
             params.stopLoss,
