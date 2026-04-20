@@ -1,4 +1,11 @@
-import { getAccountEquity, stripMetadataBlock, type StrategyRunContext } from "@valiq-trading/core"
+import {
+    formatRunSystemContextDigestLines,
+    getAccountEquity,
+    type RunSystemContextDigest,
+    stripMetadataBlock,
+    truncateHandoffSummary,
+    type StrategyRunContext,
+} from "@valiq-trading/core"
 
 function formatCurrency(amount: number, currency = "USD"): string {
     return new Intl.NumberFormat("en-US", {
@@ -102,11 +109,14 @@ function buildPendingOrdersSection(context: StrategyRunContext): string {
 }
 
 function buildPreviousRunSection(
-    previousRun: { summary: string; endedAt: number },
+    previousRun: { summary: string; endedAt: number; systemContextDigest?: RunSystemContextDigest },
     currentTimestamp: number
 ): string {
     const minutesAgo = Math.round((currentTimestamp - previousRun.endedAt) / 60000)
-    const cleanSummary = stripMetadataBlock(previousRun.summary)
+    const cleanSummary = truncateHandoffSummary(stripMetadataBlock(previousRun.summary))
+    const previousDigestLines = previousRun.systemContextDigest
+        ? formatRunSystemContextDigestLines(previousRun.systemContextDigest)
+        : []
     return [
         "## Previous Run Handoff",
         "",
@@ -121,6 +131,15 @@ function buildPreviousRunSection(
         "",
         "---",
         "",
+        ...(previousDigestLines.length > 0
+            ? [
+                "Canonical previous-run system digest:",
+                ...previousDigestLines,
+                "",
+                "---",
+                "",
+            ]
+            : []),
         cleanSummary,
         "",
         "---",
@@ -129,8 +148,9 @@ function buildPreviousRunSection(
 
 function buildRuntimeContextSection(runtimeContextLines: string[]): string {
     return [
-        "## Runtime Context",
+        "## System Context Digest",
         "",
+        "Canonical system-authored state snapshot for this run:",
         ...runtimeContextLines,
     ].join("\n")
 }
@@ -211,12 +231,14 @@ function buildPolicySection(context: StrategyRunContext): string {
     } else if (context.app === "alpaca-options") {
         lines.push(
             "",
-            "## Alpaca Iron Condor Order Requirements",
+            "## Alpaca Multi-Leg Credit Structure Requirements",
             "",
-            "Use `propose_order` only for new 4-leg iron condor entries.",
+            "Use `propose_order` only for new 2-leg or 4-leg multi-leg credit entries.",
             "- Structure identity is derived from the provider order and normalized leg set. Quantity is state, not identity.",
             "- Each leg instrument must be a valid OCC option symbol",
-            "- Entry leg sides must be exactly two `sell_to_open` shorts and two `buy_to_open` wings",
+            "- Supported entry structures:",
+            "  - 2-leg one-sided credit vertical: bull put (`sell_to_open` put + `buy_to_open` lower put) or bear call (`sell_to_open` call + `buy_to_open` higher call)",
+            "  - 4-leg iron condor: two `sell_to_open` shorts and two `buy_to_open` wings",
             "- Use quantity as the number of full structures and leg quantity `1` for each leg",
             "- Supported order type: `limit` only",
             "- Supported time in force: `day` only",
@@ -227,7 +249,7 @@ function buildPolicySection(context: StrategyRunContext): string {
             "- Use `modify_order` only to improve or reduce the limit price on a still-working entry order",
             "- Do not use `propose_adjustment` for Alpaca options structures in this strategy path. Filled structures must be managed with `propose_close`, and working entries with `modify_order`.",
             "- Use `get_order_status` and `wait_for_order_update` to supervise working orders",
-            "- Use `propose_close` to close an already-filled iron condor structure",
+            "- Use `propose_close` to close an already-filled credit vertical or iron condor structure",
             "- Do not submit single-leg options, partial structures, stop orders, or duplicate replacement entries",
         )
     } else if (context.app === "polymarket") {

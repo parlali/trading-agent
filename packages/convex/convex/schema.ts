@@ -12,6 +12,10 @@ import {
     claimSourceV,
     portfolioProviderStatusV,
     providerOwnershipStatusV,
+    strategySafetyStateV,
+    executionSafetyFaultCategoryV,
+    runSystemContextDigestV,
+    strategyCooldownReasonV,
 } from "./lib/validators"
 
 export default defineSchema({
@@ -49,6 +53,12 @@ export default defineSchema({
         error: v.optional(v.string()),
         callbackRequestedMinutes: v.optional(v.number()),
         callbackFiresAt: v.optional(v.number()),
+        degradedResearch: v.optional(v.boolean()),
+        degradedReason: v.optional(v.string()),
+        toolFailureCount: v.optional(v.number()),
+        toolRetryCount: v.optional(v.number()),
+        decisionUnderDegradedContext: v.optional(v.boolean()),
+        systemContextDigest: v.optional(runSystemContextDigestV),
     })
         .index("by_strategy", ["strategyId"])
         .index("by_strategy_status", ["strategyId", "status"])
@@ -282,8 +292,10 @@ export default defineSchema({
     provider_positions: defineTable({
         app: venueAppV,
         positionKey: v.string(),
+        providerPositionId: v.optional(v.string()),
         strategyId: v.optional(v.id("strategies")),
         ownershipStatus: providerOwnershipStatusV,
+        expectedExternal: v.optional(v.boolean()),
         instrument: v.string(),
         side: v.union(v.literal("long"), v.literal("short")),
         quantity: v.number(),
@@ -304,6 +316,7 @@ export default defineSchema({
         strategyId: v.optional(v.id("strategies")),
         runId: v.optional(v.id("strategy_runs")),
         ownershipStatus: providerOwnershipStatusV,
+        expectedExternal: v.optional(v.boolean()),
         venue: v.string(),
         instrument: v.string(),
         status: orderStatusV,
@@ -318,11 +331,52 @@ export default defineSchema({
         metadata: v.optional(v.string()),
         submittedAt: v.number(),
         updatedAt: v.number(),
+        cancelAt: v.optional(v.number()),
         syncedAt: v.number(),
     })
         .index("by_app", ["app"])
         .index("by_app_strategy", ["app", "strategyId"])
         .index("by_app_status", ["app", "status"]),
+
+    strategy_risk_states: defineTable({
+        strategyId: v.id("strategies"),
+        app: venueAppV,
+        safetyState: strategySafetyStateV,
+        dayRealizedPnl: v.number(),
+        weekRealizedPnl: v.number(),
+        dayDrawdownLimit: v.optional(v.number()),
+        weekDrawdownLimit: v.optional(v.number()),
+        dayDrawdownProgress: v.optional(v.number()),
+        weekDrawdownProgress: v.optional(v.number()),
+        cooldownActive: v.boolean(),
+        cooldownReason: v.optional(strategyCooldownReasonV),
+        cooldownStartedAt: v.optional(v.number()),
+        cooldownExpiresAt: v.optional(v.number()),
+        blockedInstruments: v.array(v.string()),
+        forcedExitClusterInstruments: v.array(v.string()),
+        unresolvedExecutionFaultCount: v.number(),
+        lastBreachReason: v.optional(v.string()),
+        updatedAt: v.number(),
+    })
+        .index("by_strategy", ["strategyId"])
+        .index("by_app", ["app"])
+        .index("by_app_state", ["app", "safetyState"]),
+
+    execution_safety_faults: defineTable({
+        strategyId: v.id("strategies"),
+        app: venueAppV,
+        instrument: v.string(),
+        category: executionSafetyFaultCategoryV,
+        message: v.string(),
+        providerPayload: v.optional(v.string()),
+        blocked: v.boolean(),
+        occurredAt: v.number(),
+        resolvedAt: v.optional(v.number()),
+        resolutionNote: v.optional(v.string()),
+    })
+        .index("by_strategy", ["strategyId"])
+        .index("by_strategy_blocked", ["strategyId", "blocked"])
+        .index("by_app_blocked", ["app", "blocked"]),
 
     manual_run_requests: defineTable({
         strategyId: v.id("strategies"),

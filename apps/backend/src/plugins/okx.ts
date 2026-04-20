@@ -12,10 +12,8 @@ import {
     ValiqResearchAdapter,
 } from "@valiq-trading/valiq"
 import {
-    getCurrentTimeInTimezone,
+    isWithinSessionFlatWindow,
     okxPolicySchema,
-    padTime,
-    type OKXPolicy,
     type RiskValidator,
     type VenueAdapter,
 } from "@valiq-trading/core"
@@ -29,7 +27,6 @@ import {
 } from "@valiq-trading/okx"
 import type {
     ExtraToolsConfig,
-    PostRunHookConfig,
     PreRunHookConfig,
     PreRunHookResult,
     VenuePlugin,
@@ -149,11 +146,6 @@ export class OKXPlugin implements VenuePlugin {
         const venue = config.venue as OKXVenueAdapter
         const policy = okxPolicySchema.parse(config.policy)
 
-        const emergencyFlattened = await this.checkEmergencyFlatten(venue, policy, config.strategyId, config)
-        if (emergencyFlattened) {
-            return { skip: true, reason: "Emergency flatten executed" }
-        }
-
         const eodFlattened = await this.checkEndOfSessionFlatten(venue, policy, config.strategyId, config)
         if (eodFlattened) {
             return { skip: true, reason: "End-of-session flatten executed" }
@@ -166,62 +158,25 @@ export class OKXPlugin implements VenuePlugin {
         }
     }
 
-    async postRunHooks(config: PostRunHookConfig): Promise<void> {
-        const venue = config.venue as OKXVenueAdapter
-        const policy = okxPolicySchema.parse(config.policy)
-        await this.checkEmergencyFlatten(venue, policy, config.strategyId, config)
-    }
-
-    private async checkEmergencyFlatten(
-        venue: OKXVenueAdapter,
-        policy: OKXPolicy,
-        strategyId: string,
-        config: { logger: PreRunHookConfig["logger"]; createAlert: PreRunHookConfig["createAlert"] }
-    ): Promise<boolean> {
-        const accountState = await venue.getAccountState()
-
-        if (accountState.openPnl < 0 && Math.abs(accountState.openPnl) >= policy.emergencyFlattenThreshold) {
-            config.logger.error("OKX emergency flatten triggered", {
-                strategyId,
-                openPnl: accountState.openPnl,
-                threshold: policy.emergencyFlattenThreshold,
-            })
-
-            await config.createAlert({
-                strategyId,
-                app: this.app,
-                severity: "critical",
-                message: `OKX emergency flatten triggered: unrealized loss ${Math.abs(accountState.openPnl).toFixed(2)} exceeds threshold ${policy.emergencyFlattenThreshold}`,
-            })
-
-            const result = await venue.closeAllPositions()
-            config.logger.info("OKX emergency flatten completed", {
-                strategyId,
-                closed: result.closed,
-            })
-
-            return true
-        }
-
-        return false
-    }
-
     private async checkEndOfSessionFlatten(
         venue: OKXVenueAdapter,
-        policy: OKXPolicy,
+        policy: ReturnType<typeof okxPolicySchema.parse>,
         strategyId: string,
         config: { logger: PreRunHookConfig["logger"]; createAlert: PreRunHookConfig["createAlert"] }
     ): Promise<boolean> {
-        const { end, timezone } = policy.tradingHours
-        const now = getCurrentTimeInTimezone(timezone)
-        const [endHour, endMinute] = end.split(":").map(Number) as [number, number]
+        const sessionFlatPolicy = policy.safety.sessionFlat
+        if (!sessionFlatPolicy.enabled) {
+            return false
+        }
 
-        const currentMinutes = now.hours * 60 + now.minutes
-        const endMinutes = endHour * 60 + endMinute
-        const flattenMinutes = endMinutes - 15
-        const shouldFlatten = currentMinutes >= flattenMinutes && currentMinutes < endMinutes
+        const timezone = sessionFlatPolicy.timezone || policy.tradingHours.timezone
+        const flattenWindow = isWithinSessionFlatWindow({
+            end: policy.tradingHours.end,
+            timezone,
+            closeBufferMinutes: sessionFlatPolicy.closeBufferMinutes,
+        })
 
-        if (!shouldFlatten) {
+        if (!flattenWindow.shouldFlatten) {
             return false
         }
 
@@ -232,8 +187,9 @@ export class OKXPlugin implements VenuePlugin {
 
         config.logger.warn("OKX end-of-session flatten triggered", {
             strategyId,
-            currentTime: `${padTime(now.hours)}:${padTime(now.minutes)}`,
-            endTime: end,
+            currentTime: flattenWindow.currentTime,
+            endTime: policy.tradingHours.end,
+            closeBufferMinutes: sessionFlatPolicy.closeBufferMinutes,
             openPositions: positions.length,
         })
 
@@ -241,7 +197,7 @@ export class OKXPlugin implements VenuePlugin {
             strategyId,
             app: this.app,
             severity: "warning",
-            message: `OKX end-of-session flatten: closing ${positions.length} position(s) before ${end} ${timezone}`,
+            message: `Session-flat policy triggered: closing ${positions.length} position(s) before ${policy.tradingHours.end} ${timezone}`,
         })
 
         const result = await venue.closeAllPositions()
@@ -255,7 +211,7 @@ export class OKXPlugin implements VenuePlugin {
 
     private async buildRuntimeContextLines(
         venue: OKXVenueAdapter,
-        policy: OKXPolicy,
+        policy: ReturnType<typeof okxPolicySchema.parse>,
         config: { logger: PreRunHookConfig["logger"]; strategyId: string }
     ): Promise<string[] | undefined> {
         try {

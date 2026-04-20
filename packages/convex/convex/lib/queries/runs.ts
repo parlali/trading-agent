@@ -35,7 +35,8 @@ export const getLastCompletedRunSummary = query({
         if (!run?.summary) return null
         return {
             summary: run.summary,
-            endedAt: run.endedAt,
+            endedAt: run.endedAt ?? run.startedAt,
+            systemContextDigest: run.systemContextDigest,
         }
     },
 })

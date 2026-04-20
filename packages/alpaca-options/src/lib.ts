@@ -21,8 +21,16 @@ export {
 } from "./runtime-config"
 export {
     alpacaRiskValidators,
+    buildAlpacaStructureInstrumentFromLegs,
+    buildCreditVerticalInstrument,
+    buildCreditVerticalInstrumentFromLegs,
     buildIronCondorInstrument,
     buildIronCondorInstrumentFromLegs,
     parseOptionContractSymbol,
+} from "./risk-rules"
+export type {
+    AlpacaStructureType,
+    AlpacaVerticalSpreadType,
+    ParsedOptionContract,
 } from "./risk-rules"
 export { AlpacaOptionsVenueAdapter } from "./venue-adapter"

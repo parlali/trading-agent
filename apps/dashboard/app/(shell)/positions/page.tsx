@@ -18,6 +18,7 @@ import {
     type PortfolioTradeRow,
 } from "@/components/portfolio"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
+import { Badge } from "@/components/ui/badge"
 import { PageSkeleton } from "@/components/page-skeleton"
 import { VenueBadge } from "@/components/venue-badge"
 import { StatusBadge } from "@/components/status-badge"
@@ -32,9 +33,11 @@ import { Activity, ClipboardList } from "lucide-react"
 
 type PortfolioPosition = {
     app: string
+    providerPositionId?: string
     strategyId?: string
     strategyName?: string
     ownershipStatus: string
+    expectedExternal?: boolean
     instrument: string
     side: string
     quantity: number
@@ -51,6 +54,7 @@ type PortfolioPendingOrder = {
     strategyId?: string
     strategyName?: string
     ownershipStatus: string
+    expectedExternal?: boolean
     orderId: string
     instrument: string
     venue: string
@@ -65,6 +69,28 @@ type PortfolioPendingOrder = {
     avgFillPrice?: number
     submittedAt: number
     updatedAt: number
+    cancelAt?: number
+}
+
+function renderOwnershipLabel(row: {
+    strategyName?: string
+    ownershipStatus: string
+    expectedExternal?: boolean
+}) {
+    if (row.expectedExternal) {
+        return (
+            <span className="inline-flex items-center gap-1.5">
+                <span>Expected External</span>
+                <Badge variant="outline" className="text-[10px] leading-none">manual</Badge>
+            </span>
+        )
+    }
+
+    if (row.ownershipStatus === "owned") {
+        return row.strategyName ?? "Owned"
+    }
+
+    return "Unowned"
 }
 
 function getPositionKey(pos: PortfolioPosition) {
@@ -86,7 +112,7 @@ const positionColumns: Column<PortfolioPosition>[] = [
         key: "strategy",
         header: "Strategy",
         cellClassName: "truncate max-w-[120px]",
-        render: (pos) => pos.strategyName ?? "Unowned",
+        render: (pos) => renderOwnershipLabel(pos),
     },
     {
         key: "instrument",
@@ -160,7 +186,7 @@ const pendingOrderColumns: Column<PortfolioPendingOrder>[] = [
         key: "strategy",
         header: "Strategy",
         cellClassName: "truncate max-w-[120px]",
-        render: (order) => order.strategyName ?? "Unowned",
+        render: (order) => renderOwnershipLabel(order),
     },
     {
         key: "instrument",
@@ -204,6 +230,24 @@ const pendingOrderColumns: Column<PortfolioPendingOrder>[] = [
         header: "Updated",
         cellClassName: "text-xs text-muted-foreground whitespace-nowrap",
         render: (order) => formatRelativeTime(order.updatedAt),
+    },
+    {
+        key: "ttl",
+        header: "TTL",
+        cellClassName: "text-xs whitespace-nowrap",
+        render: (order) => {
+            if (order.cancelAt === undefined) {
+                return <span className="text-muted-foreground">--</span>
+            }
+            if (order.cancelAt <= Date.now()) {
+                return <span className="text-loss">expired</span>
+            }
+            return (
+                <span className="text-muted-foreground">
+                    {formatRelativeTime(order.cancelAt)}
+                </span>
+            )
+        },
     },
 ]
 
@@ -254,7 +298,7 @@ function PositionsTab({ positions }: { positions: PortfolioPosition[] }) {
                                 <div className="flex items-center gap-2">
                                     <VenueBadge app={pos.app} />
                                     <span className="truncate max-w-[100px]">
-                                        {pos.strategyName ?? "Unowned"}
+                                        {pos.expectedExternal ? "Expected External" : (pos.strategyName ?? "Unowned")}
                                     </span>
                                 </div>
                                 <div className="flex items-center gap-3 font-mono tabular-nums shrink-0">
@@ -324,7 +368,7 @@ function PendingOrdersTab({ orders }: { orders: PortfolioPendingOrder[] }) {
                                 <div className="flex items-center gap-2">
                                     <VenueBadge app={order.app} />
                                     <span className="truncate max-w-[100px]">
-                                        {order.strategyName ?? "Unowned"}
+                                        {order.expectedExternal ? "Expected External" : (order.strategyName ?? "Unowned")}
                                     </span>
                                 </div>
                                 <div className="flex items-center gap-3 font-mono tabular-nums shrink-0">

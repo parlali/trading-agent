@@ -6,6 +6,8 @@ import {
     EVENT_TYPES,
     PORTFOLIO_PROVIDER_STATUSES,
     PROVIDER_OWNERSHIP_STATUSES,
+    STRATEGY_SAFETY_STATES,
+    EXECUTION_SAFETY_FAULT_CATEGORIES,
 } from "@valiq-trading/core"
 import {
     ORDER_STATUSES,
@@ -37,3 +39,46 @@ export const claimSourceV = v.union(
 
 export const portfolioProviderStatusV = stringLiterals(PORTFOLIO_PROVIDER_STATUSES)
 export const providerOwnershipStatusV = stringLiterals(PROVIDER_OWNERSHIP_STATUSES)
+export const strategySafetyStateV = stringLiterals(STRATEGY_SAFETY_STATES)
+export const executionSafetyFaultCategoryV = stringLiterals(EXECUTION_SAFETY_FAULT_CATEGORIES)
+
+export const strategyCooldownReasonV = v.union(
+    v.literal("day_drawdown"),
+    v.literal("week_drawdown"),
+    v.literal("forced_exit_cluster"),
+    v.literal("execution_fault")
+)
+
+export const runSystemContextDigestV = v.object({
+    schemaVersion: v.literal(1),
+    generatedAt: v.number(),
+    risk: v.object({
+        safetyState: strategySafetyStateV,
+        dayRealizedPnl: v.number(),
+        weekRealizedPnl: v.number(),
+        dayDrawdownLimit: v.optional(v.number()),
+        weekDrawdownLimit: v.optional(v.number()),
+        cooldownActive: v.boolean(),
+        cooldownReason: v.optional(strategyCooldownReasonV),
+        cooldownExpiresAt: v.optional(v.number()),
+        blockedInstruments: v.array(v.string()),
+        forcedExitClusterInstruments: v.array(v.string()),
+        unresolvedExecutionFaultCount: v.number(),
+    }),
+    recentTrades: v.object({
+        dayEntries: v.number(),
+        dayCloses: v.number(),
+        dayForcedExits: v.number(),
+        dayRejectedOrTerminal: v.number(),
+        weekRealizedPnl: v.number(),
+        closeOutStreakDirection: v.optional(v.union(v.literal("win"), v.literal("loss"))),
+        closeOutStreakCount: v.number(),
+    }),
+    pendingOrders: v.array(v.object({
+        orderId: v.string(),
+        instrument: v.string(),
+        action: orderActionV,
+        status: orderStatusV,
+        cancelAt: v.optional(v.number()),
+    })),
+})

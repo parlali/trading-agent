@@ -33,6 +33,7 @@ const accountStateInputV = v.object({
 
 const providerPositionInputV = v.object({
     instrument: v.string(),
+    providerPositionId: v.optional(v.string()),
     side: v.union(v.literal("long"), v.literal("short")),
     quantity: v.number(),
     entryPrice: v.number(),
@@ -52,6 +53,7 @@ const providerWorkingOrderInputV = v.object({
     remainingQuantity: v.number(),
     submittedAt: v.number(),
     updatedAt: v.number(),
+    cancelAt: v.optional(v.number()),
     side: v.optional(v.union(v.literal("buy"), v.literal("sell"))),
     limitPrice: v.optional(v.number()),
     stopPrice: v.optional(v.number()),
@@ -100,6 +102,14 @@ export const reconcileProviderPortfolio = mutation({
         const activeOrders = await listActiveOrdersForApp(ctx, strategies)
         const activeOrdersById = new Map(activeOrders.map((order) => [order.orderId, order]))
         const protectionLevelsByInstrument = buildProtectionLevels(args.workingOrders)
+        const expectedExternalInstruments = collectExpectedExternalInstruments(strategies)
+        const existingProviderPositions = await ctx.db
+            .query("provider_positions")
+            .withIndex("by_app", (q) => q.eq("app", args.app))
+            .collect()
+        const existingProviderPositionsByKey = new Map(
+            existingProviderPositions.map((position) => [position.positionKey, position])
+        )
 
         const liveWorkingOrderIds = new Set(args.workingOrders.map((order) => order.orderId))
         const statusMismatches: string[] = []
@@ -166,16 +176,25 @@ export const reconcileProviderPortfolio = mutation({
             .collect()
         const refreshedClaimsByInstrument = buildClaimsByInstrument(refreshedClaims, strategyMap)
 
-        const resolvedPositions = args.positions.map((position) => ({
-            ...position,
-            stopLoss: position.stopLoss ?? protectionLevelsByInstrument.get(position.instrument)?.stopLoss,
-            takeProfit: position.takeProfit ?? protectionLevelsByInstrument.get(position.instrument)?.takeProfit,
-            positionKey: buildPositionKey(position),
-            ...resolveOwnership({
+        const resolvedPositions = args.positions.map((position) => {
+            const positionKey = buildPositionKey(position)
+            const ownership = resolveOwnership({
                 instrument: position.instrument,
+                positionKey,
                 claimsByInstrument: refreshedClaimsByInstrument,
-            }),
-        }))
+                existingPositionByKey: existingProviderPositionsByKey,
+            })
+            const expectedExternal = ownership.ownershipStatus !== "owned" && expectedExternalInstruments.has(position.instrument)
+
+            return {
+                ...position,
+                stopLoss: position.stopLoss ?? protectionLevelsByInstrument.get(position.instrument)?.stopLoss,
+                takeProfit: position.takeProfit ?? protectionLevelsByInstrument.get(position.instrument)?.takeProfit,
+                positionKey,
+                expectedExternal,
+                ...ownership,
+            }
+        })
 
         const resolvedWorkingOrders = args.workingOrders.map((order) => {
             const existingOrder = activeOrdersById.get(order.orderId)
@@ -185,12 +204,15 @@ export const reconcileProviderPortfolio = mutation({
                 existingOrder,
                 strategyMap,
             })
+            const expectedExternal = ownership.ownershipStatus !== "owned" && expectedExternalInstruments.has(order.instrument)
 
             return {
                 ...order,
                 venue: existingOrder?.venue ?? args.venue,
                 action: existingOrder?.action,
                 runId: existingOrder?.runId,
+                cancelAt: order.cancelAt ?? readOrderCancelAt(existingOrder),
+                expectedExternal,
                 ...ownership,
             }
         })
@@ -240,8 +262,10 @@ export const reconcileProviderPortfolio = mutation({
         const nextProviderPositions = resolvedPositions.map((position) => ({
             app: args.app,
             positionKey: position.positionKey,
+            providerPositionId: position.providerPositionId,
             strategyId: position.strategyId,
             ownershipStatus: position.ownershipStatus,
+            expectedExternal: position.expectedExternal,
             instrument: position.instrument,
             side: position.side,
             quantity: position.quantity,
@@ -260,6 +284,7 @@ export const reconcileProviderPortfolio = mutation({
             strategyId: order.strategyId,
             runId: order.runId,
             ownershipStatus: order.ownershipStatus,
+            expectedExternal: order.expectedExternal,
             venue: order.venue,
             instrument: order.instrument,
             status: order.status,
@@ -274,6 +299,7 @@ export const reconcileProviderPortfolio = mutation({
             metadata: order.metadata,
             submittedAt: order.submittedAt,
             updatedAt: order.updatedAt,
+            cancelAt: order.cancelAt,
             syncedAt: now,
         }))
 
@@ -368,8 +394,12 @@ export const reconcileProviderPortfolio = mutation({
             delta: positionSnapshotResult.stats.skipped,
         })
 
-        const unownedPositions = resolvedPositions.filter((position) => position.ownershipStatus !== "owned")
-        const unownedOrders = resolvedWorkingOrders.filter((order) => order.ownershipStatus !== "owned")
+        const unownedPositions = resolvedPositions.filter((position) =>
+            position.ownershipStatus !== "owned" && position.expectedExternal !== true
+        )
+        const unownedOrders = resolvedWorkingOrders.filter((order) =>
+            order.ownershipStatus !== "owned" && order.expectedExternal !== true
+        )
         const driftSummary = createDriftSummary({
             unownedPositionCount: unownedPositions.length,
             unownedOrderCount: unownedOrders.length,
@@ -609,6 +639,7 @@ export const adoptProviderPositions = mutation({
             await ctx.db.patch(position._id, {
                 strategyId: args.strategyId,
                 ownershipStatus: "owned",
+                expectedExternal: false,
             })
             adoptedPositions++
         }
@@ -622,6 +653,7 @@ export const adoptProviderPositions = mutation({
             await ctx.db.patch(order._id, {
                 strategyId: args.strategyId,
                 ownershipStatus: "owned",
+                expectedExternal: false,
             })
             adoptedOrders++
         }
@@ -652,6 +684,36 @@ function buildClaimsByInstrument(
     }
 
     return claimsByInstrument
+}
+
+function collectExpectedExternalInstruments(
+    strategies: StrategyDoc[]
+): Set<string> {
+    const expected = new Set<string>()
+
+    for (const strategy of strategies) {
+        const safetyPolicy = (strategy.policy as Record<string, unknown>).safety as Record<string, unknown> | undefined
+        const expectedInstruments = safetyPolicy?.expectedExternalInstruments
+
+        if (!Array.isArray(expectedInstruments)) {
+            continue
+        }
+
+        for (const value of expectedInstruments) {
+            if (typeof value !== "string") {
+                continue
+            }
+
+            const instrument = value.trim()
+            if (instrument.length === 0) {
+                continue
+            }
+
+            expected.add(instrument)
+        }
+    }
+
+    return expected
 }
 
 async function repairMissingLivePositionClaimsFromFilledOrders(
@@ -754,8 +816,12 @@ async function updateProviderSyncStateFromCurrentRows(
         return
     }
 
-    const unownedPositionCount = positions.filter((position) => position.ownershipStatus !== "owned").length
-    const unownedOrderCount = orders.filter((order) => order.ownershipStatus !== "owned").length
+    const unownedPositionCount = positions.filter((position) =>
+        position.ownershipStatus !== "owned" && position.expectedExternal !== true
+    ).length
+    const unownedOrderCount = orders.filter((order) =>
+        order.ownershipStatus !== "owned" && order.expectedExternal !== true
+    ).length
     const driftSummary = createDriftSummary({
         unownedPositionCount,
         unownedOrderCount,
@@ -810,8 +876,10 @@ async function listActiveOrdersForApp(
 
 function resolveOwnership(args: {
     instrument: string
+    positionKey?: string
     claimsByInstrument: Map<string, Set<Id<"strategies">>>
     existingOrder?: OrderDoc
+    existingPositionByKey?: Map<string, Doc<"provider_positions">>
     strategyMap?: Map<string, StrategyDoc>
 }): ResolvedOwnership {
     if (args.existingOrder) {
@@ -824,6 +892,18 @@ function resolveOwnership(args: {
 
         return {
             ownershipStatus: "orphaned",
+        }
+    }
+
+    if (args.positionKey && args.existingPositionByKey) {
+        const existingPosition = args.existingPositionByKey.get(args.positionKey)
+        if (existingPosition?.strategyId) {
+            if (!args.strategyMap || args.strategyMap.has(String(existingPosition.strategyId))) {
+                return {
+                    strategyId: existingPosition.strategyId,
+                    ownershipStatus: "owned",
+                }
+            }
         }
     }
 
@@ -845,9 +925,47 @@ function resolveOwnership(args: {
 
 function buildPositionKey(position: {
     instrument: string
+    providerPositionId?: string
+    metadata?: string
     side: string
 }): string {
+    const providerPositionId = resolveProviderPositionId(position.providerPositionId, position.metadata)
+    if (providerPositionId) {
+        return `${position.instrument}:${providerPositionId}`
+    }
+
     return `${position.instrument}:${position.side}`
+}
+
+function resolveProviderPositionId(
+    providerPositionId: string | undefined,
+    metadata: string | undefined
+): string | undefined {
+    if (providerPositionId) {
+        return providerPositionId
+    }
+
+    const parsed = parseJson<Record<string, unknown>>(metadata)
+    if (!parsed) {
+        return undefined
+    }
+
+    const ticket = parsed.ticket
+    if (typeof ticket === "string" || typeof ticket === "number") {
+        return String(ticket)
+    }
+
+    const posId = parsed.posId
+    if (typeof posId === "string" || typeof posId === "number") {
+        return String(posId)
+    }
+
+    const nestedProviderPositionId = parsed.providerPositionId
+    if (typeof nestedProviderPositionId === "string" || typeof nestedProviderPositionId === "number") {
+        return String(nestedProviderPositionId)
+    }
+
+    return undefined
 }
 
 function inferClosedOrderStatus(args: {
@@ -960,8 +1078,10 @@ async function upsertProviderPositionRows(
         }
 
         const changed = (
+            current.providerPositionId !== row.providerPositionId ||
             current.strategyId !== row.strategyId ||
             current.ownershipStatus !== row.ownershipStatus ||
+            current.expectedExternal !== row.expectedExternal ||
             current.instrument !== row.instrument ||
             current.side !== row.side ||
             current.quantity !== row.quantity ||
@@ -980,8 +1100,10 @@ async function upsertProviderPositionRows(
         }
 
         await ctx.db.patch(current._id, {
+            providerPositionId: row.providerPositionId,
             strategyId: row.strategyId,
             ownershipStatus: row.ownershipStatus,
+            expectedExternal: row.expectedExternal,
             instrument: row.instrument,
             side: row.side,
             quantity: row.quantity,
@@ -1039,6 +1161,7 @@ async function upsertProviderWorkingOrderRows(
             current.strategyId !== row.strategyId ||
             current.runId !== row.runId ||
             current.ownershipStatus !== row.ownershipStatus ||
+            current.expectedExternal !== row.expectedExternal ||
             current.venue !== row.venue ||
             current.instrument !== row.instrument ||
             current.status !== row.status ||
@@ -1053,6 +1176,7 @@ async function upsertProviderWorkingOrderRows(
             current.metadata !== row.metadata ||
             current.submittedAt !== row.submittedAt ||
             current.updatedAt !== row.updatedAt ||
+            current.cancelAt !== row.cancelAt ||
             current.syncedAt !== row.syncedAt
         )
 
@@ -1065,6 +1189,7 @@ async function upsertProviderWorkingOrderRows(
             strategyId: row.strategyId,
             runId: row.runId,
             ownershipStatus: row.ownershipStatus,
+            expectedExternal: row.expectedExternal,
             venue: row.venue,
             instrument: row.instrument,
             status: row.status,
@@ -1079,6 +1204,7 @@ async function upsertProviderWorkingOrderRows(
             metadata: row.metadata,
             submittedAt: row.submittedAt,
             updatedAt: row.updatedAt,
+            cancelAt: row.cancelAt,
             syncedAt: row.syncedAt,
         })
         stats.patched++
@@ -1340,4 +1466,29 @@ function parseJson<T>(value: string | undefined): T | undefined {
     } catch {
         return undefined
     }
+}
+
+function readOrderCancelAt(order: OrderDoc | undefined): number | undefined {
+    if (!order || !order.intent || typeof order.intent !== "object") {
+        return undefined
+    }
+
+    const metadata = (order.intent as Record<string, unknown>).metadata
+    if (!metadata || typeof metadata !== "object") {
+        return undefined
+    }
+
+    const cancelAt = (metadata as Record<string, unknown>).cancelAt
+    return typeof cancelAt === "number" && Number.isFinite(cancelAt)
+        ? cancelAt
+        : undefined
+}
+
+export const portfolioGovernanceTestables = {
+    collectExpectedExternalInstruments,
+    buildPositionKey,
+    resolveProviderPositionId,
+    resolveOwnership,
+    inferClosedOrderStatus,
+    readOrderCancelAt,
 }

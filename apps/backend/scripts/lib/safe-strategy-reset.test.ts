@@ -25,6 +25,8 @@ function createDeleteResult(): DeleteStrategyResult {
         positions: 0,
         instrumentClaims: 0,
         positionSyncs: 0,
+        strategyRiskStates: 0,
+        executionSafetyFaults: 0,
         providerPositions: 0,
         providerWorkingOrders: 0,
         providerSyncStates: 0,
@@ -50,7 +52,19 @@ function createStrategy(
                 end: "23:59",
                 timezone: "UTC",
             },
-            emergencyFlattenThreshold: 1000,
+            safety: {
+                maxDrawdownDay: 3,
+                maxDrawdownWeek: 10,
+                cooldownMinutesAfterDayBreach: 12 * 60,
+                cooldownMinutesAfterWeekBreach: 24 * 60,
+                strategyTimezone: "UTC",
+                sessionFlat: {
+                    enabled: true,
+                    closeBufferMinutes: 15,
+                    timezone: "UTC",
+                },
+                expectedExternalInstruments: [],
+            },
             fundingRateThreshold: 0.003,
             requireTakeProfit: false,
         }
@@ -70,7 +84,19 @@ function createStrategy(
                 end: "23:59",
                 timezone: "UTC",
             },
-            emergencyFlattenThreshold: 1000,
+            safety: {
+                maxDrawdownDay: 3,
+                maxDrawdownWeek: 10,
+                cooldownMinutesAfterDayBreach: 12 * 60,
+                cooldownMinutesAfterWeekBreach: 24 * 60,
+                strategyTimezone: "UTC",
+                sessionFlat: {
+                    enabled: true,
+                    closeBufferMinutes: 15,
+                    timezone: "UTC",
+                },
+                expectedExternalInstruments: [],
+            },
             allowMultiplePendingEntryOrdersPerInstrument: false,
             allowOverlappingExposure: false,
         }
@@ -531,7 +557,7 @@ function stubImmediateTimeout() {
                     handler()
                 }
             })
-            return 0 as ReturnType<typeof setTimeout>
-        }) as typeof setTimeout
+            return 0 as unknown as ReturnType<typeof setTimeout>
+        }) as unknown as typeof setTimeout
     ))
 }

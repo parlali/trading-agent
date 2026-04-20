@@ -16,13 +16,21 @@ import {
     type MarketClosedResetBlock,
     reconcileAndVerifyReset,
 } from "./lib/safe-strategy-reset"
-import type { DeleteStrategyResult, StoredStrategy, TradingBackendClient } from "@valiq-trading/convex"
+import type {
+    DeleteStrategyBatchResult,
+    DeleteStrategyResult,
+    StoredStrategy,
+    TradingBackendClient,
+} from "@valiq-trading/convex"
 import { MT5VenueAdapter } from "@valiq-trading/mt5"
 
 const FORCE_RESET_FLATTEN_ATTEMPTS = 5
 const FORCE_RESET_FLATTEN_DELAY_MS = 1500
 const STRATEGY_DELETE_BATCH_SIZE = 50
 const STRATEGY_DELETE_MAX_BATCHES = 10000
+const STRATEGY_DELETE_RETRY_ATTEMPTS = 3
+const STRATEGY_DELETE_RETRY_DELAY_MS = 1500
+const STRATEGY_DELETE_NO_PROGRESS_BATCH_LIMIT = 100
 
 runScript(async () => {
     const client = createClient()
@@ -261,10 +269,24 @@ async function deleteStrategyWithContext(
 }> {
     const deleted = createDeleteTotals()
     let strategyDeleted = false
+    let consecutiveNoProgressBatches = 0
 
     try {
         for (let batch = 1; batch <= STRATEGY_DELETE_MAX_BATCHES; batch++) {
-            const result = await client.deleteStrategyBatch(strategy._id, STRATEGY_DELETE_BATCH_SIZE)
+            const result = await deleteStrategyBatchWithRetry(client, strategy)
+            const deletedThisBatch = sumDeleteCounts(result)
+            if (deletedThisBatch === 0 && !result.strategyDeleted) {
+                consecutiveNoProgressBatches++
+            } else {
+                consecutiveNoProgressBatches = 0
+            }
+
+            if (consecutiveNoProgressBatches >= STRATEGY_DELETE_NO_PROGRESS_BATCH_LIMIT) {
+                throw new Error(
+                    `Delete made no progress for ${STRATEGY_DELETE_NO_PROGRESS_BATCH_LIMIT} consecutive batches. Verify backend writers are stopped and provider sync rows are not being re-created during reset.`
+                )
+            }
+
             addDeleteCounts(deleted, result)
             strategyDeleted = strategyDeleted || result.strategyDeleted
 
@@ -277,7 +299,7 @@ async function deleteStrategyWithContext(
 
             if (batch % 25 === 0) {
                 console.log(
-                    `  deleted ${batch} batch(es) for ${strategy.name}: runs=${deleted.runs}, logs=${deleted.agentLogs}, events=${deleted.tradeEvents}, orders=${deleted.orders}, transitions=${deleted.orderTransitions}`
+                    `  deleted ${batch} batch(es) for ${strategy.name}: last_batch=${deletedThisBatch}, runs=${deleted.runs}, logs=${deleted.agentLogs}, events=${deleted.tradeEvents}, orders=${deleted.orders}, transitions=${deleted.orderTransitions}, provider_positions=${deleted.providerPositions}, provider_working_orders=${deleted.providerWorkingOrders}, provider_sync_states=${deleted.providerSyncStates}, account_snapshots=${deleted.accountSnapshots}, app_heartbeats=${deleted.appHeartbeats}`
                 )
             }
         }
@@ -287,6 +309,60 @@ async function deleteStrategyWithContext(
         const message = error instanceof Error ? error.message : String(error)
         throw new Error(`Failed deleting reset strategy ${strategy.name} (${strategy.app}, ${strategy._id}): ${message}`)
     }
+}
+
+async function deleteStrategyBatchWithRetry(
+    client: TradingBackendClient,
+    strategy: StoredStrategy
+): Promise<DeleteStrategyBatchResult> {
+    let lastError: unknown
+
+    for (let attempt = 1; attempt <= STRATEGY_DELETE_RETRY_ATTEMPTS; attempt++) {
+        try {
+            return await client.deleteStrategyBatch(strategy._id, STRATEGY_DELETE_BATCH_SIZE)
+        } catch (error) {
+            lastError = error
+            const message = error instanceof Error ? error.message : String(error)
+            const isRetryable =
+                message.includes("Server Error") ||
+                message.includes("Request ID") ||
+                message.includes("network") ||
+                message.includes("timed out")
+
+            if (!isRetryable || attempt === STRATEGY_DELETE_RETRY_ATTEMPTS) {
+                throw error
+            }
+
+            console.log(
+                `  warning: delete batch failed for ${strategy.name} (${strategy.app}) on attempt ${attempt}/${STRATEGY_DELETE_RETRY_ATTEMPTS}: ${message}`
+            )
+            await sleep(STRATEGY_DELETE_RETRY_DELAY_MS)
+        }
+    }
+
+    throw lastError instanceof Error ? lastError : new Error(String(lastError))
+}
+
+function sumDeleteCounts(result: DeleteStrategyBatchResult): number {
+    return (
+        result.runs +
+        result.agentLogs +
+        result.tradeEvents +
+        result.orders +
+        result.orderTransitions +
+        result.positions +
+        result.instrumentClaims +
+        result.positionSyncs +
+        result.strategyRiskStates +
+        result.executionSafetyFaults +
+        result.providerPositions +
+        result.providerWorkingOrders +
+        result.providerSyncStates +
+        result.accountSnapshots +
+        result.appHeartbeats +
+        result.manualRunRequests +
+        result.alerts
+    )
 }
 
 async function sleep(delayMs: number): Promise<void> {

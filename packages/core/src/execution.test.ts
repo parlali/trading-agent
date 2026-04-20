@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest"
 import {
     DRY_RUN_ACCOUNT_LEDGER_INSTRUMENT,
     ExecutionPipeline,
+    resolveDryRunAccountState,
     type PriceVerifier,
     type TradeEventLogger,
     type VenueAdapter,
@@ -230,6 +231,44 @@ describe("ExecutionPipeline dry-run accounting", () => {
         expect(await pipeline.getPositions()).toEqual([])
     })
 
+    it("reconstructs dry-run account state from stored positions before the next run", () => {
+        const state = resolveDryRunAccountState({
+            policy: {
+                dryRun: true,
+                virtualCash: 1000,
+            },
+            positions: [
+                {
+                    instrument: "BTC-USDT-SWAP",
+                    side: "long",
+                    quantity: 2,
+                    entryPrice: 100,
+                    currentPrice: 110,
+                    unrealizedPnl: 20,
+                },
+                {
+                    instrument: DRY_RUN_ACCOUNT_LEDGER_INSTRUMENT,
+                    side: "long",
+                    quantity: 0,
+                    entryPrice: 0,
+                    currentPrice: 0,
+                    unrealizedPnl: 0,
+                    metadata: {
+                        dryRunLedger: true,
+                        cashAdjustment: -180,
+                        realizedPnl: 5,
+                    },
+                },
+            ],
+        })
+
+        expect(state.balance).toBe(820)
+        expect(state.equity).toBe(1040)
+        expect(state.openPnl).toBe(20)
+        expect(state.dayPnl).toBe(25)
+        expect(state.marginUsed).toBe(220)
+    })
+
     it("values virtual short positions as liabilities instead of long inventory", async () => {
         const pipeline = new ExecutionPipeline({
             venue: createVenue(),
@@ -309,5 +348,91 @@ describe("ExecutionPipeline dry-run accounting", () => {
         expect(result.status).toBe("rejected")
         expect(result.error).toContain("Price verification failed closed")
         expect(submitOrder).not.toHaveBeenCalled()
+    })
+
+    it("uses venue close-intent metadata when grouped structures are resolved provider-side", async () => {
+        let capturedIntent: OrderIntent | undefined
+        const venue: VenueAdapter = {
+            ...createVenue(),
+            getPositions: async () => [],
+            buildCloseIntent: async () => ({
+                instrument: "VS:BULL_PUT_CREDIT:SPY:2026-04-24:SPY260424P00649000|SPY260424P00650000",
+                side: "buy",
+                quantity: 1,
+                orderType: "limit",
+                limitPrice: 0.42,
+                timeInForce: "day",
+                legs: [
+                    {
+                        instrument: "SPY260424P00650000",
+                        side: "buy_to_close",
+                        quantity: 1,
+                    },
+                    {
+                        instrument: "SPY260424P00649000",
+                        side: "sell_to_close",
+                        quantity: 1,
+                    },
+                ],
+                metadata: {
+                    structureType: "credit_vertical",
+                    verticalSpreadType: "bull_put_credit",
+                    underlying: "SPY",
+                    expiration: "2026-04-24",
+                    entryPrice: 0.9,
+                    positionSide: "short",
+                    estimatedPrice: 0.41,
+                },
+            }),
+            closePosition: async (_instrument: string, preparedIntent?: OrderIntent) => {
+                capturedIntent = preparedIntent
+                return {
+                    orderId: "close-vertical-1",
+                    status: "filled",
+                    filledQuantity: 1,
+                    fillPrice: 0.42,
+                    timestamp: Date.now(),
+                }
+            },
+        }
+        const pipeline = new ExecutionPipeline({
+            venue,
+            venueName: "alpaca-options",
+            policy: {
+                dryRun: false,
+            },
+            logger: createLogger({ minLevel: "fatal" }),
+            runId: "run-6",
+            strategyId: "strategy-1",
+        })
+
+        const { result, validation } = await pipeline.closePosition(
+            "VS:BULL_PUT_CREDIT:SPY:2026-04-24:SPY260424P00649000|SPY260424P00650000",
+            "stop loss",
+            {
+                estimatedPrice: 0.4,
+                metadata: {
+                    requestedBy: "agent",
+                },
+            }
+        )
+
+        expect(validation.allowed).toBe(true)
+        expect(result.status).toBe("filled")
+        expect(capturedIntent).toMatchObject({
+            side: "buy",
+            orderType: "limit",
+            limitPrice: 0.42,
+            metadata: {
+                action: "close",
+                reason: "stop loss",
+                structureType: "credit_vertical",
+                verticalSpreadType: "bull_put_credit",
+                entryPrice: 0.9,
+                positionSide: "short",
+                estimatedPrice: 0.4,
+                requestedBy: "agent",
+            },
+        })
     })
 })

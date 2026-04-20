@@ -59,6 +59,7 @@ describe("tool contracts", () => {
         const mt5Order = getToolContract("propose_order", "mt5")
         const okxOrder = getToolContract("propose_order", "okx-swap")
         const polymarketOrder = getToolContract("propose_order", "polymarket")
+        const alpacaOrder = getToolContract("propose_order", "alpaca-options")
         const polymarketMarketPrice = getToolContract("get_market_price", "polymarket")
 
         expect(mt5Order.description).toContain("MT5")
@@ -81,6 +82,51 @@ describe("tool contracts", () => {
             quantity: 10,
             orderType: "limit",
             limitPrice: 0.5,
+        }).success).toBe(false)
+        expect(alpacaOrder.parameters.safeParse({
+            instrument: "VS:BULL_PUT_CREDIT:SPY:2026-04-24",
+            side: "sell",
+            quantity: 1,
+            orderType: "limit",
+            limitPrice: 0.85,
+            timeInForce: "day",
+            legs: [
+                {
+                    instrument: "SPY260424P00650000",
+                    side: "sell_to_open",
+                    quantity: 1,
+                },
+                {
+                    instrument: "SPY260424P00649000",
+                    side: "buy_to_open",
+                    quantity: 1,
+                },
+            ],
+        }).success).toBe(true)
+        expect(alpacaOrder.parameters.safeParse({
+            instrument: "VS:BULL_PUT_CREDIT:SPY:2026-04-24",
+            side: "sell",
+            quantity: 1,
+            orderType: "limit",
+            limitPrice: 0.85,
+            timeInForce: "day",
+            legs: [
+                {
+                    instrument: "SPY260424P00650000",
+                    side: "sell_to_open",
+                    quantity: 1,
+                },
+                {
+                    instrument: "SPY260424P00649500",
+                    side: "buy_to_open",
+                    quantity: 1,
+                },
+                {
+                    instrument: "SPY260424P00649000",
+                    side: "buy_to_open",
+                    quantity: 1,
+                },
+            ],
         }).success).toBe(false)
         expect(polymarketMarketPrice.description).toContain("Polymarket")
     })

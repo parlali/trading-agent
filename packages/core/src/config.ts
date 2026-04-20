@@ -3,9 +3,122 @@ import { z } from "zod/v4"
 export const baseStrategyPolicySchema = z.object({
     dryRun: z.boolean().default(false),
     model: z.string().trim().min(1, "OpenRouter model id is required"),
+    safety: z.object({
+        maxDrawdownDay: z.number().positive().max(100).optional(),
+        maxDrawdownWeek: z.number().positive().max(100).optional(),
+        cooldownMinutesAfterDayBreach: z.number().int().nonnegative().default(12 * 60),
+        cooldownMinutesAfterWeekBreach: z.number().int().nonnegative().default(24 * 60),
+        strategyTimezone: z.string().default("UTC"),
+        sessionFlat: z.object({
+            enabled: z.boolean().default(false),
+            closeBufferMinutes: z.number().int().min(1).max(240).default(15),
+            timezone: z.string().default("UTC"),
+        }).default({
+            enabled: false,
+            closeBufferMinutes: 15,
+            timezone: "UTC",
+        }),
+        expectedExternalInstruments: z.array(z.string().trim().min(1)).default([]),
+        pendingEntryTtlMinutes: z.number().int().positive().max(7 * 24 * 60).optional(),
+    }).default({
+        maxDrawdownDay: undefined,
+        maxDrawdownWeek: undefined,
+        cooldownMinutesAfterDayBreach: 12 * 60,
+        cooldownMinutesAfterWeekBreach: 24 * 60,
+        strategyTimezone: "UTC",
+        sessionFlat: {
+            enabled: false,
+            closeBufferMinutes: 15,
+            timezone: "UTC",
+        },
+        expectedExternalInstruments: [],
+        pendingEntryTtlMinutes: undefined,
+    }),
 }).passthrough()
 
 export type BaseStrategyPolicy = z.infer<typeof baseStrategyPolicySchema>
+
+export interface ConfiguredStrategySafetyPolicy {
+    maxDrawdownDay?: number
+    maxDrawdownWeek?: number
+    cooldownMinutesAfterDayBreach: number
+    cooldownMinutesAfterWeekBreach: number
+    strategyTimezone: string
+}
+
+export interface RuntimeStrategySafetyPolicy {
+    maxDrawdownDay?: number
+    maxDrawdownWeek?: number
+    cooldownMinutesAfterDayBreach: number
+    cooldownMinutesAfterWeekBreach: number
+    strategyTimezone: string
+}
+
+function readFiniteNumber(value: unknown): number | undefined {
+    return typeof value === "number" && Number.isFinite(value)
+        ? value
+        : undefined
+}
+
+function readPositivePercentage(value: unknown): number | undefined {
+    const numeric = readFiniteNumber(value)
+    if (numeric === undefined || numeric <= 0 || numeric > 100) {
+        return undefined
+    }
+
+    return numeric
+}
+
+function readString(value: unknown): string | undefined {
+    return typeof value === "string" && value.trim().length > 0
+        ? value.trim()
+        : undefined
+}
+
+function roundCurrencyAmount(value: number): number {
+    return Number(value.toFixed(2))
+}
+
+function resolveAbsoluteDrawdownLimit(
+    percentLimit: number | undefined,
+    accountBalance: number | undefined,
+    label: "day" | "week"
+): number | undefined {
+    if (percentLimit === undefined) {
+        return undefined
+    }
+
+    if (accountBalance === undefined || !Number.isFinite(accountBalance) || accountBalance <= 0) {
+        throw new Error(`Cannot resolve ${label} max drawdown percentage without a positive account balance`)
+    }
+
+    return roundCurrencyAmount(accountBalance * (percentLimit / 100))
+}
+
+export function readConfiguredStrategySafetyPolicy(policy: Record<string, unknown>): ConfiguredStrategySafetyPolicy {
+    const safety = (policy.safety ?? {}) as Record<string, unknown>
+
+    return {
+        maxDrawdownDay: readPositivePercentage(safety.maxDrawdownDay),
+        maxDrawdownWeek: readPositivePercentage(safety.maxDrawdownWeek),
+        cooldownMinutesAfterDayBreach: readFiniteNumber(safety.cooldownMinutesAfterDayBreach) ?? 12 * 60,
+        cooldownMinutesAfterWeekBreach: readFiniteNumber(safety.cooldownMinutesAfterWeekBreach) ?? 24 * 60,
+        strategyTimezone: readString(safety.strategyTimezone) ?? "UTC",
+    }
+}
+
+export function resolveRuntimeStrategySafetyPolicy(args: {
+    policy: ConfiguredStrategySafetyPolicy
+    accountBalance?: number
+}): RuntimeStrategySafetyPolicy {
+    return {
+        maxDrawdownDay: resolveAbsoluteDrawdownLimit(args.policy.maxDrawdownDay, args.accountBalance, "day"),
+        maxDrawdownWeek: resolveAbsoluteDrawdownLimit(args.policy.maxDrawdownWeek, args.accountBalance, "week"),
+        cooldownMinutesAfterDayBreach: args.policy.cooldownMinutesAfterDayBreach,
+        cooldownMinutesAfterWeekBreach: args.policy.cooldownMinutesAfterWeekBreach,
+        strategyTimezone: args.policy.strategyTimezone,
+    }
+}
 
 export const strategyConfigSchema = z.object({
     app: z.enum(["alpaca-options", "polymarket", "mt5", "okx-swap"]),
@@ -60,7 +173,6 @@ export const mt5PolicySchema = baseStrategyPolicySchema.extend({
     maxRiskPercent: z.number().positive().max(100),
     minRiskReward: z.number().positive().default(0.5),
     tradingHours: mt5TradingHoursSchema,
-    emergencyFlattenThreshold: z.number().positive(),
     marketRegionsByInstrument: mt5MarketRegionsByInstrumentSchema.optional(),
     allowMultiplePendingEntryOrdersPerInstrument: z.boolean().default(false),
     allowOverlappingExposure: z.boolean().default(false),
@@ -73,7 +185,6 @@ export const okxPolicySchema = baseStrategyPolicySchema.extend({
     maxLeverage: z.number().int().positive().max(5),
     maxRiskPercent: z.number().positive().max(100),
     tradingHours: mt5TradingHoursSchema,
-    emergencyFlattenThreshold: z.number().positive(),
     fundingRateThreshold: z.number().nonnegative(),
     requireTakeProfit: z.boolean().default(false),
 })
@@ -104,10 +215,24 @@ export function validateStrategyConfig(raw: unknown): StrategyConfig {
 export const ALPACA_OPTIONS_POLICY_DEFAULTS: AlpacaOptionsPolicy = {
     dryRun: true,
     model: "",
+    safety: {
+        maxDrawdownDay: undefined,
+        maxDrawdownWeek: undefined,
+        cooldownMinutesAfterDayBreach: 12 * 60,
+        cooldownMinutesAfterWeekBreach: 24 * 60,
+        strategyTimezone: "UTC",
+        sessionFlat: {
+            enabled: false,
+            closeBufferMinutes: 15,
+            timezone: "UTC",
+        },
+        expectedExternalInstruments: [],
+        pendingEntryTtlMinutes: undefined,
+    },
     maxLossPerPlay: 500,
 }
 
-export const ALPACA_OPTIONS_CONTEXT_DEFAULT = `You are an autonomous Alpaca options trader running a weekly short iron condor program. Trade only liquid index ETF candidates where Val-iQ can justify the range thesis and strike selection. The operating model is deliberate and low-frequency.
+export const ALPACA_OPTIONS_CONTEXT_DEFAULT = `You are an autonomous Alpaca options trader running a weekly short premium program with iron condors and one-sided credit verticals. Trade only liquid index ETF candidates where Val-iQ can justify the range thesis and strike selection. The operating model is deliberate and low-frequency.
 
 BASE SCHEDULE:
 - The base cron handles normal supervision.
@@ -115,12 +240,13 @@ BASE SCHEDULE:
 - After Monday, the default job is managing already-open structures, not opening fresh replacement trades every run.
 
 ENTRY RULES:
-1. Use \`query_valiq_research\` to identify a liquid underlying and expected range, then use \`get_quote\` and \`get_options_chain\` to select the executable strike set for a same-week or next-week iron condor.
-2. Submit only one 4-leg short iron condor at a time per qualifying expiry.
-3. Entries must be net-credit limit orders with explicit OCC symbols for all four legs.
-4. Pass the entry net credit as a positive \`limitPrice\`; the system converts it to Alpaca's signed multi-leg API value.
-5. Cross-check the proposed limit price against the live broker chain data before submitting.
-6. If no clean range thesis or pricing edge exists, sit out. Forced entries are a failure mode.
+1. Use \`query_valiq_research\` to identify a liquid underlying and directional or range thesis, then use \`get_quote\` and \`get_options_chain\` to select strikes for a same-week or next-week credit structure.
+2. Submit only one active credit structure per qualifying expiry unless policy explicitly allows overlap.
+3. Entries must be net-credit limit orders with explicit OCC symbols for all legs.
+4. Supported structures are 2-leg one-sided credit verticals (bull put or bear call) and 4-leg iron condors.
+5. Pass the entry net credit as a positive \`limitPrice\`; the system converts it to Alpaca's signed multi-leg API value.
+6. Cross-check the proposed limit price against the live broker chain data before submitting.
+7. If no clean thesis or pricing edge exists, sit out. Forced entries are a failure mode.
 
 ORDER MANAGEMENT:
 - If a new entry order is still working, manage that existing order first before researching another trade.
@@ -146,6 +272,20 @@ Preserve capital first. This strategy should look like selective weekly position
 export const POLYMARKET_POLICY_DEFAULTS: PolymarketPolicy = {
     dryRun: true,
     model: "",
+    safety: {
+        maxDrawdownDay: undefined,
+        maxDrawdownWeek: undefined,
+        cooldownMinutesAfterDayBreach: 12 * 60,
+        cooldownMinutesAfterWeekBreach: 24 * 60,
+        strategyTimezone: "UTC",
+        sessionFlat: {
+            enabled: false,
+            closeBufferMinutes: 15,
+            timezone: "UTC",
+        },
+        expectedExternalInstruments: [],
+        pendingEntryTtlMinutes: undefined,
+    },
     maxBet: { mode: "fixed", value: 100 },
     minLiquidity: 0,
     minResolutionBufferHours: 48,
@@ -155,10 +295,23 @@ export const POLYMARKET_POLICY_DEFAULTS: PolymarketPolicy = {
 export const MT5_POLICY_DEFAULTS: MT5Policy = {
     dryRun: true,
     model: "",
+    safety: {
+        maxDrawdownDay: 3,
+        maxDrawdownWeek: 10,
+        cooldownMinutesAfterDayBreach: 12 * 60,
+        cooldownMinutesAfterWeekBreach: 24 * 60,
+        strategyTimezone: "UTC",
+        sessionFlat: {
+            enabled: true,
+            closeBufferMinutes: 15,
+            timezone: "UTC",
+        },
+        expectedExternalInstruments: [],
+        pendingEntryTtlMinutes: 120,
+    },
     maxRiskPercent: 2,
     minRiskReward: 0.5,
     tradingHours: { start: "08:00", end: "16:00", timezone: "UTC" },
-    emergencyFlattenThreshold: 1000,
     allowMultiplePendingEntryOrdersPerInstrument: false,
     allowOverlappingExposure: false,
 }
@@ -166,11 +319,24 @@ export const MT5_POLICY_DEFAULTS: MT5Policy = {
 export const OKX_POLICY_DEFAULTS: OKXPolicy = {
     dryRun: true,
     model: "",
+    safety: {
+        maxDrawdownDay: 3,
+        maxDrawdownWeek: 10,
+        cooldownMinutesAfterDayBreach: 12 * 60,
+        cooldownMinutesAfterWeekBreach: 24 * 60,
+        strategyTimezone: "UTC",
+        sessionFlat: {
+            enabled: true,
+            closeBufferMinutes: 15,
+            timezone: "UTC",
+        },
+        expectedExternalInstruments: [],
+        pendingEntryTtlMinutes: 120,
+    },
     allowedInstruments: ["BTC-USDT-SWAP", "ETH-USDT-SWAP"],
     maxLeverage: 3,
     maxRiskPercent: 1,
     tradingHours: { start: "00:00", end: "23:59", timezone: "UTC" },
-    emergencyFlattenThreshold: 1000,
     fundingRateThreshold: 0.003,
     requireTakeProfit: false,
 }

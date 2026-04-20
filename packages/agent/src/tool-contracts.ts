@@ -196,7 +196,9 @@ export const alpacaOrderParamsSchema = z.object({
     orderType: z.literal("limit"),
     limitPrice: z.number().positive(),
     timeInForce: z.literal("day").default("day"),
-    legs: z.array(alpacaLegSchema).length(4),
+    legs: z.array(alpacaLegSchema).refine((legs) => legs.length === 2 || legs.length === 4, {
+        message: "Alpaca options structures must contain exactly 2 or 4 legs",
+    }),
     metadata: z.record(z.string(), z.unknown()).optional(),
 })
 
@@ -205,20 +207,20 @@ export const alpacaOrderJsonSchema = {
     properties: {
         instrument: {
             type: "string",
-            description: "Structure identifier in the form IC:UNDERLYING:YYYY-MM-DD plus normalized leg set. Quantity is state, not identity.",
+            description: "Structure identifier. Iron condors use IC:UNDERLYING:YYYY-MM-DD and credit verticals use VS:TYPE:UNDERLYING:YYYY-MM-DD with normalized leg sets.",
         },
         side: {
             type: "string",
             enum: ["sell"],
-            description: "Iron condor entries are submitted as net-credit sells",
+            description: "Alpaca multi-leg credit entries are submitted as net-credit sells",
         },
-        quantity: { type: "number", description: "Number of full iron condor structures" },
+        quantity: { type: "number", description: "Number of full structure units" },
         orderType: {
             type: "string",
             enum: ["limit"],
             description: "Only net-credit limit entries are supported for this strategy path",
         },
-        limitPrice: { type: "number", description: "Positive net credit limit price for the full 4-leg structure. The system translates it to Alpaca's signed `mleg` wire value." },
+        limitPrice: { type: "number", description: "Positive net credit limit price for the full structure. The system translates it to Alpaca's signed `mleg` wire value." },
         timeInForce: {
             type: "string",
             enum: ["day"],
@@ -226,9 +228,9 @@ export const alpacaOrderJsonSchema = {
         },
         legs: {
             type: "array",
-            minItems: 4,
+            minItems: 2,
             maxItems: 4,
-            description: "Exactly four OCC option legs with explicit open semantics",
+            description: "Exactly two legs for one-sided credit verticals or four legs for iron condors, all with explicit open semantics",
             items: {
                 type: "object",
                 properties: {
@@ -730,7 +732,7 @@ const toolContracts = createToolContractCatalog([
         compatibleVenues: VENUE_APPS,
         variants: {
             "alpaca-options": {
-                description: "Propose a new 4-leg iron condor entry. Use a positive net-credit `limitPrice`, `day` time in force, and four OCC option legs with explicit open semantics. The system converts the price to Alpaca's signed `mleg` wire format.",
+                description: "Propose a new Alpaca multi-leg credit entry. Use a positive net-credit `limitPrice`, `day` time in force, and either a 2-leg one-sided credit vertical (bull put or bear call) or a 4-leg iron condor with explicit open semantics. The system converts the price to Alpaca's signed `mleg` wire format.",
                 parameters: alpacaOrderParamsSchema,
                 jsonSchema: alpacaOrderJsonSchema,
                 outputDescription: "Returns the normalized execution result, risk validation, and tracked order snapshot for the structure.",
@@ -837,7 +839,7 @@ const toolContracts = createToolContractCatalog([
         compatibleVenues: ["alpaca-options", "polymarket", "mt5"],
         variants: {
             "alpaca-options": {
-                description: "Modify a working Alpaca iron condor order. Supported changes are the positive net limit price and, if truly necessary, the structure quantity. The system handles Alpaca's signed `mleg` wire price.",
+                description: "Modify a working Alpaca multi-leg options order. Supported changes are the positive net limit price and, if truly necessary, the structure quantity. The system handles Alpaca's signed `mleg` wire price.",
                 parameters: alpacaModifyOrderParamsSchema,
                 jsonSchema: alpacaModifyOrderJsonSchema,
                 outputDescription: "Returns the normalized order modification result plus the refreshed tracked order snapshot.",

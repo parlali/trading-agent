@@ -348,8 +348,8 @@ export class MT5VenueAdapter implements VenueAdapter, PriceVerifier {
     }
 
     /**
-     * Emergency flatten -- close all open positions immediately.
-     * Used by the emergency flatten risk rule.
+     * Close all open positions immediately.
+     * Used by session-flat and reset flows.
      */
     async closeAllPositions(): Promise<{ closed: number; results: ExecutionResult[] }> {
         await this.ensureConnected()
@@ -369,6 +369,7 @@ export class MT5VenueAdapter implements VenueAdapter, PriceVerifier {
 function mapMT5Position(raw: MT5Position): Position {
     return {
         instrument: raw.symbol,
+        providerPositionId: String(raw.ticket),
         side: raw.type === "buy" ? "long" : "short",
         quantity: raw.volume,
         entryPrice: raw.openPrice,

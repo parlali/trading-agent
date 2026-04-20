@@ -36,6 +36,29 @@ function createEntryIntent(): OrderIntent {
     }
 }
 
+function createVerticalEntryIntent(): OrderIntent {
+    return {
+        instrument: "VS:BULL_PUT_CREDIT:SPY:2026-04-17:1",
+        side: "sell",
+        quantity: 1,
+        orderType: "limit",
+        limitPrice: 0.85,
+        timeInForce: "day",
+        legs: [
+            {
+                instrument: "SPY260417P00500000",
+                side: "sell_to_open",
+                quantity: 1,
+            },
+            {
+                instrument: "SPY260417P00495000",
+                side: "buy_to_open",
+                quantity: 1,
+            },
+        ],
+    }
+}
+
 function createCloseIntent(): OrderIntent {
     return {
         instrument: "IC:SPY:2026-04-17:1",
@@ -221,6 +244,32 @@ describe("buildCreateOrderPayload", () => {
         })
     })
 
+    it("accepts 2-leg one-sided credit vertical entries", () => {
+        const payload = buildCreateOrderPayload(createVerticalEntryIntent())
+
+        expect(payload).toMatchObject({
+            order_class: "mleg",
+            type: "limit",
+            time_in_force: "day",
+            qty: 1,
+            limit_price: -0.85,
+            legs: [
+                {
+                    symbol: "SPY260417P00500000",
+                    ratio_qty: 1,
+                    side: "sell",
+                    position_intent: "sell_to_open",
+                },
+                {
+                    symbol: "SPY260417P00495000",
+                    ratio_qty: 1,
+                    side: "buy",
+                    position_intent: "buy_to_open",
+                },
+            ],
+        })
+    })
+
     it("rejects single-leg options orders", () => {
         expect(() => buildCreateOrderPayload({
             instrument: "SPY260424C00690000",
@@ -229,7 +278,7 @@ describe("buildCreateOrderPayload", () => {
             orderType: "limit",
             limitPrice: 4.55,
             timeInForce: "day",
-        })).toThrow("Alpaca multi-leg options orders must be submitted as exactly 4 legs")
+        })).toThrow("Alpaca multi-leg options orders must be submitted as either 2 or 4 legs")
     })
 })
 

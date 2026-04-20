@@ -9,26 +9,39 @@ import {
     type RiskValidator,
 } from "@valiq-trading/core"
 
-interface ParsedOptionContract {
+export interface ParsedOptionContract {
     underlying: string
     expiration: string
     optionType: "call" | "put"
     strike: number
 }
 
+export type AlpacaStructureType = "iron_condor" | "credit_vertical"
+export type AlpacaVerticalSpreadType = "bull_put_credit" | "bear_call_credit"
+
 interface NormalizedOptionLeg extends ParsedOptionContract {
     instrument: string
     quantity: number
     side: OrderLegSide
-    direction: "buy" | "sell"
     positionEffect: "open" | "close"
+    exposure: "long" | "short"
+}
+
+interface ResolvedStructure {
+    structureType: AlpacaStructureType
+    verticalSpreadType?: AlpacaVerticalSpreadType
+    underlying: string
+    expiration: string
+    spreadWidth: number
+    legs: NormalizedOptionLeg[]
 }
 
 const SUPPORTED_ALPACA_ORDER_TYPE = "limit"
 const SUPPORTED_ALPACA_TIME_IN_FORCE = "day"
+const SUPPORTED_LEG_COUNTS = new Set([2, 4])
 
 export const alpacaRiskValidators: readonly RiskValidator[] = [
-    ironCondorStructureValidator,
+    alpacaStructureValidator,
     maxLossPerPlayValidator,
     expiryValidationValidator,
     spreadWidthValidationValidator,
@@ -42,6 +55,17 @@ export function buildIronCondorInstrument(
     return `IC:${underlying.toUpperCase()}:${expiration}`
 }
 
+export function buildCreditVerticalInstrument(
+    underlying: string,
+    expiration: string,
+    verticalSpreadType: AlpacaVerticalSpreadType
+): string {
+    const type = verticalSpreadType === "bull_put_credit"
+        ? "BULL_PUT_CREDIT"
+        : "BEAR_CALL_CREDIT"
+    return `VS:${type}:${underlying.toUpperCase()}:${expiration}`
+}
+
 export function buildIronCondorInstrumentFromLegs(
     underlying: string,
     expiration: string,
@@ -53,6 +77,43 @@ export function buildIronCondorInstrumentFromLegs(
         .join("|")
 
     return `${buildIronCondorInstrument(underlying, expiration)}:${normalizedLegs}`
+}
+
+export function buildCreditVerticalInstrumentFromLegs(
+    underlying: string,
+    expiration: string,
+    verticalSpreadType: AlpacaVerticalSpreadType,
+    legs: Array<{ instrument: string }>
+): string {
+    const normalizedLegs = legs
+        .map((leg) => leg.instrument.trim().toUpperCase())
+        .sort()
+        .join("|")
+
+    return `${buildCreditVerticalInstrument(underlying, expiration, verticalSpreadType)}:${normalizedLegs}`
+}
+
+export function buildAlpacaStructureInstrumentFromLegs(structure: {
+    structureType: AlpacaStructureType
+    verticalSpreadType?: AlpacaVerticalSpreadType
+    underlying: string
+    expiration: string
+    legs: Array<{ instrument: string }>
+}): string {
+    if (structure.structureType === "iron_condor") {
+        return buildIronCondorInstrumentFromLegs(structure.underlying, structure.expiration, structure.legs)
+    }
+
+    if (!structure.verticalSpreadType) {
+        throw new Error("Vertical Alpaca structure requires verticalSpreadType")
+    }
+
+    return buildCreditVerticalInstrumentFromLegs(
+        structure.underlying,
+        structure.expiration,
+        structure.verticalSpreadType,
+        structure.legs
+    )
 }
 
 export function parseOptionContractSymbol(symbol: string): ParsedOptionContract | null {
@@ -83,7 +144,7 @@ export function parseOptionContractSymbol(symbol: string): ParsedOptionContract 
     }
 }
 
-function ironCondorStructureValidator(intent: OrderIntent) {
+function alpacaStructureValidator(intent: OrderIntent) {
     const action = getIntentAction(intent)
 
     if (action === "adjustment") {
@@ -96,56 +157,56 @@ function ironCondorStructureValidator(intent: OrderIntent) {
     if (!intent.legs || intent.legs.length === 0) {
         return {
             allowed: false,
-            reason: "Alpaca options orders must be submitted as exactly 4 option legs",
+            reason: "Alpaca options orders must be submitted as either a 2-leg credit vertical or a 4-leg iron condor",
         }
     }
 
-    if (intent.legs.length !== 4) {
+    if (!SUPPORTED_LEG_COUNTS.has(intent.legs.length)) {
         return {
             allowed: false,
-            reason: "Alpaca iron condor orders must contain exactly 4 legs",
+            reason: "Alpaca options structures must contain exactly 2 or 4 legs",
         }
     }
 
     if (!Number.isInteger(intent.quantity) || intent.quantity <= 0) {
         return {
             allowed: false,
-            reason: "Alpaca iron condor orders require a positive integer structure quantity",
+            reason: "Alpaca options structures require a positive integer structure quantity",
         }
     }
 
     if (intent.orderType !== SUPPORTED_ALPACA_ORDER_TYPE) {
         return {
             allowed: false,
-            reason: "Alpaca iron condor orders only support limit pricing",
+            reason: "Alpaca options structures only support limit pricing",
         }
     }
 
     if (intent.timeInForce !== SUPPORTED_ALPACA_TIME_IN_FORCE) {
         return {
             allowed: false,
-            reason: "Alpaca iron condor orders only support day time in force",
+            reason: "Alpaca options structures only support day time in force",
         }
     }
 
     if (intent.stopPrice !== undefined) {
         return {
             allowed: false,
-            reason: "Alpaca iron condor orders do not support stop prices",
+            reason: "Alpaca options structures do not support stop prices",
         }
     }
 
     if (intent.limitPrice === undefined || intent.limitPrice <= 0) {
         return {
             allowed: false,
-            reason: "Alpaca iron condor orders require a positive net credit/debit limit price",
+            reason: "Alpaca options structures require a positive net credit/debit limit price",
         }
     }
 
     if (intent.legs.some((leg) => leg.limitPrice !== undefined)) {
         return {
             allowed: false,
-            reason: "Per-leg limit prices are not supported for Alpaca iron condor orders",
+            reason: "Per-leg limit prices are not supported for Alpaca options structures",
         }
     }
 
@@ -166,19 +227,7 @@ function ironCondorStructureValidator(intent: OrderIntent) {
     if (underlyings.size !== 1) {
         return {
             allowed: false,
-            reason: "All legs in an Alpaca iron condor must share the same underlying",
-        }
-    }
-
-    const calls = normalizedLegs.filter((leg) => leg.optionType === "call")
-    const puts = normalizedLegs.filter((leg) => leg.optionType === "put")
-    const buys = normalizedLegs.filter((leg) => leg.direction === "buy")
-    const sells = normalizedLegs.filter((leg) => leg.direction === "sell")
-
-    if (calls.length !== 2 || puts.length !== 2 || buys.length !== 2 || sells.length !== 2) {
-        return {
-            allowed: false,
-            reason: "Alpaca iron condor entries must have 2 calls, 2 puts, 2 buys, and 2 sells",
+            reason: "All legs in an Alpaca options structure must share the same underlying",
         }
     }
 
@@ -192,34 +241,43 @@ function ironCondorStructureValidator(intent: OrderIntent) {
         }
     }
 
-    if (!isIronCondorGeometry(calls, puts)) {
-        return {
-            allowed: false,
-            reason: "Leg strikes do not form a valid iron condor geometry",
-        }
-    }
-
     if (!hasSupportedLegRatios(intent, normalizedLegs)) {
         return {
             allowed: false,
-            reason: "Each Alpaca iron condor leg must use a 1-lot ratio matching the top-level structure quantity",
+            reason: "Each Alpaca options structure leg must use a 1-lot ratio matching the top-level structure quantity",
         }
     }
 
-    const expiration = normalizedLegs[0]?.expiration ?? ""
-    const underlying = normalizedLegs[0]?.underlying ?? intent.instrument
-    const spreadWidth = calculateNormalizedStructureWidth(normalizedLegs)
+    const resolvedStructure = resolveStructureFromNormalizedLegs(normalizedLegs)
+    if (!resolvedStructure) {
+        return {
+            allowed: false,
+            reason: normalizedLegs.length === 4
+                ? "Leg strikes do not form a valid iron condor geometry"
+                : "Leg strikes do not form a valid one-sided credit vertical",
+        }
+    }
+
+    const structureLegs = resolvedStructure.legs
+        .map((leg) => leg.instrument.trim().toUpperCase())
+        .sort()
 
     return {
         allowed: true,
         adjustedIntent: {
             ...intent,
-            instrument: buildIronCondorInstrumentFromLegs(underlying, expiration, normalizedLegs),
+            instrument: buildAlpacaStructureInstrumentFromLegs({
+                structureType: resolvedStructure.structureType,
+                verticalSpreadType: resolvedStructure.verticalSpreadType,
+                underlying: resolvedStructure.underlying,
+                expiration: resolvedStructure.expiration,
+                legs: resolvedStructure.legs,
+            }),
             side: action === "close" ? "buy" : "sell",
             orderType: SUPPORTED_ALPACA_ORDER_TYPE,
             timeInForce: SUPPORTED_ALPACA_TIME_IN_FORCE,
             stopPrice: undefined,
-            legs: normalizedLegs.map<OrderLeg>((leg) => ({
+            legs: resolvedStructure.legs.map<OrderLeg>((leg) => ({
                 instrument: leg.instrument,
                 side: leg.side,
                 quantity: 1,
@@ -227,11 +285,13 @@ function ironCondorStructureValidator(intent: OrderIntent) {
             metadata: {
                 ...intent.metadata,
                 action,
-                structureType: "iron_condor",
-                underlying,
-                expiration,
-                expectedExpiration: expiration,
-                spreadWidth,
+                structureType: resolvedStructure.structureType,
+                verticalSpreadType: resolvedStructure.verticalSpreadType,
+                underlying: resolvedStructure.underlying,
+                expiration: resolvedStructure.expiration,
+                expectedExpiration: resolvedStructure.expiration,
+                spreadWidth: resolvedStructure.spreadWidth,
+                structureLegs,
             },
         },
     }
@@ -342,7 +402,7 @@ function getIntentExpirations(intent: OrderIntent): string[] {
 function calculateStructureWidth(intent: OrderIntent): number | null {
     const normalizedLegs = normalizeOptionLegs(intent)
 
-    if (!Array.isArray(normalizedLegs) || normalizedLegs.length < 4) {
+    if (!Array.isArray(normalizedLegs) || normalizedLegs.length < 2) {
         const metadataWidth = intent.metadata?.spreadWidth
         return typeof metadataWidth === "number" ? metadataWidth : null
     }
@@ -404,8 +464,8 @@ function normalizeOptionLegs(intent: OrderIntent): NormalizedOptionLeg[] | { all
             instrument: leg.instrument,
             quantity: leg.quantity,
             side: normalizedSide,
-            direction: normalizedSide.startsWith("buy") ? "buy" : "sell",
             positionEffect: normalizedSide.endsWith("_close") ? "close" : "open",
+            exposure: resolveExposureFromSide(normalizedSide),
         })
     }
 
@@ -436,28 +496,115 @@ function normalizeLegSide(
     return null
 }
 
+function resolveExposureFromSide(side: OrderLegSide): "long" | "short" {
+    if (side === "sell_to_open" || side === "buy_to_close") {
+        return "short"
+    }
+    return "long"
+}
+
 function hasSupportedLegRatios(intent: OrderIntent, legs: NormalizedOptionLeg[]): boolean {
     return legs.every((leg) => Number.isInteger(leg.quantity) && (leg.quantity === 1 || leg.quantity === intent.quantity))
 }
 
-function isIronCondorGeometry(
-    calls: NormalizedOptionLeg[],
-    puts: NormalizedOptionLeg[]
-): boolean {
-    const shortCall = calls.find((leg) => leg.direction === "sell")
-    const longCall = calls.find((leg) => leg.direction === "buy")
-    const shortPut = puts.find((leg) => leg.direction === "sell")
-    const longPut = puts.find((leg) => leg.direction === "buy")
-
-    if (!shortCall || !longCall || !shortPut || !longPut) {
-        return false
+function resolveStructureFromNormalizedLegs(legs: NormalizedOptionLeg[]): ResolvedStructure | null {
+    if (legs.length === 4) {
+        return resolveIronCondorStructure(legs)
     }
 
-    return (
+    if (legs.length === 2) {
+        return resolveCreditVerticalStructure(legs)
+    }
+
+    return null
+}
+
+function resolveIronCondorStructure(legs: NormalizedOptionLeg[]): ResolvedStructure | null {
+    const calls = legs.filter((leg) => leg.optionType === "call")
+    const puts = legs.filter((leg) => leg.optionType === "put")
+    const shorts = legs.filter((leg) => leg.exposure === "short")
+    const longs = legs.filter((leg) => leg.exposure === "long")
+
+    if (calls.length !== 2 || puts.length !== 2 || shorts.length !== 2 || longs.length !== 2) {
+        return null
+    }
+
+    const shortCall = calls.find((leg) => leg.exposure === "short")
+    const longCall = calls.find((leg) => leg.exposure === "long")
+    const shortPut = puts.find((leg) => leg.exposure === "short")
+    const longPut = puts.find((leg) => leg.exposure === "long")
+
+    if (!shortCall || !longCall || !shortPut || !longPut) {
+        return null
+    }
+
+    const validGeometry = (
         longPut.strike < shortPut.strike &&
         shortPut.strike < shortCall.strike &&
         shortCall.strike < longCall.strike
     )
+
+    if (!validGeometry) {
+        return null
+    }
+
+    const spreadWidth = calculateNormalizedStructureWidth(legs)
+    if (spreadWidth === null) {
+        return null
+    }
+
+    return {
+        structureType: "iron_condor",
+        underlying: legs[0]!.underlying,
+        expiration: legs[0]!.expiration,
+        spreadWidth,
+        legs,
+    }
+}
+
+function resolveCreditVerticalStructure(legs: NormalizedOptionLeg[]): ResolvedStructure | null {
+    const shorts = legs.filter((leg) => leg.exposure === "short")
+    const longs = legs.filter((leg) => leg.exposure === "long")
+
+    if (shorts.length !== 1 || longs.length !== 1) {
+        return null
+    }
+
+    const shortLeg = shorts[0]!
+    const longLeg = longs[0]!
+    if (shortLeg.optionType !== longLeg.optionType) {
+        return null
+    }
+
+    let verticalSpreadType: AlpacaVerticalSpreadType | null = null
+    let spreadWidth: number | null = null
+
+    if (shortLeg.optionType === "call") {
+        if (shortLeg.strike >= longLeg.strike) {
+            return null
+        }
+        verticalSpreadType = "bear_call_credit"
+        spreadWidth = longLeg.strike - shortLeg.strike
+    } else {
+        if (longLeg.strike >= shortLeg.strike) {
+            return null
+        }
+        verticalSpreadType = "bull_put_credit"
+        spreadWidth = shortLeg.strike - longLeg.strike
+    }
+
+    if (spreadWidth <= 0) {
+        return null
+    }
+
+    return {
+        structureType: "credit_vertical",
+        verticalSpreadType,
+        underlying: shortLeg.underlying,
+        expiration: shortLeg.expiration,
+        spreadWidth,
+        legs: [shortLeg, longLeg],
+    }
 }
 
 function calculateNormalizedStructureWidth(legs: NormalizedOptionLeg[]): number | null {

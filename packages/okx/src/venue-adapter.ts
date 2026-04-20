@@ -120,6 +120,7 @@ export class OKXVenueAdapter implements VenueAdapter, PriceVerifier {
 
                 return {
                     instrument: position.instId,
+                    providerPositionId: position.posId,
                     side,
                     quantity,
                     entryPrice: Number(position.avgPx),
@@ -135,6 +136,7 @@ export class OKXVenueAdapter implements VenueAdapter, PriceVerifier {
                         leverage: position.lever ? Number(position.lever) : undefined,
                         liquidationPrice: isFiniteNumberString(position.liqPx) ? Number(position.liqPx) : undefined,
                         positionMode: this.config.positionMode,
+                        posId: position.posId,
                     },
                 } satisfies Position
             })
@@ -933,7 +935,7 @@ function mapAccountState(balance: OKXAccountBalance): AccountState {
         marginUsed,
         marginAvailable: available,
         openPnl,
-        dayPnl: 0,
+        dayPnl: openPnl,
     }
 }
 
@@ -1044,6 +1046,20 @@ function mapToOKXOrderType(
 
     if (timeInForce === "fok") {
         return "fok"
+    }
+
+    if (timeInForce === "day") {
+        throw createExecutionError(
+            "pre_validation",
+            "OKX swap does not support implicit day-end expiry semantics. Use gtc, ioc, or fok with explicit cancellation policy.",
+            {
+                code: "UNSUPPORTED_TIME_IN_FORCE",
+                retryable: false,
+                details: {
+                    timeInForce,
+                },
+            }
+        )
     }
 
     return "limit"

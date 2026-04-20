@@ -33,11 +33,18 @@ export default function StrategyDetailPage({
         strategyId: id as Id<"strategies">,
         limit: 20,
     })
+    const riskState = useQuery(api.queries.getStrategyRiskState, {
+        strategyId: id as Id<"strategies">,
+    })
+    const executionFaults = useQuery(api.queries.getStrategyExecutionSafetyFaults, {
+        strategyId: id as Id<"strategies">,
+        unresolvedOnly: true,
+    })
     const upsertStrategy = useMutation(api.mutations.upsertStrategy)
     const triggerManualRun = useMutation(api.mutations.triggerManualRun)
     const [deleteOpen, setDeleteOpen] = useState(false)
 
-    if (isLoading || runs === undefined) {
+    if (isLoading || runs === undefined || riskState === undefined || executionFaults === undefined) {
         return (
             <div className="space-y-6">
                 <Skeleton className="h-8 w-48" />
@@ -164,6 +171,93 @@ export default function StrategyDetailPage({
                     </CardContent>
                 </Card>
             </div>
+
+            <Card>
+                <CardHeader>
+                    <CardTitle className="text-base">Risk Posture</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                    {!riskState ? (
+                        <p className="text-sm text-muted-foreground">Risk state not initialized yet.</p>
+                    ) : (
+                        <>
+                            <div className="flex items-center gap-2 flex-wrap">
+                                <Badge
+                                    variant={
+                                        riskState.safetyState === "healthy"
+                                            ? "default"
+                                            : riskState.safetyState === "blocked"
+                                                ? "destructive"
+                                                : "secondary"
+                                    }
+                                >
+                                    {riskState.safetyState}
+                                </Badge>
+                                {riskState.cooldown.active ? (
+                                    <Badge variant="outline">
+                                        cooldown {riskState.cooldown.expiresAt ? formatTimestamp(riskState.cooldown.expiresAt) : ""}
+                                    </Badge>
+                                ) : null}
+                                <span className="text-xs text-muted-foreground">
+                                    Updated {formatRelativeTime(riskState.lastUpdatedAt)}
+                                </span>
+                            </div>
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
+                                <div className="rounded-md border border-border-subtle p-3 space-y-1">
+                                    <p className="text-xs text-muted-foreground">Daily Drawdown</p>
+                                    <p className="font-mono">
+                                        {riskState.day.realizedPnl.toFixed(2)}
+                                        {riskState.day.limit !== undefined ? ` / -${riskState.day.limit.toFixed(2)}` : " / not configured"}
+                                    </p>
+                                    {riskState.day.progress !== undefined ? (
+                                        <p className="text-xs text-muted-foreground">
+                                            {Math.round(riskState.day.progress * 100)}% of limit
+                                        </p>
+                                    ) : null}
+                                </div>
+                                <div className="rounded-md border border-border-subtle p-3 space-y-1">
+                                    <p className="text-xs text-muted-foreground">Weekly Drawdown</p>
+                                    <p className="font-mono">
+                                        {riskState.week.realizedPnl.toFixed(2)}
+                                        {riskState.week.limit !== undefined ? ` / -${riskState.week.limit.toFixed(2)}` : " / not configured"}
+                                    </p>
+                                    {riskState.week.progress !== undefined ? (
+                                        <p className="text-xs text-muted-foreground">
+                                            {Math.round(riskState.week.progress * 100)}% of limit
+                                        </p>
+                                    ) : null}
+                                </div>
+                            </div>
+                            <div className="space-y-1 text-sm">
+                                <p className="text-xs text-muted-foreground">Blocked Instruments</p>
+                                <p>{riskState.blockedInstruments.length > 0 ? riskState.blockedInstruments.join(", ") : "none"}</p>
+                                {riskState.forcedExitClusterInstruments.length > 0 ? (
+                                    <p className="text-xs text-muted-foreground">
+                                        Forced-exit cluster guard: {riskState.forcedExitClusterInstruments.join(", ")}
+                                    </p>
+                                ) : null}
+                            </div>
+                            <div className="space-y-1 text-sm">
+                                <p className="text-xs text-muted-foreground">Execution Faults</p>
+                                <p>{executionFaults.length} unresolved</p>
+                                {executionFaults.length > 0 ? (
+                                    <div className="space-y-1">
+                                        {executionFaults.slice(0, 5).map((fault) => (
+                                            <div
+                                                key={fault._id}
+                                                className="rounded-md border border-border-subtle p-2 text-xs"
+                                            >
+                                                <p className="font-medium">{fault.instrument} • {fault.category}</p>
+                                                <p className="text-muted-foreground">{fault.message}</p>
+                                            </div>
+                                        ))}
+                                    </div>
+                                ) : null}
+                            </div>
+                        </>
+                    )}
+                </CardContent>
+            </Card>
 
             <Card>
                 <CardHeader>

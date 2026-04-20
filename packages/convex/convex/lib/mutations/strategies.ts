@@ -243,6 +243,8 @@ export const deleteAllStrategies = mutation({
             positions: 0,
             instrumentClaims: 0,
             positionSyncs: 0,
+            strategyRiskStates: 0,
+            executionSafetyFaults: 0,
             providerPositions: 0,
             providerWorkingOrders: 0,
             providerSyncStates: 0,
@@ -269,6 +271,8 @@ export const deleteAllStrategies = mutation({
             deleted.positions += result.positions
             deleted.instrumentClaims += result.instrumentClaims
             deleted.positionSyncs += result.positionSyncs
+            deleted.strategyRiskStates += result.strategyRiskStates
+            deleted.executionSafetyFaults += result.executionSafetyFaults
             deleted.providerPositions += result.providerPositions
             deleted.providerWorkingOrders += result.providerWorkingOrders
             deleted.providerSyncStates += result.providerSyncStates
@@ -307,6 +311,8 @@ export const deleteOrphanedStrategyHistoryBatch = mutation({
             positions: 0,
             instrumentClaims: 0,
             positionSyncs: 0,
+            strategyRiskStates: 0,
+            executionSafetyFaults: 0,
             providerPositions: 0,
             providerWorkingOrders: 0,
             providerSyncStates: 0,
@@ -529,6 +535,40 @@ export const deleteOrphanedStrategyHistoryBatch = mutation({
 
             await ctx.db.delete(sync._id)
             deleted.positionSyncs++
+        }
+
+        if (sumDeletedCounts(deleted) > 0) {
+            return {
+                ...deleted,
+                hasMore: true,
+            }
+        }
+
+        const orphanRiskStates = await ctx.db.query("strategy_risk_states").order("asc").take(batchSize)
+        for (const riskState of orphanRiskStates) {
+            if (await strategyExists(riskState.strategyId)) {
+                continue
+            }
+
+            await ctx.db.delete(riskState._id)
+            deleted.strategyRiskStates++
+        }
+
+        if (sumDeletedCounts(deleted) > 0) {
+            return {
+                ...deleted,
+                hasMore: true,
+            }
+        }
+
+        const orphanExecutionFaults = await ctx.db.query("execution_safety_faults").order("asc").take(batchSize)
+        for (const fault of orphanExecutionFaults) {
+            if (await strategyExists(fault.strategyId)) {
+                continue
+            }
+
+            await ctx.db.delete(fault._id)
+            deleted.executionSafetyFaults++
         }
 
         if (sumDeletedCounts(deleted) > 0) {
@@ -779,6 +819,32 @@ async function deleteStrategyTableBatch(
         return true
     }
 
+    const riskStates = await ctx.db
+        .query("strategy_risk_states")
+        .withIndex("by_strategy", (q) => q.eq("strategyId", strategyId))
+        .take(batchSize)
+
+    if (riskStates.length > 0) {
+        for (const riskState of riskStates) {
+            await ctx.db.delete(riskState._id)
+            deleted.strategyRiskStates++
+        }
+        return true
+    }
+
+    const executionFaults = await ctx.db
+        .query("execution_safety_faults")
+        .withIndex("by_strategy", (q) => q.eq("strategyId", strategyId))
+        .take(batchSize)
+
+    if (executionFaults.length > 0) {
+        for (const fault of executionFaults) {
+            await ctx.db.delete(fault._id)
+            deleted.executionSafetyFaults++
+        }
+        return true
+    }
+
     const providerPositions = await ctx.db
         .query("provider_positions")
         .withIndex("by_app_strategy", (q) =>
@@ -967,6 +1033,8 @@ async function cascadeDeleteStrategy(
     positions: number
     instrumentClaims: number
     positionSyncs: number
+    strategyRiskStates: number
+    executionSafetyFaults: number
     providerPositions: number
     providerWorkingOrders: number
     providerSyncStates: number
@@ -989,6 +1057,8 @@ async function cascadeDeleteStrategy(
     let positions = 0
     let instrumentClaims = 0
     let positionSyncs = 0
+    let strategyRiskStates = 0
+    let executionSafetyFaults = 0
     let providerPositions = 0
     let providerWorkingOrders = 0
     let providerSyncStates = 0
@@ -1039,6 +1109,26 @@ async function cascadeDeleteStrategy(
     for (const sync of strategySyncs) {
         await ctx.db.delete(sync._id)
         positionSyncs++
+    }
+
+    const strategyRiskRows = await ctx.db
+        .query("strategy_risk_states")
+        .withIndex("by_strategy", (q) => q.eq("strategyId", strategyId))
+        .collect()
+
+    for (const riskRow of strategyRiskRows) {
+        await ctx.db.delete(riskRow._id)
+        strategyRiskStates++
+    }
+
+    const strategyExecutionFaults = await ctx.db
+        .query("execution_safety_faults")
+        .withIndex("by_strategy", (q) => q.eq("strategyId", strategyId))
+        .collect()
+
+    for (const fault of strategyExecutionFaults) {
+        await ctx.db.delete(fault._id)
+        executionSafetyFaults++
     }
 
     const strategyProviderPositions = await ctx.db
@@ -1153,6 +1243,8 @@ async function cascadeDeleteStrategy(
         positions,
         instrumentClaims,
         positionSyncs,
+        strategyRiskStates,
+        executionSafetyFaults,
         providerPositions,
         providerWorkingOrders,
         providerSyncStates,
@@ -1238,6 +1330,8 @@ export const replaceAllStrategies = mutation({
             positions: 0,
             instrumentClaims: 0,
             positionSyncs: 0,
+            strategyRiskStates: 0,
+            executionSafetyFaults: 0,
             providerPositions: 0,
             providerWorkingOrders: 0,
             providerSyncStates: 0,
@@ -1268,6 +1362,8 @@ export const replaceAllStrategies = mutation({
             deleted.positions += result.positions
             deleted.instrumentClaims += result.instrumentClaims
             deleted.positionSyncs += result.positionSyncs
+            deleted.strategyRiskStates += result.strategyRiskStates
+            deleted.executionSafetyFaults += result.executionSafetyFaults
             deleted.providerPositions += result.providerPositions
             deleted.providerWorkingOrders += result.providerWorkingOrders
             deleted.providerSyncStates += result.providerSyncStates
@@ -1387,6 +1483,8 @@ function sumDeletedCounts(counts: {
     positions: number
     instrumentClaims: number
     positionSyncs: number
+    strategyRiskStates: number
+    executionSafetyFaults: number
     providerPositions: number
     providerWorkingOrders: number
     providerSyncStates: number
@@ -1404,6 +1502,8 @@ function sumDeletedCounts(counts: {
         counts.positions +
         counts.instrumentClaims +
         counts.positionSyncs +
+        counts.strategyRiskStates +
+        counts.executionSafetyFaults +
         counts.providerPositions +
         counts.providerWorkingOrders +
         counts.providerSyncStates +

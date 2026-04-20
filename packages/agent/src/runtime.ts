@@ -35,12 +35,26 @@ export interface AgentRunResult {
     error?: string
     iterations: number
     usage: LLMUsage
+    degradedResearch?: {
+        active: boolean
+        reasons: string[]
+        toolFailureCount: number
+        retryCount: number
+        decisionUnderDegradedContext: boolean
+    }
 }
 
 const DEFAULT_MAX_ITERATIONS = 25
 const DEFAULT_MAX_CONSECUTIVE_ERRORS = 5
 const DEFAULT_RUN_TIMEOUT_MS = 10 * 60 * 1000
 const TOOL_TIMEOUT_MS = 120_000
+const RESEARCH_TOOL_NAMES = new Set([
+    "query_valiq_research",
+    "query_valiq_data",
+    "get_breaking_news",
+    "web_search",
+    "web_fetch",
+])
 
 export async function executeAgentRun(
     context: StrategyRunContext,
@@ -88,8 +102,19 @@ export async function executeAgentRun(
     let iteration = 0
     const repeatedToolErrors = new Map<string, number>()
     const maxRepeatedToolErrors = 3
+    const degradedResearchReasons = new Set<string>()
+    let degradedResearchToolFailureCount = 0
+    let degradedResearchRetryCount = 0
 
     const openRouterTools = tools.toOpenRouterTools()
+
+    const buildDegradedResearch = (decisionTaken: boolean) => ({
+        active: degradedResearchReasons.size > 0,
+        reasons: Array.from(degradedResearchReasons),
+        toolFailureCount: degradedResearchToolFailureCount,
+        retryCount: degradedResearchRetryCount,
+        decisionUnderDegradedContext: decisionTaken && degradedResearchReasons.size > 0,
+    })
 
     try {
         while (iteration < maxIterations) {
@@ -108,6 +133,7 @@ export async function executeAgentRun(
                     error: `Run timed out after ${Math.round(elapsed / 1000)}s (limit: ${Math.round(runTimeoutMs / 1000)}s)`,
                     iterations: iteration,
                     usage: aggregatedUsage,
+                    degradedResearch: buildDegradedResearch(false),
                 }
             }
 
@@ -126,6 +152,7 @@ export async function executeAgentRun(
                             error: "Kill switch activated during run",
                             iterations: iteration,
                             usage: aggregatedUsage,
+                            degradedResearch: buildDegradedResearch(false),
                         }
                     }
                 } catch (error) {
@@ -163,6 +190,7 @@ export async function executeAgentRun(
                         error: `Circuit breaker: ${consecutiveErrors} consecutive LLM failures. Last: ${errorMsg}`,
                         iterations: iteration,
                         usage: aggregatedUsage,
+                        degradedResearch: buildDegradedResearch(false),
                     }
                 }
                 continue
@@ -203,6 +231,16 @@ export async function executeAgentRun(
                         )
                         const repeatedError = recordRepeatedToolError(repeatedToolErrors, toolName, errorResult)
                         if (repeatedError >= maxRepeatedToolErrors) {
+                            if (RESEARCH_TOOL_NAMES.has(toolName)) {
+                                degradedResearchToolFailureCount++
+                                degradedResearchRetryCount += repeatedError
+                                degradedResearchReasons.add(`${toolName}: unknown tool`)
+                                clearRepeatedToolErrors(repeatedToolErrors, toolName)
+                                conversation.addUserMessage(
+                                    `System warning: ${toolName} is unavailable after repeated attempts. Continue in degraded research mode using currently available context and prioritize risk-reducing actions.`
+                                )
+                                continue
+                            }
                             return repeatedToolErrorResult(context.runId, toolName, errorResult, iteration, aggregatedUsage)
                         }
                         continue
@@ -222,6 +260,16 @@ export async function executeAgentRun(
                         )
                         const repeatedError = recordRepeatedToolError(repeatedToolErrors, toolName, errorResult)
                         if (repeatedError >= maxRepeatedToolErrors) {
+                            if (RESEARCH_TOOL_NAMES.has(toolName)) {
+                                degradedResearchToolFailureCount++
+                                degradedResearchRetryCount += repeatedError
+                                degradedResearchReasons.add(`${toolName}: invalid arguments loop`)
+                                clearRepeatedToolErrors(repeatedToolErrors, toolName)
+                                conversation.addUserMessage(
+                                    `System warning: ${toolName} calls failed argument parsing repeatedly. Continue in degraded research mode and avoid repeated identical calls.`
+                                )
+                                continue
+                            }
                             return repeatedToolErrorResult(context.runId, toolName, errorResult, iteration, aggregatedUsage)
                         }
                         continue
@@ -239,6 +287,16 @@ export async function executeAgentRun(
                         )
                         const repeatedError = recordRepeatedToolError(repeatedToolErrors, toolName, normalizeToolErrorSignature(errorResult))
                         if (repeatedError >= maxRepeatedToolErrors) {
+                            if (RESEARCH_TOOL_NAMES.has(toolName)) {
+                                degradedResearchToolFailureCount++
+                                degradedResearchRetryCount += repeatedError
+                                degradedResearchReasons.add(`${toolName}: parameter validation loop`)
+                                clearRepeatedToolErrors(repeatedToolErrors, toolName)
+                                conversation.addUserMessage(
+                                    `System warning: ${toolName} parameter validation failed repeatedly. Continue in degraded research mode and proceed with bounded actions only.`
+                                )
+                                continue
+                            }
                             return repeatedToolErrorResult(context.runId, toolName, errorResult, iteration, aggregatedUsage)
                         }
                         continue
@@ -286,13 +344,23 @@ export async function executeAgentRun(
                             logger.error("Tool execution error", { toolName, error: errorMsg })
                             const repeatedError = recordRepeatedToolError(repeatedToolErrors, toolName, toolResult)
                             if (repeatedError >= maxRepeatedToolErrors) {
-                                conversation.addToolResult(toolCall.id, toolName, toolResult)
-                                void agentLogger?.log(
-                                    context.runId, context.strategyId,
-                                    conversation.getSequence(), "tool",
-                                    toolResult, toolName, toolCall.function.arguments, toolResult
-                                )
-                                return repeatedToolErrorResult(context.runId, toolName, toolResult, iteration, aggregatedUsage)
+                                if (RESEARCH_TOOL_NAMES.has(toolName)) {
+                                    degradedResearchToolFailureCount++
+                                    degradedResearchRetryCount += repeatedError
+                                    degradedResearchReasons.add(`${toolName}: execution failure loop`)
+                                    clearRepeatedToolErrors(repeatedToolErrors, toolName)
+                                    toolResult = JSON.stringify({
+                                        warning: `Degraded research mode active: ${toolName} failed repeatedly and has been bounded for this run.`,
+                                    })
+                                } else {
+                                    conversation.addToolResult(toolCall.id, toolName, toolResult)
+                                    void agentLogger?.log(
+                                        context.runId, context.strategyId,
+                                        conversation.getSequence(), "tool",
+                                        toolResult, toolName, toolCall.function.arguments, toolResult
+                                    )
+                                    return repeatedToolErrorResult(context.runId, toolName, toolResult, iteration, aggregatedUsage)
+                                }
                             }
                         }
 
@@ -325,6 +393,7 @@ export async function executeAgentRun(
                     summary: response.content,
                     iterations: iteration,
                     usage: aggregatedUsage,
+                    degradedResearch: buildDegradedResearch(true),
                 }
             }
 
@@ -341,6 +410,7 @@ export async function executeAgentRun(
             error: `Reached max iterations (${maxIterations})`,
             iterations: iteration,
             usage: aggregatedUsage,
+            degradedResearch: buildDegradedResearch(false),
         }
     } finally {
         if (config.cleanup && config.cleanup.length > 0) {

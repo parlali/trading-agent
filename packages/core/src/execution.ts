@@ -106,6 +106,7 @@ export interface ExecuteIntentResult {
 
 export interface ClosePositionOptions {
     estimatedPrice?: number
+    metadata?: Record<string, unknown>
 }
 
 export interface OrderLifecycleConfig {
@@ -117,6 +118,80 @@ export interface PriceVerificationConfig {
     warningThresholdPercent?: number
     blockingThresholdPercent?: number
     failClosedOnVerificationError?: boolean
+}
+
+export function resolveDryRunAccountState(args: {
+    policy: Record<string, unknown>
+    positions: Position[]
+}): AccountState {
+    let dryRunCashAdjustment = 0
+    let dryRunRealizedPnl = 0
+    const ledger = args.positions.find((position) => isDryRunAccountLedgerPosition(position))
+
+    if (ledger) {
+        dryRunCashAdjustment = readNumber(ledger.metadata?.cashAdjustment) ?? 0
+        dryRunRealizedPnl = readNumber(ledger.metadata?.realizedPnl) ?? 0
+    }
+
+    for (const position of args.positions) {
+        if (isDryRunAccountLedgerPosition(position)) {
+            continue
+        }
+
+        if (!ledger) {
+            dryRunCashAdjustment += resolveDryRunOpeningCashDelta(position)
+        }
+    }
+
+    return buildDryRunAccountState({
+        policy: args.policy,
+        positions: args.positions.filter((position) => !isDryRunAccountLedgerPosition(position)),
+        cashAdjustment: dryRunCashAdjustment,
+        realizedPnl: dryRunRealizedPnl,
+    })
+}
+
+function buildDryRunAccountState(args: {
+    policy: Record<string, unknown>
+    positions: Position[]
+    cashAdjustment: number
+    realizedPnl: number
+}): AccountState {
+    const initialCash = typeof args.policy.dryRunInitialCash === "number"
+        ? args.policy.dryRunInitialCash
+        : typeof args.policy.virtualCash === "number"
+            ? args.policy.virtualCash
+            : 1000
+    let currentValue = 0
+    let marginUsed = 0
+    let openPnl = 0
+
+    for (const position of args.positions) {
+        const mark = position.currentPrice ?? position.entryPrice
+        const marketValue = position.quantity * mark
+        currentValue += position.side === "short" ? -marketValue : marketValue
+        marginUsed += Math.abs(marketValue)
+        openPnl += position.unrealizedPnl ?? resolveDryRunUnrealizedPnl(
+            position.side,
+            position.quantity,
+            position.entryPrice,
+            mark
+        ) ?? 0
+    }
+
+    const balance = initialCash + args.cashAdjustment
+    const equity = balance + currentValue
+    const dayPnl = args.realizedPnl + openPnl
+
+    return {
+        balance,
+        equity,
+        buyingPower: Math.max(balance, 0),
+        marginUsed,
+        marginAvailable: Math.max(balance, 0),
+        openPnl,
+        dayPnl,
+    }
 }
 
 export type OrderStatusCallback = (
@@ -433,22 +508,8 @@ export class ExecutionPipeline {
         const positions = await this.getPositions()
         const position = positions.find((item) => item.instrument === instrument)
         const closeSide = position?.side === "long" ? "sell" : "buy"
-        let intent: OrderIntent = {
-            instrument,
-            side: closeSide,
-            quantity: position?.quantity ?? 0,
-            orderType: "market",
-            timeInForce: "day",
-            metadata: {
-                ...position?.metadata,
-                action: "close",
-                reason,
-                estimatedPrice: options.estimatedPrice,
-            },
-        }
-
-        if (position && !this.policy.dryRun && this.venue.buildCloseIntent) {
-            let venueIntent: OrderIntent
+        let venueIntent: OrderIntent | undefined
+        if (!this.policy.dryRun && this.venue.buildCloseIntent) {
             try {
                 venueIntent = await this.venue.buildCloseIntent(instrument)
             } catch (error) {
@@ -468,23 +529,47 @@ export class ExecutionPipeline {
                     },
                 }
             }
+        }
 
-            intent = {
+        const venueMetadata = venueIntent?.metadata
+        const venueEntryPrice = readNumber(venueMetadata?.entryPrice)
+        const venuePositionSide = readPositionSide(venueMetadata?.positionSide)
+        const venueEstimatedPrice = readNumber(venueMetadata?.estimatedPrice)
+        const intent: OrderIntent = venueIntent
+            ? {
                 ...venueIntent,
                 metadata: {
-                    ...position.metadata,
-                    ...venueIntent.metadata,
+                    ...position?.metadata,
+                    ...options.metadata,
+                    ...venueMetadata,
                     action: "close",
                     reason,
-                    estimatedPrice: options.estimatedPrice ?? venueIntent.metadata?.estimatedPrice,
+                    entryPrice: position?.entryPrice ?? venueEntryPrice,
+                    positionSide: position?.side ?? venuePositionSide,
+                    estimatedPrice: options.estimatedPrice ?? venueEstimatedPrice,
                 },
             }
-        }
+            : {
+                instrument,
+                side: closeSide,
+                quantity: position?.quantity ?? 0,
+                orderType: "market",
+                timeInForce: "day",
+                metadata: {
+                    ...position?.metadata,
+                    ...options.metadata,
+                    action: "close",
+                    reason,
+                    entryPrice: position?.entryPrice,
+                    positionSide: position?.side,
+                    estimatedPrice: options.estimatedPrice,
+                },
+            }
 
         this.logger.info("Closing position", { instrument, reason })
         void this.tradeEventLogger?.logIntent(this.runId, this.strategyId, intent)
 
-        if (!position) {
+        if (!position && !venueIntent) {
             const validation: ValidationResult = {
                 allowed: false,
                 reason: `No open position found for ${instrument}`,
@@ -508,6 +593,25 @@ export class ExecutionPipeline {
         void this.tradeEventLogger?.logValidation(this.runId, this.strategyId, ALLOWED_VALIDATION, intent)
 
         if (this.policy.dryRun) {
+            if (!position) {
+                const validation: ValidationResult = {
+                    allowed: false,
+                    reason: `No open position found for ${instrument}`,
+                }
+                const errorDetail = createExecutionErrorDetail("pre_validation", validation.reason ?? "No open position found")
+                return {
+                    result: {
+                        orderId: "",
+                        status: "rejected",
+                        filledQuantity: 0,
+                        timestamp: Date.now(),
+                        error: formatExecutionError(errorDetail),
+                        errorDetail,
+                    },
+                    validation,
+                }
+            }
+
             const result: ExecutionResult = {
                 orderId: `dry-run-close-${Date.now()}`,
                 status: "filled",
@@ -650,41 +754,12 @@ export class ExecutionPipeline {
     }
 
     private getDryRunAccountState(): AccountState {
-        const initialCash = typeof this.policy.dryRunInitialCash === "number"
-            ? this.policy.dryRunInitialCash
-            : typeof this.policy.virtualCash === "number"
-                ? this.policy.virtualCash
-                : 1000
-        let currentValue = 0
-        let marginUsed = 0
-        let openPnl = 0
-
-        for (const position of this.dryRunPositionBook.values()) {
-            const mark = position.currentPrice ?? position.entryPrice
-            const marketValue = position.quantity * mark
-            currentValue += position.side === "short" ? -marketValue : marketValue
-            marginUsed += Math.abs(marketValue)
-            openPnl += position.unrealizedPnl ?? resolveDryRunUnrealizedPnl(
-                position.side,
-                position.quantity,
-                position.entryPrice,
-                mark
-            ) ?? 0
-        }
-
-        const balance = initialCash + this.dryRunCashAdjustment
-        const equity = balance + currentValue
-        const dayPnl = this.dryRunRealizedPnl + openPnl
-
-        return {
-            balance,
-            equity,
-            buyingPower: Math.max(balance, 0),
-            marginUsed,
-            marginAvailable: Math.max(balance, 0),
-            openPnl,
-            dayPnl,
-        }
+        return buildDryRunAccountState({
+            policy: this.policy,
+            positions: this.getDryRunPositions(),
+            cashAdjustment: this.dryRunCashAdjustment,
+            realizedPnl: this.dryRunRealizedPnl,
+        })
     }
 
     private async runPriceVerification(intent: OrderIntent): Promise<PriceVerification | undefined> {
@@ -897,7 +972,12 @@ export class ExecutionPipeline {
     }
 
     private createDryRunAccountLedgerPosition(): Position {
-        const state = this.getDryRunAccountState()
+        const state = buildDryRunAccountState({
+            policy: this.policy,
+            positions: this.getDryRunPositions(),
+            cashAdjustment: this.dryRunCashAdjustment,
+            realizedPnl: this.dryRunRealizedPnl,
+        })
 
         return {
             instrument: DRY_RUN_ACCOUNT_LEDGER_INSTRUMENT,
@@ -1144,6 +1224,12 @@ function resolveDryRunRealizedPnl(
 
 function orderSideForPositionSide(side: Position["side"]): "buy" | "sell" {
     return side === "long" ? "buy" : "sell"
+}
+
+function readPositionSide(value: unknown): Position["side"] | undefined {
+    return value === "long" || value === "short"
+        ? value
+        : undefined
 }
 
 function readNumber(value: unknown): number | undefined {

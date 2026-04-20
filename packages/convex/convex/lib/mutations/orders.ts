@@ -6,6 +6,7 @@ import { DEFAULT_STALE_RUN_TIMEOUT_MS } from "@valiq-trading/core"
 import { requireServiceToken } from "../authGuards"
 import { getClaimInstrumentsForOrder, reconcileOrderInstrumentClaim } from "../instrumentClaims"
 import { incrementControlPlaneMetric } from "../controlPlaneMetrics"
+import { runSystemContextDigestV } from "../validators"
 
 export const createRun = mutation({
     args: {
@@ -169,12 +170,32 @@ export const updateRun = mutation({
         ),
         summary: v.optional(v.string()),
         error: v.optional(v.string()),
+        diagnostics: v.optional(v.object({
+            degradedResearch: v.optional(v.boolean()),
+            degradedReason: v.optional(v.string()),
+            toolFailureCount: v.optional(v.number()),
+            toolRetryCount: v.optional(v.number()),
+            decisionUnderDegradedContext: v.optional(v.boolean()),
+            systemContextDigest: v.optional(runSystemContextDigestV),
+        })),
     },
     handler: async (ctx, args) => {
         requireServiceToken(args.serviceToken)
         const patch: Record<string, unknown> = { status: args.status }
         if (args.summary !== undefined) patch.summary = args.summary
         if (args.error !== undefined) patch.error = args.error
+        if (args.diagnostics) {
+            if (args.diagnostics.degradedResearch !== undefined) patch.degradedResearch = args.diagnostics.degradedResearch
+            if (args.diagnostics.degradedReason !== undefined) patch.degradedReason = args.diagnostics.degradedReason
+            if (args.diagnostics.toolFailureCount !== undefined) patch.toolFailureCount = args.diagnostics.toolFailureCount
+            if (args.diagnostics.toolRetryCount !== undefined) patch.toolRetryCount = args.diagnostics.toolRetryCount
+            if (args.diagnostics.decisionUnderDegradedContext !== undefined) {
+                patch.decisionUnderDegradedContext = args.diagnostics.decisionUnderDegradedContext
+            }
+            if (args.diagnostics.systemContextDigest !== undefined) {
+                patch.systemContextDigest = args.diagnostics.systemContextDigest
+            }
+        }
         if (args.status === "completed" || args.status === "failed") {
             patch.endedAt = Date.now()
         }

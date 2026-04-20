@@ -36,6 +36,23 @@ export const EXECUTION_ERROR_SOURCES = [
 ] as const
 export type ExecutionErrorSource = typeof EXECUTION_ERROR_SOURCES[number]
 
+export const STRATEGY_SAFETY_STATES = [
+    "healthy",
+    "cooldown",
+    "execution_degraded",
+    "blocked",
+] as const
+export type StrategySafetyState = typeof STRATEGY_SAFETY_STATES[number]
+
+export const EXECUTION_SAFETY_FAULT_CATEGORIES = [
+    "position_not_found_yet",
+    "provider_rejected",
+    "already_exists_conflict",
+    "invalid_params",
+    "unknown",
+] as const
+export type ExecutionSafetyFaultCategory = typeof EXECUTION_SAFETY_FAULT_CATEGORIES[number]
+
 export const ORDER_LEG_SIDES = [
     "buy",
     "sell",
@@ -87,6 +104,7 @@ export interface ExecutionErrorDetail {
 
 export interface Position {
     instrument: string
+    providerPositionId?: string
     side: "long" | "short"
     quantity: number
     entryPrice: number
@@ -116,6 +134,7 @@ export interface WorkingOrder {
     remainingQuantity: number
     submittedAt: number
     updatedAt: number
+    cancelAt?: number
     side?: OrderSide
     limitPrice?: number
     stopPrice?: number
@@ -139,6 +158,7 @@ export interface StrategyRunContext {
     previousRunSummary?: {
         summary: string
         endedAt: number
+        systemContextDigest?: RunSystemContextDigest
     }
 }
 
@@ -152,9 +172,44 @@ export interface PendingOrderContext {
     remainingQuantity: number
     submittedAt: number
     updatedAt: number
+    cancelAt?: number
     limitPrice?: number
     avgFillPrice?: number
     recommendedAction: string
+}
+
+export interface RunSystemContextDigest {
+    schemaVersion: 1
+    generatedAt: number
+    risk: {
+        safetyState: StrategySafetyState
+        dayRealizedPnl: number
+        weekRealizedPnl: number
+        dayDrawdownLimit?: number
+        weekDrawdownLimit?: number
+        cooldownActive: boolean
+        cooldownReason?: StrategyRiskCooldownState["reason"]
+        cooldownExpiresAt?: number
+        blockedInstruments: string[]
+        forcedExitClusterInstruments: string[]
+        unresolvedExecutionFaultCount: number
+    }
+    recentTrades: {
+        dayEntries: number
+        dayCloses: number
+        dayForcedExits: number
+        dayRejectedOrTerminal: number
+        weekRealizedPnl: number
+        closeOutStreakDirection?: "win" | "loss"
+        closeOutStreakCount: number
+    }
+    pendingOrders: Array<{
+        orderId: string
+        instrument: string
+        action: OrderAction
+        status: OrderStatus
+        cancelAt?: number
+    }>
 }
 
 export interface ValidationResult {
@@ -191,9 +246,12 @@ export interface PortfolioFreshness {
 
 export interface PortfolioPosition {
     app: VenueApp
+    positionKey?: string
+    providerPositionId?: string
     strategyId?: string
     strategyName?: string
     ownershipStatus: ProviderOwnershipStatus
+    expectedExternal?: boolean
     instrument: string
     side: "long" | "short"
     quantity: number
@@ -211,6 +269,7 @@ export interface PortfolioPendingOrder {
     strategyId?: string
     strategyName?: string
     ownershipStatus: ProviderOwnershipStatus
+    expectedExternal?: boolean
     orderId: string
     instrument: string
     venue: string
@@ -225,7 +284,34 @@ export interface PortfolioPendingOrder {
     avgFillPrice?: number
     submittedAt: number
     updatedAt: number
+    cancelAt?: number
     metadata?: Record<string, unknown>
+}
+
+export interface StrategyRiskCooldownState {
+    active: boolean
+    reason?: "day_drawdown" | "week_drawdown" | "forced_exit_cluster" | "execution_fault"
+    startedAt?: number
+    expiresAt?: number
+}
+
+export interface StrategyDrawdownState {
+    realizedPnl: number
+    limit?: number
+    progress?: number
+}
+
+export interface StrategyRiskState {
+    strategyId: string
+    app: VenueApp
+    safetyState: StrategySafetyState
+    day: StrategyDrawdownState
+    week: StrategyDrawdownState
+    cooldown: StrategyRiskCooldownState
+    unresolvedExecutionFaultCount: number
+    blockedInstruments: string[]
+    forcedExitClusterInstruments: string[]
+    lastUpdatedAt: number
 }
 
 export interface PortfolioTradeRow {

@@ -14,7 +14,6 @@ export const mt5RiskValidators: readonly RiskValidator[] = [
     minRiskRewardValidator,
     maxRiskPercentValidator,
     tradingHoursValidator,
-    emergencyFlattenValidator,
 ]
 
 function slTpRequiredValidator(
@@ -136,27 +135,6 @@ function tradingHoursValidator(
         return {
             allowed: false,
             reason: `Outside trading hours. Current time: ${padTime(now.hours)}:${padTime(now.minutes)} ${timezone}. Allowed: ${start}-${end}`,
-        }
-    }
-
-    return { allowed: true }
-}
-
-function emergencyFlattenValidator(
-    intent: OrderIntent,
-    rawPolicy: Record<string, unknown>,
-    state: AccountState
-) {
-    if (isCloseAction(intent)) {
-        return { allowed: true }
-    }
-
-    const policy = mt5PolicySchema.parse(rawPolicy)
-
-    if (state.openPnl < 0 && Math.abs(state.openPnl) >= policy.emergencyFlattenThreshold) {
-        return {
-            allowed: false,
-            reason: `Unrealized loss ${Math.abs(state.openPnl).toFixed(2)} exceeds emergency flatten threshold ${policy.emergencyFlattenThreshold}. Close positions first.`,
         }
     }
 

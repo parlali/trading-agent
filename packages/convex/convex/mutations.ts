@@ -46,3 +46,9 @@ export {
     recordProviderSyncFailure,
     adoptProviderPositions,
 } from "./lib/mutations/portfolio"
+
+export {
+    refreshStrategyRiskState,
+    recordExecutionSafetyFault,
+    resolveExecutionSafetyFaults,
+} from "./lib/mutations/risk"

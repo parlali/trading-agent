@@ -706,6 +706,8 @@ export const clearFullResetState = mutation({
             positions: 0,
             instrumentClaims: 0,
             positionSyncs: 0,
+            strategyRiskStates: 0,
+            executionSafetyFaults: 0,
             providerPositions: 0,
             providerWorkingOrders: 0,
             providerSyncStates: 0,
@@ -713,6 +715,18 @@ export const clearFullResetState = mutation({
             appHeartbeats: 0,
             manualRunRequests: 0,
             alerts: 0,
+        }
+
+        const riskStates = await ctx.db.query("strategy_risk_states").collect()
+        for (const riskState of riskStates) {
+            await ctx.db.delete(riskState._id)
+            deleted.strategyRiskStates++
+        }
+
+        const executionFaults = await ctx.db.query("execution_safety_faults").collect()
+        for (const fault of executionFaults) {
+            await ctx.db.delete(fault._id)
+            deleted.executionSafetyFaults++
         }
 
         const providerSyncStates = await ctx.db.query("provider_sync_state").collect()
@@ -770,13 +784,6 @@ export const clearFullResetStateBatch = mutation({
         requireServiceToken(args.serviceToken)
 
         const batchSize = Math.max(1, Math.min(args.batchSize ?? 20, 50))
-        await incrementControlPlaneMetric(ctx, {
-            metric: "maintenance.full_reset_batch.invocation",
-        })
-        await incrementControlPlaneMetric(ctx, {
-            metric: "maintenance.full_reset_batch.batch_size",
-            delta: batchSize,
-        })
         const preserveApps = new Set<App>(args.preserveApps ?? [])
         const deleted = createEmptyCascadeDeleteCounts()
         const venueApps = [
@@ -789,6 +796,60 @@ export const clearFullResetStateBatch = mutation({
             ...venueApps,
             "backend",
         ] as const
+
+        for (const app of venueApps) {
+            if (preserveApps.has(app)) {
+                continue
+            }
+
+            const riskState = await ctx.db
+                .query("strategy_risk_states")
+                .withIndex("by_app", (q) => q.eq("app", app))
+                .first()
+
+            if (riskState) {
+                await ctx.db.delete(riskState._id)
+                deleted.strategyRiskStates++
+                return {
+                    ...deleted,
+                    hasMore: true,
+                }
+            }
+        }
+
+        for (const app of venueApps) {
+            if (preserveApps.has(app)) {
+                continue
+            }
+
+            const blockedFault = await ctx.db
+                .query("execution_safety_faults")
+                .withIndex("by_app_blocked", (q) => q.eq("app", app).eq("blocked", true))
+                .first()
+
+            if (blockedFault) {
+                await ctx.db.delete(blockedFault._id)
+                deleted.executionSafetyFaults++
+                return {
+                    ...deleted,
+                    hasMore: true,
+                }
+            }
+
+            const resolvedFault = await ctx.db
+                .query("execution_safety_faults")
+                .withIndex("by_app_blocked", (q) => q.eq("app", app).eq("blocked", false))
+                .first()
+
+            if (resolvedFault) {
+                await ctx.db.delete(resolvedFault._id)
+                deleted.executionSafetyFaults++
+                return {
+                    ...deleted,
+                    hasMore: true,
+                }
+            }
+        }
 
         for (const app of venueApps) {
             if (preserveApps.has(app)) {
@@ -902,17 +963,6 @@ export const clearFullResetStateBatch = mutation({
                     deleted.alerts++
                 }
 
-                return {
-                    ...deleted,
-                    hasMore: true,
-                }
-            }
-
-            const metrics = await ctx.db.query("control_plane_metrics").order("asc").take(batchSize)
-            if (metrics.length > 0) {
-                for (const metric of metrics) {
-                    await ctx.db.delete(metric._id)
-                }
                 return {
                     ...deleted,
                     hasMore: true,

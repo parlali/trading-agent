@@ -493,7 +493,7 @@ class MT5Client:
         return self._map_order_result(result)
 
     def close_all_positions(self, deviation: int = 20) -> list[dict[str, Any]]:
-        """Emergency flatten -- close every open position."""
+        """Close every open position."""
         positions = mt5.positions_get()
         if not positions:
             return []
@@ -504,7 +504,7 @@ class MT5Client:
                 result = self.close_position(int(pos.ticket), deviation=deviation)
                 results.append(result)
             except Exception as exc:
-                log.error("emergency_close_failed", ticket=pos.ticket, error=str(exc))
+                log.error("close_all_positions_failed", ticket=pos.ticket, error=str(exc))
                 results.append({
                     "ticket": int(pos.ticket),
                     "retcode": -1,

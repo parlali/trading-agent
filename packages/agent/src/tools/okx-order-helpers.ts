@@ -21,7 +21,7 @@ export const okxOrderParamsSchema = z.object({
     stopLoss: z.number(),
     takeProfit: z.number().optional(),
     riskRewardRatio: z.number().positive().optional(),
-    timeInForce: z.enum(["day", "gtc", "ioc", "fok"]).default("gtc"),
+    timeInForce: z.enum(["gtc", "ioc", "fok"]).default("gtc"),
     reason: z.string(),
 })
 
@@ -38,7 +38,7 @@ export const okxOrderJsonSchema = {
         stopLoss: { type: "number", description: "Absolute stop-loss price. Always required." },
         takeProfit: { type: "number", description: "Absolute take-profit price. Provide this OR riskRewardRatio." },
         riskRewardRatio: { type: "number", description: "Risk-reward ratio used to derive takeProfit. Provide this OR takeProfit." },
-        timeInForce: { type: "string", enum: ["day", "gtc", "ioc", "fok"], default: "gtc" },
+        timeInForce: { type: "string", enum: ["gtc", "ioc", "fok"], default: "gtc" },
         reason: { type: "string", description: "Trade rationale" },
     },
     required: ["instrument", "side", "stopLoss", "reason"],
@@ -55,6 +55,8 @@ export interface OKXOrderResult {
     protectionOrders?: {
         cancelledOrderIds: string[]
         createdOrderIds: string[]
+        category?: "position_not_found_yet" | "provider_rejected" | "already_exists_conflict" | "invalid_params" | "unknown"
+        flattened?: boolean
         error?: string
     }
     computed?: {
@@ -74,12 +76,26 @@ export interface OKXOrderResult {
     }
 }
 
+interface OKXExecutionSafetyCallbacks {
+    recordFault?: (args: {
+        instrument: string
+        category: "position_not_found_yet" | "provider_rejected" | "already_exists_conflict" | "invalid_params" | "unknown"
+        message: string
+        providerPayload?: string
+    }) => Promise<void>
+    resolveFaults?: (args: {
+        instrument: string
+        resolutionNote: string
+    }) => Promise<void>
+}
+
 export async function prepareOKXOrder(
     params: OKXOrderParams,
     pipeline: ExecutionPipeline,
     venue: OKXVenueAdapter,
     policy: OKXPolicy,
-    action: "entry" | "adjustment"
+    action: "entry" | "adjustment",
+    callbacks?: OKXExecutionSafetyCallbacks
 ): Promise<OKXOrderResult> {
     const hasTp = params.takeProfit !== undefined
     const hasRr = params.riskRewardRatio !== undefined
@@ -190,6 +206,7 @@ export async function prepareOKXOrder(
             reason: params.reason,
             estimatedPrice: entryPrice,
             fundingRate,
+            cancelAt: resolveCancelAt(policy, action, params.orderType),
         },
     }
 
@@ -202,12 +219,15 @@ export async function prepareOKXOrder(
 
     const protectionOrders = action === "entry" && validation.allowed
         ? await ensureProtectionOrders({
+            pipeline,
             venue,
             instrument,
             stopLoss: normalizedStopLoss,
             takeProfit: normalizedTakeProfit,
             dryRun: policy.dryRun,
             status: result.status,
+            requireTakeProfit: policy.requireTakeProfit,
+            callbacks,
         })
         : undefined
 
@@ -256,16 +276,93 @@ function rejected(error: string): OKXOrderResult {
     }
 }
 
+function resolveCancelAt(
+    policy: OKXPolicy,
+    action: "entry" | "adjustment",
+    orderType: "market" | "limit"
+): number | undefined {
+    if (action !== "entry" || orderType !== "limit") {
+        return undefined
+    }
+
+    const ttlMinutes = policy.safety.pendingEntryTtlMinutes
+    if (ttlMinutes === undefined || ttlMinutes <= 0) {
+        return undefined
+    }
+
+    return Date.now() + ttlMinutes * 60_000
+}
+
+function classifyProtectionAttachmentFailure(
+    errorMessage: string
+): "position_not_found_yet" | "provider_rejected" | "already_exists_conflict" | "invalid_params" | "unknown" {
+    const normalized = errorMessage.toLowerCase()
+
+    if (normalized.includes("position_not_found") || normalized.includes("no open okx swap position found")) {
+        return "position_not_found_yet"
+    }
+
+    if (normalized.includes("already exists") || normalized.includes("conflict") || normalized.includes("duplicate")) {
+        return "already_exists_conflict"
+    }
+
+    if (normalized.includes("invalid") || normalized.includes("parameter") || normalized.includes("price")) {
+        return "invalid_params"
+    }
+
+    if (normalized.includes("rejected") || normalized.includes("scode") || normalized.includes("order_failed")) {
+        return "provider_rejected"
+    }
+
+    return "unknown"
+}
+
+async function verifyProtectionFromProviderTruth(config: {
+    venue: OKXVenueAdapter
+    instrument: string
+    requireTakeProfit: boolean
+}): Promise<{ ok: boolean; reason?: string }> {
+    const positions = await config.venue.getPositions()
+    const position = positions.find((entry) => entry.instrument === config.instrument)
+    if (!position) {
+        return {
+            ok: false,
+            reason: `position_not_found:${config.instrument}`,
+        }
+    }
+
+    if (position.stopLoss === undefined) {
+        return {
+            ok: false,
+            reason: `stop_loss_missing:${config.instrument}`,
+        }
+    }
+
+    if (config.requireTakeProfit && position.takeProfit === undefined) {
+        return {
+            ok: false,
+            reason: `take_profit_missing:${config.instrument}`,
+        }
+    }
+
+    return { ok: true }
+}
+
 async function ensureProtectionOrders(config: {
+    pipeline: ExecutionPipeline
     venue: OKXVenueAdapter
     instrument: string
     stopLoss: number
     takeProfit: number
     dryRun?: boolean
     status: string
+    requireTakeProfit: boolean
+    callbacks?: OKXExecutionSafetyCallbacks
 }): Promise<{
     cancelledOrderIds: string[]
     createdOrderIds: string[]
+    category?: "position_not_found_yet" | "provider_rejected" | "already_exists_conflict" | "invalid_params" | "unknown"
+    flattened?: boolean
     error?: string
 }> {
     if (config.dryRun) {
@@ -293,6 +390,7 @@ async function ensureProtectionOrders(config: {
     }
 
     let lastError: string | undefined
+    let lastCategory: "position_not_found_yet" | "provider_rejected" | "already_exists_conflict" | "invalid_params" | "unknown" | undefined
 
     for (let attempt = 0; attempt < 3; attempt++) {
         try {
@@ -301,6 +399,24 @@ async function ensureProtectionOrders(config: {
                 stopLoss: config.stopLoss,
                 takeProfit: config.takeProfit,
             })
+            const verification = await verifyProtectionFromProviderTruth({
+                venue: config.venue,
+                instrument: config.instrument,
+                requireTakeProfit: config.requireTakeProfit,
+            })
+            if (!verification.ok) {
+                lastError = verification.reason
+                lastCategory = classifyProtectionAttachmentFailure(verification.reason ?? "unknown")
+                if (attempt < 2) {
+                    await delay((attempt + 1) * 500)
+                    continue
+                }
+                break
+            }
+            await config.callbacks?.resolveFaults?.({
+                instrument: config.instrument,
+                resolutionNote: "Protection verified from provider truth after entry fill",
+            })
 
             return {
                 cancelledOrderIds: updated.cancelledOrderIds,
@@ -308,7 +424,8 @@ async function ensureProtectionOrders(config: {
             }
         } catch (error) {
             lastError = error instanceof Error ? error.message : String(error)
-            const shouldRetry = lastError.includes("POSITION_NOT_FOUND") || lastError.includes("No open OKX swap position found")
+            lastCategory = classifyProtectionAttachmentFailure(lastError)
+            const shouldRetry = lastCategory === "position_not_found_yet"
 
             if (!shouldRetry || attempt === 2) {
                 break
@@ -318,10 +435,61 @@ async function ensureProtectionOrders(config: {
         }
     }
 
+    const faultCategory = lastCategory ?? classifyProtectionAttachmentFailure(lastError ?? "unknown")
+    const faultMessage = lastError ?? "Failed to update protection orders"
+
+    try {
+        const flattenResult = await config.pipeline.closePosition(
+            config.instrument,
+            "Protection attachment failed; flattening to fail closed",
+            {
+                metadata: {
+                    forcedExit: true,
+                    executionSafetyCategory: faultCategory,
+                    executionSafetyReason: faultMessage,
+                },
+            }
+        )
+        if (flattenResult.result.status !== "filled" && flattenResult.result.status !== "partially_filled") {
+            throw new Error(flattenResult.result.error ?? `Unexpected flatten status: ${flattenResult.result.status}`)
+        }
+    } catch (flattenError) {
+        const flattenMessage = flattenError instanceof Error ? flattenError.message : String(flattenError)
+        const combinedMessage = `${faultMessage}; flatten_failed=${flattenMessage}`
+        await config.callbacks?.recordFault?.({
+            instrument: config.instrument,
+            category: faultCategory,
+            message: combinedMessage,
+            providerPayload: JSON.stringify({
+                protectionError: faultMessage,
+                flattenError: flattenMessage,
+            }),
+        })
+
+        return {
+            cancelledOrderIds: [],
+            createdOrderIds: [],
+            category: faultCategory,
+            flattened: false,
+            error: combinedMessage,
+        }
+    }
+
+    await config.callbacks?.recordFault?.({
+        instrument: config.instrument,
+        category: faultCategory,
+        message: faultMessage,
+        providerPayload: JSON.stringify({
+            protectionError: faultMessage,
+        }),
+    })
+
     return {
         cancelledOrderIds: [],
         createdOrderIds: [],
-        error: lastError ?? "Failed to update protection orders",
+        category: faultCategory,
+        flattened: true,
+        error: `${faultMessage}. Position was flattened to fail closed.`,
     }
 }
 

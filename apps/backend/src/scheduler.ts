@@ -41,28 +41,36 @@ import type { StoredStrategy } from "@valiq-trading/convex"
 import {
     ExecutionPipeline,
     VENUE_APPS,
-    isTerminalOrderStatus,
     createInstrumentConflictValidator,
+    createStrategySafetyValidator,
     createKillSwitchGuardedVenue as createRuntimeKillSwitchGuardedVenue,
+    buildRunSystemContextDigest,
+    formatRunSystemContextDigestLines,
     filterPositionsByOwnership,
     okxPolicySchema,
     getNextCronFireMs,
     mt5PolicySchema,
     parseSummaryMetadata,
     stripMetadataBlock,
+    computeRecentTradeDigest,
+    readConfiguredStrategySafetyPolicy,
+    resolveDryRunAccountState,
+    resolveRuntimeStrategySafetyPolicy,
     validatePolicy,
     withTimeout,
-    type PendingOrderContext,
     type Logger,
     type Scheduler,
-    type OrderSnapshot,
+    type AccountState,
+    type Position,
+    type RunSystemContextDigest,
     type VenueAdapter,
+    type StrategyRiskState,
 } from "@valiq-trading/core"
 import { AlpacaOptionsVenueAdapter } from "@valiq-trading/alpaca-options"
 import { OKXVenueAdapter } from "@valiq-trading/okx"
 import { MT5VenueAdapter } from "@valiq-trading/mt5"
 import { PolymarketVenueAdapter } from "@valiq-trading/polymarket"
-import type { RunTrigger } from "@valiq-trading/convex"
+import type { Id, RunTrigger } from "@valiq-trading/convex"
 import type { VenueApp, VenuePlugin } from "./types"
 import { getCronStartDelayMs } from "./schedule-stagger"
 import type { SyncStrategyEntry } from "./state"
@@ -81,6 +89,7 @@ import {
     healthState,
 } from "./state"
 import { reconcileProviderPortfolio, recordProviderSyncFailure } from "./provider-sync"
+import { reconcilePendingOrdersForRun } from "./pending-orders"
 
 const PRE_RUN_HOOK_TIMEOUT_MS = 90_000
 const POST_RUN_HOOK_TIMEOUT_MS = 90_000
@@ -133,35 +142,6 @@ function mergeRuntimeContextLines(
     return [...(existing ?? []), ...additional]
 }
 
-function buildPendingOrderContext(snapshot: OrderSnapshot): PendingOrderContext {
-    return {
-        orderId: snapshot.orderId,
-        instrument: snapshot.instrument,
-        action: snapshot.action,
-        status: snapshot.status,
-        quantity: snapshot.quantity,
-        filledQuantity: snapshot.filledQuantity,
-        remainingQuantity: snapshot.remainingQuantity,
-        submittedAt: snapshot.submittedAt,
-        updatedAt: snapshot.updatedAt,
-        limitPrice: snapshot.intent.limitPrice,
-        avgFillPrice: snapshot.avgFillPrice,
-        recommendedAction: getPendingOrderRecommendedAction(snapshot),
-    }
-}
-
-function getPendingOrderRecommendedAction(snapshot: OrderSnapshot): string {
-    if (snapshot.status === "partially_filled") {
-        return "Review the remaining quantity immediately. Decide whether to keep working the remainder, improve the price, or cancel the rest."
-    }
-
-    if (snapshot.polling.timedOutAt) {
-        return "Refresh this order first. The prior run handed it off after its wait window expired while the venue order was still live."
-    }
-
-    return "Refresh the working order, then either keep waiting, improve the limit price, or cancel if the thesis or session conditions changed."
-}
-
 function resolveExtraToolCategory(
     tool: ToolDefinition,
     runLogger: Logger,
@@ -195,6 +175,94 @@ function logVenueToolMismatch(
     })
 }
 
+function buildRunDiagnostics(result: {
+    degradedResearch?: {
+        active: boolean
+        reasons: string[]
+        toolFailureCount: number
+        retryCount: number
+        decisionUnderDegradedContext: boolean
+    }
+}, systemContextDigest?: RunSystemContextDigest): {
+    degradedResearch?: boolean
+    degradedReason?: string
+    toolFailureCount?: number
+    toolRetryCount?: number
+    decisionUnderDegradedContext?: boolean
+    systemContextDigest?: RunSystemContextDigest
+} | undefined {
+    const diagnostics: {
+        degradedResearch?: boolean
+        degradedReason?: string
+        toolFailureCount?: number
+        toolRetryCount?: number
+        decisionUnderDegradedContext?: boolean
+        systemContextDigest?: RunSystemContextDigest
+    } = {}
+
+    if (result.degradedResearch) {
+        diagnostics.degradedResearch = result.degradedResearch.active
+        diagnostics.degradedReason = result.degradedResearch.reasons.join("; ")
+        diagnostics.toolFailureCount = result.degradedResearch.toolFailureCount
+        diagnostics.toolRetryCount = result.degradedResearch.retryCount
+        diagnostics.decisionUnderDegradedContext = result.degradedResearch.decisionUnderDegradedContext
+    }
+
+    if (systemContextDigest) {
+        diagnostics.systemContextDigest = systemContextDigest
+    }
+
+    return Object.keys(diagnostics).length > 0
+        ? diagnostics
+        : undefined
+}
+
+async function resolveRuntimeSafetyPolicyForRun(args: {
+    policy: Record<string, unknown>
+    venue: VenueAdapter
+    latestStoredPositions?: Position[]
+    accountState?: AccountState
+}): Promise<ReturnType<typeof resolveRuntimeStrategySafetyPolicy>> {
+    const configuredSafety = readConfiguredStrategySafetyPolicy(args.policy)
+    const requiresBalance = configuredSafety.maxDrawdownDay !== undefined ||
+        configuredSafety.maxDrawdownWeek !== undefined
+
+    if (!requiresBalance) {
+        return resolveRuntimeStrategySafetyPolicy({
+            policy: configuredSafety,
+        })
+    }
+
+    if (args.accountState) {
+        return resolveRuntimeStrategySafetyPolicy({
+            policy: configuredSafety,
+            accountBalance: args.accountState.balance,
+        })
+    }
+
+    if (Boolean(args.policy.dryRun)) {
+        if (args.latestStoredPositions === undefined) {
+            throw new Error("Dry-run safety policy resolution requires stored positions or current account state")
+        }
+
+        const dryRunAccountState = resolveDryRunAccountState({
+            policy: args.policy,
+            positions: args.latestStoredPositions,
+        })
+
+        return resolveRuntimeStrategySafetyPolicy({
+            policy: configuredSafety,
+            accountBalance: dryRunAccountState.balance,
+        })
+    }
+
+    const providerAccountState = await args.venue.getAccountState()
+    return resolveRuntimeStrategySafetyPolicy({
+        policy: configuredSafety,
+        accountBalance: providerAccountState.balance,
+    })
+}
+
 function registerCanonicalTool(
     toolPool: ToolPool,
     registration: {
@@ -211,6 +279,7 @@ function registerCanonicalTool(
 
 function buildToolPool(config: {
     app: VenueApp
+    strategyId: string
     venue: VenueAdapter
     pipeline: ExecutionPipeline
     policy: Record<string, unknown>
@@ -220,6 +289,7 @@ function buildToolPool(config: {
 }): ToolPool {
     const {
         app,
+        strategyId,
         venue,
         pipeline,
         policy,
@@ -338,7 +408,42 @@ function buildToolPool(config: {
                 return createOKXProposeOrderTool(
                     pipeline,
                     venue,
-                    okxPolicySchema.parse(policy)
+                    okxPolicySchema.parse(policy),
+                    {
+                        onExecutionSafetyFault: async ({ instrument, category, message, providerPayload }) => {
+                            await backend.recordExecutionSafetyFault({
+                                strategyId: strategyId as Id<"strategies">,
+                                app: "okx-swap",
+                                instrument,
+                                category,
+                                message,
+                                providerPayload,
+                                blocked: true,
+                            })
+                            runLogger.error("Recorded execution safety fault", {
+                                strategyId,
+                                app,
+                                instrument,
+                                category,
+                                message,
+                            })
+                        },
+                        onExecutionSafetyRecovered: async ({ instrument, resolutionNote }) => {
+                            const result = await backend.resolveExecutionSafetyFaults({
+                                strategyId: strategyId as Id<"strategies">,
+                                instrument,
+                                resolutionNote,
+                            })
+                            if (result.resolved > 0) {
+                                runLogger.info("Cleared execution safety faults", {
+                                    strategyId,
+                                    app,
+                                    instrument,
+                                    resolved: result.resolved,
+                                })
+                            }
+                        },
+                    }
                 )
             }
 
@@ -384,6 +489,25 @@ function buildToolPool(config: {
                 const parsedPolicy = okxPolicySchema.parse(policy)
                 return createOKXProposeAdjustmentTool(pipeline, venue, {
                     dryRun: parsedPolicy.dryRun,
+                    requireTakeProfit: parsedPolicy.requireTakeProfit,
+                    onExecutionSafetyFault: async ({ instrument, category, message, providerPayload }) => {
+                        await backend.recordExecutionSafetyFault({
+                            strategyId: strategyId as Id<"strategies">,
+                            app: "okx-swap",
+                            instrument,
+                            category,
+                            message,
+                            providerPayload,
+                            blocked: true,
+                        })
+                    },
+                    onExecutionSafetyRecovered: async ({ instrument, resolutionNote }) => {
+                        await backend.resolveExecutionSafetyFaults({
+                            strategyId: strategyId as Id<"strategies">,
+                            instrument,
+                            resolutionNote,
+                        })
+                    },
                 })
             }
 
@@ -532,56 +656,6 @@ function buildToolPool(config: {
     })
 
     return toolPool
-}
-
-async function reconcilePendingOrdersForRun(
-    pipeline: ExecutionPipeline,
-    strategyId: string,
-    orderPersistence: ReturnType<typeof createConvexOrderPersistenceAdapter>,
-    runLogger: Logger
-): Promise<{ pendingOrders: PendingOrderContext[]; runtimeContextLines: string[] }> {
-    const persistedActiveOrders = await orderPersistence.listActiveOrders(strategyId)
-    if (persistedActiveOrders.length === 0) {
-        return {
-            pendingOrders: [],
-            runtimeContextLines: [],
-        }
-    }
-
-    const pendingOrders: PendingOrderContext[] = []
-    const runtimeContextLines: string[] = []
-
-    for (const persistedOrder of persistedActiveOrders) {
-        try {
-            await pipeline.getOrderStatus(persistedOrder.orderId)
-        } catch (error) {
-            const message = error instanceof Error ? error.message : String(error)
-            runLogger.warn("Failed to refresh persisted active order before run", {
-                orderId: persistedOrder.orderId,
-                error: message,
-            })
-            runtimeContextLines.push(
-                `Active order refresh failed at run start for ${persistedOrder.orderId}. Do not trust the stored snapshot without a successful venue refresh.`
-            )
-            continue
-        }
-
-        const refreshedSnapshot = await pipeline.getOrderSnapshot(persistedOrder.orderId)
-        if (!refreshedSnapshot || isTerminalOrderStatus(refreshedSnapshot.status)) {
-            continue
-        }
-
-        pendingOrders.push(buildPendingOrderContext(refreshedSnapshot))
-    }
-
-    if (pendingOrders.length > 0) {
-        await pipeline.resumeOpenOrders(() => ({ decision: "wait" }))
-    }
-
-    return {
-        pendingOrders,
-        runtimeContextLines,
-    }
 }
 
 export async function registerStrategyWithScheduler(
@@ -783,72 +857,101 @@ export async function runStrategy(
         app,
     })
 
-    const [ownedInstrumentsList, allOwnedInstruments] = await Promise.all([
-        backend.getStrategyOwnedInstruments(strategy._id),
-        backend.getAllOwnedInstrumentsByApp(app),
-    ])
-
-    const ownedInstruments = new Set(ownedInstrumentsList)
-    const conflictMap = new Map<string, string>()
-    for (const entry of allOwnedInstruments) {
-        if (entry.strategyId !== strategy._id) {
-            conflictMap.set(entry.instrument, entry.strategyId)
-        }
-    }
-
-    const pluginValidators = plugin.getRiskValidators()
-    const riskValidators = conflictMap.size > 0
-        ? [...pluginValidators, createInstrumentConflictValidator(conflictMap)]
-        : pluginValidators
-
-    const orderPersistence = createConvexOrderPersistenceAdapter({
-        url: convexUrl,
-        machineAuth: {
-            serviceToken: backendServiceToken,
-        },
-    })
-    const guardedVenue = createKillSwitchGuardedVenue(venue, app, strategy._id)
-
-    const pipeline = new ExecutionPipeline({
-        venue: guardedVenue,
-        venueName: plugin.venueName,
-        policy,
-        riskValidators,
-        logger: runLogger,
-        tradeEventLogger: backend,
-        orderPersistence,
-        priceVerification: {
-            failClosedOnVerificationError: app === "polymarket",
-        },
-        runId,
-        strategyId: strategy._id,
-        ownedInstruments,
-    })
-
-    const extraTools = plugin.getExtraTools({
-        secrets: strategySecrets,
-        runLogger,
-    })
-    const isCallback = trigger === "callback"
-    const budgetedExtraTools = extraTools.map((tool) =>
-        isCallback ? withCallBudget(tool, 2) : tool
-    )
-
-    const toolPool = buildToolPool({
-        app,
-        venue,
-        pipeline,
-        policy,
-        extraTools: budgetedExtraTools,
-        isCallback,
-        runLogger,
-    })
-    const tools = new ToolRegistry()
-    for (const tool of toolPool.forVenue(app)) {
-        tools.register(tool)
-    }
+    let pipeline: ExecutionPipeline | undefined
+    let runSystemContextDigest: RunSystemContextDigest | undefined
+    let latestStoredPositions: Position[] | undefined
+    let currentAccountState: AccountState | undefined
 
     try {
+        const [ownedInstrumentsList, allOwnedInstruments, storedPositions] = await Promise.all([
+            backend.getStrategyOwnedInstruments(strategy._id),
+            backend.getAllOwnedInstrumentsByApp(app),
+            Boolean(policy.dryRun)
+                ? backend.getLatestPositions(strategy._id)
+                : Promise.resolve(undefined),
+        ])
+        latestStoredPositions = storedPositions
+
+        const ownedInstruments = new Set(ownedInstrumentsList)
+        const conflictMap = new Map<string, string>()
+        for (const entry of allOwnedInstruments) {
+            if (entry.strategyId !== strategy._id) {
+                conflictMap.set(entry.instrument, entry.strategyId)
+            }
+        }
+
+        const preRunSafetyPolicy = await resolveRuntimeSafetyPolicyForRun({
+            policy,
+            venue,
+            latestStoredPositions,
+        })
+        const riskState = await backend.refreshStrategyRiskState({
+            strategyId: strategy._id,
+            app,
+            policy: preRunSafetyPolicy,
+        })
+
+        const safetyValidator = createStrategySafetyValidator({
+            safetyState: riskState.safetyState,
+            blockedInstruments: new Set(riskState.blockedInstruments),
+            reason: riskState.cooldown.active
+                ? `Strategy cooldown active (${riskState.cooldown.reason ?? "risk"})`
+                : undefined,
+        })
+        const pluginValidators = plugin.getRiskValidators()
+        const riskValidators = conflictMap.size > 0
+            ? [safetyValidator, ...pluginValidators, createInstrumentConflictValidator(conflictMap)]
+            : [safetyValidator, ...pluginValidators]
+
+        const orderPersistence = createConvexOrderPersistenceAdapter({
+            url: convexUrl,
+            machineAuth: {
+                serviceToken: backendServiceToken,
+            },
+        })
+        const guardedVenue = createKillSwitchGuardedVenue(venue, app, strategy._id)
+
+        pipeline = new ExecutionPipeline({
+            venue: guardedVenue,
+            venueName: plugin.venueName,
+            policy,
+            riskValidators,
+            logger: runLogger,
+            tradeEventLogger: backend,
+            orderPersistence,
+            priceVerification: {
+                failClosedOnVerificationError: app === "polymarket",
+            },
+            runId,
+            strategyId: strategy._id,
+            ownedInstruments,
+        })
+        const activePipeline = pipeline
+
+        const extraTools = plugin.getExtraTools({
+            secrets: strategySecrets,
+            runLogger,
+        })
+        const isCallback = trigger === "callback"
+        const budgetedExtraTools = extraTools.map((tool) =>
+            isCallback ? withCallBudget(tool, 2) : tool
+        )
+
+        const toolPool = buildToolPool({
+            app,
+            strategyId: strategy._id,
+            venue,
+            pipeline: activePipeline,
+            policy,
+            extraTools: budgetedExtraTools,
+            isCallback,
+            runLogger,
+        })
+        const tools = new ToolRegistry()
+        for (const tool of toolPool.forVenue(app)) {
+            tools.register(tool)
+        }
+
         await withTimeout(async () => {
             if (!strategySecrets.OPENROUTER_API_KEY) {
                 throw new Error("Cannot run strategy: OPENROUTER_API_KEY is not set in Convex environment variables")
@@ -856,35 +959,53 @@ export async function runStrategy(
 
             const isDryRun = Boolean(policy.dryRun)
             const { pendingOrders, runtimeContextLines: pendingOrderRuntimeContext } = await reconcilePendingOrdersForRun(
-                pipeline,
+                activePipeline,
                 strategy._id,
                 orderPersistence,
                 runLogger
             )
             runtimeContextLines = mergeRuntimeContextLines(runtimeContextLines, pendingOrderRuntimeContext)
 
-            const [allPositions, previousRunSummary] = await Promise.all([
-                isDryRun ? backend.getLatestPositions(strategy._id) : venue.getPositions(),
+            const runTimestamp = Date.now()
+            const [allPositions, previousRunSummary, recentOrderHistory] = await Promise.all([
+                isDryRun ? Promise.resolve(latestStoredPositions ?? []) : venue.getPositions(),
                 backend.getLastCompletedRunSummary(strategy._id),
+                backend.getStrategyOrderHistory(strategy._id, 250),
             ])
+            const recentTrades = computeRecentTradeDigest({
+                orders: recentOrderHistory,
+                timezone: preRunSafetyPolicy.strategyTimezone,
+                timestamp: runTimestamp,
+            })
+            runSystemContextDigest = buildRunSystemContextDigest({
+                generatedAt: runTimestamp,
+                riskState,
+                recentTrades,
+                pendingOrders,
+            })
+            runtimeContextLines = mergeRuntimeContextLines(
+                runtimeContextLines,
+                formatRunSystemContextDigestLines(runSystemContextDigest)
+            )
 
             if (isDryRun) {
-                pipeline.seedDryRunPositions(allPositions)
+                activePipeline.seedDryRunPositions(allPositions)
             }
 
             const positions = isDryRun
-                ? pipeline.getDryRunPositions()
+                ? activePipeline.getDryRunPositions()
                 : filterPositionsByOwnership(allPositions, ownedInstruments)
             const accountState = isDryRun
-                ? await pipeline.getAccountState()
+                ? await activePipeline.getAccountState()
                 : await venue.getAccountState()
+            currentAccountState = accountState
 
             const result = await executeAgentRun(
                 {
                     runId,
                     strategyId: strategy._id,
                     app,
-                    timestamp: Date.now(),
+                    timestamp: runTimestamp,
                     trigger,
                     positions,
                     accountState,
@@ -922,7 +1043,7 @@ export async function runStrategy(
             }
 
             if (isDryRun) {
-                const syncedPositions = pipeline.getDryRunPositionsForSync()
+                const syncedPositions = activePipeline.getDryRunPositionsForSync()
                 await backend.syncPositions(strategy._id, app, syncedPositions)
             } else {
                 await reconcileProviderPortfolio({
@@ -933,13 +1054,29 @@ export async function runStrategy(
                 })
             }
 
+            currentAccountState = Boolean(policy.dryRun)
+                ? await activePipeline.getAccountState()
+                : await venue.getAccountState()
+            const postRunSafetyPolicy = await resolveRuntimeSafetyPolicyForRun({
+                policy,
+                venue,
+                latestStoredPositions,
+                accountState: currentAccountState,
+            })
+            await backend.refreshStrategyRiskState({
+                strategyId: strategy._id,
+                app,
+                policy: postRunSafetyPolicy,
+            })
+
             const cleanSummary = result.summary
                 ? stripMetadataBlock(result.summary)
                 : result.summary
+            const runDiagnostics = buildRunDiagnostics(result, runSystemContextDigest)
 
             if (result.error) {
                 await Promise.all([
-                    backend.updateRun(runId, "failed", cleanSummary, result.error),
+                    backend.updateRun(runId, "failed", cleanSummary, result.error, runDiagnostics),
                     backend.createAlert({
                         strategyId: strategy._id,
                         app,
@@ -951,7 +1088,7 @@ export async function runStrategy(
                 return
             }
 
-            await backend.updateRun(runId, "completed", cleanSummary)
+            await backend.updateRun(runId, "completed", cleanSummary, undefined, runDiagnostics)
             updateHealth("completed", cleanSummary)
 
             if (scheduler && result.summary) {
@@ -982,7 +1119,15 @@ export async function runStrategy(
     } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
         await Promise.all([
-            backend.updateRun(runId, "failed", undefined, message),
+            backend.updateRun(
+                runId,
+                "failed",
+                undefined,
+                message,
+                runSystemContextDigest
+                    ? { systemContextDigest: runSystemContextDigest }
+                    : undefined
+            ),
             backend.createAlert({
                 strategyId: strategy._id,
                 app,
@@ -993,9 +1138,9 @@ export async function runStrategy(
         updateHealth("failed", undefined, message)
 
         try {
-            if (Boolean(policy.dryRun)) {
+            if (Boolean(policy.dryRun) && pipeline) {
                 await backend.syncPositions(strategy._id, app, pipeline.getDryRunPositionsForSync())
-            } else {
+            } else if (!Boolean(policy.dryRun)) {
                 await reconcileProviderPortfolio({
                     app,
                     venueName: plugin.venueName,
@@ -1010,9 +1155,43 @@ export async function runStrategy(
             }
         }
 
+        try {
+            if (Boolean(policy.dryRun) && pipeline) {
+                currentAccountState = await pipeline.getAccountState()
+            } else if (!Boolean(policy.dryRun)) {
+                currentAccountState = await venue.getAccountState()
+            }
+        } catch (accountStateError) {
+            logger.warn("Failed to refresh account state before risk update after run failure", {
+                strategyId: strategy._id,
+                app,
+                error: accountStateError instanceof Error ? accountStateError.message : String(accountStateError),
+            })
+        }
+
+        try {
+            const postFailureSafetyPolicy = await resolveRuntimeSafetyPolicyForRun({
+                policy,
+                venue,
+                latestStoredPositions,
+                accountState: currentAccountState,
+            })
+            await backend.refreshStrategyRiskState({
+                strategyId: strategy._id,
+                app,
+                policy: postFailureSafetyPolicy,
+            })
+        } catch (riskRefreshError) {
+            logger.warn("Failed to refresh strategy risk state after run failure", {
+                strategyId: strategy._id,
+                app,
+                error: riskRefreshError instanceof Error ? riskRefreshError.message : String(riskRefreshError),
+            })
+        }
+
         throw error
     } finally {
-        pipeline.stopAllTracking()
+        pipeline?.stopAllTracking()
     }
 }
 

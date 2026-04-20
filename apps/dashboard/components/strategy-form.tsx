@@ -248,6 +248,155 @@ export function StrategyForm({ mode, initialData }: StrategyFormProps) {
                         </p>
                     </div>
 
+                    <div className="rounded-lg border p-3 space-y-3">
+                        <div>
+                            <Label className="text-sm">Risk Governance</Label>
+                            <p className="text-xs text-muted-foreground mt-0.5">
+                                Canonical per-strategy drawdown, cooldown, and continuity policy. Drawdown limits are percentages of current account balance.
+                            </p>
+                        </div>
+
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                            <div className="space-y-1.5">
+                                <Label className="text-xs">Max Day Drawdown (%)</Label>
+                                <Input
+                                    type="number"
+                                    step="any"
+                                    placeholder="3"
+                                    value={getNestedValue(policy, "safety.maxDrawdownDay") !== undefined ? String(getNestedValue(policy, "safety.maxDrawdownDay")) : ""}
+                                    onChange={(e) => handlePolicyFieldChange(
+                                        "safety.maxDrawdownDay",
+                                        e.target.value === "" ? undefined : Number(e.target.value)
+                                    )}
+                                />
+                            </div>
+                            <div className="space-y-1.5">
+                                <Label className="text-xs">Max Week Drawdown (%)</Label>
+                                <Input
+                                    type="number"
+                                    step="any"
+                                    placeholder="10"
+                                    value={getNestedValue(policy, "safety.maxDrawdownWeek") !== undefined ? String(getNestedValue(policy, "safety.maxDrawdownWeek")) : ""}
+                                    onChange={(e) => handlePolicyFieldChange(
+                                        "safety.maxDrawdownWeek",
+                                        e.target.value === "" ? undefined : Number(e.target.value)
+                                    )}
+                                />
+                            </div>
+                            <div className="space-y-1.5">
+                                <Label className="text-xs">Cooldown After Day Breach (minutes)</Label>
+                                <Input
+                                    type="number"
+                                    step={1}
+                                    min={0}
+                                    placeholder="720"
+                                    value={getNestedValue(policy, "safety.cooldownMinutesAfterDayBreach") !== undefined ? String(getNestedValue(policy, "safety.cooldownMinutesAfterDayBreach")) : ""}
+                                    onChange={(e) => handlePolicyFieldChange(
+                                        "safety.cooldownMinutesAfterDayBreach",
+                                        e.target.value === "" ? undefined : Number(e.target.value)
+                                    )}
+                                />
+                            </div>
+                            <div className="space-y-1.5">
+                                <Label className="text-xs">Cooldown After Week Breach (minutes)</Label>
+                                <Input
+                                    type="number"
+                                    step={1}
+                                    min={0}
+                                    placeholder="1440"
+                                    value={getNestedValue(policy, "safety.cooldownMinutesAfterWeekBreach") !== undefined ? String(getNestedValue(policy, "safety.cooldownMinutesAfterWeekBreach")) : ""}
+                                    onChange={(e) => handlePolicyFieldChange(
+                                        "safety.cooldownMinutesAfterWeekBreach",
+                                        e.target.value === "" ? undefined : Number(e.target.value)
+                                    )}
+                                />
+                            </div>
+                        </div>
+
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                            <div className="space-y-1.5">
+                                <Label className="text-xs">Strategy Timezone</Label>
+                                <Input
+                                    placeholder="UTC"
+                                    value={getNestedValue(policy, "safety.strategyTimezone") as string ?? ""}
+                                    onChange={(e) => handlePolicyFieldChange("safety.strategyTimezone", e.target.value)}
+                                />
+                            </div>
+                            <div className="space-y-1.5">
+                                <Label className="text-xs">Pending Entry TTL (minutes)</Label>
+                                <Input
+                                    type="number"
+                                    step={1}
+                                    min={1}
+                                    placeholder="120"
+                                    value={getNestedValue(policy, "safety.pendingEntryTtlMinutes") !== undefined ? String(getNestedValue(policy, "safety.pendingEntryTtlMinutes")) : ""}
+                                    onChange={(e) => handlePolicyFieldChange(
+                                        "safety.pendingEntryTtlMinutes",
+                                        e.target.value === "" ? undefined : Number(e.target.value)
+                                    )}
+                                />
+                            </div>
+                        </div>
+
+                        {(app === "mt5" || app === "okx-swap") ? (
+                            <div className="rounded-md border p-3 space-y-3">
+                                <div className="flex items-start justify-between gap-4">
+                                    <div className="space-y-1">
+                                        <Label className="text-xs">Session Flat Policy</Label>
+                                        <p className="text-xs text-muted-foreground">
+                                            Deterministic end-of-session flattening is policy-controlled.
+                                        </p>
+                                    </div>
+                                    <Switch
+                                        checked={Boolean(getNestedValue(policy, "safety.sessionFlat.enabled"))}
+                                        onCheckedChange={(checked) => handlePolicyFieldChange("safety.sessionFlat.enabled", checked)}
+                                    />
+                                </div>
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                    <div className="space-y-1.5">
+                                        <Label className="text-xs">Close Buffer (minutes)</Label>
+                                        <Input
+                                            type="number"
+                                            step={1}
+                                            min={1}
+                                            placeholder="15"
+                                            value={getNestedValue(policy, "safety.sessionFlat.closeBufferMinutes") !== undefined ? String(getNestedValue(policy, "safety.sessionFlat.closeBufferMinutes")) : ""}
+                                            onChange={(e) => handlePolicyFieldChange(
+                                                "safety.sessionFlat.closeBufferMinutes",
+                                                e.target.value === "" ? undefined : Number(e.target.value)
+                                            )}
+                                        />
+                                    </div>
+                                    <div className="space-y-1.5">
+                                        <Label className="text-xs">Session Flat Timezone</Label>
+                                        <Input
+                                            placeholder="UTC"
+                                            value={getNestedValue(policy, "safety.sessionFlat.timezone") as string ?? ""}
+                                            onChange={(e) => handlePolicyFieldChange("safety.sessionFlat.timezone", e.target.value)}
+                                        />
+                                    </div>
+                                </div>
+                            </div>
+                        ) : null}
+
+                        <div className="space-y-1.5">
+                            <Label className="text-xs">Expected External Instruments</Label>
+                            <Textarea
+                                placeholder={"GREENLAND-2026\nBTC-USDT-SWAP"}
+                                value={Array.isArray(getNestedValue(policy, "safety.expectedExternalInstruments")) ? (getNestedValue(policy, "safety.expectedExternalInstruments") as string[]).join("\n") : ""}
+                                onChange={(e) => handlePolicyFieldChange(
+                                    "safety.expectedExternalInstruments",
+                                    e.target.value
+                                        .split(/[\n,]+/)
+                                        .map((instrument) => instrument.trim())
+                                        .filter(Boolean)
+                                )}
+                                rows={2}
+                                className="font-mono text-xs"
+                            />
+                        </div>
+                    </div>
+
                     {app === "alpaca-options" ? (
                         <div className="space-y-1.5">
                             <Label className="text-sm">
@@ -353,25 +502,6 @@ export function StrategyForm({ mode, initialData }: StrategyFormProps) {
                                         className="w-24 sm:w-28"
                                     />
                                 </div>
-                            </div>
-
-                            <div className="space-y-1.5">
-                                <Label className="text-sm">
-                                    Emergency Flatten Threshold ($)<span className="text-signal-danger ml-0.5">*</span>
-                                </Label>
-                                <Input
-                                    type="number"
-                                    step="any"
-                                    placeholder="1000"
-                                    value={policy.emergencyFlattenThreshold !== undefined ? String(policy.emergencyFlattenThreshold) : ""}
-                                    onChange={(e) => handlePolicyFieldChange(
-                                        "emergencyFlattenThreshold",
-                                        e.target.value === "" ? undefined : Number(e.target.value)
-                                    )}
-                                />
-                                <p className="text-xs text-muted-foreground">
-                                    Auto-close all positions when unrealized loss exceeds this amount
-                                </p>
                             </div>
 
                             <div className="space-y-1.5">
@@ -593,22 +723,6 @@ export function StrategyForm({ mode, initialData }: StrategyFormProps) {
                                         className="w-24 sm:w-28"
                                     />
                                 </div>
-                            </div>
-
-                            <div className="space-y-1.5">
-                                <Label className="text-sm">
-                                    Emergency Flatten Threshold ($)<span className="text-signal-danger ml-0.5">*</span>
-                                </Label>
-                                <Input
-                                    type="number"
-                                    step="any"
-                                    placeholder="1000"
-                                    value={policy.emergencyFlattenThreshold !== undefined ? String(policy.emergencyFlattenThreshold) : ""}
-                                    onChange={(e) => handlePolicyFieldChange(
-                                        "emergencyFlattenThreshold",
-                                        e.target.value === "" ? undefined : Number(e.target.value)
-                                    )}
-                                />
                             </div>
 
                             <div className="space-y-1.5">

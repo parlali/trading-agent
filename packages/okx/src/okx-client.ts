@@ -50,6 +50,7 @@ export interface OKXAccountBalance {
 export interface OKXPosition {
     instId: string
     instType: string
+    posId?: string
     pos: string
     posSide: string
     avgPx: string

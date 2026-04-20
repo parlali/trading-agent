@@ -343,14 +343,14 @@ export class AlpacaClient {
         }
 
         if (changes.stopPrice !== undefined) {
-            throw createExecutionError("pre_validation", "Alpaca iron condor orders do not support stop price modifications", {
+            throw createExecutionError("pre_validation", "Alpaca options structures do not support stop price modifications", {
                 code: "STOP_PRICE_UNSUPPORTED",
                 retryable: false,
             })
         }
 
         if (changes.timeInForce !== undefined && changes.timeInForce !== "day") {
-            throw createExecutionError("pre_validation", "Alpaca iron condor orders only support day time in force", {
+            throw createExecutionError("pre_validation", "Alpaca options structures only support day time in force", {
                 code: "TIME_IN_FORCE_UNSUPPORTED",
                 retryable: false,
             })
@@ -786,8 +786,8 @@ export function buildCreateOrderPayload(intent: OrderIntent): Record<string, unk
         })
     }
 
-    if (!intent.legs || intent.legs.length !== 4) {
-        throw createExecutionError("pre_validation", "Alpaca multi-leg options orders must be submitted as exactly 4 legs", {
+    if (!intent.legs || (intent.legs.length !== 2 && intent.legs.length !== 4)) {
+        throw createExecutionError("pre_validation", "Alpaca multi-leg options orders must be submitted as either 2 or 4 legs", {
             code: "INVALID_LEG_COUNT",
             retryable: false,
         })

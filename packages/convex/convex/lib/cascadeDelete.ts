@@ -7,6 +7,8 @@ export interface CascadeDeleteCounts {
     positions: number
     instrumentClaims: number
     positionSyncs: number
+    strategyRiskStates: number
+    executionSafetyFaults: number
     providerPositions: number
     providerWorkingOrders: number
     providerSyncStates: number
@@ -26,6 +28,8 @@ export function createEmptyCascadeDeleteCounts(): CascadeDeleteCounts {
         positions: 0,
         instrumentClaims: 0,
         positionSyncs: 0,
+        strategyRiskStates: 0,
+        executionSafetyFaults: 0,
         providerPositions: 0,
         providerWorkingOrders: 0,
         providerSyncStates: 0,

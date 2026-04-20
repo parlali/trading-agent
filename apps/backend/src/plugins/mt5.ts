@@ -11,10 +11,8 @@ import {
     ValiqResearchAdapter,
 } from "@valiq-trading/valiq"
 import {
-    getCurrentTimeInTimezone,
+    isWithinSessionFlatWindow,
     mt5PolicySchema,
-    padTime,
-    type MT5Policy,
     type RiskValidator,
     type VenueAdapter,
 } from "@valiq-trading/core"
@@ -33,7 +31,6 @@ import type {
     ExtraToolsConfig,
     PreRunHookConfig,
     PreRunHookResult,
-    PostRunHookConfig,
 } from "../types"
 
 export class MT5Plugin implements VenuePlugin {
@@ -139,13 +136,6 @@ export class MT5Plugin implements VenuePlugin {
         const mt5Venue = config.venue as MT5VenueAdapter
         const parsedPolicy = mt5PolicySchema.parse(config.policy)
 
-        const emergencyFlattened = await this.checkEmergencyFlatten(
-            mt5Venue, parsedPolicy, config.strategyId, config
-        )
-        if (emergencyFlattened) {
-            return { skip: true, reason: "Emergency flatten executed" }
-        }
-
         const eodFlattened = await this.checkEndOfDayFlatten(
             mt5Venue, parsedPolicy, config.strategyId, config
         )
@@ -191,69 +181,25 @@ export class MT5Plugin implements VenuePlugin {
         return { skip: false, runtimeContextLines }
     }
 
-    async postRunHooks(config: PostRunHookConfig): Promise<void> {
-        const mt5Venue = config.venue as MT5VenueAdapter
-        const parsedPolicy = mt5PolicySchema.parse(config.policy)
-        await this.checkEmergencyFlatten(
-            mt5Venue, parsedPolicy, config.strategyId, config
-        )
-    }
-
-    private async checkEmergencyFlatten(
-        venue: MT5VenueAdapter,
-        policy: MT5Policy,
-        strategyId: string,
-        config: { logger: PreRunHookConfig["logger"]; createAlert: PreRunHookConfig["createAlert"] }
-    ): Promise<boolean> {
-        const accountState = await venue.getAccountState()
-
-        if (accountState.openPnl < 0 && Math.abs(accountState.openPnl) >= policy.emergencyFlattenThreshold) {
-            config.logger.error("Emergency flatten triggered", {
-                strategyId,
-                openPnl: accountState.openPnl,
-                threshold: policy.emergencyFlattenThreshold,
-            })
-
-            await config.createAlert({
-                strategyId,
-                app: this.app,
-                severity: "critical",
-                message: `Emergency flatten triggered: unrealized loss ${Math.abs(accountState.openPnl).toFixed(2)} exceeds threshold ${policy.emergencyFlattenThreshold}`,
-            })
-
-            const result = await venue.closeAllPositions()
-            config.logger.info("Emergency flatten completed", {
-                closed: result.closed,
-                results: result.results.map((r: { orderId: string; status: string }) => ({
-                    orderId: r.orderId,
-                    status: r.status,
-                })),
-            })
-
-            return true
-        }
-
-        return false
-    }
-
     private async checkEndOfDayFlatten(
         venue: MT5VenueAdapter,
-        policy: MT5Policy,
+        policy: ReturnType<typeof mt5PolicySchema.parse>,
         strategyId: string,
         config: { logger: PreRunHookConfig["logger"]; createAlert: PreRunHookConfig["createAlert"] }
     ): Promise<boolean> {
-        const { end, timezone } = policy.tradingHours
+        const sessionFlatPolicy = policy.safety.sessionFlat
+        if (!sessionFlatPolicy.enabled) {
+            return false
+        }
 
-        const now = getCurrentTimeInTimezone(timezone)
-        const [endHour, endMinute] = end.split(":").map(Number) as [number, number]
+        const timezone = sessionFlatPolicy.timezone || policy.tradingHours.timezone
+        const flattenWindow = isWithinSessionFlatWindow({
+            end: policy.tradingHours.end,
+            timezone,
+            closeBufferMinutes: sessionFlatPolicy.closeBufferMinutes,
+        })
 
-        const currentMinutes = now.hours * 60 + now.minutes
-        const endMinutes = endHour * 60 + endMinute
-
-        const flattenMinutes = endMinutes - 15
-        const shouldFlatten = currentMinutes >= flattenMinutes && currentMinutes < endMinutes
-
-        if (!shouldFlatten) {
+        if (!flattenWindow.shouldFlatten) {
             return false
         }
 
@@ -264,8 +210,9 @@ export class MT5Plugin implements VenuePlugin {
 
         config.logger.warn("End-of-day flatten triggered", {
             strategyId,
-            currentTime: `${padTime(now.hours)}:${padTime(now.minutes)}`,
-            endTime: end,
+            currentTime: flattenWindow.currentTime,
+            endTime: policy.tradingHours.end,
+            closeBufferMinutes: sessionFlatPolicy.closeBufferMinutes,
             openPositions: positions.length,
         })
 
@@ -273,7 +220,7 @@ export class MT5Plugin implements VenuePlugin {
             strategyId,
             app: this.app,
             severity: "warning",
-            message: `End-of-day flatten: closing ${positions.length} position(s) before ${end} ${timezone}`,
+            message: `Session-flat policy triggered: closing ${positions.length} position(s) before ${policy.tradingHours.end} ${timezone}`,
         })
 
         const result = await venue.closeAllPositions()

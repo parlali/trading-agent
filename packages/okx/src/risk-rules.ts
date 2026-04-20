@@ -10,11 +10,11 @@ import {
 
 export const okxRiskValidators: readonly RiskValidator[] = [
     allowedInstrumentsValidator,
+    explicitTimeInForceValidator,
     slTpRequiredValidator,
     maxLeverageValidator,
     maxRiskPercentValidator,
     tradingHoursValidator,
-    emergencyFlattenValidator,
     fundingRateValidator,
 ]
 
@@ -65,6 +65,21 @@ function slTpRequiredValidator(
         return {
             allowed: false,
             reason: "OKX policy requires takeProfit for new entries",
+        }
+    }
+
+    return { allowed: true }
+}
+
+function explicitTimeInForceValidator(intent: OrderIntent) {
+    if (isCloseAction(intent)) {
+        return { allowed: true }
+    }
+
+    if (intent.timeInForce === "day") {
+        return {
+            allowed: false,
+            reason: "OKX swap does not infer end-of-day expiration from timeInForce=day. Use gtc, ioc, or fok with explicit cancellation policy.",
         }
     }
 
@@ -145,27 +160,6 @@ function tradingHoursValidator(
         return {
             allowed: false,
             reason: `Outside trading hours. Current time: ${padTime(now.hours)}:${padTime(now.minutes)} ${timezone}. Allowed: ${start}-${end}`,
-        }
-    }
-
-    return { allowed: true }
-}
-
-function emergencyFlattenValidator(
-    intent: OrderIntent,
-    rawPolicy: Record<string, unknown>,
-    state: AccountState
-) {
-    if (isCloseAction(intent)) {
-        return { allowed: true }
-    }
-
-    const policy = okxPolicySchema.parse(rawPolicy)
-
-    if (state.openPnl < 0 && Math.abs(state.openPnl) >= policy.emergencyFlattenThreshold) {
-        return {
-            allowed: false,
-            reason: `Unrealized loss ${Math.abs(state.openPnl).toFixed(2)} exceeds emergencyFlattenThreshold ${policy.emergencyFlattenThreshold}`,
         }
     }
 

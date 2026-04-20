@@ -114,9 +114,12 @@ export const getPortfolioPositions = query({
                 .sort((left, right) => left.instrument.localeCompare(right.instrument))
                 .map((row) => ({
                     app: row.app,
+                    positionKey: row.positionKey,
+                    providerPositionId: row.providerPositionId,
                     strategyId: row.strategyId ? String(row.strategyId) : undefined,
                     strategyName: row.strategyId ? strategyMap.get(String(row.strategyId))?.name : undefined,
                     ownershipStatus: row.ownershipStatus,
+                    expectedExternal: row.expectedExternal,
                     instrument: row.instrument,
                     side: row.side,
                     quantity: row.quantity,
@@ -191,6 +194,7 @@ export const getPortfolioPendingOrders = query({
                 strategyId: row.strategyId ? String(row.strategyId) : undefined,
                 strategyName: row.strategyId ? strategyMap.get(String(row.strategyId))?.name : undefined,
                 ownershipStatus: row.ownershipStatus,
+                expectedExternal: row.expectedExternal,
                 orderId: row.orderId,
                 instrument: row.instrument,
                 venue: row.venue,
@@ -205,6 +209,7 @@ export const getPortfolioPendingOrders = query({
                 avgFillPrice: row.avgFillPrice,
                 submittedAt: row.submittedAt,
                 updatedAt: row.updatedAt,
+                cancelAt: row.cancelAt,
                 metadata: parseJson(row.metadata),
             }))
     },

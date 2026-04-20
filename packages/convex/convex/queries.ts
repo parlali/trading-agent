@@ -12,6 +12,7 @@ export {
     getOrderTransitions,
     getTradeEvents,
     getTradeHistory,
+    getStrategyOrderHistory,
 } from "./lib/queries/orders"
 
 export { getOpenPositions, getStrategyPositions } from "./lib/queries/positions"
@@ -46,3 +47,8 @@ export {
     getControlPlaneMetrics,
     getFullResetAudit,
 } from "./lib/queries/system"
+
+export {
+    getStrategyRiskState,
+    getStrategyExecutionSafetyFaults,
+} from "./lib/queries/risk"

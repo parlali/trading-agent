@@ -21,9 +21,16 @@ import {
     type AlpacaClockResponse,
     type AlpacaPositionResponse,
 } from "./alpaca-client"
-import { buildIronCondorInstrumentFromLegs, parseOptionContractSymbol } from "./risk-rules"
+import {
+    buildAlpacaStructureInstrumentFromLegs,
+    type AlpacaStructureType,
+    type AlpacaVerticalSpreadType,
+    parseOptionContractSymbol,
+} from "./risk-rules"
 
 interface PositionGroup {
+    structureType: AlpacaStructureType
+    verticalSpreadType?: AlpacaVerticalSpreadType
     instrument: string
     underlying: string
     expiration: string
@@ -49,11 +56,17 @@ interface OptionPositionUnit {
 interface OptionSpreadUnit {
     shortLeg: OptionPositionUnit
     longLeg: OptionPositionUnit
+    optionType: "call" | "put"
 }
 
 interface IronCondorUnit {
     callSpread: OptionSpreadUnit
     putSpread: OptionSpreadUnit
+}
+
+interface CreditVerticalUnit {
+    spread: OptionSpreadUnit
+    verticalSpreadType: AlpacaVerticalSpreadType
 }
 
 export class AlpacaOptionsVenueAdapter implements VenueAdapter, PriceVerifier {
@@ -107,7 +120,7 @@ export class AlpacaOptionsVenueAdapter implements VenueAdapter, PriceVerifier {
         const rawPositions = await this.client.getPositions()
         const optionPositions = rawPositions.filter(isAlpacaOptionPosition)
 
-        const grouped = groupIronCondorPositions(optionPositions)
+        const grouped = groupOptionStructures(optionPositions)
 
         const individual = optionPositions
             .map((position) => toResidualPosition(position, grouped.consumedQuantities))
@@ -377,8 +390,15 @@ function buildGroupCloseIntent(group: PositionGroup): OrderIntent {
         })),
         metadata: {
             action: "close",
+            structureType: group.structureType,
+            verticalSpreadType: group.verticalSpreadType,
             underlying: group.underlying,
             expiration: group.expiration,
+            entryPrice: group.entryPrice,
+            positionSide: "short",
+            structureLegs: group.positions
+                .map((position) => position.symbol.trim().toUpperCase())
+                .sort(),
         },
     }
 }
@@ -426,7 +446,7 @@ function toResidualPosition(
     }
 }
 
-function groupIronCondorPositions(positions: AlpacaPositionResponse[]): GroupingResult {
+function groupOptionStructures(positions: AlpacaPositionResponse[]): GroupingResult {
     const buckets = new Map<string, OptionPositionUnit[]>()
 
     for (const position of positions) {
@@ -455,8 +475,11 @@ function groupIronCondorPositions(positions: AlpacaPositionResponse[]): Grouping
     const consumedQuantities = new Map<string, number>()
 
     for (const units of buckets.values()) {
-        const condors = buildCondorUnits(units)
-        const aggregated = aggregateCondorUnits(condors)
+        const structures = buildStructureUnits(units)
+        const aggregated = [
+            ...aggregateCondorUnits(structures.condors),
+            ...aggregateVerticalUnits(structures.verticals),
+        ]
 
         for (const group of aggregated) {
             groups.push(group)
@@ -473,7 +496,10 @@ function groupIronCondorPositions(positions: AlpacaPositionResponse[]): Grouping
     }
 }
 
-function buildCondorUnits(units: OptionPositionUnit[]): IronCondorUnit[] {
+function buildStructureUnits(units: OptionPositionUnit[]): {
+    condors: IronCondorUnit[]
+    verticals: CreditVerticalUnit[]
+} {
     const callShorts = units
         .filter((unit) => unit.parsed.optionType === "call" && unit.position.side === "short")
         .sort((left, right) => left.parsed.strike - right.parsed.strike)
@@ -487,14 +513,24 @@ function buildCondorUnits(units: OptionPositionUnit[]): IronCondorUnit[] {
         .filter((unit) => unit.parsed.optionType === "put" && unit.position.side === "long")
         .sort((left, right) => left.parsed.strike - right.parsed.strike)
 
-    const maxCondors = Math.min(callShorts.length, callLongs.length, putShorts.length, putLongs.length)
-    if (maxCondors === 0) {
-        return []
-    }
+    const callSpreads = pairSpreads(callShorts, callLongs, Math.min(callShorts.length, callLongs.length), "call")
+    const putSpreads = pairSpreads(putShorts, putLongs, Math.min(putShorts.length, putLongs.length), "put")
+    const condorPairing = pairCondors(callSpreads, putSpreads)
+    const verticals: CreditVerticalUnit[] = [
+        ...condorPairing.remainingCallSpreads.map((spread) => ({
+            spread,
+            verticalSpreadType: "bear_call_credit" as const,
+        })),
+        ...condorPairing.remainingPutSpreads.map((spread) => ({
+            spread,
+            verticalSpreadType: "bull_put_credit" as const,
+        })),
+    ]
 
-    const callSpreads = pairSpreads(callShorts, callLongs, maxCondors, "call")
-    const putSpreads = pairSpreads(putShorts, putLongs, maxCondors, "put")
-    return pairCondors(callSpreads, putSpreads)
+    return {
+        condors: condorPairing.condors,
+        verticals,
+    }
 }
 
 function pairSpreads(
@@ -514,6 +550,9 @@ function pairSpreads(
         }
 
         const longIndex = selectLongLegIndex(shortLeg, remainingLongs, optionType)
+        if (longIndex === null) {
+            continue
+        }
         const [longLeg] = remainingLongs.splice(longIndex, 1)
         if (!longLeg) {
             break
@@ -522,6 +561,7 @@ function pairSpreads(
         spreads.push({
             shortLeg,
             longLeg,
+            optionType,
         })
     }
 
@@ -532,49 +572,39 @@ function selectLongLegIndex(
     shortLeg: OptionPositionUnit,
     longLegs: OptionPositionUnit[],
     optionType: "call" | "put"
-): number {
+): number | null {
     const preferredIndex = longLegs.findIndex((longLeg) => {
         return optionType === "call"
             ? longLeg.parsed.strike > shortLeg.parsed.strike
             : longLeg.parsed.strike < shortLeg.parsed.strike
     })
 
-    if (preferredIndex >= 0) {
-        return preferredIndex
-    }
-
-    let closestIndex = 0
-    let closestDistance = Number.POSITIVE_INFINITY
-
-    for (let index = 0; index < longLegs.length; index++) {
-        const candidate = longLegs[index]
-        if (!candidate) {
-            continue
-        }
-
-        const distance = Math.abs(candidate.parsed.strike - shortLeg.parsed.strike)
-        if (distance < closestDistance) {
-            closestDistance = distance
-            closestIndex = index
-        }
-    }
-
-    return closestIndex
+    return preferredIndex >= 0 ? preferredIndex : null
 }
 
 function pairCondors(
     callSpreads: OptionSpreadUnit[],
     putSpreads: OptionSpreadUnit[]
-): IronCondorUnit[] {
+): {
+    condors: IronCondorUnit[]
+    remainingCallSpreads: OptionSpreadUnit[]
+    remainingPutSpreads: OptionSpreadUnit[]
+} {
+    const remainingCalls = [...callSpreads]
     const remainingPuts = [...putSpreads]
+    const unmatchedCalls: OptionSpreadUnit[] = []
     const condors: IronCondorUnit[] = []
 
-    for (const callSpread of callSpreads) {
-        if (remainingPuts.length === 0) {
-            break
+    while (remainingCalls.length > 0 && remainingPuts.length > 0) {
+        const callSpread = remainingCalls.shift()
+        if (!callSpread) {
+            continue
         }
-
         const putIndex = selectPutSpreadIndex(callSpread, remainingPuts)
+        if (putIndex === null) {
+            unmatchedCalls.push(callSpread)
+            continue
+        }
         const [putSpread] = remainingPuts.splice(putIndex, 1)
         if (!putSpread) {
             continue
@@ -586,19 +616,26 @@ function pairCondors(
         })
     }
 
-    return condors
+    return {
+        condors,
+        remainingCallSpreads: [...unmatchedCalls, ...remainingCalls],
+        remainingPutSpreads: remainingPuts,
+    }
 }
 
 function selectPutSpreadIndex(
     callSpread: OptionSpreadUnit,
     putSpreads: OptionSpreadUnit[]
-): number {
-    let closestIndex = 0
+): number | null {
+    let closestIndex: number | null = null
     let closestDistance = Number.POSITIVE_INFINITY
 
     for (let index = 0; index < putSpreads.length; index++) {
         const candidate = putSpreads[index]
         if (!candidate) {
+            continue
+        }
+        if (candidate.shortLeg.parsed.strike >= callSpread.shortLeg.parsed.strike) {
             continue
         }
 
@@ -623,7 +660,22 @@ function aggregateCondorUnits(units: IronCondorUnit[]): PositionGroup[] {
     }
 
     return Array.from(groupsByKey.values())
-        .map((groupUnits) => buildPositionGroupFromUnits(groupUnits))
+        .map((groupUnits) => buildPositionGroupFromCondorUnits(groupUnits))
+        .filter((group): group is PositionGroup => Boolean(group))
+}
+
+function aggregateVerticalUnits(units: CreditVerticalUnit[]): PositionGroup[] {
+    const groupsByKey = new Map<string, CreditVerticalUnit[]>()
+
+    for (const unit of units) {
+        const key = buildVerticalUnitKey(unit)
+        const entry = groupsByKey.get(key) ?? []
+        entry.push(unit)
+        groupsByKey.set(key, entry)
+    }
+
+    return Array.from(groupsByKey.values())
+        .map((groupUnits) => buildPositionGroupFromVerticalUnits(groupUnits))
         .filter((group): group is PositionGroup => Boolean(group))
 }
 
@@ -641,7 +693,19 @@ function buildCondorUnitKey(unit: IronCondorUnit): string {
     return `${unit.callSpread.shortLeg.parsed.underlying}:${unit.callSpread.shortLeg.parsed.expiration}:${legs}`
 }
 
-function buildPositionGroupFromUnits(units: IronCondorUnit[]): PositionGroup | null {
+function buildVerticalUnitKey(unit: CreditVerticalUnit): string {
+    const legs = [
+        unit.spread.shortLeg.position.symbol,
+        unit.spread.longLeg.position.symbol,
+    ]
+        .map((symbol) => symbol.trim().toUpperCase())
+        .sort()
+        .join("|")
+
+    return `${unit.verticalSpreadType}:${unit.spread.shortLeg.parsed.underlying}:${unit.spread.shortLeg.parsed.expiration}:${legs}`
+}
+
+function buildPositionGroupFromCondorUnits(units: IronCondorUnit[]): PositionGroup | null {
     const first = units[0]
     if (!first) {
         return null
@@ -656,40 +720,114 @@ function buildPositionGroupFromUnits(units: IronCondorUnit[]): PositionGroup | n
     const underlying = first.callSpread.shortLeg.parsed.underlying
     const expiration = first.callSpread.shortLeg.parsed.expiration
     const quantity = units.length
-    const entryPrice = positions.reduce((sum, position) => sum + Math.abs(toNumber(position.avg_entry_price)), 0)
-    const currentPriceComponents = positions.map((position) => toNumber(position.current_price))
-    const currentPrice = currentPriceComponents.every((value) => value > 0)
-        ? currentPriceComponents.reduce((sum, value) => sum + value, 0)
-        : undefined
     const unrealizedPnl = units.reduce((sum, unit) => {
-        const legs = [
+        const unitLegs = [
             unit.callSpread.shortLeg.position,
             unit.callSpread.longLeg.position,
             unit.putSpread.shortLeg.position,
             unit.putSpread.longLeg.position,
         ]
-
-        return sum + legs.reduce((legSum, leg) => {
-            const totalQuantity = parseOptionQuantity(leg)
-            if (totalQuantity <= 0) {
-                return legSum
-            }
-            return legSum + (toNumber(leg.unrealized_pl) / totalQuantity)
-        }, 0)
+        return sum + sumUnitUnrealizedPnl(unitLegs)
     }, 0)
 
-    return {
-        instrument: buildIronCondorInstrumentFromLegs(underlying, expiration, positions.map((position) => ({
-            instrument: position.symbol,
-        }))),
+    return buildPositionGroup({
+        structureType: "iron_condor",
         underlying,
         expiration,
         quantity,
         positions,
+        unrealizedPnl,
+    })
+}
+
+function buildPositionGroupFromVerticalUnits(units: CreditVerticalUnit[]): PositionGroup | null {
+    const first = units[0]
+    if (!first) {
+        return null
+    }
+
+    const positions = [
+        first.spread.shortLeg.position,
+        first.spread.longLeg.position,
+    ]
+    const underlying = first.spread.shortLeg.parsed.underlying
+    const expiration = first.spread.shortLeg.parsed.expiration
+    const quantity = units.length
+    const verticalSpreadType = first.verticalSpreadType
+    const unrealizedPnl = units.reduce((sum, unit) => {
+        const unitLegs = [
+            unit.spread.shortLeg.position,
+            unit.spread.longLeg.position,
+        ]
+        return sum + sumUnitUnrealizedPnl(unitLegs)
+    }, 0)
+
+    return buildPositionGroup({
+        structureType: "credit_vertical",
+        verticalSpreadType,
+        underlying,
+        expiration,
+        quantity,
+        positions,
+        unrealizedPnl,
+    })
+}
+
+function buildPositionGroup(args: {
+    structureType: AlpacaStructureType
+    verticalSpreadType?: AlpacaVerticalSpreadType
+    underlying: string
+    expiration: string
+    quantity: number
+    positions: AlpacaPositionResponse[]
+    unrealizedPnl: number
+}): PositionGroup {
+    const entryPrice = Math.abs(sumNetStructurePrice(args.positions, (position) => toNumber(position.avg_entry_price)))
+    const currentPrice = args.positions.every((position) => toNumber(position.current_price) > 0)
+        ? Math.abs(sumNetStructurePrice(args.positions, (position) => toNumber(position.current_price)))
+        : undefined
+
+    return {
+        structureType: args.structureType,
+        verticalSpreadType: args.verticalSpreadType,
+        instrument: buildAlpacaStructureInstrumentFromLegs({
+            structureType: args.structureType,
+            verticalSpreadType: args.verticalSpreadType,
+            underlying: args.underlying,
+            expiration: args.expiration,
+            legs: args.positions.map((position) => ({
+                instrument: position.symbol,
+            })),
+        }),
+        underlying: args.underlying,
+        expiration: args.expiration,
+        quantity: args.quantity,
+        positions: args.positions,
         entryPrice: roundPrice(entryPrice),
         currentPrice: currentPrice !== undefined ? roundPrice(currentPrice) : undefined,
-        unrealizedPnl: roundPrice(unrealizedPnl),
+        unrealizedPnl: roundPrice(args.unrealizedPnl),
     }
+}
+
+function sumUnitUnrealizedPnl(legs: AlpacaPositionResponse[]): number {
+    return legs.reduce((legSum, leg) => {
+        const totalQuantity = parseOptionQuantity(leg)
+        if (totalQuantity <= 0) {
+            return legSum
+        }
+        return legSum + (toNumber(leg.unrealized_pl) / totalQuantity)
+    }, 0)
+}
+
+function sumNetStructurePrice(
+    positions: AlpacaPositionResponse[],
+    resolvePrice: (position: AlpacaPositionResponse) => number
+): number {
+    return positions.reduce((sum, position) => {
+        const side = position.side.toLowerCase()
+        const multiplier = side === "short" ? -1 : 1
+        return sum + resolvePrice(position) * multiplier
+    }, 0)
 }
 
 function mapGroupedPosition(group: PositionGroup): Position {
@@ -701,9 +839,13 @@ function mapGroupedPosition(group: PositionGroup): Position {
         currentPrice: group.currentPrice,
         unrealizedPnl: group.unrealizedPnl,
         metadata: {
-            structureType: "iron_condor",
+            structureType: group.structureType,
+            verticalSpreadType: group.verticalSpreadType,
             underlying: group.underlying,
             expiration: group.expiration,
+            structureLegs: group.positions
+                .map((position) => position.symbol.trim().toUpperCase())
+                .sort(),
             legs: group.positions.map((position) => ({
                 symbol: position.symbol,
                 side: position.side,
@@ -764,37 +906,166 @@ function resolveOrderInstrument(
         return order.id
     }
 
-    const parsedLegs = order.legs
-        .map((leg) => parseOptionContractSymbol(leg.symbol))
-        .filter((value): value is NonNullable<ReturnType<typeof parseOptionContractSymbol>> => Boolean(value))
-
-    if (parsedLegs.length === 4) {
-        const underlying = parsedLegs[0]?.underlying
-        const expiration = parsedLegs[0]?.expiration
-        const sharedExpiration = parsedLegs.every((leg) => leg.expiration === expiration)
-
-        if (underlying && expiration && sharedExpiration) {
-            return buildIronCondorInstrumentFromLegs(underlying, expiration, order.legs.map((leg) => ({
-                instrument: leg.symbol,
-            })))
-        }
+    const structure = resolveStructureFromOrderLegs(order.legs)
+    if (structure) {
+        return buildAlpacaStructureInstrumentFromLegs(structure)
     }
 
     return order.legs.map((leg) => leg.symbol).join(" | ")
+}
+
+function resolveStructureFromOrderLegs(
+    legs: NonNullable<Awaited<ReturnType<AlpacaClient["getOpenOrders"]>>[number]["legs"]>
+): {
+    structureType: AlpacaStructureType
+    verticalSpreadType?: AlpacaVerticalSpreadType
+    underlying: string
+    expiration: string
+    legs: Array<{ instrument: string }>
+} | null {
+    if (legs.length !== 2 && legs.length !== 4) {
+        return null
+    }
+
+    const normalized = legs
+        .map((leg) => {
+            const parsed = parseOptionContractSymbol(leg.symbol)
+            const exposure = resolveOrderLegExposure(leg)
+            return parsed && exposure
+                ? {
+                    symbol: leg.symbol,
+                    parsed,
+                    exposure,
+                }
+                : null
+        })
+        .filter((entry): entry is {
+            symbol: string
+            parsed: ParsedOptionContract
+            exposure: "long" | "short"
+        } => Boolean(entry))
+
+    if (normalized.length !== legs.length) {
+        return null
+    }
+
+    const underlying = normalized[0]?.parsed.underlying
+    const expiration = normalized[0]?.parsed.expiration
+    const sharedContract = normalized.every((leg) =>
+        leg.parsed.underlying === underlying && leg.parsed.expiration === expiration
+    )
+    if (!underlying || !expiration || !sharedContract) {
+        return null
+    }
+
+    if (normalized.length === 4) {
+        const calls = normalized.filter((leg) => leg.parsed.optionType === "call")
+        const puts = normalized.filter((leg) => leg.parsed.optionType === "put")
+        if (calls.length !== 2 || puts.length !== 2) {
+            return null
+        }
+
+        const shortCall = calls.find((leg) => leg.exposure === "short")
+        const longCall = calls.find((leg) => leg.exposure === "long")
+        const shortPut = puts.find((leg) => leg.exposure === "short")
+        const longPut = puts.find((leg) => leg.exposure === "long")
+        if (!shortCall || !longCall || !shortPut || !longPut) {
+            return null
+        }
+
+        const validGeometry = (
+            longPut.parsed.strike < shortPut.parsed.strike &&
+            shortPut.parsed.strike < shortCall.parsed.strike &&
+            shortCall.parsed.strike < longCall.parsed.strike
+        )
+        if (!validGeometry) {
+            return null
+        }
+
+        return {
+            structureType: "iron_condor",
+            underlying,
+            expiration,
+            legs: normalized.map((leg) => ({
+                instrument: leg.symbol,
+            })),
+        }
+    }
+
+    const shorts = normalized.filter((leg) => leg.exposure === "short")
+    const longs = normalized.filter((leg) => leg.exposure === "long")
+    if (shorts.length !== 1 || longs.length !== 1) {
+        return null
+    }
+
+    const shortLeg = shorts[0]!
+    const longLeg = longs[0]!
+    if (shortLeg.parsed.optionType !== longLeg.parsed.optionType) {
+        return null
+    }
+
+    if (shortLeg.parsed.optionType === "call") {
+        if (shortLeg.parsed.strike >= longLeg.parsed.strike) {
+            return null
+        }
+        return {
+            structureType: "credit_vertical",
+            verticalSpreadType: "bear_call_credit",
+            underlying,
+            expiration,
+            legs: normalized.map((leg) => ({
+                instrument: leg.symbol,
+            })),
+        }
+    }
+
+    if (longLeg.parsed.strike >= shortLeg.parsed.strike) {
+        return null
+    }
+    return {
+        structureType: "credit_vertical",
+        verticalSpreadType: "bull_put_credit",
+        underlying,
+        expiration,
+        legs: normalized.map((leg) => ({
+            instrument: leg.symbol,
+        })),
+    }
+}
+
+function resolveOrderLegExposure(
+    leg: NonNullable<Awaited<ReturnType<AlpacaClient["getOpenOrders"]>>[number]["legs"]>[number]
+): "long" | "short" | null {
+    const positionIntent = leg.position_intent?.toLowerCase()
+    if (positionIntent === "sell_to_open" || positionIntent === "buy_to_close") {
+        return "short"
+    }
+    if (positionIntent === "buy_to_open" || positionIntent === "sell_to_close") {
+        return "long"
+    }
+
+    if (leg.side === "sell") {
+        return "short"
+    }
+    if (leg.side === "buy") {
+        return "long"
+    }
+
+    return null
 }
 
 function resolveGroupForClose(
     positions: AlpacaPositionResponse[],
     instrument: string
 ): PositionGroup | null {
-    const grouped = groupIronCondorPositions(positions.filter(isAlpacaOptionPosition)).groups
+    const grouped = groupOptionStructures(positions.filter(isAlpacaOptionPosition)).groups
     const normalizedInstrument = instrument.trim().toUpperCase()
-    const directMatch = grouped.find((group) => group.instrument === instrument)
+    const directMatch = grouped.find((group) => group.instrument.trim().toUpperCase() === normalizedInstrument)
     if (directMatch) {
         return directMatch
     }
 
-    const byUnderlying = grouped.filter((group) => group.underlying === instrument.toUpperCase())
+    const byUnderlying = grouped.filter((group) => group.underlying === normalizedInstrument)
     if (byUnderlying.length === 1) {
         return byUnderlying[0] ?? null
     }

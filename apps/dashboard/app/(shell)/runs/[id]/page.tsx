@@ -118,6 +118,9 @@ export default function RunDetailPage({
                                     status={run.status}
                                     category="run"
                                 />
+                                {run.degradedResearch ? (
+                                    <Badge variant="outline">degraded research</Badge>
+                                ) : null}
                                 <span className="text-sm text-muted-foreground">
                                     {formatTimestamp(run.startedAt)}
                                     {run.endedAt
@@ -160,6 +163,27 @@ export default function RunDetailPage({
                     </CardHeader>
                     <CardContent>
                         <MarkdownContent content={run.summary} />
+                    </CardContent>
+                </Card>
+            ) : null}
+
+            {run?.degradedResearch ? (
+                <Card className="border-border-subtle">
+                    <CardHeader className="pb-2">
+                        <CardTitle className="text-base">Degraded Research</CardTitle>
+                    </CardHeader>
+                    <CardContent className="space-y-1 text-sm">
+                        <p>
+                            This run completed under degraded research context.
+                        </p>
+                        <p className="text-muted-foreground">
+                            Tool failures: {run.toolFailureCount ?? 0} • Retries: {run.toolRetryCount ?? 0}
+                        </p>
+                        {run.degradedReason ? (
+                            <p className="text-muted-foreground break-words">
+                                {run.degradedReason}
+                            </p>
+                        ) : null}
                     </CardContent>
                 </Card>
             ) : null}

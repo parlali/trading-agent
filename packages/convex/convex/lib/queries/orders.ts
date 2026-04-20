@@ -60,6 +60,7 @@ export const getTradeEvents = query({
 
 export const getTradeHistory = query({
     args: {
+        serviceToken: v.optional(v.string()),
         app: v.optional(
             v.union(
                 v.literal("alpaca-options"),
@@ -86,7 +87,7 @@ export const getTradeHistory = query({
         limit: v.optional(v.number()),
     },
     handler: async (ctx, args) => {
-        await requireUser(ctx)
+        await requireUserOrServiceToken(ctx, args.serviceToken)
         const limit = args.limit ?? 100
 
         let events: Doc<"trade_events">[]
@@ -136,6 +137,42 @@ export const getTradeHistory = query({
                 return true
             })
             .sort((left, right) => right.timestamp - left.timestamp)
+            .slice(0, limit)
+    },
+})
+
+export const getStrategyOrderHistory = query({
+    args: {
+        serviceToken: v.optional(v.string()),
+        strategyId: v.id("strategies"),
+        limit: v.optional(v.number()),
+    },
+    handler: async (ctx, args) => {
+        await requireUserOrServiceToken(ctx, args.serviceToken)
+
+        const limit = Math.max(1, Math.min(args.limit ?? 200, 500))
+        const statuses = [
+            "filled",
+            "partially_filled",
+            "rejected",
+            "cancelled",
+            "expired",
+            "timed_out",
+        ] as const
+
+        const rows = (
+            await Promise.all(
+                statuses.map(async (status) => await ctx.db
+                    .query("orders")
+                    .withIndex("by_strategy_status", (q) =>
+                        q.eq("strategyId", args.strategyId).eq("status", status)
+                    )
+                    .collect())
+            )
+        ).flat()
+
+        return rows
+            .sort((left, right) => right.updatedAt - left.updatedAt)
             .slice(0, limit)
     },
 })

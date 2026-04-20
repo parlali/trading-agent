@@ -11,6 +11,8 @@ import type {
     OrderSnapshot,
     OrderTransition,
     Position,
+    RunSystemContextDigest,
+    StrategyRiskState,
     StrategyConfig,
     TradeEventLogger,
     ValidationResult,
@@ -74,6 +76,12 @@ export interface StoredRun {
     error?: string
     callbackRequestedMinutes?: number
     callbackFiresAt?: number
+    degradedResearch?: boolean
+    degradedReason?: string
+    toolFailureCount?: number
+    toolRetryCount?: number
+    decisionUnderDegradedContext?: boolean
+    systemContextDigest?: RunSystemContextDigest
 }
 
 export interface KillSwitchState {
@@ -117,6 +125,8 @@ export interface CascadeDeleteCounts {
     positions: number
     instrumentClaims: number
     positionSyncs: number
+    strategyRiskStates: number
+    executionSafetyFaults: number
     providerPositions: number
     providerWorkingOrders: number
     providerSyncStates: number
@@ -191,9 +201,12 @@ export interface PortfolioFreshnessRow {
 
 export interface ProviderPositionRow {
     app: Exclude<App, "backend">
+    positionKey?: string
+    providerPositionId?: string
     strategyId?: string
     strategyName?: string
     ownershipStatus: "owned" | "unowned" | "orphaned"
+    expectedExternal?: boolean
     instrument: string
     side: "long" | "short"
     quantity: number
@@ -211,6 +224,7 @@ export interface ProviderPendingOrderRow {
     strategyId?: string
     strategyName?: string
     ownershipStatus: "owned" | "unowned" | "orphaned"
+    expectedExternal?: boolean
     orderId: string
     instrument: string
     venue: string
@@ -225,18 +239,128 @@ export interface ProviderPendingOrderRow {
     avgFillPrice?: number
     submittedAt: number
     updatedAt: number
+    cancelAt?: number
     metadata?: Record<string, unknown>
+}
+
+export interface StrategyRiskStateRow extends StrategyRiskState {
+    strategyId: string
+    app: Exclude<App, "backend">
+}
+
+export interface ExecutionSafetyFaultRow {
+    _id: Id<"execution_safety_faults">
+    _creationTime: number
+    strategyId: Id<"strategies">
+    app: Exclude<App, "backend">
+    instrument: string
+    category: "position_not_found_yet" | "provider_rejected" | "already_exists_conflict" | "invalid_params" | "unknown"
+    message: string
+    providerPayload?: string
+    blocked: boolean
+    occurredAt: number
+    resolvedAt?: number
+    resolutionNote?: string
+}
+
+export interface StrategyOrderHistoryRow {
+    _id: Id<"orders">
+    _creationTime: number
+    orderId: string
+    strategyId: Id<"strategies">
+    status: OrderSnapshot["status"]
+    action: OrderSnapshot["action"]
+    instrument: string
+    filledQuantity: number
+    avgFillPrice?: number
+    updatedAt: number
+    intent: OrderIntent
+}
+
+interface RawStrategyRiskStateRow {
+    strategyId: string | Id<"strategies">
+    app: Exclude<App, "backend">
+    safetyState: StrategyRiskStateRow["safetyState"]
+    dayRealizedPnl: number
+    weekRealizedPnl: number
+    dayDrawdownLimit?: number
+    weekDrawdownLimit?: number
+    dayDrawdownProgress?: number
+    weekDrawdownProgress?: number
+    cooldownActive: boolean
+    cooldownReason?: StrategyRiskStateRow["cooldown"]["reason"]
+    cooldownStartedAt?: number
+    cooldownExpiresAt?: number
+    unresolvedExecutionFaultCount: number
+    blockedInstruments: string[]
+    forcedExitClusterInstruments?: string[]
+    updatedAt: number
+}
+
+function mapStrategyRiskStateRow(
+    row: RawStrategyRiskStateRow | StrategyRiskStateRow | null
+): StrategyRiskStateRow | null {
+    if (!row) {
+        return null
+    }
+
+    if ("day" in row && "week" in row && "cooldown" in row) {
+        return {
+            ...row,
+            strategyId: String(row.strategyId),
+            forcedExitClusterInstruments: row.forcedExitClusterInstruments ?? [],
+        }
+    }
+
+    return {
+        strategyId: String(row.strategyId),
+        app: row.app,
+        safetyState: row.safetyState,
+        day: {
+            realizedPnl: row.dayRealizedPnl,
+            limit: row.dayDrawdownLimit,
+            progress: row.dayDrawdownProgress,
+        },
+        week: {
+            realizedPnl: row.weekRealizedPnl,
+            limit: row.weekDrawdownLimit,
+            progress: row.weekDrawdownProgress,
+        },
+        cooldown: {
+            active: row.cooldownActive,
+            reason: row.cooldownReason,
+            startedAt: row.cooldownStartedAt,
+            expiresAt: row.cooldownExpiresAt,
+        },
+        unresolvedExecutionFaultCount: row.unresolvedExecutionFaultCount,
+        blockedInstruments: row.blockedInstruments,
+        forcedExitClusterInstruments: row.forcedExitClusterInstruments ?? [],
+        lastUpdatedAt: row.updatedAt,
+    }
 }
 
 export interface TradingBackendClient extends TradeEventLoggerMethods {
     getStrategyConfigs(app: App): Promise<StoredStrategy[]>
     getStrategyById(id: Id<"strategies">): Promise<StoredStrategy | null>
     getActiveRun(strategyId: Id<"strategies">): Promise<StoredRun | null>
-    getLastCompletedRunSummary(strategyId: Id<"strategies">): Promise<{ summary: string; endedAt: number } | null>
+    getLastCompletedRunSummary(strategyId: Id<"strategies">): Promise<{ summary: string; endedAt: number; systemContextDigest?: RunSystemContextDigest } | null>
     recoverRunningRuns(): Promise<number>
     recoverStaleRunningRuns(olderThanMs?: number): Promise<number>
     createRun(strategyId: Id<"strategies">, app: App, trigger?: RunTrigger): Promise<Id<"strategy_runs">>
-    updateRun(runId: Id<"strategy_runs">, status: StoredRun["status"], summary?: string, error?: string): Promise<void>
+    updateRun(
+        runId: Id<"strategy_runs">,
+        status: StoredRun["status"],
+        summary?: string,
+        error?: string,
+        diagnostics?: {
+            degradedResearch?: boolean
+            degradedReason?: string
+            toolFailureCount?: number
+            toolRetryCount?: number
+            decisionUnderDegradedContext?: boolean
+            systemContextDigest?: RunSystemContextDigest
+        }
+    ): Promise<void>
     recordRunCallback(runId: Id<"strategy_runs">, callbackRequestedMinutes: number, callbackFiresAt: number): Promise<void>
     syncPositions(strategyId: Id<"strategies">, app: App, positions: Position[]): Promise<void>
     reconcileProviderPortfolio(
@@ -247,6 +371,31 @@ export interface TradingBackendClient extends TradeEventLoggerMethods {
         positions: Position[],
         workingOrders: WorkingOrder[]
     ): Promise<ProviderPortfolioReconciliationResult>
+    refreshStrategyRiskState(args: {
+        strategyId: Id<"strategies">
+        app: Exclude<App, "backend">
+        policy: {
+            maxDrawdownDay?: number
+            maxDrawdownWeek?: number
+            cooldownMinutesAfterDayBreach: number
+            cooldownMinutesAfterWeekBreach: number
+            strategyTimezone: string
+        }
+    }): Promise<StrategyRiskStateRow>
+    recordExecutionSafetyFault(args: {
+        strategyId: Id<"strategies">
+        app: Exclude<App, "backend">
+        instrument: string
+        category: ExecutionSafetyFaultRow["category"]
+        message: string
+        providerPayload?: string
+        blocked?: boolean
+    }): Promise<string>
+    resolveExecutionSafetyFaults(args: {
+        strategyId: Id<"strategies">
+        instrument: string
+        resolutionNote?: string
+    }): Promise<{ resolved: number }>
     recordProviderSyncFailure(app: Exclude<App, "backend">, error: string): Promise<void>
     log(
         runId: string,
@@ -281,6 +430,12 @@ export interface TradingBackendClient extends TradeEventLoggerMethods {
     getSystemState(): Promise<KillSwitchState>
     getControlPlaneMetrics(): Promise<ControlPlaneMetricRow[]>
     getPortfolioFreshness(app?: Exclude<App, "backend">): Promise<PortfolioFreshnessRow[]>
+    getStrategyRiskState(strategyId: Id<"strategies">): Promise<StrategyRiskStateRow | null>
+    getStrategyExecutionSafetyFaults(
+        strategyId: Id<"strategies">,
+        unresolvedOnly?: boolean
+    ): Promise<ExecutionSafetyFaultRow[]>
+    getStrategyOrderHistory(strategyId: Id<"strategies">, limit?: number): Promise<StrategyOrderHistoryRow[]>
     getPortfolioPositions(app?: Exclude<App, "backend">, strategyId?: Id<"strategies">): Promise<ProviderPositionRow[]>
     getPortfolioPendingOrders(app?: Exclude<App, "backend">, strategyId?: Id<"strategies">): Promise<ProviderPendingOrderRow[]>
     adoptProviderPositions(
@@ -377,10 +532,10 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
                 } as never) as StoredRun | null
             )
         },
-        async getLastCompletedRunSummary(strategyId: Id<"strategies">): Promise<{ summary: string; endedAt: number } | null> {
+        async getLastCompletedRunSummary(strategyId: Id<"strategies">): Promise<{ summary: string; endedAt: number; systemContextDigest?: RunSystemContextDigest } | null> {
             return await runWithTimeout(
                 "Convex query getLastCompletedRunSummary",
-                async () => await client.query(api.queries.getLastCompletedRunSummary, { ...requireMachineAuth(), strategyId } as never) as { summary: string; endedAt: number } | null
+                async () => await client.query(api.queries.getLastCompletedRunSummary, { ...requireMachineAuth(), strategyId } as never) as { summary: string; endedAt: number; systemContextDigest?: RunSystemContextDigest } | null
             )
         },
         async recoverRunningRuns(): Promise<number> {
@@ -434,7 +589,15 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
             runId: Id<"strategy_runs">,
             status: StoredRun["status"],
             summary?: string,
-            error?: string
+            error?: string,
+            diagnostics?: {
+                degradedResearch?: boolean
+                degradedReason?: string
+                toolFailureCount?: number
+                toolRetryCount?: number
+                decisionUnderDegradedContext?: boolean
+                systemContextDigest?: RunSystemContextDigest
+            }
         ): Promise<void> {
             await runWithTimeout(
                 "Convex mutation updateRun",
@@ -444,6 +607,7 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
                     status,
                     summary,
                     error,
+                    diagnostics,
                 })
             )
         },
@@ -558,6 +722,7 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
                     app: app as "alpaca-options" | "polymarket" | "mt5" | "okx-swap",
                     positions: positions.map((position) => ({
                         instrument: position.instrument,
+                        providerPositionId: position.providerPositionId,
                         side: position.side,
                         quantity: position.quantity,
                         entryPrice: position.entryPrice,
@@ -612,6 +777,7 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
                         remainingQuantity: order.remainingQuantity,
                         submittedAt: order.submittedAt,
                         updatedAt: order.updatedAt,
+                        cancelAt: order.cancelAt,
                         side: order.side,
                         limitPrice: order.limitPrice,
                         stopPrice: order.stopPrice,
@@ -619,6 +785,70 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
                         metadata: order.metadata ? JSON.stringify(order.metadata) : undefined,
                     })),
                 } as never) as ProviderPortfolioReconciliationResult
+            )
+        },
+        async refreshStrategyRiskState(args: {
+            strategyId: Id<"strategies">
+            app: Exclude<App, "backend">
+            policy: {
+                maxDrawdownDay?: number
+                maxDrawdownWeek?: number
+                cooldownMinutesAfterDayBreach: number
+                cooldownMinutesAfterWeekBreach: number
+                strategyTimezone: string
+            }
+        }): Promise<StrategyRiskStateRow> {
+            const result = await runWithTimeout(
+                "Convex mutation refreshStrategyRiskState",
+                async () => await client.mutation(api.mutations.refreshStrategyRiskState, {
+                    ...requireMachineAuth(),
+                    strategyId: args.strategyId,
+                    app: args.app,
+                    policy: args.policy,
+                } as never) as RawStrategyRiskStateRow | StrategyRiskStateRow
+            )
+            const mapped = mapStrategyRiskStateRow(result)
+            if (!mapped) {
+                throw new Error("refreshStrategyRiskState returned empty payload")
+            }
+            return mapped
+        },
+        async recordExecutionSafetyFault(args: {
+            strategyId: Id<"strategies">
+            app: Exclude<App, "backend">
+            instrument: string
+            category: ExecutionSafetyFaultRow["category"]
+            message: string
+            providerPayload?: string
+            blocked?: boolean
+        }): Promise<string> {
+            return await runWithTimeout(
+                "Convex mutation recordExecutionSafetyFault",
+                async () => await client.mutation(api.mutations.recordExecutionSafetyFault, {
+                    ...requireMachineAuth(),
+                    strategyId: args.strategyId,
+                    app: args.app,
+                    instrument: args.instrument,
+                    category: args.category,
+                    message: args.message,
+                    providerPayload: args.providerPayload,
+                    blocked: args.blocked,
+                } as never) as string
+            )
+        },
+        async resolveExecutionSafetyFaults(args: {
+            strategyId: Id<"strategies">
+            instrument: string
+            resolutionNote?: string
+        }): Promise<{ resolved: number }> {
+            return await runWithTimeout(
+                "Convex mutation resolveExecutionSafetyFaults",
+                async () => await client.mutation(api.mutations.resolveExecutionSafetyFaults, {
+                    ...requireMachineAuth(),
+                    strategyId: args.strategyId,
+                    instrument: args.instrument,
+                    resolutionNote: args.resolutionNote,
+                } as never) as { resolved: number }
             )
         },
         async recordProviderSyncFailure(app: Exclude<App, "backend">, error: string): Promise<void> {
@@ -731,6 +961,42 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
                     ...requireMachineAuth(),
                     app,
                 } as never) as PortfolioFreshnessRow[]
+            )
+        },
+        async getStrategyRiskState(strategyId: Id<"strategies">): Promise<StrategyRiskStateRow | null> {
+            const row = await runWithTimeout(
+                "Convex query getStrategyRiskState",
+                async () => await client.query(api.queries.getStrategyRiskState, {
+                    ...requireMachineAuth(),
+                    strategyId,
+                } as never) as RawStrategyRiskStateRow | StrategyRiskStateRow | null
+            )
+            return mapStrategyRiskStateRow(row)
+        },
+        async getStrategyExecutionSafetyFaults(
+            strategyId: Id<"strategies">,
+            unresolvedOnly?: boolean
+        ): Promise<ExecutionSafetyFaultRow[]> {
+            return await runWithTimeout(
+                "Convex query getStrategyExecutionSafetyFaults",
+                async () => await client.query(api.queries.getStrategyExecutionSafetyFaults, {
+                    ...requireMachineAuth(),
+                    strategyId,
+                    unresolvedOnly,
+                } as never) as ExecutionSafetyFaultRow[]
+            )
+        },
+        async getStrategyOrderHistory(
+            strategyId: Id<"strategies">,
+            limit?: number
+        ): Promise<StrategyOrderHistoryRow[]> {
+            return await runWithTimeout(
+                "Convex query getStrategyOrderHistory",
+                async () => await client.query(api.queries.getStrategyOrderHistory, {
+                    ...requireMachineAuth(),
+                    strategyId,
+                    limit,
+                } as never) as StrategyOrderHistoryRow[]
             )
         },
         async getPortfolioPositions(

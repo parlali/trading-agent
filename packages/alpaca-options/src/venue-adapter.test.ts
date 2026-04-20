@@ -50,6 +50,17 @@ function createClientMock() {
             filledQuantity: 0,
             timestamp: Date.parse("2026-04-14T10:00:00Z"),
         }),
+        getAccount: vi.fn().mockResolvedValue({
+            equity: "10050",
+            portfolio_value: "10050",
+            cash: "9000",
+            buying_power: "12000",
+            regt_buying_power: "12000",
+            initial_margin: "1000",
+            maintenance_margin: "750",
+            unrealized_pl: "50",
+            last_equity: "10000",
+        }),
     }
 }
 
@@ -93,6 +104,29 @@ function createUnmatchedResidualPositions(): AlpacaPositionResponse[] {
     ]
 }
 
+function createBullPutVerticalPositions(): AlpacaPositionResponse[] {
+    return [
+        {
+            asset_class: "us_option",
+            symbol: "SPY260424P00650000",
+            side: "short",
+            qty: "1",
+            avg_entry_price: "2.10",
+            current_price: "1.50",
+            unrealized_pl: "0.60",
+        },
+        {
+            asset_class: "us_option",
+            symbol: "SPY260424P00649000",
+            side: "long",
+            qty: "1",
+            avg_entry_price: "1.20",
+            current_price: "0.90",
+            unrealized_pl: "-0.30",
+        },
+    ]
+}
+
 function createPosition(
     symbol: string,
     side: "long" | "short",
@@ -109,6 +143,29 @@ function createPosition(
     }
 }
 
+function createInvalidCreditGeometryPositions(): AlpacaPositionResponse[] {
+    return [
+        {
+            asset_class: "us_option",
+            symbol: "SPY260424C00700000",
+            side: "short",
+            qty: "1",
+            avg_entry_price: "1.90",
+            current_price: "1.60",
+            unrealized_pl: "0.30",
+        },
+        {
+            asset_class: "us_option",
+            symbol: "SPY260424C00699000",
+            side: "long",
+            qty: "1",
+            avg_entry_price: "2.30",
+            current_price: "2.10",
+            unrealized_pl: "-0.20",
+        },
+    ]
+}
+
 describe("AlpacaOptionsVenueAdapter", () => {
     it("normalizes working entry orders to positive internal limit prices", async () => {
         const client = createClientMock()
@@ -122,6 +179,48 @@ describe("AlpacaOptionsVenueAdapter", () => {
             instrument: "IC:SPY:2026-04-17:SPY260417C00550000|SPY260417C00555000|SPY260417P00495000|SPY260417P00500000",
             side: "sell",
             limitPrice: 1.23,
+        })
+    })
+
+    it("normalizes working one-sided vertical orders with canonical structure ids", async () => {
+        const client = createClientMock()
+        client.getOpenOrders.mockResolvedValueOnce([
+            {
+                id: "order-vertical-1",
+                order_class: "mleg",
+                side: "sell",
+                status: "new",
+                qty: "1",
+                filled_qty: "0",
+                limit_price: "-0.85",
+                submitted_at: "2026-04-10T10:00:00Z",
+                updated_at: "2026-04-10T10:00:01Z",
+                legs: [
+                    {
+                        symbol: "SPY260417P00500000",
+                        side: "sell",
+                        position_intent: "sell_to_open",
+                        ratio_qty: "1",
+                    },
+                    {
+                        symbol: "SPY260417P00495000",
+                        side: "buy",
+                        position_intent: "buy_to_open",
+                        ratio_qty: "1",
+                    },
+                ],
+            },
+        ])
+
+        const adapter = new AlpacaOptionsVenueAdapter(client as never)
+        const orders = await adapter.getWorkingOrders()
+
+        expect(orders).toHaveLength(1)
+        expect(orders[0]).toMatchObject({
+            orderId: "order-vertical-1",
+            instrument: "VS:BULL_PUT_CREDIT:SPY:2026-04-17:SPY260417P00495000|SPY260417P00500000",
+            side: "sell",
+            limitPrice: 0.85,
         })
     })
 
@@ -180,8 +279,146 @@ describe("AlpacaOptionsVenueAdapter", () => {
 
         const positions = await adapter.getPositions()
 
-        expect(positions.every((position) => position.instrument.startsWith("IC:SPY:2026-04-24:"))).toBe(true)
+        expect(positions.every((position) =>
+            position.instrument.startsWith("IC:SPY:2026-04-24:") ||
+            position.instrument.startsWith("VS:")
+        )).toBe(true)
         expect(positions.reduce((sum, position) => sum + position.quantity, 0)).toBe(8)
+    })
+
+    it("values grouped iron condors using net credit/debit economics", async () => {
+        const client = createClientMock()
+        client.getPositions.mockResolvedValueOnce([
+            {
+                asset_class: "us_option",
+                symbol: "SPY260424C00705000",
+                side: "short",
+                qty: "1",
+                avg_entry_price: "2.00",
+                current_price: "1.50",
+                unrealized_pl: "0.50",
+            },
+            {
+                asset_class: "us_option",
+                symbol: "SPY260424C00706000",
+                side: "long",
+                qty: "1",
+                avg_entry_price: "1.00",
+                current_price: "0.80",
+                unrealized_pl: "-0.20",
+            },
+            {
+                asset_class: "us_option",
+                symbol: "SPY260424P00650000",
+                side: "short",
+                qty: "1",
+                avg_entry_price: "2.20",
+                current_price: "1.70",
+                unrealized_pl: "0.50",
+            },
+            {
+                asset_class: "us_option",
+                symbol: "SPY260424P00649000",
+                side: "long",
+                qty: "1",
+                avg_entry_price: "1.10",
+                current_price: "0.90",
+                unrealized_pl: "-0.20",
+            },
+        ])
+
+        const adapter = new AlpacaOptionsVenueAdapter(client as never)
+        const positions = await adapter.getPositions()
+
+        expect(positions).toHaveLength(1)
+        expect(positions[0]?.entryPrice).toBe(2.1)
+        expect(positions[0]?.currentPrice).toBe(1.5)
+    })
+
+    it("groups one-sided vertical spreads with canonical structure metadata and pricing", async () => {
+        const client = createClientMock()
+        client.getPositions.mockResolvedValueOnce(createBullPutVerticalPositions())
+
+        const adapter = new AlpacaOptionsVenueAdapter(client as never)
+        const positions = await adapter.getPositions()
+
+        expect(positions).toHaveLength(1)
+        expect(positions[0]?.instrument.startsWith("VS:BULL_PUT_CREDIT:SPY:2026-04-24:")).toBe(true)
+        expect(positions[0]?.entryPrice).toBe(0.9)
+        expect(positions[0]?.currentPrice).toBe(0.6)
+        expect(positions[0]?.unrealizedPnl).toBe(0.3)
+        expect(positions[0]?.metadata).toMatchObject({
+            structureType: "credit_vertical",
+            verticalSpreadType: "bull_put_credit",
+            underlying: "SPY",
+            expiration: "2026-04-24",
+        })
+    })
+
+    it("keeps invalid non-credit spread geometry as residual legs instead of grouping it", async () => {
+        const client = createClientMock()
+        client.getPositions.mockResolvedValueOnce(createInvalidCreditGeometryPositions())
+
+        const adapter = new AlpacaOptionsVenueAdapter(client as never)
+        const positions = await adapter.getPositions()
+
+        expect(positions).toHaveLength(2)
+        expect(positions.some((position) => position.instrument.startsWith("VS:"))).toBe(false)
+        expect(positions.some((position) => position.instrument.startsWith("IC:"))).toBe(false)
+    })
+
+    it("keeps account snapshot semantics aligned with grouped position valuation", async () => {
+        const client = createClientMock()
+        client.getPositions.mockResolvedValueOnce([
+            {
+                asset_class: "us_option",
+                symbol: "SPY260424C00705000",
+                side: "short",
+                qty: "1",
+                avg_entry_price: "2.00",
+                current_price: "1.50",
+                unrealized_pl: "0.50",
+            },
+            {
+                asset_class: "us_option",
+                symbol: "SPY260424C00706000",
+                side: "long",
+                qty: "1",
+                avg_entry_price: "1.00",
+                current_price: "0.80",
+                unrealized_pl: "-0.20",
+            },
+            {
+                asset_class: "us_option",
+                symbol: "SPY260424P00650000",
+                side: "short",
+                qty: "1",
+                avg_entry_price: "2.20",
+                current_price: "1.70",
+                unrealized_pl: "0.50",
+            },
+            {
+                asset_class: "us_option",
+                symbol: "SPY260424P00649000",
+                side: "long",
+                qty: "1",
+                avg_entry_price: "1.10",
+                current_price: "0.90",
+                unrealized_pl: "-0.20",
+            },
+        ])
+
+        const adapter = new AlpacaOptionsVenueAdapter(client as never)
+        const [positions, account] = await Promise.all([
+            adapter.getPositions(),
+            adapter.getAccountState(),
+        ])
+
+        const groupedUnrealizedPnl = positions.reduce((sum, position) => sum + (position.unrealizedPnl ?? 0), 0)
+        expect(positions).toHaveLength(1)
+        expect(groupedUnrealizedPnl).toBeCloseTo(0.6)
+        expect(account.openPnl).toBe(50)
+        expect(account.dayPnl).toBe(50)
     })
 
     it("submits close orders as 4-leg structures", async () => {
@@ -202,6 +439,32 @@ describe("AlpacaOptionsVenueAdapter", () => {
             "sell_to_close",
             "sell_to_close",
         ])
+    })
+
+    it("submits close orders as 2-leg structures for one-sided vertical spreads", async () => {
+        const client = createClientMock()
+        client.getPositions.mockResolvedValueOnce(createBullPutVerticalPositions())
+        client.getPositions.mockResolvedValueOnce(createBullPutVerticalPositions())
+        const adapter = new AlpacaOptionsVenueAdapter(client as never)
+        const positions = await adapter.getPositions()
+        const target = positions[0]
+
+        expect(target).toBeDefined()
+        await adapter.closePosition(target?.instrument ?? "")
+
+        expect(client.createOrder).toHaveBeenCalledTimes(1)
+        const payload = client.createOrder.mock.calls[0]?.[0]
+        expect(payload?.legs).toHaveLength(2)
+        expect(payload?.legs.map((leg: { side: string }) => leg.side).sort()).toEqual([
+            "buy_to_close",
+            "sell_to_close",
+        ])
+        expect(payload?.metadata).toMatchObject({
+            structureType: "credit_vertical",
+            verticalSpreadType: "bull_put_credit",
+            entryPrice: 0.9,
+            positionSide: "short",
+        })
     })
 
     it("fails closed instead of pricing structure close orders from entry prices", async () => {
