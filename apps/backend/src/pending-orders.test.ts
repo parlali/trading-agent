@@ -89,9 +89,10 @@ describe("reconcilePendingOrdersForRun", () => {
             "Provider working-order TTL expired"
         )
         expect(result.pendingOrders).toHaveLength(0)
+        expect(result.blockedInstruments).toEqual([])
     })
 
-    it("does not fail run preflight when TTL cancellation reports order not found", async () => {
+    it("blocks new entries on the instrument when TTL cancellation cannot be reconciled", async () => {
         const pipeline = {
             cancelOrder: vi.fn().mockRejectedValue(new Error("order not found")),
             getOrderStatus: vi.fn(),
@@ -126,11 +127,12 @@ describe("reconcilePendingOrdersForRun", () => {
         )
 
         expect(result.pendingOrders).toHaveLength(0)
-        expect(result.runtimeContextLines[0]).toContain("TTL cancellation failed")
+        expect(result.runtimeContextLines[0]).toContain("New entries and size-ins on BTC-USDT-SWAP are blocked this run")
+        expect(result.blockedInstruments).toEqual(["BTC-USDT-SWAP"])
         expect(pipeline.getOrderStatus).not.toHaveBeenCalled()
     })
 
-    it("adds explicit runtime warning when provider refresh fails for an unknown order id", async () => {
+    it("blocks new entries on the instrument when provider refresh fails for an unknown order id", async () => {
         const pipeline = {
             cancelOrder: vi.fn(),
             getOrderStatus: vi.fn().mockRejectedValue(new Error("order not found")),
@@ -151,9 +153,10 @@ describe("reconcilePendingOrdersForRun", () => {
         )
 
         expect(result.runtimeContextLines).toEqual([
-            "Active order refresh failed at run start for order-unknown. Do not trust the stored snapshot without a successful venue refresh.",
+            "Active order refresh failed at run start for order-unknown. New entries and size-ins on BTC-USDT-SWAP are blocked this run until provider state is reconciled.",
         ])
         expect(result.pendingOrders).toHaveLength(0)
+        expect(result.blockedInstruments).toEqual(["BTC-USDT-SWAP"])
         expect(pipeline.resumeOpenOrders).not.toHaveBeenCalled()
     })
 
@@ -183,6 +186,7 @@ describe("reconcilePendingOrdersForRun", () => {
 
         expect(result.pendingOrders).toHaveLength(1)
         expect(result.pendingOrders[0]?.orderId).toBe("order-live")
+        expect(result.blockedInstruments).toEqual([])
         expect(pipeline.resumeOpenOrders).toHaveBeenCalledTimes(1)
     })
 })

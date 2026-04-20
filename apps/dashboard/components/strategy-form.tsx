@@ -40,6 +40,14 @@ type StrategyFormProps = {
     initialData?: StrategyFormData & { id: Id<"strategies"> }
 }
 
+function getDefaultPolicy(app: ActiveVenueApp): PolicyFields {
+    return structuredClone(POLICY_DEFAULTS[app] ?? {})
+}
+
+function getDefaultContext(app: ActiveVenueApp): string {
+    return STRATEGY_CONTEXT_DEFAULTS[app] ?? ""
+}
+
 function getNestedValue(obj: PolicyFields, path: string): unknown {
     const parts = path.split(".")
     let current: unknown = obj
@@ -53,19 +61,22 @@ function getNestedValue(obj: PolicyFields, path: string): unknown {
 function setNestedValue(obj: PolicyFields, path: string, value: unknown): PolicyFields {
     const parts = path.split(".")
     const result = { ...obj }
+    const leafKey = parts.at(-1)
+
+    if (!leafKey) {
+        return result
+    }
 
     if (parts.length === 1) {
-        result[parts[0]] = value
+        result[leafKey] = value
         return result
     }
 
     const parentPath = parts.slice(0, -1)
-    const leafKey = parts[parts.length - 1]
 
     let parent: Record<string, unknown> = result
-    for (let i = 0; i < parentPath.length; i++) {
-        const key = parentPath[i]
-        parent[key] = { ...(parent[key] as Record<string, unknown> || {}) }
+    for (const key of parentPath) {
+        parent[key] = { ...((parent[key] as Record<string, unknown> | undefined) ?? {}) }
         parent = parent[key] as Record<string, unknown>
     }
     parent[leafKey] = value
@@ -83,15 +94,15 @@ export function StrategyForm({ mode, initialData }: StrategyFormProps) {
     const [enabled, setEnabled] = useState(initialData?.enabled ?? false)
     const [schedule, setSchedule] = useState(initialData?.schedule ?? "")
     const [policy, setPolicy] = useState<PolicyFields>(
-        initialData?.policy ?? POLICY_DEFAULTS["alpaca-options"]
+        initialData?.policy ?? getDefaultPolicy("alpaca-options")
     )
-    const [context, setContext] = useState(initialData?.context ?? STRATEGY_CONTEXT_DEFAULTS["alpaca-options"])
+    const [context, setContext] = useState(initialData?.context ?? getDefaultContext("alpaca-options"))
 
     function handleVenueChange(newApp: ActiveVenueApp) {
         setApp(newApp)
         if (mode === "create") {
-            setPolicy(POLICY_DEFAULTS[newApp])
-            setContext(STRATEGY_CONTEXT_DEFAULTS[newApp])
+            setPolicy(getDefaultPolicy(newApp))
+            setContext(getDefaultContext(newApp))
         }
     }
 
@@ -565,7 +576,11 @@ export function StrategyForm({ mode, initialData }: StrategyFormProps) {
                                                     const entries = Object.entries(
                                                         (policy.marketRegionsByInstrument ?? {}) as Record<string, string[]>
                                                     )
-                                                    entries[index] = [e.target.value, entries[index][1]]
+                                                    const currentEntry = entries[index]
+                                                    if (!currentEntry) {
+                                                        return
+                                                    }
+                                                    entries[index] = [e.target.value, currentEntry[1]]
                                                     const record: Record<string, string[]> = {}
                                                     for (const [k, v] of entries) {
                                                         record[k] = v
@@ -581,8 +596,12 @@ export function StrategyForm({ mode, initialData }: StrategyFormProps) {
                                                     const entries = Object.entries(
                                                         (policy.marketRegionsByInstrument ?? {}) as Record<string, string[]>
                                                     )
+                                                    const currentEntry = entries[index]
+                                                    if (!currentEntry) {
+                                                        return
+                                                    }
                                                     entries[index] = [
-                                                        entries[index][0],
+                                                        currentEntry[0],
                                                         e.target.value.split(",").map((s) => s.trim().toUpperCase()).filter(Boolean),
                                                     ]
                                                     const record: Record<string, string[]> = {}

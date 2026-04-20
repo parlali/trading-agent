@@ -1,7 +1,9 @@
 import { readdir, rm } from "node:fs/promises"
 import path from "node:path"
+import { fileURLToPath } from "node:url"
 
-const functionsDir = path.resolve(import.meta.dir, "..", "convex")
+const scriptDir = path.dirname(fileURLToPath(import.meta.url))
+const functionsDir = path.resolve(scriptDir, "..", "convex")
 const generatedDir = path.join(functionsDir, "_generated")
 
 function isGeneratedPath(filePath: string): boolean {

@@ -58,22 +58,40 @@ interface PendingOrderPersistence {
     listActiveOrders(strategyId: string): Promise<OrderSnapshot[]>
 }
 
+function blockInstrumentForRun(args: {
+    blockedInstruments: Set<string>
+    runtimeContextLines: string[]
+    snapshot: Pick<OrderSnapshot, "instrument" | "orderId">
+    failure: string
+}): void {
+    args.blockedInstruments.add(args.snapshot.instrument)
+    args.runtimeContextLines.push(
+        `${args.failure} New entries and size-ins on ${args.snapshot.instrument} are blocked this run until provider state is reconciled.`
+    )
+}
+
 export async function reconcilePendingOrdersForRun(
     pipeline: PendingOrderPipeline,
     strategyId: string,
     orderPersistence: PendingOrderPersistence,
     runLogger: Logger
-): Promise<{ pendingOrders: PendingOrderContext[]; runtimeContextLines: string[] }> {
+): Promise<{
+    pendingOrders: PendingOrderContext[]
+    runtimeContextLines: string[]
+    blockedInstruments: string[]
+}> {
     const persistedActiveOrders = await orderPersistence.listActiveOrders(strategyId)
     if (persistedActiveOrders.length === 0) {
         return {
             pendingOrders: [],
             runtimeContextLines: [],
+            blockedInstruments: [],
         }
     }
 
     const pendingOrders: PendingOrderContext[] = []
     const runtimeContextLines: string[] = []
+    const blockedInstruments = new Set<string>()
 
     for (const persistedOrder of persistedActiveOrders) {
         const cancelAt = readFiniteNumber(persistedOrder.intent.metadata?.cancelAt)
@@ -95,9 +113,12 @@ export async function reconcilePendingOrdersForRun(
                     cancelAt,
                     error: message,
                 })
-                runtimeContextLines.push(
-                    `TTL cancellation failed for ${persistedOrder.orderId}. Refresh venue status before placing any new entries on this instrument.`
-                )
+                blockInstrumentForRun({
+                    blockedInstruments,
+                    runtimeContextLines,
+                    snapshot: persistedOrder,
+                    failure: `TTL cancellation failed for ${persistedOrder.orderId}.`,
+                })
             }
             continue
         }
@@ -110,9 +131,12 @@ export async function reconcilePendingOrdersForRun(
                 orderId: persistedOrder.orderId,
                 error: message,
             })
-            runtimeContextLines.push(
-                `Active order refresh failed at run start for ${persistedOrder.orderId}. Do not trust the stored snapshot without a successful venue refresh.`
-            )
+            blockInstrumentForRun({
+                blockedInstruments,
+                runtimeContextLines,
+                snapshot: persistedOrder,
+                failure: `Active order refresh failed at run start for ${persistedOrder.orderId}.`,
+            })
             continue
         }
 
@@ -131,6 +155,7 @@ export async function reconcilePendingOrdersForRun(
     return {
         pendingOrders,
         runtimeContextLines,
+        blockedInstruments: Array.from(blockedInstruments).sort((left, right) => left.localeCompare(right)),
     }
 }
 

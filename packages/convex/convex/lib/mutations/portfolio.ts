@@ -184,7 +184,10 @@ export const reconcileProviderPortfolio = mutation({
                 claimsByInstrument: refreshedClaimsByInstrument,
                 existingPositionByKey: existingProviderPositionsByKey,
             })
-            const expectedExternal = ownership.ownershipStatus !== "owned" && expectedExternalInstruments.has(position.instrument)
+            const expectedExternal = ownership.ownershipStatus !== "owned" && isExpectedExternalProviderRow(
+                expectedExternalInstruments,
+                position
+            )
 
             return {
                 ...position,
@@ -204,7 +207,10 @@ export const reconcileProviderPortfolio = mutation({
                 existingOrder,
                 strategyMap,
             })
-            const expectedExternal = ownership.ownershipStatus !== "owned" && expectedExternalInstruments.has(order.instrument)
+            const expectedExternal = ownership.ownershipStatus !== "owned" && isExpectedExternalProviderRow(
+                expectedExternalInstruments,
+                order
+            )
 
             return {
                 ...order,
@@ -714,6 +720,69 @@ function collectExpectedExternalInstruments(
     }
 
     return expected
+}
+
+function readMetadataRecord(value: string | undefined): Record<string, unknown> | undefined {
+    if (!value) {
+        return undefined
+    }
+
+    try {
+        const parsed = JSON.parse(value)
+        return parsed && typeof parsed === "object"
+            ? parsed as Record<string, unknown>
+            : undefined
+    } catch {
+        return undefined
+    }
+}
+
+function addExpectedExternalIdentifier(
+    identifiers: Set<string>,
+    value: unknown
+): void {
+    if (typeof value !== "string") {
+        return
+    }
+
+    const normalized = value.trim()
+    if (normalized.length === 0) {
+        return
+    }
+
+    identifiers.add(normalized)
+}
+
+function isExpectedExternalProviderRow(
+    expectedExternalInstruments: Set<string>,
+    row: {
+        instrument: string
+        metadata?: string
+    }
+): boolean {
+    if (expectedExternalInstruments.has(row.instrument)) {
+        return true
+    }
+
+    const metadata = readMetadataRecord(row.metadata)
+    if (!metadata) {
+        return false
+    }
+
+    const identifiers = new Set<string>()
+    addExpectedExternalIdentifier(identifiers, metadata.tokenId)
+    addExpectedExternalIdentifier(identifiers, metadata.marketSlug)
+    addExpectedExternalIdentifier(identifiers, metadata.slug)
+    addExpectedExternalIdentifier(identifiers, metadata.conditionId)
+    addExpectedExternalIdentifier(identifiers, metadata.market)
+
+    for (const identifier of identifiers) {
+        if (expectedExternalInstruments.has(identifier)) {
+            return true
+        }
+    }
+
+    return false
 }
 
 async function repairMissingLivePositionClaimsFromFilledOrders(
@@ -1486,6 +1555,7 @@ function readOrderCancelAt(order: OrderDoc | undefined): number | undefined {
 
 export const portfolioGovernanceTestables = {
     collectExpectedExternalInstruments,
+    isExpectedExternalProviderRow,
     buildPositionKey,
     resolveProviderPositionId,
     resolveOwnership,

@@ -141,4 +141,31 @@ describe("portfolio governance helpers", () => {
         expect(ownership.ownershipStatus).toBe("unowned")
         expect(flaggedAsExpectedExternal).toBe(true)
     })
+
+    it("matches expected external Polymarket rows by canonical market slug aliases", () => {
+        const expectedExternal = portfolioGovernanceTestables.collectExpectedExternalInstruments([
+            {
+                _id: "strategy-manual",
+                policy: {
+                    safety: {
+                        expectedExternalInstruments: ["will-the-us-acquire-any-part-of-greenland-in-2026"],
+                    },
+                },
+            },
+        ] as never)
+
+        const flaggedAsExpectedExternal = portfolioGovernanceTestables.isExpectedExternalProviderRow(
+            expectedExternal,
+            {
+                instrument: "token-active",
+                metadata: JSON.stringify({
+                    tokenId: "token-active",
+                    marketSlug: "will-the-us-acquire-any-part-of-greenland-in-2026",
+                    slug: "will-the-us-acquire-any-part-of-greenland-in-2026",
+                }),
+            }
+        )
+
+        expect(flaggedAsExpectedExternal).toBe(true)
+    })
 })

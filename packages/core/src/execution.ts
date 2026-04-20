@@ -679,6 +679,10 @@ export class ExecutionPipeline {
         return this.lifecycleManager.getTrackedOrders()
     }
 
+    setRiskValidators(validators: readonly RiskValidator[]): void {
+        this.riskValidators = [...validators]
+    }
+
     stopTracking(orderId: string): void {
         this.lifecycleManager.stopTracking(orderId)
     }

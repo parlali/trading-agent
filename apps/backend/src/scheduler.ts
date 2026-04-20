@@ -142,6 +142,30 @@ function mergeRuntimeContextLines(
     return [...(existing ?? []), ...additional]
 }
 
+function mergePendingOrderBlockedInstrumentsIntoRiskState(
+    riskState: StrategyRiskState,
+    blockedInstruments: string[]
+): StrategyRiskState {
+    if (blockedInstruments.length === 0) {
+        return riskState
+    }
+
+    const existingBlocked = new Set(riskState.blockedInstruments)
+    const mergedBlockedInstruments = Array.from(
+        new Set([...riskState.blockedInstruments, ...blockedInstruments])
+    ).sort((left, right) => left.localeCompare(right))
+    const newBlockedCount = blockedInstruments.filter((instrument) => !existingBlocked.has(instrument)).length
+
+    return {
+        ...riskState,
+        safetyState: riskState.safetyState === "healthy"
+            ? "execution_degraded"
+            : riskState.safetyState,
+        blockedInstruments: mergedBlockedInstruments,
+        unresolvedExecutionFaultCount: riskState.unresolvedExecutionFaultCount + newBlockedCount,
+    }
+}
+
 function resolveExtraToolCategory(
     tool: ToolDefinition,
     runLogger: Logger,
@@ -890,18 +914,21 @@ export async function runStrategy(
             app,
             policy: preRunSafetyPolicy,
         })
-
-        const safetyValidator = createStrategySafetyValidator({
-            safetyState: riskState.safetyState,
-            blockedInstruments: new Set(riskState.blockedInstruments),
-            reason: riskState.cooldown.active
-                ? `Strategy cooldown active (${riskState.cooldown.reason ?? "risk"})`
-                : undefined,
-        })
         const pluginValidators = plugin.getRiskValidators()
-        const riskValidators = conflictMap.size > 0
-            ? [safetyValidator, ...pluginValidators, createInstrumentConflictValidator(conflictMap)]
-            : [safetyValidator, ...pluginValidators]
+        let runRiskState = riskState
+        const buildRiskValidators = (currentRiskState: StrategyRiskState) => {
+            const safetyValidator = createStrategySafetyValidator({
+                safetyState: currentRiskState.safetyState,
+                blockedInstruments: new Set(currentRiskState.blockedInstruments),
+                reason: currentRiskState.cooldown.active
+                    ? `Strategy cooldown active (${currentRiskState.cooldown.reason ?? "risk"})`
+                    : undefined,
+            })
+
+            return conflictMap.size > 0
+                ? [safetyValidator, ...pluginValidators, createInstrumentConflictValidator(conflictMap)]
+                : [safetyValidator, ...pluginValidators]
+        }
 
         const orderPersistence = createConvexOrderPersistenceAdapter({
             url: convexUrl,
@@ -915,7 +942,7 @@ export async function runStrategy(
             venue: guardedVenue,
             venueName: plugin.venueName,
             policy,
-            riskValidators,
+            riskValidators: buildRiskValidators(runRiskState),
             logger: runLogger,
             tradeEventLogger: backend,
             orderPersistence,
@@ -958,13 +985,24 @@ export async function runStrategy(
             }
 
             const isDryRun = Boolean(policy.dryRun)
-            const { pendingOrders, runtimeContextLines: pendingOrderRuntimeContext } = await reconcilePendingOrdersForRun(
+            const {
+                pendingOrders,
+                runtimeContextLines: pendingOrderRuntimeContext,
+                blockedInstruments: pendingOrderBlockedInstruments,
+            } = await reconcilePendingOrdersForRun(
                 activePipeline,
                 strategy._id,
                 orderPersistence,
                 runLogger
             )
             runtimeContextLines = mergeRuntimeContextLines(runtimeContextLines, pendingOrderRuntimeContext)
+            if (pendingOrderBlockedInstruments.length > 0) {
+                runRiskState = mergePendingOrderBlockedInstrumentsIntoRiskState(
+                    runRiskState,
+                    pendingOrderBlockedInstruments
+                )
+                activePipeline.setRiskValidators(buildRiskValidators(runRiskState))
+            }
 
             const runTimestamp = Date.now()
             const [allPositions, previousRunSummary, recentOrderHistory] = await Promise.all([
@@ -979,7 +1017,7 @@ export async function runStrategy(
             })
             runSystemContextDigest = buildRunSystemContextDigest({
                 generatedAt: runTimestamp,
-                riskState,
+                riskState: runRiskState,
                 recentTrades,
                 pendingOrders,
             })

@@ -1,8 +1,8 @@
 import { useState, useMemo, useCallback } from "react"
-import type { VenueApp } from "@/lib/constants"
+import type { ActiveVenueApp } from "@/lib/constants"
 
 export function useProviderFilter<T extends { app: string }>() {
-    const [provider, setProvider] = useState<VenueApp | null>(null)
+    const [provider, setProvider] = useState<ActiveVenueApp | null>(null)
 
     const filterByProvider = useCallback(
         (items: T[]): T[] => {
@@ -17,7 +17,7 @@ export function useProviderFilter<T extends { app: string }>() {
 
 export function useFilteredData<T extends { app: string }>(
     data: T[] | undefined,
-    provider: VenueApp | null,
+    provider: ActiveVenueApp | null,
 ): { filtered: T[], isEmpty: boolean, isLoading: boolean } {
     const filtered = useMemo(() => {
         if (!data) return []

@@ -1,4 +1,6 @@
-import { resolve } from "node:path"
+import { readFile } from "node:fs/promises"
+import { fileURLToPath } from "node:url"
+import { dirname, resolve } from "node:path"
 import {
     createTradingBackendClient,
     type CascadeDeleteCounts,
@@ -12,10 +14,11 @@ import type { App, StrategyConfig } from "@valiq-trading/core"
 
 const FULL_RESET_CLEAR_BATCH_SIZE = 20
 const FULL_RESET_CLEAR_MAX_BATCHES = 10000
+const strategyCliDir = dirname(fileURLToPath(import.meta.url))
 
 export function resolveArg(name: string): string | undefined {
     const prefix = `--${name}=`
-    const entry = Bun.argv.find((value) => value.startsWith(prefix))
+    const entry = process.argv.find((value) => value.startsWith(prefix))
 
     if (!entry) {
         return undefined
@@ -60,18 +63,18 @@ export function resolveDocumentPath(): string {
         return resolve(process.cwd(), explicitPath)
     }
 
-    return resolve(import.meta.dir, "../../../../strategies.md")
+    return resolve(strategyCliDir, "../../../../strategies.md")
 }
 
 export async function loadStrategiesFromDocument(): Promise<StrategyConfig[]> {
     const documentPath = resolveDocumentPath()
-    const file = Bun.file(documentPath)
-
-    if (!(await file.exists())) {
-        throw new Error(`Strategy document not found: ${documentPath}`)
+    let markdown: string
+    try {
+        markdown = await readFile(documentPath, "utf8")
+    } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        throw new Error(`Strategy document not found: ${documentPath} (${message})`)
     }
-
-    const markdown = await file.text()
     const document = parseStrategyMarkdownDocument(markdown)
 
     console.log(`Parsed ${document.strategies.length} strategies from ${documentPath}`)
@@ -141,6 +144,8 @@ export function createDeleteTotals(): DeleteAllStrategiesResult {
         positions: 0,
         instrumentClaims: 0,
         positionSyncs: 0,
+        strategyRiskStates: 0,
+        executionSafetyFaults: 0,
         providerPositions: 0,
         providerWorkingOrders: 0,
         providerSyncStates: 0,

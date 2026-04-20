@@ -63,6 +63,7 @@ function dayModeToCronDow(state: ScheduleState): string {
             if (state.days.length === 0) return ""
             return state.days
                 .map((i) => DAY_CRON_VALUES[i])
+                .filter((value): value is number => value !== undefined)
                 .sort((a, b) => a - b)
                 .join(",")
         }
@@ -146,9 +147,18 @@ function cronToSchedule(cron: string): ScheduleState {
         const hourListMatch = hour.match(/^[\d,]+$/)
         if (hourListMatch) {
             const hours = hour.split(",").map(Number)
-            if (hours.length >= 2) {
-                const interval = hours[1] - hours[0]
-                const isEvenlySpaced = hours.every((h, i) => i === 0 || h - hours[i - 1] === interval)
+            const firstHour = hours[0]
+            const secondHour = hours[1]
+            if (firstHour !== undefined && secondHour !== undefined) {
+                const interval = secondHour - firstHour
+                const isEvenlySpaced = hours.every((h, i) => {
+                    if (i === 0) {
+                        return true
+                    }
+
+                    const previousHour = hours[i - 1]
+                    return previousHour !== undefined && h - previousHour === interval
+                })
                 if (isEvenlySpaced && interval >= 1) {
                     return {
                         ...DEFAULT_STATE,

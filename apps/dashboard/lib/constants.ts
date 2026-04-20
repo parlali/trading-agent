@@ -18,7 +18,7 @@ type VenueMeta = {
     chartColor: string
 }
 
-export const VENUE_META: Record<string, VenueMeta> = {
+export const VENUE_META: Record<ActiveVenueApp, VenueMeta> = {
     "alpaca-options": {
         label: "Alpaca Options",
         shortLabel: "Alpaca",
