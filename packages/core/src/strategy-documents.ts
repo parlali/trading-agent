@@ -29,22 +29,33 @@ export function parseStrategyMarkdownDocument(markdown: string): StrategyMarkdow
 
     const strategies: StrategyConfig[] = []
     const names = new Set<string>()
-    const headings = Array.from(normalized.matchAll(/^##\s+(.+)$/gm))
-    const sectionBoundaries = Array.from(normalized.matchAll(/^#{1,2}\s+.+$/gm))
-        .map((match) => match.index ?? 0)
+    const headings = Array.from(normalized.matchAll(/^(#{1,2})\s+(.+)$/gm)).map((match) => ({
+        depth: match[1]?.length ?? 0,
+        name: match[2]?.trim() ?? "",
+        index: match.index ?? 0,
+    }))
+    let currentSectionName: string | null = null
 
     for (let index = 0; index < headings.length; index++) {
         const heading = headings[index]!
-        const rawName = heading[1]
 
-        if (!rawName) {
+        if (heading.depth === 1) {
+            currentSectionName = heading.name === "Strategies" ? null : heading.name
+            continue
+        }
+
+        if (currentSectionName === null) {
+            continue
+        }
+
+        const name = heading.name
+
+        if (!name) {
             throw new Error("Strategy heading cannot be empty")
         }
 
-        const name = rawName.trim()
-        const sectionStart = heading.index ?? 0
-        const sectionEnd =
-            sectionBoundaries.find((boundary) => boundary > sectionStart) ?? normalized.length
+        const sectionStart = heading.index
+        const sectionEnd = headings[index + 1]?.index ?? normalized.length
         const section = normalized.slice(sectionStart, sectionEnd).trim()
 
         if (names.has(name)) {
