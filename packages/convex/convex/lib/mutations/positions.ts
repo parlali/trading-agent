@@ -3,6 +3,7 @@ import { v } from "convex/values"
 import { requireServiceToken } from "../authGuards"
 import { replacePositionClaims } from "../instrumentClaims"
 import { isDryRunLedgerMetadata } from "../dryRunLedger"
+import { buildPositionClaim } from "../providerPositions"
 
 export const syncPositions = mutation({
     args: {
@@ -17,6 +18,7 @@ export const syncPositions = mutation({
         positions: v.array(
             v.object({
                 instrument: v.string(),
+                providerPositionId: v.optional(v.string()),
                 side: v.union(v.literal("long"), v.literal("short")),
                 quantity: v.number(),
                 entryPrice: v.number(),
@@ -54,9 +56,9 @@ export const syncPositions = mutation({
         await replacePositionClaims(ctx, {
             strategyId: args.strategyId,
             app: args.app,
-            instruments: args.positions
+            positionClaims: args.positions
                 .filter((position) => !isDryRunLedgerMetadata(position.metadata))
-                .map((position) => position.instrument),
+                .map((position) => buildPositionClaim(position)),
             updatedAt: now,
         })
     },

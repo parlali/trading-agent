@@ -241,12 +241,34 @@ export async function replacePositionClaims(
     args: {
         strategyId: Id<"strategies">
         app: VenueApp
-        instruments: string[]
+        instruments?: string[]
+        positionClaims?: Array<{
+            instrument: string
+            sourceId?: string
+        }>
         updatedAt: number
     }
 ): Promise<void> {
-    const nextInstruments = uniqueInstruments(args.instruments)
-    const nextInstrumentSet = new Set(nextInstruments)
+    const fallbackClaims = uniqueInstruments(args.instruments ?? []).map((instrument) => ({
+        instrument,
+        sourceId: instrument,
+    }))
+    const requestedClaims = (args.positionClaims ?? [])
+        .map((claim) => ({
+            instrument: claim.instrument.trim(),
+            sourceId: (claim.sourceId ?? claim.instrument).trim(),
+        }))
+        .filter((claim) => claim.instrument.length > 0 && claim.sourceId.length > 0)
+    const nextClaims = requestedClaims.length > 0
+        ? requestedClaims
+        : fallbackClaims
+    const dedupedClaims = new Map<string, { instrument: string; sourceId: string }>()
+
+    for (const claim of nextClaims) {
+        dedupedClaims.set(claim.sourceId, claim)
+    }
+
+    const nextSourceIdSet = new Set(Array.from(dedupedClaims.keys()))
     const existingClaims = await ctx.db
         .query("instrument_claims")
         .withIndex("by_strategy_source", (q) =>
@@ -255,18 +277,18 @@ export async function replacePositionClaims(
         .collect()
 
     for (const claim of existingClaims) {
-        if (!nextInstrumentSet.has(claim.instrument)) {
+        if (!nextSourceIdSet.has(claim.sourceId)) {
             await ctx.db.delete(claim._id)
         }
     }
 
-    for (const instrument of nextInstruments) {
+    for (const claim of dedupedClaims.values()) {
         await upsertClaim(ctx, {
             strategyId: args.strategyId,
             app: args.app,
-            instrument,
+            instrument: claim.instrument,
             source: POSITION_CLAIM_SOURCE,
-            sourceId: instrument,
+            sourceId: claim.sourceId,
             updatedAt: args.updatedAt,
         })
     }

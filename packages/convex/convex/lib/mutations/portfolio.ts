@@ -14,6 +14,11 @@ import {
     upsertPositionInstrumentClaims,
 } from "../instrumentClaims"
 import {
+    buildPositionClaim,
+    buildProviderPositionKey,
+    resolveProviderPositionId,
+} from "../providerPositions"
+import {
     orderStatusV,
     venueAppV,
 } from "../validators"
@@ -175,19 +180,40 @@ export const reconcileProviderPortfolio = mutation({
             .withIndex("by_app", (q) => q.eq("app", args.app))
             .collect()
         const refreshedClaimsByInstrument = buildClaimsByInstrument(refreshedClaims, strategyMap)
+        const refreshedPositionClaimsByKey = buildPositionClaimsByKey(refreshedClaims, strategyMap)
+        const ownershipMismatches = new Set<string>()
 
         const resolvedPositions = args.positions.map((position) => {
-            const positionKey = buildPositionKey(position)
+            const positionKey = buildProviderPositionKey(position)
+            const previousPosition = existingProviderPositionsByKey.get(positionKey)
             const ownership = resolveOwnership({
                 instrument: position.instrument,
                 positionKey,
                 claimsByInstrument: refreshedClaimsByInstrument,
+                claimsByPositionKey: refreshedPositionClaimsByKey,
                 existingPositionByKey: existingProviderPositionsByKey,
+                strategyMap,
             })
             const expectedExternal = ownership.ownershipStatus !== "owned" && isExpectedExternalProviderRow(
                 expectedExternalInstruments,
                 position
             )
+
+            if (
+                hasPositionOwnershipMismatch({
+                    positionKey,
+                    claimsByPositionKey: refreshedPositionClaimsByKey,
+                    existingPositionByKey: existingProviderPositionsByKey,
+                    strategyMap,
+                }) ||
+                previousPosition?.strategyId &&
+                (
+                    ownership.ownershipStatus !== "owned" ||
+                    ownership.strategyId !== previousPosition.strategyId
+                )
+            ) {
+                ownershipMismatches.add(positionKey)
+            }
 
             return {
                 ...position,
@@ -411,6 +437,7 @@ export const reconcileProviderPortfolio = mutation({
             unownedOrderCount: unownedOrders.length,
             closedPersistedOrders,
             statusMismatches,
+            ownershipMismatches: Array.from(ownershipMismatches),
         })
         const driftDetected = driftSummary !== undefined
         const stale = false
@@ -596,6 +623,27 @@ export const adoptProviderPositions = mutation({
                 .collect(),
         ])
 
+        const conflictingProviderPositions = providerPositions.filter(
+            (position) =>
+                instrumentSet.has(position.instrument) &&
+                position.strategyId &&
+                position.strategyId !== args.strategyId
+        )
+        const conflictingProviderWorkingOrders = providerWorkingOrders.filter(
+            (order) =>
+                instrumentSet.has(order.instrument) &&
+                order.strategyId &&
+                order.strategyId !== args.strategyId
+        )
+
+        if (conflictingProviderPositions.length > 0 || conflictingProviderWorkingOrders.length > 0) {
+            const conflictingPositionIds = conflictingProviderPositions.map((position) => position.positionKey)
+            const conflictingOrderIds = conflictingProviderWorkingOrders.map((order) => order.orderId)
+            throw new Error(
+                `Cannot adopt instruments already owned by another strategy. Conflicting provider positions: ${conflictingPositionIds.join(", ") || "none"}; conflicting provider working orders: ${conflictingOrderIds.join(", ") || "none"}`
+            )
+        }
+
         const instruments = resolveProviderAdoptionInstruments({
             targetStrategyId: String(args.strategyId),
             requestedInstruments,
@@ -625,16 +673,19 @@ export const adoptProviderPositions = mutation({
             }
         }
 
-        for (const instrument of instruments) {
-            await ctx.db.insert("instrument_claims", {
-                strategyId: args.strategyId,
-                app: args.app,
-                instrument,
-                source: "position",
-                sourceId: instrument,
-                updatedAt: now,
-            })
-        }
+        const adoptedPositionClaims = buildAdoptedPositionClaims({
+            strategyId: args.strategyId,
+            requestedInstruments: instruments,
+            providerPositions,
+            existingClaims: claims,
+        })
+
+        await replacePositionClaims(ctx, {
+            strategyId: args.strategyId,
+            app: args.app,
+            positionClaims: adoptedPositionClaims,
+            updatedAt: now,
+        })
 
         let adoptedPositions = 0
         for (const position of providerPositions) {
@@ -690,6 +741,58 @@ function buildClaimsByInstrument(
     }
 
     return claimsByInstrument
+}
+
+function buildPositionClaimsByKey(
+    claims: Array<Doc<"instrument_claims">>,
+    strategyMap: Map<string, StrategyDoc>
+): Map<string, Set<Id<"strategies">>> {
+    const claimsByPositionKey = new Map<string, Set<Id<"strategies">>>()
+
+    for (const claim of claims) {
+        if (claim.source !== "position" || !strategyMap.has(String(claim.strategyId))) {
+            continue
+        }
+
+        const positionKey = claim.sourceId.trim()
+        if (positionKey.length === 0) {
+            continue
+        }
+
+        const existing = claimsByPositionKey.get(positionKey) ?? new Set<Id<"strategies">>()
+        existing.add(claim.strategyId)
+        claimsByPositionKey.set(positionKey, existing)
+    }
+
+    return claimsByPositionKey
+}
+
+function buildAdoptedPositionClaims(args: {
+    strategyId: Id<"strategies">
+    requestedInstruments: string[]
+    providerPositions: Array<Doc<"provider_positions">>
+    existingClaims: Array<Doc<"instrument_claims">>
+}): Array<{ instrument: string; sourceId: string }> {
+    const instrumentSet = new Set(args.requestedInstruments)
+    const adoptedClaims = args.providerPositions
+        .filter((position) => instrumentSet.has(position.instrument))
+        .map((position) => ({
+            instrument: position.instrument,
+            sourceId: position.positionKey,
+        }))
+
+    const preservedClaims = args.existingClaims
+        .filter((claim) =>
+            claim.strategyId === args.strategyId &&
+            claim.source === "position" &&
+            !instrumentSet.has(claim.instrument)
+        )
+        .map((claim) => ({
+            instrument: claim.instrument,
+            sourceId: claim.sourceId,
+        }))
+
+    return [...preservedClaims, ...adoptedClaims]
 }
 
 function collectExpectedExternalInstruments(
@@ -896,6 +999,7 @@ async function updateProviderSyncStateFromCurrentRows(
         unownedOrderCount,
         closedPersistedOrders: [],
         statusMismatches: [],
+        ownershipMismatches: [],
     })
     const driftDetected = driftSummary !== undefined
     const stale = isStale(state.lastVerifiedAt, now)
@@ -947,6 +1051,7 @@ function resolveOwnership(args: {
     instrument: string
     positionKey?: string
     claimsByInstrument: Map<string, Set<Id<"strategies">>>
+    claimsByPositionKey?: Map<string, Set<Id<"strategies">>>
     existingOrder?: OrderDoc
     existingPositionByKey?: Map<string, Doc<"provider_positions">>
     strategyMap?: Map<string, StrategyDoc>
@@ -964,15 +1069,15 @@ function resolveOwnership(args: {
         }
     }
 
-    if (args.positionKey && args.existingPositionByKey) {
-        const existingPosition = args.existingPositionByKey.get(args.positionKey)
-        if (existingPosition?.strategyId) {
-            if (!args.strategyMap || args.strategyMap.has(String(existingPosition.strategyId))) {
-                return {
-                    strategyId: existingPosition.strategyId,
-                    ownershipStatus: "owned",
-                }
-            }
+    if (args.positionKey && (args.existingPositionByKey || args.claimsByPositionKey)) {
+        const positionOwnership = resolvePositionOwnership({
+            positionKey: args.positionKey,
+            claimsByPositionKey: args.claimsByPositionKey,
+            existingPositionByKey: args.existingPositionByKey,
+            strategyMap: args.strategyMap,
+        })
+        if (positionOwnership) {
+            return positionOwnership
         }
     }
 
@@ -992,46 +1097,101 @@ function resolveOwnership(args: {
     }
 }
 
-function buildPositionKey(position: {
-    instrument: string
-    providerPositionId?: string
-    metadata?: string
-    side: string
-}): string {
-    const providerPositionId = resolveProviderPositionId(position.providerPositionId, position.metadata)
-    if (providerPositionId) {
-        return `${position.instrument}:${providerPositionId}`
+function resolvePositionOwnership(args: {
+    positionKey: string
+    claimsByPositionKey?: Map<string, Set<Id<"strategies">>>
+    existingPositionByKey?: Map<string, Doc<"provider_positions">>
+    strategyMap?: Map<string, StrategyDoc>
+}): ResolvedOwnership | undefined {
+    const existingStrategyId = readKnownStrategyId(
+        args.existingPositionByKey?.get(args.positionKey)?.strategyId,
+        args.strategyMap
+    )
+    const claims = args.claimsByPositionKey?.get(args.positionKey)
+
+    if (claims && claims.size > 1) {
+        return {
+            ownershipStatus: "orphaned",
+        }
     }
 
-    return `${position.instrument}:${position.side}`
+    const [claimedStrategyId] = claims ? Array.from(claims) : []
+    const knownClaimedStrategyId = readKnownStrategyId(claimedStrategyId, args.strategyMap)
+
+    if (existingStrategyId && claimedStrategyId && !knownClaimedStrategyId) {
+        return {
+            ownershipStatus: "orphaned",
+        }
+    }
+
+    if (existingStrategyId && knownClaimedStrategyId && existingStrategyId !== knownClaimedStrategyId) {
+        return {
+            ownershipStatus: "orphaned",
+        }
+    }
+
+    if (knownClaimedStrategyId) {
+        return {
+            strategyId: knownClaimedStrategyId,
+            ownershipStatus: "owned",
+        }
+    }
+
+    if (existingStrategyId) {
+        return {
+            strategyId: existingStrategyId,
+            ownershipStatus: "owned",
+        }
+    }
+
+    if (claimedStrategyId) {
+        return {
+            ownershipStatus: "orphaned",
+        }
+    }
+
+    return undefined
 }
 
-function resolveProviderPositionId(
-    providerPositionId: string | undefined,
-    metadata: string | undefined
-): string | undefined {
-    if (providerPositionId) {
-        return providerPositionId
+function hasPositionOwnershipMismatch(args: {
+    positionKey: string
+    claimsByPositionKey?: Map<string, Set<Id<"strategies">>>
+    existingPositionByKey?: Map<string, Doc<"provider_positions">>
+    strategyMap?: Map<string, StrategyDoc>
+}): boolean {
+    const claims = args.claimsByPositionKey?.get(args.positionKey)
+    if (claims && claims.size > 1) {
+        return true
     }
 
-    const parsed = parseJson<Record<string, unknown>>(metadata)
-    if (!parsed) {
+    const existingStrategyId = readKnownStrategyId(
+        args.existingPositionByKey?.get(args.positionKey)?.strategyId,
+        args.strategyMap
+    )
+    const [claimedStrategyId] = claims ? Array.from(claims) : []
+    const knownClaimedStrategyId = readKnownStrategyId(claimedStrategyId, args.strategyMap)
+
+    if (existingStrategyId && claimedStrategyId && !knownClaimedStrategyId) {
+        return true
+    }
+
+    return Boolean(
+        existingStrategyId &&
+        knownClaimedStrategyId &&
+        existingStrategyId !== knownClaimedStrategyId
+    )
+}
+
+function readKnownStrategyId(
+    strategyId: Id<"strategies"> | undefined,
+    strategyMap?: Map<string, StrategyDoc>
+): Id<"strategies"> | undefined {
+    if (!strategyId) {
         return undefined
     }
 
-    const ticket = parsed.ticket
-    if (typeof ticket === "string" || typeof ticket === "number") {
-        return String(ticket)
-    }
-
-    const posId = parsed.posId
-    if (typeof posId === "string" || typeof posId === "number") {
-        return String(posId)
-    }
-
-    const nestedProviderPositionId = parsed.providerPositionId
-    if (typeof nestedProviderPositionId === "string" || typeof nestedProviderPositionId === "number") {
-        return String(nestedProviderPositionId)
+    if (!strategyMap || strategyMap.has(String(strategyId))) {
+        return strategyId
     }
 
     return undefined
@@ -1298,6 +1458,7 @@ async function writeStrategyPositionSnapshots(
         strategies: StrategyDoc[]
         positions: Array<{
             strategyId?: Id<"strategies">
+            positionKey?: string
             instrument: string
             side: "long" | "short"
             quantity: number
@@ -1369,7 +1530,7 @@ async function writeStrategyPositionSnapshots(
             await replacePositionClaims(ctx, {
                 strategyId: strategy._id,
                 app: args.app,
-                instruments: strategyPositions.map((position) => position.instrument),
+                positionClaims: strategyPositions.map((position) => buildPositionClaim(position)),
                 updatedAt: args.syncedAt,
             })
             continue
@@ -1402,7 +1563,7 @@ async function writeStrategyPositionSnapshots(
         await replacePositionClaims(ctx, {
             strategyId: strategy._id,
             app: args.app,
-            instruments: strategyPositions.map((position) => position.instrument),
+            positionClaims: strategyPositions.map((position) => buildPositionClaim(position)),
             updatedAt: args.syncedAt,
         })
 
@@ -1437,6 +1598,7 @@ function createDriftSummary(args: {
     unownedOrderCount: number
     closedPersistedOrders: string[]
     statusMismatches: string[]
+    ownershipMismatches: string[]
 }): string | undefined {
     const parts: string[] = []
 
@@ -1454,6 +1616,10 @@ function createDriftSummary(args: {
 
     if (args.statusMismatches.length > 0) {
         parts.push(`${args.statusMismatches.length} working order(s) required status or quantity repair`)
+    }
+
+    if (args.ownershipMismatches.length > 0) {
+        parts.push(`${args.ownershipMismatches.length} provider position ownership mismatch(es) were detected`)
     }
 
     return parts.length > 0 ? parts.join("; ") : undefined
@@ -1556,8 +1722,13 @@ function readOrderCancelAt(order: OrderDoc | undefined): number | undefined {
 export const portfolioGovernanceTestables = {
     collectExpectedExternalInstruments,
     isExpectedExternalProviderRow,
-    buildPositionKey,
+    buildAdoptedPositionClaims,
+    buildPositionClaimsByKey,
+    buildProviderPositionKey,
+    createDriftSummary,
+    hasPositionOwnershipMismatch,
     resolveProviderPositionId,
+    resolvePositionOwnership,
     resolveOwnership,
     inferClosedOrderStatus,
     readOrderCancelAt,

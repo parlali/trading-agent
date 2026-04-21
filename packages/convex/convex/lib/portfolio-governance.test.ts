@@ -30,7 +30,7 @@ describe("portfolio governance helpers", () => {
     })
 
     it("keeps MT5 provider-position ownership stable for ticket 1600791764 across sync/restart", () => {
-        const positionKey = portfolioGovernanceTestables.buildPositionKey({
+        const positionKey = portfolioGovernanceTestables.buildProviderPositionKey({
             instrument: "XAUUSD",
             providerPositionId: undefined,
             metadata: JSON.stringify({ ticket: 1600791764 }),
@@ -70,7 +70,7 @@ describe("portfolio governance helpers", () => {
             ownershipStatus: "owned",
         })
 
-        const secondKey = portfolioGovernanceTestables.buildPositionKey({
+        const secondKey = portfolioGovernanceTestables.buildProviderPositionKey({
             instrument: "XAUUSD",
             providerPositionId: undefined,
             metadata: JSON.stringify({ ticket: 1600791765 }),
@@ -78,6 +78,146 @@ describe("portfolio governance helpers", () => {
         })
         expect(secondKey).toBe("XAUUSD:1600791765")
         expect(secondKey).not.toBe(positionKey)
+    })
+
+    it("resolves same-instrument A/B positions by provider-position claim keys", () => {
+        const strategyA = "strategy-a"
+        const strategyB = "strategy-b"
+        const strategyMap = new Map([
+            [strategyA, { _id: strategyA }],
+            [strategyB, { _id: strategyB }],
+        ])
+        const claimsByInstrument = new Map([
+            ["XAUUSD", new Set([strategyA, strategyB])],
+        ])
+        const claimsByPositionKey = new Map([
+            ["XAUUSD:1600791764", new Set([strategyA])],
+            ["XAUUSD:1600791765", new Set([strategyB])],
+        ])
+
+        const resolvedA = portfolioGovernanceTestables.resolveOwnership({
+            instrument: "XAUUSD",
+            positionKey: "XAUUSD:1600791764",
+            claimsByInstrument,
+            claimsByPositionKey,
+            strategyMap,
+        } as never)
+        const resolvedB = portfolioGovernanceTestables.resolveOwnership({
+            instrument: "XAUUSD",
+            positionKey: "XAUUSD:1600791765",
+            claimsByInstrument,
+            claimsByPositionKey,
+            strategyMap,
+        } as never)
+
+        expect(resolvedA).toEqual({
+            strategyId: strategyA,
+            ownershipStatus: "owned",
+        })
+        expect(resolvedB).toEqual({
+            strategyId: strategyB,
+            ownershipStatus: "owned",
+        })
+    })
+
+    it("fails closed when a provider row owner conflicts with a provider-position claim", () => {
+        const strategyA = "strategy-a"
+        const strategyB = "strategy-b"
+        const strategyMap = new Map([
+            [strategyA, { _id: strategyA }],
+            [strategyB, { _id: strategyB }],
+        ])
+        const positionKey = "XAUUSD:1600791764"
+
+        const resolved = portfolioGovernanceTestables.resolveOwnership({
+            instrument: "XAUUSD",
+            positionKey,
+            claimsByInstrument: new Map([["XAUUSD", new Set([strategyA, strategyB])]]),
+            claimsByPositionKey: new Map([[positionKey, new Set([strategyB])]]),
+            existingPositionByKey: new Map([
+                [positionKey, {
+                    strategyId: strategyA,
+                }],
+            ]),
+            strategyMap,
+        } as never)
+
+        expect(resolved).toEqual({
+            ownershipStatus: "orphaned",
+        })
+        expect(portfolioGovernanceTestables.hasPositionOwnershipMismatch({
+            positionKey,
+            claimsByPositionKey: new Map([[positionKey, new Set([strategyB])]]),
+            existingPositionByKey: new Map([
+                [positionKey, {
+                    strategyId: strategyA,
+                }],
+            ]),
+            strategyMap,
+        } as never)).toBe(true)
+    })
+
+    it("builds adopted position claims from provider row keys and preserves unrelated claims", () => {
+        const strategyA = "strategy-a"
+        const strategyB = "strategy-b"
+
+        const claims = portfolioGovernanceTestables.buildAdoptedPositionClaims({
+            strategyId: strategyA,
+            requestedInstruments: ["XAUUSD"],
+            providerPositions: [
+                {
+                    instrument: "XAUUSD",
+                    positionKey: "XAUUSD:1600791764",
+                },
+                {
+                    instrument: "XAUUSD",
+                    positionKey: "XAUUSD:1600791765",
+                },
+                {
+                    instrument: "EURUSD",
+                    positionKey: "EURUSD:long",
+                },
+            ],
+            existingClaims: [
+                {
+                    strategyId: strategyA,
+                    source: "position",
+                    instrument: "EURUSD",
+                    sourceId: "EURUSD:long",
+                },
+                {
+                    strategyId: strategyB,
+                    source: "position",
+                    instrument: "XAUUSD",
+                    sourceId: "XAUUSD:old",
+                },
+            ],
+        } as never)
+
+        expect(claims).toEqual([
+            {
+                instrument: "EURUSD",
+                sourceId: "EURUSD:long",
+            },
+            {
+                instrument: "XAUUSD",
+                sourceId: "XAUUSD:1600791764",
+            },
+            {
+                instrument: "XAUUSD",
+                sourceId: "XAUUSD:1600791765",
+            },
+        ])
+    })
+
+    it("includes ownership mismatches in the drift summary", () => {
+        expect(portfolioGovernanceTestables.createDriftSummary({
+            unownedPositionCount: 0,
+            unownedOrderCount: 0,
+            closedPersistedOrders: [],
+            statusMismatches: [],
+            ownershipMismatches: ["XAUUSD:1600791764"],
+        })).toBe("1 provider position ownership mismatch(es) were detected")
     })
 
     it("infers MT5 closed-order fill from provider ticket match and cancels stale unmatched rows", () => {
