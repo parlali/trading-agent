@@ -28,17 +28,14 @@ jobs:
 
                       Write-Host "========== DEPLOY START =========="
                       Write-Host "Timestamp: $(Get-Date)"
-                      Write-Host "User: $env:USERNAME"
 
                       Write-Host ""
                       Write-Host "--- Step 1: Navigate to repo ---"
                       Set-Location $repoDir
-                      Write-Host "Current directory: $(Get-Location)"
 
                       Write-Host ""
-                      Write-Host "--- Step 2: Git status before pull ---"
-                      git status 2>&1 | Out-String | Write-Host
-                      git log --oneline -3 2>&1 | Out-String | Write-Host
+                      Write-Host "--- Step 2: Current revision before pull ---"
+                      git rev-parse --short HEAD 2>&1 | Out-String | Write-Host
 
                       Write-Host ""
                       Write-Host "--- Step 3: Git pull ---"
@@ -48,22 +45,21 @@ jobs:
                           exit 1
                       }
                       Write-Host "Git pull succeeded"
-                      git log --oneline -3 2>&1 | Out-String | Write-Host
+                      git rev-parse --short HEAD 2>&1 | Out-String | Write-Host
 
                       Write-Host ""
                       Write-Host "--- Step 4: Check NSSM exists ---"
                       $nssm = Get-Command nssm -ErrorAction SilentlyContinue
                       if (-not $nssm) {
-                          Write-Host "FATAL: nssm not found in PATH: $env:PATH"
+                          Write-Host "FATAL: nssm not found in PATH"
                           exit 1
                       }
-                      Write-Host "nssm found at: $($nssm.Source)"
 
                       Write-Host ""
                       Write-Host "--- Step 5: Check required private MT5 files ---"
                       $serversDatPath = Join-Path $repoDir "private\mt5-worker\servers.dat"
                       if (-not (Test-Path $serversDatPath)) {
-                          Write-Host "FATAL: missing required private MT5 server database at private\mt5-worker\servers.dat"
+                          Write-Host "FATAL: missing required private MT5 server database"
                           exit 1
                       }
                       Write-Host "Found required private MT5 server database"
@@ -98,13 +94,8 @@ jobs:
                           $r = Invoke-WebRequest -Uri "http://localhost:8090/health" -UseBasicParsing
                           Write-Host "Health check HTTP status: $($r.StatusCode)"
                       } catch {
-                          Write-Host "Health check failed: $_"
+                          Write-Host "Health check failed"
                       }
-
-                      Write-Host ""
-                      Write-Host "--- Step 10: Log paths ---"
-                      nssm get trading-mt5-worker AppStdout 2>&1 | Out-String | Write-Host
-                      nssm get trading-mt5-worker AppStderr 2>&1 | Out-String | Write-Host
 
                       Write-Host ""
                       Write-Host "========== DEPLOY COMPLETE =========="
