@@ -109,8 +109,15 @@ class MT5Client:
         config_dir = os.path.join(path, "config")
         os.makedirs(config_dir, exist_ok=True)
         servers_dst = os.path.join(config_dir, "servers.dat")
-        servers_src = os.path.join(os.path.dirname(__file__), "servers.dat")
-        if os.path.isfile(servers_src) and not os.path.isfile(servers_dst):
+        servers_src = os.path.abspath(os.path.expanduser(settings.mt5_servers_dat_path))
+        if not os.path.isfile(servers_src):
+            raise MT5ConnectionError(
+                "Required MT5 servers.dat not found. Place it in private/mt5-worker/servers.dat or set MT5_SERVERS_DAT_PATH.",
+                error_type="missing_servers_dat",
+                retryable=False,
+            )
+
+        if not os.path.isfile(servers_dst):
             shutil.copy2(servers_src, servers_dst)
 
         return path

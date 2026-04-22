@@ -13,6 +13,7 @@ dist/
 .env.*
 !.env.example
 private/
+plan.md
 
 # Turbo
 .turbo/

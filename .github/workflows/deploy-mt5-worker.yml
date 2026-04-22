@@ -15,18 +15,24 @@ jobs:
               uses: appleboy/ssh-action@v1
               with:
                   host: ${{ secrets.MT5_WORKER_VM_HOST }}
-                  port: 2227
+                  port: ${{ secrets.MT5_WORKER_VM_PORT }}
                   username: ${{ secrets.VM_USER }}
                   password: ${{ secrets.VM_PASSWORD }}
                   command_timeout: 10m
                   script: |
+                      $repoDir = "${{ secrets.MT5_WORKER_REPO_DIR }}"
+                      if (-not $repoDir) {
+                          Write-Host "FATAL: MT5_WORKER_REPO_DIR is not configured"
+                          exit 1
+                      }
+
                       Write-Host "========== DEPLOY START =========="
                       Write-Host "Timestamp: $(Get-Date)"
                       Write-Host "User: $env:USERNAME"
 
                       Write-Host ""
                       Write-Host "--- Step 1: Navigate to repo ---"
-                      Set-Location "${{ secrets.MT5_WORKER_REPO_DIR }}"
+                      Set-Location $repoDir
                       Write-Host "Current directory: $(Get-Location)"
 
                       Write-Host ""
@@ -54,11 +60,20 @@ jobs:
                       Write-Host "nssm found at: $($nssm.Source)"
 
                       Write-Host ""
-                      Write-Host "--- Step 5: Service status before restart ---"
+                      Write-Host "--- Step 5: Check required private MT5 files ---"
+                      $serversDatPath = Join-Path $repoDir "private\mt5-worker\servers.dat"
+                      if (-not (Test-Path $serversDatPath)) {
+                          Write-Host "FATAL: missing required private MT5 server database at private\mt5-worker\servers.dat"
+                          exit 1
+                      }
+                      Write-Host "Found required private MT5 server database"
+
+                      Write-Host ""
+                      Write-Host "--- Step 6: Service status before restart ---"
                       nssm status trading-mt5-worker 2>&1 | Out-String | Write-Host
 
                       Write-Host ""
-                      Write-Host "--- Step 6: Restart service ---"
+                      Write-Host "--- Step 7: Restart service ---"
                       nssm restart trading-mt5-worker 2>&1 | Out-String | Write-Host
                       if ($LASTEXITCODE -ne 0) {
                           Write-Host "WARNING: nssm restart exited $LASTEXITCODE, trying stop then start"
@@ -72,12 +87,12 @@ jobs:
                       }
 
                       Write-Host ""
-                      Write-Host "--- Step 7: Verify service is running ---"
+                      Write-Host "--- Step 8: Verify service is running ---"
                       Start-Sleep -Seconds 5
                       nssm status trading-mt5-worker 2>&1 | Out-String | Write-Host
 
                       Write-Host ""
-                      Write-Host "--- Step 8: Health endpoint ---"
+                      Write-Host "--- Step 9: Health endpoint ---"
                       Start-Sleep -Seconds 3
                       try {
                           $r = Invoke-WebRequest -Uri "http://localhost:8090/health" -UseBasicParsing
@@ -87,7 +102,7 @@ jobs:
                       }
 
                       Write-Host ""
-                      Write-Host "--- Step 9: Log paths ---"
+                      Write-Host "--- Step 10: Log paths ---"
                       nssm get trading-mt5-worker AppStdout 2>&1 | Out-String | Write-Host
                       nssm get trading-mt5-worker AppStderr 2>&1 | Out-String | Write-Host
 

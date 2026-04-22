@@ -1,4 +1,10 @@
+from pathlib import Path
+
 from pydantic_settings import BaseSettings
+
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_MT5_SERVERS_DAT_PATH = REPO_ROOT / "private" / "mt5-worker" / "servers.dat"
 
 
 class Settings(BaseSettings):
@@ -14,6 +20,7 @@ class Settings(BaseSettings):
     # MT5 terminal settings (Windows paths)
     mt5_portable_dir: str = "C:\\mt5"
     mt5_terminal_path: str = "C:\\Program Files\\MetaTrader 5\\terminal64.exe"
+    mt5_servers_dat_path: str = str(DEFAULT_MT5_SERVERS_DAT_PATH)
     mt5_initialize_timeout_ms: int = 60_000
 
     # Connection management

@@ -64,14 +64,24 @@ After auth is deployed, create the single dashboard user from the Convex dashboa
 }
 ```
 
+### MT5 Worker Private Files
+
+Any machine that runs `apps/mt5-worker` must keep the broker server database at `private/mt5-worker/servers.dat`.
+
+- The worker copies that file into each portable MT5 instance before `MetaTrader5.initialize(...)`
+- The file is required and intentionally not committed
+- If you intentionally keep it outside the repo's private overlay, set `MT5_SERVERS_DAT_PATH` explicitly
+
+If the file is missing, the worker fails closed with a clear error instead of starting against a stale or implicit fallback path.
+
 ### Polymarket Funder Address
 
 `POLYMARKET_FUNDER_ADDRESS` is required and must be set explicitly. The runtime does not derive it from the private key and does not fall back to any other wallet address.
 
 Operator workflow:
 
-1. Run `bun run packages/polymarket/src/derive-api-key.ts <private-key>` to derive the L2 API credentials from the signer key you exported for Polymarket.
-2. Copy `POLYMARKET_API_KEY`, `POLYMARKET_API_SECRET`, `POLYMARKET_API_PASSPHRASE`, and `POLYMARKET_PRIVATE_KEY` into Convex env vars.
+1. Run `bun run packages/polymarket/src/derive-api-key.ts <private-key>` to derive the L2 API credentials from the signer key you exported for Polymarket. By default this writes them to `private/polymarket-credentials.env` with restrictive file permissions. Use `--stdout` only when you explicitly want terminal output.
+2. Copy `POLYMARKET_API_KEY`, `POLYMARKET_API_SECRET`, `POLYMARKET_API_PASSPHRASE`, and `POLYMARKET_PRIVATE_KEY` from that file into Convex env vars.
 3. In Polymarket, copy the profile or proxy wallet address shown in the account UI and set that exact value as `POLYMARKET_FUNDER_ADDRESS`.
 4. Open Dashboard > Test > Polymarket and verify the `Runtime Config` step shows the expected signer and funder addresses, then verify `Authenticated Runtime Path` is green before enabling scheduled runs.
 

@@ -26,6 +26,7 @@ Run tests or targeted checks relevant to your change before opening a pull reque
 ## Private Overlay
 
 If you need local strategy docs or private runbooks, keep them in `private/`. The public repository should not contain live strategy files or private operator documents.
+Machines that run `apps/mt5-worker` should also keep `private/mt5-worker/servers.dat` outside version control.
 
 ## Pull Requests
 

@@ -1,16 +1,120 @@
+import { chmod, mkdir, writeFile } from "node:fs/promises"
+import { dirname, resolve } from "node:path"
+import { fileURLToPath } from "node:url"
 import { privateKeyToAccount } from "viem/accounts"
 import { fetchWithTimeout } from "@valiq-trading/core"
 
 const HOST = "https://clob.polymarket.com"
 const REQUEST_TIMEOUT_MS = 30_000
+const DEFAULT_OUTPUT_PATH = "private/polymarket-credentials.env"
 
-async function main() {
-    const privateKey = process.argv[2]
+type DerivedCredentials = {
+    apiKey: string
+    secret: string
+    passphrase: string
+}
+
+type CliOptions = {
+    outputPath: string
+    privateKey: string
+    stdout: boolean
+}
+
+function usage(): string {
+    return [
+        "Usage: bun run packages/polymarket/src/derive-api-key.ts <private-key> [--out <path> | --stdout]",
+        "  private-key: your Polymarket wallet private key (with or without 0x prefix)",
+        `  --out <path>: write secrets to a file instead of stdout (default: ${DEFAULT_OUTPUT_PATH})`,
+        "  --stdout: print secrets to stdout explicitly",
+    ].join("\n")
+}
+
+export function getDefaultOutputPath(cwd: string = process.cwd()): string {
+    return resolve(cwd, DEFAULT_OUTPUT_PATH)
+}
+
+export function parseCliArgs(argv: string[], cwd: string = process.cwd()): CliOptions {
+    let outputPath = getDefaultOutputPath(cwd)
+    let privateKey: string | null = null
+    let stdout = false
+
+    for (let index = 0; index < argv.length; index += 1) {
+        const arg = argv[index]
+        if (arg === undefined) {
+            throw new Error("Missing CLI argument")
+        }
+
+        if (arg === "--out") {
+            const nextArg = argv[index + 1]
+            if (!nextArg) {
+                throw new Error("--out requires a path")
+            }
+            outputPath = resolve(cwd, nextArg)
+            index += 1
+            continue
+        }
+
+        if (arg === "--stdout") {
+            stdout = true
+            continue
+        }
+
+        if (arg.startsWith("--")) {
+            throw new Error(`Unknown option: ${arg}`)
+        }
+
+        if (privateKey) {
+            throw new Error("Expected exactly one private key argument")
+        }
+
+        privateKey = arg
+    }
 
     if (!privateKey) {
-        console.error("Usage: bun run packages/polymarket/src/derive-api-key.ts <private-key>")
-        console.error("  private-key: your Polymarket wallet private key (with or without 0x prefix)")
-        process.exit(1)
+        throw new Error(usage())
+    }
+
+    if (stdout && outputPath !== getDefaultOutputPath(cwd)) {
+        throw new Error("Use either --stdout or --out, not both")
+    }
+
+    return {
+        outputPath,
+        privateKey,
+        stdout,
+    }
+}
+
+export function formatEnvFileContents(
+    credentials: DerivedCredentials,
+    privateKey: string
+): string {
+    return [
+        `POLYMARKET_API_KEY=${credentials.apiKey}`,
+        `POLYMARKET_API_SECRET=${credentials.secret}`,
+        `POLYMARKET_API_PASSPHRASE=${credentials.passphrase}`,
+        `POLYMARKET_PRIVATE_KEY=${privateKey}`,
+        "POLYMARKET_FUNDER_ADDRESS=<your Polymarket profile wallet address>",
+        "",
+    ].join("\n")
+}
+
+async function writeSecureFile(path: string, contents: string): Promise<void> {
+    await mkdir(dirname(path), { recursive: true })
+    await writeFile(path, contents, "utf8")
+    await chmod(path, 0o600)
+}
+
+function isDirectExecution(): boolean {
+    return resolve(process.argv[1] ?? "") === fileURLToPath(import.meta.url)
+}
+
+async function main(argv: string[] = process.argv.slice(2)) {
+    const options = parseCliArgs(argv)
+    const privateKey = options.privateKey
+
+    if (!privateKey) {
+        throw new Error(usage())
     }
 
     const pk = privateKey.startsWith("0x")
@@ -65,22 +169,26 @@ async function main() {
         process.exit(1)
     }
 
-    const data = await response.json() as {
-        apiKey: string
-        secret: string
-        passphrase: string
+    const data = await response.json() as DerivedCredentials
+    const envFileContents = formatEnvFileContents(data, privateKey)
+
+    if (options.stdout) {
+        process.stdout.write(envFileContents)
+        return
     }
 
-    console.log("Add these to your Convex environment variables:\n")
-    console.log(`POLYMARKET_API_KEY=${data.apiKey}`)
-    console.log(`POLYMARKET_API_SECRET=${data.secret}`)
-    console.log(`POLYMARKET_API_PASSPHRASE=${data.passphrase}`)
-    console.log(`POLYMARKET_PRIVATE_KEY=${privateKey}`)
-    console.log(`POLYMARKET_FUNDER_ADDRESS=<your Polymarket profile wallet address>`)
-    console.log("")
+    await writeSecureFile(options.outputPath, envFileContents)
+
+    console.log(`Wrote derived credentials to ${options.outputPath}\n`)
     console.log("POLYMARKET_FUNDER_ADDRESS must be the profile or proxy wallet shown in Polymarket.")
     console.log("Do not copy the signer wallet from the exported private key unless it is also your profile wallet.")
     console.log("Validate the pair in Dashboard > Test > Polymarket before scheduling live runs.")
 }
 
-await main()
+if (isDirectExecution()) {
+    void main().catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error)
+        console.error(message)
+        process.exit(1)
+    })
+}
