@@ -24,6 +24,7 @@ import type * as lib_mutations_positions from "../lib/mutations/positions.js";
 import type * as lib_mutations_risk from "../lib/mutations/risk.js";
 import type * as lib_mutations_strategies from "../lib/mutations/strategies.js";
 import type * as lib_mutations_system from "../lib/mutations/system.js";
+import type * as lib_providerPositions from "../lib/providerPositions.js";
 import type * as lib_queries_dashboard from "../lib/queries/dashboard.js";
 import type * as lib_queries_orders from "../lib/queries/orders.js";
 import type * as lib_queries_portfolio from "../lib/queries/portfolio.js";
@@ -63,6 +64,7 @@ declare const fullApi: ApiFromModules<{
   "lib/mutations/risk": typeof lib_mutations_risk;
   "lib/mutations/strategies": typeof lib_mutations_strategies;
   "lib/mutations/system": typeof lib_mutations_system;
+  "lib/providerPositions": typeof lib_providerPositions;
   "lib/queries/dashboard": typeof lib_queries_dashboard;
   "lib/queries/orders": typeof lib_queries_orders;
   "lib/queries/portfolio": typeof lib_queries_portfolio;
