@@ -57,13 +57,7 @@ export function createClient(): TradingBackendClient {
 }
 
 export function resolveDocumentPath(): string {
-    const explicitPath = resolveArg("file")
-
-    if (explicitPath) {
-        return resolve(process.cwd(), explicitPath)
-    }
-
-    return resolve(strategyCliDir, "../../../../strategies.md")
+    return resolve(strategyCliDir, "../../../../private/strategies.md")
 }
 
 export async function loadStrategiesFromDocument(): Promise<StrategyConfig[]> {

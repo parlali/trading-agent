@@ -1,26 +1,26 @@
 # Val-iQ Trading
 
-Private trading monorepo. LLM agents execute strategies across multiple venues with deterministic risk policy enforcement.
+Open-source trading infrastructure for running LLM-assisted strategies with deterministic risk enforcement, provider-truth reconciliation, and a typed Convex control plane.
 
-## Apps
+This repository contains the reusable runtime, venue adapters, dashboard, and operational tooling. Live strategies, private plans, and deployment-specific notes live in the ignored `private/` overlay.
 
-| App | Description | Venue |
-|---|---|---|
-| `apps/backend` | Single TypeScript runtime for all venue strategies | Alpaca, Polymarket, MT5, OKX perpetual swaps |
-| `apps/mt5-worker` | Lightweight Python worker that exposes MT5 broker operations over HTTP | MetaTrader 5 |
+## What This Repo Includes
 
-## Packages
+- `apps/backend`: single TypeScript runtime for strategy execution across supported venues
+- `apps/mt5-worker`: Python worker exposing MT5 broker operations over HTTP
+- `apps/dashboard`: operational dashboard backed by Convex
+- `packages/*`: shared execution, risk, provider, agent, and Convex code
 
-| Package | Description |
-|---|---|
-| `packages/convex` | Convex backend -- schema, queries, mutations |
-| `packages/core` | Shared types, risk engine, execution pipeline, utilities |
-| `packages/agent` | Agent runtime, tool registry, LLM client |
-| `packages/valiq` | Val-iQ API client (data endpoints + research chat API) |
-| `packages/alpaca-options` | Alpaca venue client, adapter, and risk rules |
-| `packages/polymarket` | Polymarket venue client, adapter, and risk rules |
-| `packages/mt5` | MT5 venue client, adapter, and risk rules |
-| `packages/okx` | OKX perpetual swap client, adapter, and risk rules |
+## Private Overlay
+
+This repo ignores `private/` by default. That directory is for operator-local files that should not be committed:
+
+- `private/strategies.md`
+- `private/plan.md`
+- `private/context.md`
+- deployment notes, runbooks, or one-off maintenance scripts tied to your own accounts
+
+The strategy CLI reads `private/strategies.md`.
 
 ## Setup
 
@@ -47,8 +47,6 @@ Configure these secrets before starting the backend:
 - `OKX_POSITION_MODE` in Convex env vars and set explicitly to `net_mode` or `long_short_mode`
 - `OKX_BASE_URL` in Convex env vars only when you need to override the default official host (`https://www.okx.com`)
 
-Set `OKX_DEMO_TRADING=true` to use OKX demo trading for live-order-path testing without real capital. The runtime sends OKX's `x-simulated-trading: 1` header on authenticated requests in that mode.
-
 Generate machine credentials with a high-entropy random value, for example:
 
 ```bash
@@ -66,8 +64,6 @@ After auth is deployed, create the single dashboard user from the Convex dashboa
 }
 ```
 
-The password should be entered in plain text there. It is hashed automatically by the action before anything is stored.
-
 ### Polymarket Funder Address
 
 `POLYMARKET_FUNDER_ADDRESS` is required and must be set explicitly. The runtime does not derive it from the private key and does not fall back to any other wallet address.
@@ -79,9 +75,7 @@ Operator workflow:
 3. In Polymarket, copy the profile or proxy wallet address shown in the account UI and set that exact value as `POLYMARKET_FUNDER_ADDRESS`.
 4. Open Dashboard > Test > Polymarket and verify the `Runtime Config` step shows the expected signer and funder addresses, then verify `Authenticated Runtime Path` is green before enabling scheduled runs.
 
-If the signer address is correct but order placement later fails, re-check `POLYMARKET_FUNDER_ADDRESS` first. The runtime signs requests with `POLYMARKET_PRIVATE_KEY`, but Polymarket orders are created with `POLYMARKET_FUNDER_ADDRESS` as the maker or owner.
-
-### Development
+## Development
 
 ```bash
 bun run dev
@@ -89,26 +83,35 @@ bun run dev
 
 ## Strategy Management
 
-`strategies.md` is the source of truth. Edit it, then push to Convex with the commands below.
+Keep your strategy document in `private/strategies.md`.
 
 | Command | Description |
 |---|---|
-| `bun run strategies:diff` | Compare strategies.md against backend |
+| `bun run strategies:diff` | Compare the strategy document against backend state |
 | `bun run strategies:list` | List all strategies in backend with IDs |
-| `bun run strategies:add --name="..."` | Add one strategy from strategies.md |
-| `bun run strategies:add-all` | Add all from strategies.md without deleting existing |
-| `bun run strategies:delete --name="..."` | Delete one strategy by name (cascades all data) |
+| `bun run strategies:add --name="..."` | Add one strategy from the strategy document |
+| `bun run strategies:add-all` | Add all strategies from the strategy document without deleting existing |
+| `bun run strategies:delete --name="..."` | Delete one strategy by name and cascade related data |
 | `bun run strategies:delete --id=<id>` | Delete one strategy by Convex ID |
 | `bun run strategies:reset` | Delete all strategies and associated data |
-| `bun run strategies:reset-import` | Delete everything then import all from strategies.md |
+| `bun run strategies:reset-import` | Delete everything and re-import the strategy document |
+
+Examples:
+
+```bash
+bun run strategies:diff
+bun run strategies:add --name="Example Strategy"
+bun run strategies:reset-import
+```
 
 ## Architecture
 
 The backend runs N strategies, each defined by a config record in Convex:
-- **policy** -- typed, schema-validated. Deterministic risk limits enforced by code.
-- **context** -- freeform string injected into the agent system prompt.
 
-The agent proposes intents. The risk layer validates. The venue adapter executes. Everything is logged to Convex.
+- `policy`: typed and schema-validated deterministic settings enforced by code
+- `context`: freeform prompt context injected into the agent system prompt
+
+The agent proposes intents. The risk layer validates them. The venue adapter executes them. The system records execution and reconciliation state in Convex.
 
 ## Auth Model
 
@@ -118,12 +121,15 @@ The agent proposes intents. The risk layer validates. The venue adapter executes
 
 Rotate machine secrets by generating a new value, updating the target service first, then updating the caller, and redeploying both ends so there is no mismatch window.
 
-See `plan.md` for the full implementation plan.
-
 ## Stack
 
-- Bun + TypeScript
-- Turborepo (monorepo orchestration)
-- Convex (state layer, real-time DB)
-- Val-iQ (market research and data)
-- Python (MT5 worker only)
+- Bun
+- TypeScript
+- Turborepo
+- Convex
+- Val-iQ
+- Python for the MT5 worker only
+
+## Open Source
+
+This repository is intended to publish the reusable platform code. Operator-specific strategies, plans, secrets, and deployment details should remain outside version control in `private/`.
