@@ -4,6 +4,7 @@ import type {
     OrderIntent,
     OrderLifecycleContext,
     Position,
+    ProviderPositionClosure,
     ValidationResult,
     WorkingOrder,
 } from "./types"
@@ -68,6 +69,7 @@ export interface VenueAdapter {
     getPositions(): Promise<Position[]>
     getAccountState(): Promise<AccountState>
     getWorkingOrders?(): Promise<WorkingOrder[]>
+    getRecentPositionClosures?(): Promise<ProviderPositionClosure[]>
     submitOrder(intent: OrderIntent): Promise<ExecutionResult>
     cancelOrder(orderId: string): Promise<ExecutionResult>
     modifyOrder(orderId: string, changes: Partial<OrderIntent>): Promise<ExecutionResult>
@@ -391,6 +393,8 @@ export class ExecutionPipeline {
         const existing = await this.lifecycleManager.getOrderSnapshot(orderId)
         const instrument = existing?.instrument ?? "order-cancel"
         const intent = createSyntheticIntent("cancel", instrument, "sell", 0, orderId, { reason })
+        const canonicalOrderId = existing?.orderId ?? orderId
+        const providerOrderId = existing?.providerOrderId ?? orderId
 
         this.logger.info("Cancelling order", { orderId, reason })
         void this.tradeEventLogger?.logIntent(this.runId, this.strategyId, intent)
@@ -398,33 +402,35 @@ export class ExecutionPipeline {
 
         if (this.policy.dryRun) {
             const result: ExecutionResult = {
-                orderId,
+                orderId: providerOrderId,
                 status: "cancelled",
                 filledQuantity: existing?.filledQuantity ?? 0,
                 fillPrice: existing?.avgFillPrice,
                 timestamp: Date.now(),
             }
             void this.tradeEventLogger?.logSubmission(this.runId, this.strategyId, result, intent)
-            await this.lifecycleManager.recordCancelAttempt(orderId, reason)
-            await this.lifecycleManager.captureVenueUpdate(orderId, result, "cancel_attempt", reason)
+            await this.lifecycleManager.recordCancelAttempt(canonicalOrderId, reason)
+            await this.lifecycleManager.captureVenueUpdate(canonicalOrderId, result, "cancel_attempt", reason)
             return result
         }
 
-        await this.lifecycleManager.recordCancelAttempt(orderId, reason)
+        await this.lifecycleManager.recordCancelAttempt(canonicalOrderId, reason)
         let result: ExecutionResult
         try {
-            result = await this.venue.cancelOrder(orderId)
+            result = await this.venue.cancelOrder(providerOrderId)
         } catch (error) {
-            result = createRejectedExecutionResultFromUnknownError(orderId, error)
+            result = createRejectedExecutionResultFromUnknownError(providerOrderId, error)
         }
         void this.tradeEventLogger?.logSubmission(this.runId, this.strategyId, result, intent)
-        await this.lifecycleManager.captureVenueUpdate(orderId, result, "cancel_attempt", reason)
+        await this.lifecycleManager.captureVenueUpdate(canonicalOrderId, result, "cancel_attempt", reason)
         return result
     }
 
     async modifyOrder(orderId: string, changes: Partial<OrderIntent>, reason?: string): Promise<ExecutionResult> {
         const hasChanges = hasIntentChanges(changes)
         const existing = await this.lifecycleManager.getOrderSnapshot(orderId)
+        const canonicalOrderId = existing?.orderId ?? orderId
+        const providerOrderId = existing?.providerOrderId ?? orderId
         const instrument = existing?.instrument ?? "order-modify"
         const side = existing?.intent.side ?? "buy"
         const intent: OrderIntent = {
@@ -466,11 +472,11 @@ export class ExecutionPipeline {
         }
 
         void this.tradeEventLogger?.logValidation(this.runId, this.strategyId, ALLOWED_VALIDATION, intent)
-        await this.lifecycleManager.recordModifyAttempt(orderId, changes, reason)
+        await this.lifecycleManager.recordModifyAttempt(canonicalOrderId, changes, reason)
 
         if (this.policy.dryRun) {
             const result: ExecutionResult = {
-                orderId,
+                orderId: providerOrderId,
                 status: existing?.status ?? "pending",
                 filledQuantity: existing?.filledQuantity ?? 0,
                 fillPrice: existing?.avgFillPrice,
@@ -478,17 +484,22 @@ export class ExecutionPipeline {
                 intentUpdates: changes,
             }
             void this.tradeEventLogger?.logSubmission(this.runId, this.strategyId, result, intent)
-            await this.lifecycleManager.captureVenueUpdate(orderId, result, "modify_attempt", reason)
+            await this.lifecycleManager.captureVenueUpdate(canonicalOrderId, result, "modify_attempt", reason)
             return result
         }
 
         let result: ExecutionResult
         try {
-            result = await this.venue.modifyOrder(orderId, changes)
+            result = await this.venue.modifyOrder(providerOrderId, changes)
         } catch (error) {
-            result = createRejectedExecutionResultFromUnknownError(orderId, error, existing?.filledQuantity ?? 0, existing?.avgFillPrice)
+            result = createRejectedExecutionResultFromUnknownError(
+                providerOrderId,
+                error,
+                existing?.filledQuantity ?? 0,
+                existing?.avgFillPrice
+            )
         }
-        const normalizedResult = normalizeModifyExecutionResult(result, existing, orderId)
+        const normalizedResult = normalizeModifyExecutionResult(result, existing, providerOrderId)
         const resultWithIntentUpdates: ExecutionResult = {
             ...normalizedResult,
             intentUpdates: shouldPersistModifyIntentUpdates(result)
@@ -496,7 +507,7 @@ export class ExecutionPipeline {
                 : undefined,
         }
         void this.tradeEventLogger?.logSubmission(this.runId, this.strategyId, resultWithIntentUpdates, intent)
-        await this.lifecycleManager.captureVenueUpdate(orderId, resultWithIntentUpdates, "modify_attempt", reason)
+        await this.lifecycleManager.captureVenueUpdate(canonicalOrderId, resultWithIntentUpdates, "modify_attempt", reason)
         return resultWithIntentUpdates
     }
 
@@ -650,8 +661,11 @@ export class ExecutionPipeline {
     }
 
     async getOrderStatus(orderId: string): Promise<ExecutionResult> {
-        const result = await this.venue.getOrderStatus(orderId)
-        await this.lifecycleManager.captureVenueUpdate(orderId, result, "status_change")
+        const existing = await this.lifecycleManager.getOrderSnapshot(orderId)
+        const canonicalOrderId = existing?.orderId ?? orderId
+        const providerOrderId = existing?.providerOrderId ?? orderId
+        const result = await this.venue.getOrderStatus(providerOrderId)
+        await this.lifecycleManager.captureVenueUpdate(canonicalOrderId, result, "status_change")
         return result
     }
 
@@ -1117,6 +1131,17 @@ function normalizeModifyExecutionResult(
         return {
             ...result,
             orderId: result.orderId || orderId,
+        }
+    }
+
+    const preserveExistingLifecycle = existing.status !== "pending" && existing.status !== "partially_filled"
+    if (preserveExistingLifecycle) {
+        return {
+            ...result,
+            orderId: result.orderId || orderId,
+            status: existing.status,
+            filledQuantity: existing.filledQuantity,
+            fillPrice: existing.avgFillPrice,
         }
     }
 

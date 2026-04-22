@@ -97,6 +97,8 @@ export default defineSchema({
 
     orders: defineTable({
         orderId: v.string(),
+        providerOrderId: v.string(),
+        providerOrderAliases: v.array(v.string()),
         runId: v.id("strategy_runs"),
         strategyId: v.id("strategies"),
         app: v.optional(venueAppV),
@@ -112,6 +114,7 @@ export default defineSchema({
         updatedAt: v.number(),
         intent: v.any(),
         metadata: v.optional(v.any()),
+        lastTransitionSequence: v.number(),
         polling: v.object({
             pollIntervalMs: v.number(),
             timeoutMs: v.number(),
@@ -124,6 +127,7 @@ export default defineSchema({
         }),
     })
         .index("by_order_id", ["orderId"])
+        .index("by_provider_order_id", ["providerOrderId"])
         .index("by_strategy_status", ["strategyId", "status"])
         .index("by_app_status", ["app", "status"])
         .index("by_run", ["runId"]),

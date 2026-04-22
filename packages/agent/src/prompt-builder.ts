@@ -1,8 +1,8 @@
 import {
     formatRunSystemContextDigestLines,
     getAccountEquity,
+    sanitizeRunSummary,
     type RunSystemContextDigest,
-    stripMetadataBlock,
     truncateHandoffSummary,
     type StrategyRunContext,
 } from "@valiq-trading/core"
@@ -113,7 +113,7 @@ function buildPreviousRunSection(
     currentTimestamp: number
 ): string {
     const minutesAgo = Math.round((currentTimestamp - previousRun.endedAt) / 60000)
-    const cleanSummary = truncateHandoffSummary(stripMetadataBlock(previousRun.summary))
+    const cleanSummary = truncateHandoffSummary(sanitizeRunSummary(previousRun.summary))
     const previousDigestLines = previousRun.systemContextDigest
         ? formatRunSystemContextDigestLines(previousRun.systemContextDigest)
         : []
@@ -299,17 +299,18 @@ function buildRulesSection(schedule?: string, trigger?: string): string {
         "",
         "1. Your current positions and account state are already provided above. Do NOT call get_positions or get_account at the start -- that data is already in this prompt. Only call them later if you need a refresh after placing an order.",
         "2. Follow the INFORMATION GATHERING order in your strategy context. Start with the research/data tools specified there, not with generic web searches.",
-        "3. If an order is rejected by the risk engine, do not retry with the same parameters.",
-        "4. For limit orders, monitor fill status and adjust or cancel if not filling.",
-        "5. When your analysis is complete and all actions are taken, respond with a final summary.",
-        "6. Your summary is handed off to the next run of this strategy as context. Write it as a briefing for your future self:",
+        "3. Treat venue-owned market data as execution truth. Research/data tools can inform your thesis, but any live prices, spreads, or current levels from them are advisory only and must yield to venue tools when they disagree.",
+        "4. If an order is rejected by the risk engine, do not retry with the same parameters.",
+        "5. For limit orders, monitor fill status and adjust or cancel if not filling.",
+        "6. When your analysis is complete and all actions are taken, respond with a final summary.",
+        "7. Your summary is handed off to the next run of this strategy as context. Write it as a briefing for your future self:",
         "   - What is the current market landscape relevant to this strategy?",
         "   - What positions are open and what is the thesis behind each?",
         "   - What actions did you take (or chose not to) and why?",
         "   - What should the next run check first or watch for?",
         "   - What key data points or prices did you observe (so the next run can detect changes)?",
         "   - Keep it dense and factual. No filler. This is an operational handoff, not a report.",
-        `7. Self-scheduling: You can request an earlier callback by appending a metadata block to the END of your summary.${scheduleInfo} Only request a callback SHORTER than your normal interval -- requests at or beyond your normal schedule are ignored since the cron already covers that.`,
+        `8. Self-scheduling: You can request an earlier callback by appending a metadata block to the END of your summary.${scheduleInfo} Only request a callback SHORTER than your normal interval -- requests at or beyond your normal schedule are ignored since the cron already covers that.`,
         "   ```",
         "   ---METADATA---",
         '   {"nextRunInMinutes": 5}',

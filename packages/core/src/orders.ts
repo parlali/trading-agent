@@ -60,6 +60,8 @@ export interface OrderPollingMetadata {
 
 export interface OrderSnapshot {
     orderId: string
+    providerOrderId: string
+    providerOrderAliases: string[]
     strategyId: string
     runId: string
     instrument: string
@@ -74,6 +76,7 @@ export interface OrderSnapshot {
     venue: string
     intent: OrderIntent
     metadata?: Record<string, unknown>
+    lastTransitionSequence: number
     polling: OrderPollingMetadata
 }
 
@@ -124,7 +127,7 @@ export interface OrderLifecycleAlert {
 
 export interface OrderPersistenceAdapter {
     upsertOrder(snapshot: OrderSnapshot): Promise<void>
-    logOrderTransition(transition: OrderTransition): Promise<void>
+    logOrderTransition(transition: OrderTransition): Promise<number>
     getOrder(orderId: string): Promise<OrderSnapshot | null>
     listActiveOrders(strategyId: string): Promise<OrderSnapshot[]>
     createAlert?(alert: OrderLifecycleAlert): Promise<void>
@@ -162,6 +165,8 @@ export const createOrderSnapshot = (
 
     return {
         orderId: params.result.orderId,
+        providerOrderId: params.result.orderId,
+        providerOrderAliases: [],
         strategyId: params.strategyId,
         runId: params.runId,
         instrument: params.intent.instrument,
@@ -176,6 +181,7 @@ export const createOrderSnapshot = (
         venue: params.venue,
         intent: params.intent,
         metadata: params.metadata,
+        lastTransitionSequence: 0,
         polling: {
             pollIntervalMs: params.pollIntervalMs,
             timeoutMs: params.timeoutMs,
@@ -195,11 +201,18 @@ export const updateOrderSnapshotFromExecution = (
     const nextIntent = mergeOrderIntent(snapshot.intent, result.intentUpdates)
     const nextQuantity = nextIntent.quantity
     const filledQuantity = result.filledQuantity ?? snapshot.filledQuantity
+    const nextProviderOrderId = result.orderId || snapshot.providerOrderId || snapshot.orderId
+    const providerOrderAliases = dedupeOrderIdentifiers([
+        ...snapshot.providerOrderAliases,
+        snapshot.providerOrderId !== snapshot.orderId ? snapshot.providerOrderId : undefined,
+    ]).filter((orderId) => orderId !== nextProviderOrderId)
 
     return {
         ...snapshot,
         quantity: nextQuantity,
         status: result.status,
+        providerOrderId: nextProviderOrderId,
+        providerOrderAliases,
         filledQuantity,
         remainingQuantity: Math.max(nextQuantity - filledQuantity, 0),
         avgFillPrice: result.fillPrice ?? snapshot.avgFillPrice,
@@ -277,6 +290,23 @@ export const pauseOrderPollingForHandoff = (
     }
 }
 
+export const getOrderIdentityCandidates = (
+    snapshot: Pick<OrderSnapshot, "orderId"> & Partial<Pick<OrderSnapshot, "providerOrderId" | "providerOrderAliases">>
+): string[] => {
+    return dedupeOrderIdentifiers([
+        snapshot.orderId,
+        snapshot.providerOrderId,
+        ...(snapshot.providerOrderAliases ?? []),
+    ])
+}
+
+export const matchesOrderIdentifier = (
+    snapshot: Pick<OrderSnapshot, "orderId"> & Partial<Pick<OrderSnapshot, "providerOrderId" | "providerOrderAliases">>,
+    orderId: string
+): boolean => {
+    return getOrderIdentityCandidates(snapshot).includes(orderId)
+}
+
 function mergeOrderIntent(
     intent: OrderIntent,
     updates?: Partial<OrderIntent>
@@ -295,4 +325,18 @@ function mergeOrderIntent(
             }
             : intent.metadata,
     }
+}
+
+function dedupeOrderIdentifiers(orderIds: Array<string | undefined>): string[] {
+    const seen = new Set<string>()
+
+    for (const orderId of orderIds) {
+        if (!orderId || orderId.trim().length === 0) {
+            continue
+        }
+
+        seen.add(orderId)
+    }
+
+    return Array.from(seen)
 }

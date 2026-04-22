@@ -1,6 +1,6 @@
 import { mutation } from "../../_generated/server"
 import type { DatabaseWriter } from "../../_generated/server"
-import type { Id } from "../../_generated/dataModel"
+import type { Doc, Id } from "../../_generated/dataModel"
 import { v } from "convex/values"
 import { DEFAULT_STALE_RUN_TIMEOUT_MS } from "@valiq-trading/core"
 import { requireServiceToken } from "../authGuards"
@@ -270,6 +270,8 @@ export const upsertOrder = mutation({
     args: {
         serviceToken: v.string(),
         orderId: v.string(),
+        providerOrderId: v.string(),
+        providerOrderAliases: v.array(v.string()),
         runId: v.id("strategy_runs"),
         strategyId: v.id("strategies"),
         venue: v.string(),
@@ -298,6 +300,7 @@ export const upsertOrder = mutation({
         updatedAt: v.number(),
         intent: v.any(),
         metadata: v.optional(v.any()),
+        lastTransitionSequence: v.number(),
         polling: v.object({
             pollIntervalMs: v.number(),
             timeoutMs: v.number(),
@@ -311,63 +314,7 @@ export const upsertOrder = mutation({
     },
     handler: async (ctx, args) => {
         requireServiceToken(args.serviceToken)
-        const strategy = await ctx.db.get(args.strategyId)
-        if (!strategy) {
-            throw new Error(`Strategy not found: ${args.strategyId}`)
-        }
-
-        const existing = await ctx.db
-            .query("orders")
-            .withIndex("by_order_id", (q) => q.eq("orderId", args.orderId))
-            .first()
-
-        const payload = {
-            orderId: args.orderId,
-            runId: args.runId,
-            strategyId: args.strategyId,
-            app: strategy.app,
-            venue: args.venue,
-            instrument: args.instrument,
-            status: args.status,
-            action: args.action,
-            quantity: args.quantity,
-            filledQuantity: args.filledQuantity,
-            remainingQuantity: args.remainingQuantity,
-            avgFillPrice: args.avgFillPrice,
-            submittedAt: args.submittedAt,
-            updatedAt: args.updatedAt,
-            intent: args.intent,
-            metadata: args.metadata,
-            polling: args.polling,
-        }
-
-        if (existing) {
-            await ctx.db.patch(existing._id, payload)
-            await reconcileOrderInstrumentClaim(ctx, {
-                strategyId: args.strategyId,
-                app: strategy.app,
-                orderId: args.orderId,
-                instrument: args.instrument,
-                claimInstruments: getClaimInstrumentsForOrder(args.instrument, args.intent),
-                action: args.action,
-                status: args.status,
-                updatedAt: args.updatedAt,
-            })
-            return existing._id
-        }
-
-        const orderDocId = await ctx.db.insert("orders", payload)
-        await reconcileOrderInstrumentClaim(ctx, {
-            strategyId: args.strategyId,
-            app: strategy.app,
-            orderId: args.orderId,
-            instrument: args.instrument,
-            claimInstruments: getClaimInstrumentsForOrder(args.instrument, args.intent),
-            action: args.action,
-            status: args.status,
-            updatedAt: args.updatedAt,
-        })
-        return orderDocId
+        return await upsertOrderRow(ctx, args)
     },
 })
 
@@ -377,7 +324,6 @@ export const logOrderTransition = mutation({
         orderId: v.string(),
         runId: v.id("strategy_runs"),
         strategyId: v.id("strategies"),
-        sequence: v.number(),
         type: v.union(
             v.literal("submission"),
             v.literal("status_change"),
@@ -412,17 +358,173 @@ export const logOrderTransition = mutation({
     },
     handler: async (ctx, args) => {
         requireServiceToken(args.serviceToken)
-        await ctx.db.insert("order_transitions", {
-            orderId: args.orderId,
-            runId: args.runId,
-            strategyId: args.strategyId,
-            sequence: args.sequence,
-            type: args.type,
-            status: args.status,
-            previousStatus: args.previousStatus,
-            reason: args.reason,
-            details: args.details,
-            timestamp: args.timestamp,
-        })
+        return await appendOrderTransition(ctx, args)
     },
 })
+
+type UpsertOrderArgs = {
+    orderId: string
+    providerOrderId: string
+    providerOrderAliases: string[]
+    runId: Id<"strategy_runs">
+    strategyId: Id<"strategies">
+    venue: string
+    instrument: string
+    status: Doc<"orders">["status"]
+    action: Doc<"orders">["action"]
+    quantity: number
+    filledQuantity: number
+    remainingQuantity: number
+    avgFillPrice?: number
+    submittedAt: number
+    updatedAt: number
+    intent: unknown
+    metadata?: unknown
+    lastTransitionSequence: number
+    polling: Doc<"orders">["polling"]
+}
+
+type OrderTransitionInsertArgs = {
+    orderId: string
+    runId: Id<"strategy_runs">
+    strategyId: Id<"strategies">
+    type: Doc<"order_transitions">["type"]
+    status: Doc<"order_transitions">["status"]
+    previousStatus?: Doc<"order_transitions">["previousStatus"]
+    reason?: string
+    details?: unknown
+    timestamp: number
+}
+
+export async function upsertOrderRow(
+    ctx: { db: DatabaseWriter },
+    args: UpsertOrderArgs
+): Promise<Id<"orders">> {
+    const strategy = await ctx.db.get(args.strategyId)
+    if (!strategy) {
+        throw new Error(`Strategy not found: ${args.strategyId}`)
+    }
+
+    const existing = await findOrderRow(ctx.db, args.orderId)
+    const payload = {
+        orderId: args.orderId,
+        providerOrderId: args.providerOrderId,
+        providerOrderAliases: mergeOrderAliases(existing, args),
+        runId: args.runId,
+        strategyId: args.strategyId,
+        app: strategy.app,
+        venue: args.venue,
+        instrument: args.instrument,
+        status: args.status,
+        action: args.action,
+        quantity: args.quantity,
+        filledQuantity: args.filledQuantity,
+        remainingQuantity: args.remainingQuantity,
+        avgFillPrice: args.avgFillPrice,
+        submittedAt: args.submittedAt,
+        updatedAt: args.updatedAt,
+        intent: args.intent,
+        metadata: args.metadata,
+        lastTransitionSequence: Math.max(existing?.lastTransitionSequence ?? 0, args.lastTransitionSequence),
+        polling: args.polling,
+    }
+
+    if (existing) {
+        await ctx.db.patch(existing._id, payload)
+        await reconcileOrderInstrumentClaim(ctx, {
+            strategyId: args.strategyId,
+            app: strategy.app,
+            orderId: args.orderId,
+            instrument: args.instrument,
+            claimInstruments: getClaimInstrumentsForOrder(args.instrument, args.intent),
+            action: args.action,
+            status: args.status,
+            updatedAt: args.updatedAt,
+        })
+        return existing._id
+    }
+
+    const orderDocId = await ctx.db.insert("orders", payload)
+    await reconcileOrderInstrumentClaim(ctx, {
+        strategyId: args.strategyId,
+        app: strategy.app,
+        orderId: args.orderId,
+        instrument: args.instrument,
+        claimInstruments: getClaimInstrumentsForOrder(args.instrument, args.intent),
+        action: args.action,
+        status: args.status,
+        updatedAt: args.updatedAt,
+    })
+    return orderDocId
+}
+
+export async function appendOrderTransition(
+    ctx: { db: DatabaseWriter },
+    args: OrderTransitionInsertArgs
+): Promise<number> {
+    const order = await findOrderRow(ctx.db, args.orderId)
+    if (!order) {
+        throw new Error(`Cannot append transition for unknown order ${args.orderId}`)
+    }
+
+    const sequence = order.lastTransitionSequence + 1
+    await ctx.db.patch(order._id, {
+        lastTransitionSequence: sequence,
+    })
+    await ctx.db.insert("order_transitions", {
+        orderId: order.orderId,
+        runId: args.runId,
+        strategyId: args.strategyId,
+        sequence,
+        type: args.type,
+        status: args.status,
+        previousStatus: args.previousStatus,
+        reason: args.reason,
+        details: args.details,
+        timestamp: args.timestamp,
+    })
+    return sequence
+}
+
+async function findOrderRow(
+    db: DatabaseWriter,
+    orderId: string
+): Promise<Doc<"orders"> | null> {
+    const byCanonicalId = await db
+        .query("orders")
+        .withIndex("by_order_id", (q) => q.eq("orderId", orderId))
+        .first()
+
+    if (byCanonicalId) {
+        return byCanonicalId
+    }
+
+    return await db
+        .query("orders")
+        .withIndex("by_provider_order_id", (q) => q.eq("providerOrderId", orderId))
+        .first()
+}
+
+function mergeOrderAliases(
+    existing: Doc<"orders"> | null,
+    args: Pick<UpsertOrderArgs, "orderId" | "providerOrderId" | "providerOrderAliases">
+): string[] {
+    const aliases = new Set<string>([
+        ...(existing?.providerOrderAliases ?? []),
+        ...args.providerOrderAliases,
+    ])
+
+    const existingProviderOrderId = existing?.providerOrderId
+    if (
+        existingProviderOrderId &&
+        existingProviderOrderId !== args.orderId &&
+        existingProviderOrderId !== args.providerOrderId
+    ) {
+        aliases.add(existingProviderOrderId)
+    }
+
+    aliases.delete(args.orderId)
+    aliases.delete(args.providerOrderId)
+
+    return Array.from(aliases).sort((left, right) => left.localeCompare(right))
+}

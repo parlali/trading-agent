@@ -16,9 +16,19 @@ export function resolveProviderPositionId(
         return String(ticket)
     }
 
+    const identifier = parsed.identifier
+    if (typeof identifier === "string" || typeof identifier === "number") {
+        return String(identifier)
+    }
+
     const posId = parsed.posId
     if (typeof posId === "string" || typeof posId === "number") {
         return String(posId)
+    }
+
+    const positionId = parsed.positionId
+    if (typeof positionId === "string" || typeof positionId === "number") {
+        return String(positionId)
     }
 
     const nestedProviderPositionId = parsed.providerPositionId

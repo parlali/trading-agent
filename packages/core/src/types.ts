@@ -115,6 +115,16 @@ export interface Position {
     metadata?: Record<string, unknown>
 }
 
+export interface ProviderPositionClosure {
+    instrument: string
+    providerPositionId?: string
+    side: "long" | "short"
+    quantity: number
+    fillPrice: number
+    closedAt: number
+    metadata?: Record<string, unknown>
+}
+
 export interface AccountState {
     balance: number
     equity: number

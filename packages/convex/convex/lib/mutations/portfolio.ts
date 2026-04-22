@@ -4,6 +4,7 @@ import type { Doc, Id } from "../../_generated/dataModel"
 import { v } from "convex/values"
 import {
     isTerminalOrderStatus,
+    getOrderIdentityCandidates,
     resolveProviderAdoptionInstruments,
 } from "@valiq-trading/core"
 import { requireServiceToken } from "../authGuards"
@@ -23,6 +24,7 @@ import {
     venueAppV,
 } from "../validators"
 import { incrementControlPlaneMetric } from "../controlPlaneMetrics"
+import { appendOrderTransition, upsertOrderRow } from "./orders"
 
 const PORTFOLIO_STALE_AFTER_MS = 10 * 60 * 1000
 
@@ -66,6 +68,16 @@ const providerWorkingOrderInputV = v.object({
     metadata: v.optional(v.string()),
 })
 
+const providerPositionClosureInputV = v.object({
+    instrument: v.string(),
+    providerPositionId: v.optional(v.string()),
+    side: v.union(v.literal("long"), v.literal("short")),
+    quantity: v.number(),
+    fillPrice: v.number(),
+    closedAt: v.number(),
+    metadata: v.optional(v.string()),
+})
+
 type StrategyDoc = Doc<"strategies">
 type OrderDoc = Doc<"orders">
 type PortfolioMutationCtx = MutationCtx
@@ -88,6 +100,7 @@ export const reconcileProviderPortfolio = mutation({
         accountState: accountStateInputV,
         positions: v.array(providerPositionInputV),
         workingOrders: v.array(providerWorkingOrderInputV),
+        positionClosures: v.optional(v.array(providerPositionClosureInputV)),
     },
     handler: async (ctx, args) => {
         requireServiceToken(args.serviceToken)
@@ -105,7 +118,7 @@ export const reconcileProviderPortfolio = mutation({
 
         const strategyMap = new Map(strategies.map((strategy) => [String(strategy._id), strategy]))
         const activeOrders = await listActiveOrdersForApp(ctx, strategies)
-        const activeOrdersById = new Map(activeOrders.map((order) => [order.orderId, order]))
+        const activeOrdersById = buildActiveOrderLookup(activeOrders)
         const protectionLevelsByInstrument = buildProtectionLevels(args.workingOrders)
         const expectedExternalInstruments = collectExpectedExternalInstruments(strategies)
         const existingProviderPositions = await ctx.db
@@ -115,6 +128,7 @@ export const reconcileProviderPortfolio = mutation({
         const existingProviderPositionsByKey = new Map(
             existingProviderPositions.map((position) => [position.positionKey, position])
         )
+        const providerPositionClosures = args.positionClosures ?? []
 
         const liveWorkingOrderIds = new Set(args.workingOrders.map((order) => order.orderId))
         const statusMismatches: string[] = []
@@ -134,20 +148,10 @@ export const reconcileProviderPortfolio = mutation({
                 statusMismatches.push(liveOrder.orderId)
             }
 
-            await ctx.db.patch(existingOrder._id, {
-                status: liveOrder.status,
-                filledQuantity: liveOrder.filledQuantity,
-                remainingQuantity: liveOrder.remainingQuantity,
-                avgFillPrice: liveOrder.avgFillPrice,
-                updatedAt: liveOrder.updatedAt,
-                polling: {
-                    ...existingOrder.polling,
-                    lastCheckedAt: now,
-                    nextCheckAt: isTerminalOrderStatus(liveOrder.status)
-                        ? undefined
-                        : now + existingOrder.polling.pollIntervalMs,
-                    lastError: undefined,
-                },
+            await applyProviderWorkingOrderUpdate(ctx, {
+                order: existingOrder,
+                liveOrder,
+                updatedAt: now,
             })
 
             const strategy = strategyMap.get(String(existingOrder.strategyId))
@@ -250,7 +254,7 @@ export const reconcileProviderPortfolio = mutation({
         })
 
         for (const existingOrder of activeOrders) {
-            if (liveWorkingOrderIds.has(existingOrder.orderId)) {
+            if (orderHasLiveWorkingOrder(existingOrder, liveWorkingOrderIds)) {
                 continue
             }
 
@@ -261,19 +265,10 @@ export const reconcileProviderPortfolio = mutation({
             })
             closedPersistedOrders.push(existingOrder.orderId)
 
-            await ctx.db.patch(existingOrder._id, {
-                status: inferredResolution.status,
-                filledQuantity: inferredResolution.filledQuantity ?? existingOrder.filledQuantity,
-                remainingQuantity: inferredResolution.remainingQuantity ?? existingOrder.remainingQuantity,
-                avgFillPrice: inferredResolution.avgFillPrice ?? existingOrder.avgFillPrice,
+            await applyClosedOrderInference(ctx, {
+                order: existingOrder,
+                inferredResolution,
                 updatedAt: now,
-                polling: {
-                    ...existingOrder.polling,
-                    lastCheckedAt: now,
-                    nextCheckAt: undefined,
-                    timedOutAt: undefined,
-                    lastError: "Provider reconciliation closed this order because it is no longer live at the venue",
-                },
             })
 
             const strategy = strategyMap.get(String(existingOrder.strategyId))
@@ -309,6 +304,15 @@ export const reconcileProviderPortfolio = mutation({
             metadata: position.metadata,
             syncedAt: now,
         }))
+
+        await reconcileProviderPositionClosures(ctx, {
+            app: args.app,
+            strategyMap,
+            existingProviderPositions,
+            livePositionKeys: new Set(nextProviderPositions.map((position) => position.positionKey)),
+            positionClosures: providerPositionClosures,
+            updatedAt: now,
+        })
 
         const nextProviderWorkingOrders = resolvedWorkingOrders.map((order) => ({
             app: args.app,
@@ -361,6 +365,12 @@ export const reconcileProviderPortfolio = mutation({
 
         const providerPositionWriteStats = await upsertProviderPositionRows(ctx, args.app, nextProviderPositions)
         const providerWorkingOrderWriteStats = await upsertProviderWorkingOrderRows(ctx, args.app, nextProviderWorkingOrders)
+        await resolveExecutionSafetyFaultsFromProviderTruth(ctx, {
+            app: args.app,
+            positions: nextProviderPositions,
+            workingOrders: nextProviderWorkingOrders,
+            updatedAt: now,
+        })
 
         const positionSnapshotResult = await writeStrategyPositionSnapshots(ctx, {
             app: args.app,
@@ -964,6 +974,469 @@ function isEntryLikeOrder(order: OrderDoc): boolean {
     return order.action === "entry" || order.action === "adjustment"
 }
 
+async function reconcileProviderPositionClosures(
+    ctx: PortfolioMutationCtx,
+    args: {
+        app: Doc<"strategies">["app"]
+        strategyMap: Map<string, StrategyDoc>
+        existingProviderPositions: Doc<"provider_positions">[]
+        livePositionKeys: Set<string>
+        positionClosures: Array<{
+            instrument: string
+            providerPositionId?: string
+            side: "long" | "short"
+            quantity: number
+            fillPrice: number
+            closedAt: number
+            metadata?: string
+        }>
+        updatedAt: number
+    }
+): Promise<void> {
+    if (args.positionClosures.length === 0) {
+        return
+    }
+
+    const candidatePositions = args.existingProviderPositions.filter((position) =>
+        position.ownershipStatus === "owned" &&
+        position.strategyId !== undefined &&
+        position.expectedExternal !== true &&
+        !args.livePositionKeys.has(position.positionKey)
+    )
+    const latestRunIdsByStrategy = new Map<string, Id<"strategy_runs"> | undefined>()
+
+    for (const position of candidatePositions) {
+        const strategy = position.strategyId
+            ? args.strategyMap.get(String(position.strategyId))
+            : undefined
+        if (!strategy || !position.strategyId) {
+            continue
+        }
+
+        const strategyKey = String(position.strategyId)
+        const runId = latestRunIdsByStrategy.has(strategyKey)
+            ? latestRunIdsByStrategy.get(strategyKey)
+            : await resolveLatestRunIdForStrategy(ctx, position.strategyId)
+        latestRunIdsByStrategy.set(strategyKey, runId)
+        if (!runId) {
+            continue
+        }
+
+        const closure = resolveMatchingPositionClosure(position, args.positionClosures)
+        if (!closure) {
+            continue
+        }
+
+        const syntheticOrderId = buildProviderCloseOrderId(args.app, position, closure)
+        const existingOrder = await ctx.db
+            .query("orders")
+            .withIndex("by_order_id", (q) => q.eq("orderId", syntheticOrderId))
+            .first()
+
+        await upsertOrderRow(ctx, {
+            orderId: syntheticOrderId,
+            providerOrderId: resolveProviderCloseOrderProviderId(closure) ?? syntheticOrderId,
+            providerOrderAliases: [],
+            runId: existingOrder?.runId ?? runId,
+            strategyId: position.strategyId,
+            venue: args.app,
+            instrument: position.instrument,
+            status: "filled",
+            action: "close",
+            quantity: closure.quantity,
+            filledQuantity: closure.quantity,
+            remainingQuantity: 0,
+            avgFillPrice: closure.fillPrice,
+            submittedAt: closure.closedAt,
+            updatedAt: closure.closedAt,
+            intent: buildProviderCloseIntent(position, closure),
+            metadata: {
+                providerReconciledClose: true,
+            },
+            lastTransitionSequence: existingOrder?.lastTransitionSequence ?? 0,
+            polling: {
+                pollIntervalMs: 0,
+                timeoutMs: 0,
+                startedAt: closure.closedAt,
+                lastCheckedAt: args.updatedAt,
+            },
+        })
+
+        if ((existingOrder?.lastTransitionSequence ?? 0) === 0) {
+            await appendOrderTransition(ctx, {
+                orderId: syntheticOrderId,
+                runId: existingOrder?.runId ?? runId,
+                strategyId: position.strategyId,
+                type: "terminal",
+                status: "filled",
+                previousStatus: undefined,
+                reason: "Provider reconciliation imported a broker-reported position close after the owned position disappeared from the live portfolio",
+                details: {
+                    providerPositionId: closure.providerPositionId,
+                    fillPrice: closure.fillPrice,
+                    quantity: closure.quantity,
+                    metadata: parseJson<Record<string, unknown>>(closure.metadata),
+                },
+                timestamp: closure.closedAt,
+            })
+
+            await ctx.db.insert("trade_events", {
+                runId: existingOrder?.runId ?? runId,
+                strategyId: position.strategyId,
+                app: args.app,
+                eventType: "filled",
+                payload: JSON.stringify({
+                    providerReconciledClose: true,
+                    instrument: position.instrument,
+                    providerPositionId: closure.providerPositionId,
+                    quantity: closure.quantity,
+                    fillPrice: closure.fillPrice,
+                    closedAt: closure.closedAt,
+                    metadata: parseJson<Record<string, unknown>>(closure.metadata),
+                }),
+                timestamp: closure.closedAt,
+            })
+        }
+    }
+}
+
+function resolveMatchingPositionClosure(
+    position: Doc<"provider_positions">,
+    closures: Array<{
+        instrument: string
+        providerPositionId?: string
+        side: "long" | "short"
+        quantity: number
+        fillPrice: number
+        closedAt: number
+        metadata?: string
+    }>
+) {
+    const candidates = closures.filter((closure) =>
+        closure.instrument === position.instrument &&
+        closure.side === position.side &&
+        closure.closedAt >= position.syncedAt
+    )
+
+    if (candidates.length === 0) {
+        return undefined
+    }
+
+    const positionIds = buildProviderPositionIdentityCandidates(position)
+    const strongMatches = candidates.filter((closure) =>
+        closure.providerPositionId !== undefined &&
+        positionIds.has(closure.providerPositionId)
+    )
+    if (strongMatches.length > 0) {
+        return strongMatches.sort((left, right) => right.closedAt - left.closedAt)[0]
+    }
+
+    const quantityMatches = candidates.filter((closure) => almostEqual(closure.quantity, position.quantity))
+    if (quantityMatches.length === 1) {
+        return quantityMatches[0]
+    }
+
+    if (candidates.length === 1) {
+        return candidates[0]
+    }
+
+    return candidates.sort((left, right) => right.closedAt - left.closedAt)[0]
+}
+
+function buildProviderPositionIdentityCandidates(
+    position: Pick<Doc<"provider_positions">, "providerPositionId" | "metadata">
+): Set<string> {
+    const identifiers = new Set<string>()
+    if (position.providerPositionId) {
+        identifiers.add(position.providerPositionId)
+    }
+
+    const metadata = readMetadataRecord(position.metadata)
+    addKnownIdentifier(identifiers, metadata?.ticket)
+    addKnownIdentifier(identifiers, metadata?.identifier)
+    addKnownIdentifier(identifiers, metadata?.positionId)
+    addKnownIdentifier(identifiers, metadata?.providerPositionId)
+    return identifiers
+}
+
+function addKnownIdentifier(
+    identifiers: Set<string>,
+    value: unknown
+): void {
+    if (typeof value === "string" && value.trim().length > 0) {
+        identifiers.add(value.trim())
+        return
+    }
+
+    if (typeof value === "number" && Number.isFinite(value)) {
+        identifiers.add(String(value))
+    }
+}
+
+function buildProviderCloseOrderId(
+    app: Doc<"strategies">["app"],
+    position: Pick<Doc<"provider_positions">, "positionKey">,
+    closure: { closedAt: number }
+): string {
+    return `provider-close:${app}:${position.positionKey}:${closure.closedAt}`
+}
+
+function resolveProviderCloseOrderProviderId(
+    closure: { metadata?: string }
+): string | undefined {
+    const metadata = parseJson<Record<string, unknown>>(closure.metadata)
+    const orderId = metadata?.orderId
+    if (typeof orderId === "string" && orderId.trim().length > 0) {
+        return orderId.trim()
+    }
+
+    if (typeof orderId === "number" && Number.isFinite(orderId)) {
+        return String(orderId)
+    }
+
+    return undefined
+}
+
+function buildProviderCloseIntent(
+    position: Pick<
+        Doc<"provider_positions">,
+        "instrument" | "side" | "entryPrice" | "metadata" | "providerPositionId" | "positionKey"
+    >,
+    closure: {
+        quantity: number
+        fillPrice: number
+        metadata?: string
+    }
+): Record<string, unknown> {
+    const metadata = {
+        ...readMetadataRecord(position.metadata),
+        ...parseJson<Record<string, unknown>>(closure.metadata),
+        action: "close",
+        providerReconciledClose: true,
+        providerPositionId: position.providerPositionId,
+        providerPositionKey: position.positionKey,
+        entryPrice: position.entryPrice,
+        positionSide: position.side,
+        estimatedPrice: closure.fillPrice,
+    }
+
+    return {
+        instrument: position.instrument,
+        side: position.side === "long" ? "sell" : "buy",
+        quantity: closure.quantity,
+        orderType: "market",
+        timeInForce: "ioc",
+        metadata,
+    }
+}
+
+function almostEqual(left: number, right: number): boolean {
+    return Math.abs(left - right) <= 0.000001
+}
+
+async function resolveLatestRunIdForStrategy(
+    ctx: PortfolioMutationCtx,
+    strategyId: Id<"strategies">
+): Promise<Id<"strategy_runs"> | undefined> {
+    const runs = await ctx.db
+        .query("strategy_runs")
+        .withIndex("by_strategy", (q) => q.eq("strategyId", strategyId))
+        .collect()
+
+    return runs
+        .sort((left, right) => right.startedAt - left.startedAt)[0]?._id
+}
+
+function buildActiveOrderLookup(activeOrders: OrderDoc[]): Map<string, OrderDoc> {
+    const lookup = new Map<string, OrderDoc>()
+
+    for (const order of activeOrders) {
+        for (const orderId of getOrderIdentityCandidates(order)) {
+            lookup.set(orderId, order)
+        }
+    }
+
+    return lookup
+}
+
+function orderHasLiveWorkingOrder(
+    order: Pick<OrderDoc, "orderId" | "providerOrderId" | "providerOrderAliases">,
+    liveWorkingOrderIds: Set<string>
+): boolean {
+    return getOrderIdentityCandidates(order).some((orderId) => liveWorkingOrderIds.has(orderId))
+}
+
+async function applyProviderWorkingOrderUpdate(
+    ctx: PortfolioMutationCtx,
+    args: {
+        order: OrderDoc
+        liveOrder: {
+            orderId: string
+            status: Doc<"orders">["status"]
+            filledQuantity: number
+            remainingQuantity: number
+            avgFillPrice?: number
+            updatedAt: number
+        }
+        updatedAt: number
+    }
+): Promise<void> {
+    const order = args.order
+    const liveOrder = args.liveOrder
+    const nextProviderOrderAliases = mergeProviderOrderAliases(order, liveOrder.orderId)
+    const nextStatus = liveOrder.status
+    const nextFilledQuantity = liveOrder.filledQuantity
+    const nextRemainingQuantity = liveOrder.remainingQuantity
+    const nextAvgFillPrice = liveOrder.avgFillPrice ?? order.avgFillPrice
+    const statusChanged = order.status !== nextStatus
+    const quantityChanged =
+        order.filledQuantity !== nextFilledQuantity ||
+        order.remainingQuantity !== nextRemainingQuantity ||
+        order.avgFillPrice !== nextAvgFillPrice
+    const currentProviderOrderId = order.providerOrderId ?? order.orderId
+    const providerOrderIdChanged = currentProviderOrderId !== liveOrder.orderId
+
+    await upsertOrderRow(ctx, {
+        orderId: order.orderId,
+        providerOrderId: liveOrder.orderId,
+        providerOrderAliases: nextProviderOrderAliases,
+        runId: order.runId,
+        strategyId: order.strategyId,
+        venue: order.venue,
+        instrument: order.instrument,
+        status: nextStatus,
+        action: order.action,
+        quantity: order.quantity,
+        filledQuantity: nextFilledQuantity,
+        remainingQuantity: nextRemainingQuantity,
+        avgFillPrice: nextAvgFillPrice,
+        submittedAt: order.submittedAt,
+        updatedAt: liveOrder.updatedAt,
+        intent: order.intent,
+        metadata: order.metadata,
+        lastTransitionSequence: order.lastTransitionSequence,
+        polling: {
+            ...order.polling,
+            lastCheckedAt: args.updatedAt,
+            nextCheckAt: isTerminalOrderStatus(nextStatus)
+                ? undefined
+                : args.updatedAt + order.polling.pollIntervalMs,
+            lastError: undefined,
+        },
+    })
+
+    if (!statusChanged && !quantityChanged && !providerOrderIdChanged) {
+        return
+    }
+
+    await appendOrderTransition(ctx, {
+        orderId: order.orderId,
+        runId: order.runId,
+        strategyId: order.strategyId,
+        type: isTerminalOrderStatus(nextStatus) ? "terminal" : "status_change",
+        status: nextStatus,
+        previousStatus: order.status,
+        reason: "Provider reconciliation refreshed the live working-order state",
+        details: {
+            providerOrderId: liveOrder.orderId,
+            previousProviderOrderId: currentProviderOrderId,
+            filledQuantity: nextFilledQuantity,
+            remainingQuantity: nextRemainingQuantity,
+            avgFillPrice: nextAvgFillPrice,
+        },
+        timestamp: liveOrder.updatedAt,
+    })
+}
+
+async function applyClosedOrderInference(
+    ctx: PortfolioMutationCtx,
+    args: {
+        order: OrderDoc
+        inferredResolution: {
+            status: Doc<"orders">["status"]
+            filledQuantity?: number
+            remainingQuantity?: number
+            avgFillPrice?: number
+        }
+        updatedAt: number
+    }
+): Promise<void> {
+    const order = args.order
+    const nextStatus = args.inferredResolution.status
+    const nextFilledQuantity = args.inferredResolution.filledQuantity ?? order.filledQuantity
+    const nextRemainingQuantity = args.inferredResolution.remainingQuantity ?? order.remainingQuantity
+    const nextAvgFillPrice = args.inferredResolution.avgFillPrice ?? order.avgFillPrice
+    const resolutionReason = nextStatus === "filled"
+        ? "Provider reconciliation inferred a fill from provider-truth position state after the order left the live working-order book"
+        : "Provider reconciliation inferred a cancellation after the order left the live working-order book without fill evidence"
+
+    await upsertOrderRow(ctx, {
+        orderId: order.orderId,
+        providerOrderId: order.providerOrderId ?? order.orderId,
+        providerOrderAliases: order.providerOrderAliases ?? [],
+        runId: order.runId,
+        strategyId: order.strategyId,
+        venue: order.venue,
+        instrument: order.instrument,
+        status: nextStatus,
+        action: order.action,
+        quantity: order.quantity,
+        filledQuantity: nextFilledQuantity,
+        remainingQuantity: nextRemainingQuantity,
+        avgFillPrice: nextAvgFillPrice,
+        submittedAt: order.submittedAt,
+        updatedAt: args.updatedAt,
+        intent: order.intent,
+        metadata: order.metadata,
+        lastTransitionSequence: order.lastTransitionSequence,
+        polling: {
+            ...order.polling,
+            lastCheckedAt: args.updatedAt,
+            nextCheckAt: undefined,
+            timedOutAt: undefined,
+            lastError: nextStatus === "cancelled"
+                ? resolutionReason
+                : undefined,
+        },
+    })
+
+    await appendOrderTransition(ctx, {
+        orderId: order.orderId,
+        runId: order.runId,
+        strategyId: order.strategyId,
+        type: "terminal",
+        status: nextStatus,
+        previousStatus: order.status,
+        reason: resolutionReason,
+        details: {
+            providerOrderId: order.providerOrderId ?? order.orderId,
+            filledQuantity: nextFilledQuantity,
+            remainingQuantity: nextRemainingQuantity,
+            avgFillPrice: nextAvgFillPrice,
+        },
+        timestamp: args.updatedAt,
+    })
+}
+
+function mergeProviderOrderAliases(
+    order: Pick<OrderDoc, "orderId" | "providerOrderId" | "providerOrderAliases">,
+    nextProviderOrderId: string
+): string[] {
+    const aliases = new Set<string>(order.providerOrderAliases ?? [])
+
+    if (
+        (order.providerOrderId ?? order.orderId) !== order.orderId &&
+        (order.providerOrderId ?? order.orderId) !== nextProviderOrderId
+    ) {
+        aliases.add(order.providerOrderId ?? order.orderId)
+    }
+
+    aliases.delete(order.orderId)
+    aliases.delete(nextProviderOrderId)
+
+    return Array.from(aliases).sort((left, right) => left.localeCompare(right))
+}
+
 async function updateProviderSyncStateFromCurrentRows(
     ctx: PortfolioMutationCtx,
     app: Doc<"strategies">["app"],
@@ -1202,6 +1675,7 @@ function inferClosedOrderStatus(args: {
     order: OrderDoc
     livePositions: Array<{
         instrument: string
+        providerPositionId?: string
         side: "long" | "short"
         quantity: number
         entryPrice: number
@@ -1247,12 +1721,49 @@ function inferClosedOrderStatus(args: {
         }
     }
 
+    if (isEntryLikeOrder(order)) {
+        const matchingPositions = args.livePositions.filter((position) =>
+            position.instrument === order.instrument &&
+            positionMatchesOrderDirection(order, position.side)
+        )
+        if (matchingPositions.length === 1) {
+            const [matchingPosition] = matchingPositions
+            if (matchingPosition) {
+                const resolvedFilledQuantity = matchingPosition.quantity > 0
+                    ? Math.min(order.quantity, matchingPosition.quantity)
+                    : order.quantity
+
+                return {
+                    status: "filled",
+                    filledQuantity: resolvedFilledQuantity,
+                    remainingQuantity: Math.max(order.quantity - resolvedFilledQuantity, 0),
+                    avgFillPrice: matchingPosition.entryPrice > 0
+                        ? matchingPosition.entryPrice
+                        : order.avgFillPrice,
+                }
+            }
+        }
+    }
+
+    if (order.action === "close" && !hasMatchingLivePositionForClose(order, args.livePositions)) {
+        return {
+            status: "filled",
+            filledQuantity: order.quantity,
+            remainingQuantity: 0,
+            avgFillPrice: order.avgFillPrice,
+        }
+    }
+
     return {
         status: "cancelled",
     }
 }
 
 function mt5PositionMatchesOrderDirection(order: OrderDoc, side: "long" | "short"): boolean {
+    return positionMatchesOrderDirection(order, side)
+}
+
+function positionMatchesOrderDirection(order: OrderDoc, side: "long" | "short"): boolean {
     if (order.intent.side === "buy") {
         return side === "long"
     }
@@ -1260,6 +1771,27 @@ function mt5PositionMatchesOrderDirection(order: OrderDoc, side: "long" | "short
         return side === "short"
     }
     return true
+}
+
+function hasMatchingLivePositionForClose(
+    order: OrderDoc,
+    livePositions: Array<{
+        instrument: string
+        side: "long" | "short"
+    }>
+): boolean {
+    const rawMetadata = order.intent?.metadata
+    const metadata = rawMetadata && typeof rawMetadata === "object"
+        ? rawMetadata as Record<string, unknown>
+        : undefined
+    const expectedPositionSide = metadata?.positionSide === "short"
+        ? "short"
+        : "long"
+
+    return livePositions.some((position) =>
+        position.instrument === order.instrument &&
+        position.side === expectedPositionSide
+    )
 }
 
 function extractMt5Ticket(metadata?: string): string | undefined {
@@ -1449,6 +1981,74 @@ async function upsertProviderWorkingOrderRows(
     }
 
     return stats
+}
+
+async function resolveExecutionSafetyFaultsFromProviderTruth(
+    ctx: PortfolioMutationCtx,
+    args: {
+        app: Doc<"strategies">["app"]
+        positions: Array<Pick<Doc<"provider_positions">, "instrument" | "ownershipStatus">>
+        workingOrders: Array<Pick<Doc<"provider_working_orders">, "instrument" | "ownershipStatus">>
+        updatedAt: number
+    }
+): Promise<void> {
+    const openFaults = await ctx.db
+        .query("execution_safety_faults")
+        .withIndex("by_app_blocked", (q) => q.eq("app", args.app).eq("blocked", true))
+        .collect()
+
+    if (openFaults.length === 0) {
+        return
+    }
+
+    const ownedPositionInstruments = new Set(
+        args.positions
+            .filter((position) => position.ownershipStatus === "owned")
+            .map((position) => position.instrument)
+    )
+    const ownedWorkingOrderInstruments = new Set(
+        args.workingOrders
+            .filter((order) => order.ownershipStatus === "owned")
+            .map((order) => order.instrument)
+    )
+    const resolvedByStrategy = new Map<string, { strategyId: Id<"strategies">; count: number }>()
+
+    for (const fault of openFaults) {
+        if (fault.resolvedAt !== undefined || fault.instrument === "*") {
+            continue
+        }
+
+        if (
+            ownedPositionInstruments.has(fault.instrument) ||
+            ownedWorkingOrderInstruments.has(fault.instrument)
+        ) {
+            continue
+        }
+
+        await ctx.db.patch(fault._id, {
+            blocked: false,
+            resolvedAt: args.updatedAt,
+            resolutionNote: "Provider reconciliation confirmed flat exposure with no owned working orders on this instrument",
+        })
+
+        const existing = resolvedByStrategy.get(String(fault.strategyId)) ?? {
+            strategyId: fault.strategyId,
+            count: 0,
+        }
+        existing.count += 1
+        resolvedByStrategy.set(String(fault.strategyId), existing)
+    }
+
+    for (const resolved of resolvedByStrategy.values()) {
+        await ctx.db.insert("alerts", {
+            strategyId: resolved.strategyId,
+            app: args.app,
+            severity: "info",
+            message: `[execution-safety] Provider reconciliation cleared ${resolved.count} fault(s) after confirming flat exposure`,
+            acknowledged: false,
+            timestamp: args.updatedAt,
+        })
+    }
 }
 
 async function writeStrategyPositionSnapshots(

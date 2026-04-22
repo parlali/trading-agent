@@ -896,10 +896,10 @@ const toolContracts = createToolContractCatalog([
         owner: "mt5",
         compatibleVenues: ["mt5"],
         defaultVariant: {
-            description: "Fetch live MT5 symbol information including bid, ask, spread, tick value, contract size, and volume constraints.",
+            description: "Fetch live MT5 symbol information including bid, ask, normalized spread with its unit, tick value, contract size, and volume constraints.",
             parameters: singleSymbolParamsSchema,
             jsonSchema: getSymbolInfoJsonSchema,
-            outputDescription: "Returns normalized MT5 symbol metadata or a found:false payload when the symbol is unavailable.",
+            outputDescription: "Returns normalized MT5 symbol metadata, including spread and spreadUnit, or a found:false payload when the symbol is unavailable.",
             errorSemantics: "Missing symbols return found:false. Worker or transport failures throw.",
         },
     },

@@ -63,6 +63,9 @@ export async function reconcileProviderPortfolio(args: {
         args.venue.getPositions(),
         args.venue.getWorkingOrders ? args.venue.getWorkingOrders() : Promise.resolve([]),
     ])
+    const positionClosures = args.venue.getRecentPositionClosures
+        ? await args.venue.getRecentPositionClosures()
+        : []
 
     const reconciliation = await backend.reconcileProviderPortfolio(
         args.app,
@@ -70,7 +73,8 @@ export async function reconcileProviderPortfolio(args: {
         args.source,
         accountState,
         positions,
-        workingOrders
+        workingOrders,
+        positionClosures
     )
 
     healthState.venues[args.app] = {

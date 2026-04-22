@@ -91,6 +91,10 @@ class GetOrderRequest(BaseModel):
     orderId: int
 
 
+class PositionClosuresRequest(BaseModel):
+    lookbackHours: int = Field(default=24, ge=1, le=168)
+
+
 # ---------------------------------------------------------------------------
 # App lifecycle
 # ---------------------------------------------------------------------------
@@ -332,6 +336,14 @@ async def close_all_positions(
         "closed": len(results),
         "results": results,
     }
+
+
+@app.post("/position/closures", dependencies=[Depends(verify_access_key)])
+async def get_position_closures(
+    req: PositionClosuresRequest,
+    client: MT5Client = Depends(get_client),
+) -> list[dict[str, Any]]:
+    return client.get_position_closures(req.lookbackHours)
 
 
 @app.post("/symbol/info", dependencies=[Depends(verify_access_key)])

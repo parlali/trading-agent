@@ -63,6 +63,20 @@ export interface MT5Position {
     identifier: number
 }
 
+export interface MT5PositionClosure {
+    ticket: number
+    orderId: number
+    positionId: number
+    symbol: string
+    side: "long" | "short"
+    volume: number
+    price: number
+    profit: number
+    timeDone: number
+    entry: number
+    reason: number
+}
+
 export interface MT5OpenOrder {
     ticket: number
     symbol: string
@@ -165,6 +179,12 @@ export class MT5Client {
 
     async getOpenOrders(): Promise<MT5OpenOrder[]> {
         return await this.get<MT5OpenOrder[]>("/orders")
+    }
+
+    async getPositionClosures(lookbackHours: number = 24): Promise<MT5PositionClosure[]> {
+        return await this.post<MT5PositionClosure[]>("/position/closures", {
+            lookbackHours,
+        })
     }
 
     async submitOrder(params: {

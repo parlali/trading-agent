@@ -6,7 +6,11 @@ export {
     resolveMT5RuntimeConfig,
 } from "./runtime-config"
 export { MT5VenueAdapter } from "./venue-adapter"
-export { createMT5SpreadContextLine, resolveMT5InstrumentRegions } from "./market-context"
+export {
+    createMT5SpreadContextLine,
+    resolveMT5InstrumentRegions,
+    resolveMT5NormalizedSpread,
+} from "./market-context"
 export type { MT5MarketSnapshot } from "./market-context"
 export { HolidayGuard } from "./holiday-guard"
 export type { HolidayCheckResult } from "./holiday-guard"

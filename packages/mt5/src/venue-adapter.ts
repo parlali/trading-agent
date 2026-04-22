@@ -16,6 +16,7 @@ import {
     type PriceVerification,
     type PriceVerifier,
     type Position,
+    type ProviderPositionClosure,
     type VenueAdapter,
     type WorkingOrder,
 } from "@valiq-trading/core"
@@ -23,6 +24,7 @@ import {
     MT5Client,
     type MT5OpenOrder,
     type MT5OrderResult,
+    type MT5PositionClosure,
     type MT5Position,
     type MT5SymbolInfo,
     type MT5WorkerCredentials,
@@ -78,6 +80,12 @@ export class MT5VenueAdapter implements VenueAdapter, PriceVerifier {
         await this.ensureConnected()
         const orders = await this.client.getOpenOrders()
         return orders.map(mapMT5WorkingOrder)
+    }
+
+    async getRecentPositionClosures(): Promise<ProviderPositionClosure[]> {
+        await this.ensureConnected()
+        const closures = await this.client.getPositionClosures()
+        return closures.map(mapMT5PositionClosure)
     }
 
     async submitOrder(intent: OrderIntent): Promise<ExecutionResult> {
@@ -379,6 +387,7 @@ function mapMT5Position(raw: MT5Position): Position {
         takeProfit: raw.takeProfit > 0 ? raw.takeProfit : undefined,
         metadata: {
             ticket: raw.ticket,
+            identifier: raw.identifier,
             stopLoss: raw.stopLoss,
             takeProfit: raw.takeProfit,
             swap: raw.swap,
@@ -542,6 +551,25 @@ function aggregateMT5CloseResults(
         timestamp: Date.now(),
         error: errorDetail ? formatExecutionError(errorDetail) : undefined,
         errorDetail,
+    }
+}
+
+function mapMT5PositionClosure(raw: MT5PositionClosure): ProviderPositionClosure {
+    return {
+        instrument: raw.symbol,
+        providerPositionId: String(raw.positionId),
+        side: raw.side,
+        quantity: raw.volume,
+        fillPrice: raw.price,
+        closedAt: raw.timeDone,
+        metadata: {
+            ticket: raw.ticket,
+            orderId: raw.orderId,
+            positionId: raw.positionId,
+            profit: raw.profit,
+            entry: raw.entry,
+            reason: raw.reason,
+        },
     }
 }
 

@@ -17,7 +17,8 @@ export function createValiqResearchTool(
             "Send a natural language research question to Val-iQ's agent for analysis. " +
             "Val-iQ has 100+ analysis tools (technical structure, liquidity, sentiment, earnings, macro, screening, backtesting, scenario analysis). " +
             "Use for complex research: iron condor candidate analysis, macro regime assessment, IV surface analysis, multi-factor screening. " +
-            "Creates a chat, sends the question, and returns the full analysis. Can take 30-120 seconds.",
+            "Creates a chat, sends the question, and returns the full analysis. Can take 30-120 seconds. " +
+            "Research output is advisory context only. Any prices, spreads, or current market levels inside it must be re-validated with venue-owned tools before execution.",
         parameters: researchParamsSchema,
         jsonSchema: {
             type: "object",
@@ -36,7 +37,12 @@ export function createValiqResearchTool(
                 chatId = await research.createChat()
             }
             const result = await research.sendQuestion(chatId, validated.question)
-            return { analysis: result.content }
+            return {
+                analysis: result.content,
+                advisoryOnly: true,
+                generatedAt: Date.now(),
+                executionTruthWarning: "Val-iQ research is not execution truth. Re-check all live prices, spreads, and tradable levels with venue-owned tools before placing, modifying, or cancelling orders.",
+            }
         },
     }
 }

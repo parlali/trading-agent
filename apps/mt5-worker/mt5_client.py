@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import shutil
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import structlog
@@ -304,6 +304,50 @@ class MT5Client:
             })
 
         return result
+
+    def get_position_closures(self, lookback_hours: int = 24) -> list[dict[str, Any]]:
+        self.ensure_connected()
+
+        now = datetime.now(timezone.utc)
+        start = now - timedelta(hours=max(1, lookback_hours))
+        deals = mt5.history_deals_get(start, now)
+
+        if not deals:
+            return []
+
+        result: list[dict[str, Any]] = []
+        for deal in deals:
+            deal_type = getattr(deal, "type", None)
+            if deal_type not in (mt5.DEAL_TYPE_BUY, mt5.DEAL_TYPE_SELL):
+                continue
+
+            entry = int(getattr(deal, "entry", -1))
+            if entry not in (
+                mt5.DEAL_ENTRY_OUT,
+                mt5.DEAL_ENTRY_OUT_BY,
+                mt5.DEAL_ENTRY_INOUT,
+            ):
+                continue
+
+            position_id = int(getattr(deal, "position_id", 0) or 0)
+            if position_id <= 0:
+                continue
+
+            result.append({
+                "ticket": int(getattr(deal, "ticket", 0)),
+                "orderId": int(getattr(deal, "order", 0) or 0),
+                "positionId": position_id,
+                "symbol": deal.symbol,
+                "side": "short" if deal_type == mt5.DEAL_TYPE_BUY else "long",
+                "volume": abs(float(deal.volume)),
+                "price": float(deal.price),
+                "profit": float(getattr(deal, "profit", 0.0)),
+                "timeDone": int(getattr(deal, "time", 0)) * 1000,
+                "entry": entry,
+                "reason": int(getattr(deal, "reason", -1)),
+            })
+
+        return sorted(result, key=lambda deal: int(deal["timeDone"]), reverse=True)
 
     # -- Order execution -------------------------------------------------------
 

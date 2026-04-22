@@ -52,6 +52,7 @@ const RESEARCH_TOOL_NAMES = new Set([
     "query_valiq_research",
     "query_valiq_data",
     "get_breaking_news",
+    "search_markets",
     "web_search",
     "web_fetch",
 ])

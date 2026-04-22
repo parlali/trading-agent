@@ -1,5 +1,5 @@
 import { z } from "zod"
-import type { MT5VenueAdapter } from "@valiq-trading/mt5"
+import { resolveMT5NormalizedSpread, type MT5VenueAdapter } from "@valiq-trading/mt5"
 import type { ToolDefinition } from "../tool-registry"
 import {
     createToolDefinition,
@@ -24,12 +24,17 @@ export function createMT5GetSymbolInfoTool(
                 }
             }
 
+            const spread = resolveMT5NormalizedSpread(info)
+
             return {
                 symbol: info.symbol,
                 found: true,
                 bid: info.bid,
                 ask: info.ask,
-                spreadInPips: info.spread,
+                spread: spread.value,
+                spreadUnit: spread.unit,
+                normalSpread: spread.normal,
+                rawSpreadPoints: info.spread,
                 tickValue: info.tickValue,
                 contractSize: info.contractSize,
                 volumeMin: info.volumeMin,

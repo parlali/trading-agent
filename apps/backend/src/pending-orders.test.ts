@@ -6,6 +6,8 @@ function createSnapshot(overrides: Partial<OrderSnapshot> = {}): OrderSnapshot {
     const now = Date.parse("2026-04-20T08:00:00.000Z")
     return {
         orderId: "order-1",
+        providerOrderId: "order-1",
+        providerOrderAliases: [],
         strategyId: "strategy-1",
         runId: "run-1",
         instrument: "BTC-USDT-SWAP",
@@ -28,6 +30,7 @@ function createSnapshot(overrides: Partial<OrderSnapshot> = {}): OrderSnapshot {
                 action: "entry",
             },
         },
+        lastTransitionSequence: 0,
         polling: {
             pollIntervalMs: 1000,
             timeoutMs: 60_000,

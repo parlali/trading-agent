@@ -223,11 +223,14 @@ describe("portfolio governance helpers", () => {
     it("infers MT5 closed-order fill from provider ticket match and cancels stale unmatched rows", () => {
         const order = {
             orderId: "1600791764",
+            providerOrderId: "1600791764",
+            providerOrderAliases: [],
             action: "entry",
             quantity: 0.01,
             filledQuantity: 0,
             avgFillPrice: undefined,
             instrument: "XAUUSD",
+            lastTransitionSequence: 0,
             intent: {
                 side: "buy",
             },
@@ -258,6 +261,76 @@ describe("portfolio governance helpers", () => {
         } as never)
 
         expect(staleRow.status).toBe("cancelled")
+    })
+
+    it("infers non-MT5 entry fills from provider-truth live positions", () => {
+        const order = {
+            orderId: "order:BTC-USDT-SWAP:root",
+            providerOrderId: "order:BTC-USDT-SWAP:live",
+            providerOrderAliases: [],
+            action: "entry",
+            quantity: 0.2,
+            filledQuantity: 0,
+            avgFillPrice: undefined,
+            instrument: "BTC-USDT-SWAP",
+            lastTransitionSequence: 0,
+            intent: {
+                side: "sell",
+            },
+        }
+
+        const inferredFill = portfolioGovernanceTestables.inferClosedOrderStatus({
+            app: "okx-swap",
+            order,
+            livePositions: [
+                {
+                    instrument: "BTC-USDT-SWAP",
+                    side: "short",
+                    quantity: 0.2,
+                    entryPrice: 101250,
+                },
+            ],
+        } as never)
+
+        expect(inferredFill).toEqual({
+            status: "filled",
+            filledQuantity: 0.2,
+            remainingQuantity: 0,
+            avgFillPrice: 101250,
+        })
+    })
+
+    it("infers close fills when the targeted position is no longer live", () => {
+        const order = {
+            orderId: "provider-close:mt5:XAUUSD:123",
+            providerOrderId: "1607000000",
+            providerOrderAliases: [],
+            action: "close",
+            quantity: 1,
+            filledQuantity: 0,
+            avgFillPrice: 3335.2,
+            instrument: "XAUUSD",
+            lastTransitionSequence: 0,
+            intent: {
+                side: "sell",
+                metadata: {
+                    positionSide: "long",
+                },
+            },
+        }
+
+        const inferredClose = portfolioGovernanceTestables.inferClosedOrderStatus({
+            app: "mt5",
+            order,
+            livePositions: [],
+        } as never)
+
+        expect(inferredClose).toEqual({
+            status: "filled",
+            filledQuantity: 1,
+            remainingQuantity: 0,
+            avgFillPrice: 3335.2,
+        })
     })
 
     it("marks manual external instruments as expected and non-blocking when unowned", () => {

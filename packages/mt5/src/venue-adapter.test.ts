@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { MT5Client, type MT5OrderResult, type MT5Position, type MT5WorkerCredentials } from "./mt5-client.ts"
+import { MT5Client, type MT5OrderResult, type MT5Position, type MT5PositionClosure, type MT5WorkerCredentials } from "./mt5-client.ts"
 import { MT5VenueAdapter } from "./venue-adapter.ts"
 
 const credentials: MT5WorkerCredentials = {
@@ -166,6 +166,43 @@ describe("MT5VenueAdapter", () => {
         expect(result.status).toBe("filled")
         expect(result.filledQuantity).toBe(0.02)
         expect(result.fillPrice).toBe(4718.75)
+    })
+
+    it("maps MT5 broker-side position closures into canonical provider close records", async () => {
+        const client = createClient()
+        client.getPositionClosures = async (): Promise<MT5PositionClosure[]> => [{
+            ticket: 1607001001,
+            orderId: 1607001000,
+            positionId: 1606516021,
+            symbol: "US30",
+            side: "long",
+            volume: 1,
+            price: 38952.4,
+            profit: -47.6,
+            timeDone: 1_714_240_000_000,
+            entry: 1,
+            reason: 4,
+        }]
+
+        const adapter = new MT5VenueAdapter(client, credentials)
+        const closures = await adapter.getRecentPositionClosures()
+
+        expect(closures).toEqual([{
+            instrument: "US30",
+            providerPositionId: "1606516021",
+            side: "long",
+            quantity: 1,
+            fillPrice: 38952.4,
+            closedAt: 1_714_240_000_000,
+            metadata: {
+                ticket: 1607001001,
+                orderId: 1607001000,
+                positionId: 1606516021,
+                profit: -47.6,
+                entry: 1,
+                reason: 4,
+            },
+        }])
     })
 })
 

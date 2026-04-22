@@ -1,22 +1,32 @@
 import type { MT5Policy } from "@valiq-trading/core"
 import type { MT5SymbolInfo } from "./mt5-client"
 
-const DEFAULT_INSTRUMENT_PROFILES: Record<string, { regions: string[]; normalSpreadPips: number }> = {
+type SpreadUnit = "pips" | "points"
+
+const DEFAULT_INSTRUMENT_PROFILES: Record<string, {
+    regions: string[]
+    normalSpread: number
+    spreadUnit: SpreadUnit
+}> = {
     EURUSD: {
         regions: ["US", "GB", "EU"],
-        normalSpreadPips: 1.0,
+        normalSpread: 1.0,
+        spreadUnit: "pips",
     },
     USDJPY: {
         regions: ["US", "GB", "EU"],
-        normalSpreadPips: 1.0,
+        normalSpread: 1.0,
+        spreadUnit: "pips",
     },
     XAUUSD: {
         regions: ["US", "GB"],
-        normalSpreadPips: 25,
+        normalSpread: 25,
+        spreadUnit: "points",
     },
     US30: {
         regions: ["US"],
-        normalSpreadPips: 20,
+        normalSpread: 20,
+        spreadUnit: "points",
     },
 }
 
@@ -30,7 +40,15 @@ export interface MT5MarketSnapshot {
     instrument: string
     bid: number
     ask: number
-    spreadPips: number
+    spread: number
+    spreadUnit: SpreadUnit
+    normalSpread?: number
+}
+
+export interface MT5NormalizedSpread {
+    value: number
+    unit: SpreadUnit
+    normal?: number
 }
 
 export function resolveMT5InstrumentRegions(policy: MT5Policy): Record<string, string[]> {
@@ -62,25 +80,27 @@ export function createMT5SpreadContextLine(
     const parts = [...snapshots]
         .sort((left, right) => left.instrument.localeCompare(right.instrument))
         .map((snapshot) => {
-            const normalSpread = getNormalSpreadPips(snapshot.instrument)
-            const currentSpread = formatSpreadPips(snapshot.spreadPips)
+            const currentSpread = formatSpreadValue(snapshot.spread)
 
-            if (normalSpread === undefined) {
-                return `${snapshot.instrument} ${currentSpread} pips`
+            if (snapshot.normalSpread === undefined) {
+                return `${snapshot.instrument} ${currentSpread} ${snapshot.spreadUnit}`
             }
 
-            return `${snapshot.instrument} ${currentSpread} pips (normal ~${formatSpreadPips(normalSpread)})`
+            return `${snapshot.instrument} ${currentSpread} ${snapshot.spreadUnit} (normal ~${formatSpreadValue(snapshot.normalSpread)})`
         })
 
     return `Current spreads: ${parts.join(", ")}`
 }
 
 export function toMT5MarketSnapshot(symbolInfo: MT5SymbolInfo): MT5MarketSnapshot {
+    const spread = resolveMT5NormalizedSpread(symbolInfo)
     return {
         instrument: normalizeInstrument(symbolInfo.symbol),
         bid: symbolInfo.bid,
         ask: symbolInfo.ask,
-        spreadPips: resolveSpreadPips(symbolInfo),
+        spread: spread.value,
+        spreadUnit: spread.unit,
+        normalSpread: spread.normal,
     }
 }
 
@@ -119,28 +139,39 @@ function resolveFallbackInstruments(policy: MT5Policy): string[] {
     return DEFAULT_STRATEGY_INSTRUMENTS[key] ?? []
 }
 
-function getNormalSpreadPips(instrument: string): number | undefined {
-    return DEFAULT_INSTRUMENT_PROFILES[normalizeInstrument(instrument)]?.normalSpreadPips
-}
-
 function normalizeInstrument(instrument: string): string {
     return instrument.trim().toUpperCase()
 }
 
-function resolveSpreadPips(symbolInfo: MT5SymbolInfo): number {
+export function resolveMT5NormalizedSpread(symbolInfo: MT5SymbolInfo): MT5NormalizedSpread {
+    const profile = DEFAULT_INSTRUMENT_PROFILES[normalizeInstrument(symbolInfo.symbol)]
+    const unit = profile?.spreadUnit ?? "points"
+    const unitSize = unit === "pips"
+        ? symbolInfo.pipSize
+        : symbolInfo.point
+    const value = resolveSpreadValue(symbolInfo, unitSize)
+
+    return {
+        value,
+        unit,
+        normal: profile?.normalSpread,
+    }
+}
+
+function resolveSpreadValue(symbolInfo: MT5SymbolInfo, unitSize: number): number {
     const priceSpread = Math.abs(symbolInfo.ask - symbolInfo.bid)
-    if (symbolInfo.pipSize > 0 && priceSpread > 0) {
-        return priceSpread / symbolInfo.pipSize
+    if (unitSize > 0 && priceSpread > 0) {
+        return priceSpread / unitSize
     }
 
-    if (symbolInfo.point > 0 && symbolInfo.pipSize > 0 && symbolInfo.spread > 0) {
-        return (symbolInfo.spread * symbolInfo.point) / symbolInfo.pipSize
+    if (symbolInfo.point > 0 && unitSize > 0 && symbolInfo.spread > 0) {
+        return (symbolInfo.spread * symbolInfo.point) / unitSize
     }
 
     return symbolInfo.spread
 }
 
-function formatSpreadPips(value: number): string {
+function formatSpreadValue(value: number): string {
     if (Math.abs(value) < 10) {
         return value.toFixed(1)
     }

@@ -51,7 +51,7 @@ import {
     getNextCronFireMs,
     mt5PolicySchema,
     parseSummaryMetadata,
-    stripMetadataBlock,
+    sanitizeRunSummary,
     computeRecentTradeDigest,
     readConfiguredStrategySafetyPolicy,
     resolveDryRunAccountState,
@@ -98,6 +98,7 @@ const EXTRA_TOOL_CATEGORIES: Record<string, ToolCategory> = {
     query_valiq_research: "research",
     query_valiq_data: "research",
     get_breaking_news: "research",
+    search_markets: "research",
 }
 
 export function updateHealth(
@@ -1108,7 +1109,7 @@ export async function runStrategy(
             })
 
             const cleanSummary = result.summary
-                ? stripMetadataBlock(result.summary)
+                ? sanitizeRunSummary(result.summary)
                 : result.summary
             const runDiagnostics = buildRunDiagnostics(result, runSystemContextDigest)
 

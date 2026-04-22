@@ -11,6 +11,7 @@ import type {
     OrderSnapshot,
     OrderTransition,
     Position,
+    ProviderPositionClosure,
     RunSystemContextDigest,
     StrategyRiskState,
     StrategyConfig,
@@ -369,7 +370,8 @@ export interface TradingBackendClient extends TradeEventLoggerMethods {
         source: ProviderPortfolioReconciliationResult["source"],
         accountState: AccountState,
         positions: Position[],
-        workingOrders: WorkingOrder[]
+        workingOrders: WorkingOrder[],
+        positionClosures?: ProviderPositionClosure[]
     ): Promise<ProviderPortfolioReconciliationResult>
     refreshStrategyRiskState(args: {
         strategyId: Id<"strategies">
@@ -739,7 +741,8 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
             source: ProviderPortfolioReconciliationResult["source"],
             accountState: AccountState,
             positions: Position[],
-            workingOrders: WorkingOrder[]
+            workingOrders: WorkingOrder[],
+            positionClosures: ProviderPositionClosure[] = []
         ): Promise<ProviderPortfolioReconciliationResult> {
             return await runWithTimeout(
                 "Convex mutation reconcileProviderPortfolio",
@@ -783,6 +786,15 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
                         stopPrice: order.stopPrice,
                         avgFillPrice: order.avgFillPrice,
                         metadata: order.metadata ? JSON.stringify(order.metadata) : undefined,
+                    })),
+                    positionClosures: positionClosures.map((closure) => ({
+                        instrument: closure.instrument,
+                        providerPositionId: closure.providerPositionId,
+                        side: closure.side,
+                        quantity: closure.quantity,
+                        fillPrice: closure.fillPrice,
+                        closedAt: closure.closedAt,
+                        metadata: closure.metadata ? JSON.stringify(closure.metadata) : undefined,
                     })),
                 } as never) as ProviderPortfolioReconciliationResult
             )
@@ -1277,6 +1289,19 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
     }
 }
 
+function normalizeOrderSnapshot(snapshot: OrderSnapshot | null): OrderSnapshot | null {
+    if (!snapshot) {
+        return null
+    }
+
+    return {
+        ...snapshot,
+        providerOrderId: snapshot.providerOrderId ?? snapshot.orderId,
+        providerOrderAliases: snapshot.providerOrderAliases ?? [],
+        lastTransitionSequence: snapshot.lastTransitionSequence ?? 0,
+    }
+}
+
 export const createConvexOrderPersistenceAdapter = (
     config: ConvexOrderPersistenceConfig
 ): OrderPersistenceAdapter => {
@@ -1304,6 +1329,8 @@ export const createConvexOrderPersistenceAdapter = (
                 async () => await client.mutation(api.mutations.upsertOrder, {
                     ...requireAdapterAuth(),
                     orderId: snapshot.orderId,
+                    providerOrderId: snapshot.providerOrderId,
+                    providerOrderAliases: snapshot.providerOrderAliases,
                     runId: snapshot.runId as Id<"strategy_runs">,
                     strategyId: snapshot.strategyId as Id<"strategies">,
                     venue: snapshot.venue,
@@ -1318,19 +1345,19 @@ export const createConvexOrderPersistenceAdapter = (
                     updatedAt: snapshot.updatedAt,
                     intent: snapshot.intent,
                     metadata: snapshot.metadata,
+                    lastTransitionSequence: snapshot.lastTransitionSequence,
                     polling: snapshot.polling,
                 })
             )
         },
-        async logOrderTransition(transition: OrderTransition): Promise<void> {
-            await runWithTimeout(
+        async logOrderTransition(transition: OrderTransition): Promise<number> {
+            return await runWithTimeout(
                 "Convex mutation logOrderTransition",
                 async () => await client.mutation(api.mutations.logOrderTransition, {
                     ...requireAdapterAuth(),
                     orderId: transition.orderId,
                     runId: transition.runId as Id<"strategy_runs">,
                     strategyId: transition.strategyId as Id<"strategies">,
-                    sequence: transition.sequence,
                     type: transition.type,
                     status: transition.status,
                     previousStatus: transition.previousStatus,
@@ -1345,7 +1372,7 @@ export const createConvexOrderPersistenceAdapter = (
                 "Convex query getOrderById",
                 async () => await client.query(api.queries.getOrderById, { ...requireAdapterAuth(), orderId })
             )
-            return order as OrderSnapshot | null
+            return normalizeOrderSnapshot(order as OrderSnapshot | null)
         },
         async listActiveOrders(strategyId: string): Promise<OrderSnapshot[]> {
             const orders = await runWithTimeout(
@@ -1355,7 +1382,9 @@ export const createConvexOrderPersistenceAdapter = (
                     strategyId: strategyId as Id<"strategies">,
                 })
             )
-            return orders as OrderSnapshot[]
+            return (orders as OrderSnapshot[])
+                .map((order) => normalizeOrderSnapshot(order))
+                .filter((order): order is OrderSnapshot => order !== null)
         },
         async createAlert(alert: OrderLifecycleAlert): Promise<void> {
             await runWithTimeout(
