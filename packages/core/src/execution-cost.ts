@@ -81,6 +81,18 @@ export interface ExecutionCostAssessment {
 const EXECUTION_COST_WARMUP_SAMPLES = 5
 const EXECUTION_COST_WARN_RATIO = 1.5
 const EXECUTION_COST_BLOCK_RATIO = 2
+const EXECUTION_COST_ABSOLUTE_THRESHOLDS: Partial<Record<
+    ExecutionCostInstrumentClass,
+    {
+        warnSpreadPercent?: number
+        blockSpreadPercent?: number
+    }
+>> = {
+    prediction_market: {
+        warnSpreadPercent: 8,
+        blockSpreadPercent: 15,
+    },
+}
 
 export class ExecutionCostTracker {
     private readonly baselines = new Map<string, ExecutionCostBaseline>()
@@ -196,9 +208,17 @@ export function assessExecutionCost(
         return buildAssessment(metrics, baseline, undefined, "blocked", true)
     }
 
+    const absoluteStatus = resolveAbsoluteExecutionCostStatus(metrics)
+    if (absoluteStatus === "blocked") {
+        const ratioToBaseline = resolveBaselineRatio(metrics, baseline)
+        return buildAssessment(metrics, baseline, ratioToBaseline, "blocked", true)
+    }
+
     const ratioToBaseline = resolveBaselineRatio(metrics, baseline)
     if (ratioToBaseline === undefined) {
-        const status = metrics.absoluteSpread === undefined ? "unavailable" : "normal"
+        const status = metrics.absoluteSpread === undefined
+            ? "unavailable"
+            : absoluteStatus ?? "normal"
         return buildAssessment(metrics, baseline, undefined, status, false)
     }
 
@@ -210,7 +230,7 @@ export function assessExecutionCost(
         return buildAssessment(metrics, baseline, ratioToBaseline, "elevated", false)
     }
 
-    return buildAssessment(metrics, baseline, ratioToBaseline, "normal", false)
+    return buildAssessment(metrics, baseline, ratioToBaseline, absoluteStatus ?? "normal", false)
 }
 
 export function formatExecutionCostMetrics(metrics: ExecutionCostMetrics): string {
@@ -335,6 +355,33 @@ function resolveBaselineRatio(
         metrics.nativeSpreadUnit === baseline.nativeSpreadUnit
     ) {
         return metrics.nativeSpread / baseline.nativeSpread
+    }
+
+    return undefined
+}
+
+function resolveAbsoluteExecutionCostStatus(
+    metrics: ExecutionCostMetrics
+): Exclude<ExecutionCostStatus, "unavailable"> | undefined {
+    const thresholds = EXECUTION_COST_ABSOLUTE_THRESHOLDS[metrics.instrumentClass]
+    if (!thresholds) {
+        return undefined
+    }
+
+    if (
+        thresholds.blockSpreadPercent !== undefined &&
+        metrics.spreadPercent !== undefined &&
+        metrics.spreadPercent >= thresholds.blockSpreadPercent
+    ) {
+        return "blocked"
+    }
+
+    if (
+        thresholds.warnSpreadPercent !== undefined &&
+        metrics.spreadPercent !== undefined &&
+        metrics.spreadPercent >= thresholds.warnSpreadPercent
+    ) {
+        return "elevated"
     }
 
     return undefined

@@ -2,13 +2,12 @@ import { describe, expect, it, vi, afterEach } from "vitest"
 import { isWithinSessionFlatWindow } from "./runtime"
 
 afterEach(() => {
-    vi.useRealTimers()
+    vi.restoreAllMocks()
 })
 
 describe("isWithinSessionFlatWindow", () => {
     it("returns true when current time is within configured close buffer", () => {
-        vi.useFakeTimers()
-        vi.setSystemTime(new Date("2026-01-01T15:50:00.000Z"))
+        vi.spyOn(Date, "now").mockReturnValue(Date.UTC(2026, 0, 1, 15, 50, 0))
 
         const result = isWithinSessionFlatWindow({
             end: "16:00",
@@ -21,8 +20,7 @@ describe("isWithinSessionFlatWindow", () => {
     })
 
     it("returns false when current time is before the flatten buffer", () => {
-        vi.useFakeTimers()
-        vi.setSystemTime(new Date("2026-01-01T15:30:00.000Z"))
+        vi.spyOn(Date, "now").mockReturnValue(Date.UTC(2026, 0, 1, 15, 30, 0))
 
         const result = isWithinSessionFlatWindow({
             end: "16:00",
@@ -34,8 +32,7 @@ describe("isWithinSessionFlatWindow", () => {
     })
 
     it("returns false once the session end minute is reached", () => {
-        vi.useFakeTimers()
-        vi.setSystemTime(new Date("2026-01-01T16:00:00.000Z"))
+        vi.spyOn(Date, "now").mockReturnValue(Date.UTC(2026, 0, 1, 16, 0, 0))
 
         const result = isWithinSessionFlatWindow({
             end: "16:00",

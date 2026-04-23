@@ -65,8 +65,9 @@ export class MT5VenueAdapter implements VenueAdapter, PriceVerifier {
 
     async getPositions(): Promise<Position[]> {
         await this.ensureConnected()
+        const observedAt = Date.now()
         const raw = await this.client.getPositions()
-        return raw.map(mapMT5Position)
+        return raw.map((position) => mapMT5Position(position, observedAt))
     }
 
     async getAccountState(): Promise<AccountState> {
@@ -86,14 +87,16 @@ export class MT5VenueAdapter implements VenueAdapter, PriceVerifier {
 
     async getWorkingOrders(): Promise<WorkingOrder[]> {
         await this.ensureConnected()
+        const observedAt = Date.now()
         const orders = await this.client.getOpenOrders()
-        return orders.map(mapMT5WorkingOrder)
+        return orders.map((order) => mapMT5WorkingOrder(order, observedAt))
     }
 
     async getRecentPositionClosures(): Promise<ProviderPositionClosure[]> {
         await this.ensureConnected()
+        const observedAt = Date.now()
         const closures = await this.client.getPositionClosures()
-        return closures.map(mapMT5PositionClosure)
+        return closures.map((closure) => mapMT5PositionClosure(closure, observedAt))
     }
 
     async submitOrder(intent: OrderIntent): Promise<ExecutionResult> {
@@ -433,7 +436,11 @@ export class MT5VenueAdapter implements VenueAdapter, PriceVerifier {
 // Mappers
 // ---------------------------------------------------------------------------
 
-function mapMT5Position(raw: MT5Position): Position {
+const MT5_PROVIDER_FUTURE_SKEW_MS = 60_000
+
+function mapMT5Position(raw: MT5Position, observedAt: number = Date.now()): Position {
+    const openTime = normalizeMT5ProviderTimestamp(raw.openTime, observedAt)
+
     return {
         instrument: raw.symbol,
         providerPositionId: String(raw.ticket),
@@ -453,7 +460,7 @@ function mapMT5Position(raw: MT5Position): Position {
             commission: raw.commission,
             magic: raw.magic,
             comment: raw.comment,
-            openTime: raw.openTime,
+            openTime,
         },
     }
 }
@@ -505,10 +512,12 @@ function resolveMT5ComparisonPrice(
     return (symbolInfo.bid + symbolInfo.ask) / 2
 }
 
-function mapMT5WorkingOrder(raw: MT5OpenOrder): WorkingOrder {
+function mapMT5WorkingOrder(raw: MT5OpenOrder, observedAt: number = Date.now()): WorkingOrder {
     const quantity = raw.volumeInitial
     const remainingQuantity = raw.volumeCurrent
     const filledQuantity = Math.max(quantity - remainingQuantity, 0)
+    const submittedAt = normalizeMT5ProviderTimestamp(raw.timeSetup, observedAt) ?? observedAt
+    const updatedAt = normalizeMT5ProviderTimestamp(raw.timeDone || raw.timeSetup, observedAt) ?? submittedAt
 
     return {
         orderId: String(raw.ticket),
@@ -517,8 +526,8 @@ function mapMT5WorkingOrder(raw: MT5OpenOrder): WorkingOrder {
         quantity,
         filledQuantity,
         remainingQuantity,
-        submittedAt: raw.timeSetup || Date.now(),
-        updatedAt: raw.timeDone || raw.timeSetup || Date.now(),
+        submittedAt,
+        updatedAt,
         side: raw.type.startsWith("buy") ? "buy" : "sell",
         limitPrice: raw.priceOpen > 0 ? raw.priceOpen : undefined,
         stopPrice: raw.stopLoss > 0 ? raw.stopLoss : undefined,
@@ -529,6 +538,19 @@ function mapMT5WorkingOrder(raw: MT5OpenOrder): WorkingOrder {
             type: raw.type,
         },
     }
+}
+
+function normalizeMT5ProviderTimestamp(
+    timestamp: number | undefined,
+    observedAt: number
+): number | undefined {
+    if (timestamp === undefined || !Number.isFinite(timestamp) || timestamp <= 0) {
+        return undefined
+    }
+
+    return timestamp > observedAt + MT5_PROVIDER_FUTURE_SKEW_MS
+        ? observedAt
+        : timestamp
 }
 
 function mapMT5SubmissionResult(
@@ -625,14 +647,14 @@ function aggregateMT5CloseResults(
     }
 }
 
-function mapMT5PositionClosure(raw: MT5PositionClosure): ProviderPositionClosure {
+function mapMT5PositionClosure(raw: MT5PositionClosure, observedAt: number = Date.now()): ProviderPositionClosure {
     return {
         instrument: raw.symbol,
         providerPositionId: String(raw.positionId),
         side: raw.side,
         quantity: raw.volume,
         fillPrice: raw.price,
-        closedAt: raw.timeDone,
+        closedAt: normalizeMT5ProviderTimestamp(raw.timeDone, observedAt) ?? observedAt,
         metadata: {
             ticket: raw.ticket,
             orderId: raw.orderId,

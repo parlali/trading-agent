@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import { MT5Client, type MT5OrderResult, type MT5Position, type MT5PositionClosure, type MT5WorkerCredentials } from "./mt5-client.ts"
 import { MT5VenueAdapter } from "./venue-adapter.ts"
 
@@ -203,6 +203,48 @@ describe("MT5VenueAdapter", () => {
                 reason: 4,
             },
         }])
+    })
+
+    it("clamps impossible future MT5 position and working-order timestamps to the observation time", async () => {
+        const now = Date.UTC(2026, 3, 23, 15, 12, 24, 623)
+        const nowSpy = vi.spyOn(Date, "now").mockReturnValue(now)
+
+        try {
+            const client = createClient()
+            client.getPositions = async () => [{
+                ...createPosition(1608922735, "XAUUSD", 4735.53),
+                currentPrice: 4731.28,
+                profit: 4.25,
+                openTime: Date.UTC(2026, 3, 23, 17, 27, 20),
+            }]
+            client.getOpenOrders = async () => [{
+                ticket: 1608821205,
+                symbol: "XAUUSD",
+                type: "sell_limit",
+                volumeInitial: 0.01,
+                volumeCurrent: 0.01,
+                priceOpen: 4748,
+                stopLoss: 4756.5,
+                takeProfit: 4729.3,
+                state: "placed",
+                comment: "",
+                magic: 0,
+                timeSetup: Date.UTC(2026, 3, 23, 16, 42, 16),
+                timeDone: Date.UTC(2026, 3, 23, 16, 42, 16),
+            }]
+
+            const adapter = new MT5VenueAdapter(client, credentials)
+            const [positions, orders] = await Promise.all([
+                adapter.getPositions(),
+                adapter.getWorkingOrders(),
+            ])
+
+            expect(positions[0]?.metadata?.openTime).toBe(now)
+            expect(orders[0]?.submittedAt).toBe(now)
+            expect(orders[0]?.updatedAt).toBe(now)
+        } finally {
+            nowSpy.mockRestore()
+        }
     })
 })
 

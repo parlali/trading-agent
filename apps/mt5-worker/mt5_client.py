@@ -18,6 +18,7 @@ except ImportError:
 from config import settings
 
 log = structlog.get_logger()
+MAX_PROVIDER_FUTURE_SKEW_MS = 60_000
 
 
 # ---------------------------------------------------------------------------
@@ -272,7 +273,7 @@ class MT5Client:
                 "commission": float(getattr(pos, "commission", 0.0)),
                 "magic": int(pos.magic),
                 "comment": pos.comment,
-                "openTime": int(pos.time) * 1000,  # to ms
+                "openTime": self._read_mt5_timestamp_ms(pos, "time_msc", "time"),
                 "identifier": int(pos.identifier),
             })
 
@@ -299,8 +300,8 @@ class MT5Client:
                 "state": self._order_state_str(order.state),
                 "comment": order.comment,
                 "magic": int(order.magic),
-                "timeSetup": int(order.time_setup) * 1000 if order.time_setup else 0,
-                "timeDone": int(order.time_done) * 1000 if order.time_done else 0,
+                "timeSetup": self._read_mt5_timestamp_ms(order, "time_setup_msc", "time_setup"),
+                "timeDone": self._read_mt5_timestamp_ms(order, "time_done_msc", "time_done"),
             })
 
         return result
@@ -342,7 +343,7 @@ class MT5Client:
                 "volume": abs(float(deal.volume)),
                 "price": float(deal.price),
                 "profit": float(getattr(deal, "profit", 0.0)),
-                "timeDone": int(getattr(deal, "time", 0)) * 1000,
+                "timeDone": self._read_mt5_timestamp_ms(deal, "time_msc", "time"),
                 "entry": entry,
                 "reason": int(getattr(deal, "reason", -1)),
             })
@@ -631,7 +632,7 @@ class MT5Client:
                 "stopLoss": float(order.sl),
                 "takeProfit": float(order.tp),
                 "state": self._order_state_str(order.state),
-                "timeDone": int(order.time_done) * 1000 if order.time_done else 0,
+                "timeDone": self._read_mt5_timestamp_ms(order, "time_done_msc", "time_done"),
             }
 
         positions = mt5.positions_get(ticket=order_id)
@@ -647,7 +648,7 @@ class MT5Client:
                 "stopLoss": float(position.sl),
                 "takeProfit": float(position.tp),
                 "state": "filled",
-                "timeDone": int(position.time) * 1000 if position.time else 0,
+                "timeDone": self._read_mt5_timestamp_ms(position, "time_msc", "time"),
             }
 
         deals = mt5.history_deals_get(ticket=order_id)
@@ -675,7 +676,7 @@ class MT5Client:
                         "price": weighted_price / total_volume,
                         "profit": float(latest_deal.profit),
                         "state": "filled",
-                        "timeDone": int(latest_deal.time) * 1000,
+                        "timeDone": self._read_mt5_timestamp_ms(latest_deal, "time_msc", "time"),
                     }
 
         history_orders = mt5.history_orders_get(ticket=order_id)
@@ -696,7 +697,7 @@ class MT5Client:
                 "stopLoss": float(order.sl),
                 "takeProfit": float(order.tp),
                 "state": self._order_state_str(order.state),
-                "timeDone": int(order.time_done) * 1000 if order.time_done else 0,
+                "timeDone": self._read_mt5_timestamp_ms(order, "time_done_msc", "time_done"),
             }
 
         return None
@@ -745,6 +746,32 @@ class MT5Client:
         if mask & 1:
             return mt5.ORDER_FILLING_FOK
         return mt5.ORDER_FILLING_RETURN
+
+    def _read_mt5_timestamp_ms(self, payload: Any, millis_attr: str, seconds_attr: str) -> int:
+        raw_millis = getattr(payload, millis_attr, 0) or 0
+        if raw_millis:
+            return self._normalize_timestamp_ms(int(raw_millis))
+
+        raw_seconds = getattr(payload, seconds_attr, 0) or 0
+        if raw_seconds:
+            return self._normalize_timestamp_ms(int(raw_seconds) * 1000)
+
+        return 0
+
+    def _normalize_timestamp_ms(self, timestamp_ms: int) -> int:
+        if timestamp_ms <= 0:
+            return 0
+
+        now_ms = int(time.time() * 1000)
+        if timestamp_ms > now_ms + MAX_PROVIDER_FUTURE_SKEW_MS:
+            log.warning(
+                "mt5_future_timestamp_clamped",
+                timestamp_ms=timestamp_ms,
+                now_ms=now_ms,
+            )
+            return now_ms
+
+        return timestamp_ms
 
     def _map_order_result(self, result: Any, fallback_order_id: int | None = None) -> dict[str, Any]:
         retcode = int(result.retcode)

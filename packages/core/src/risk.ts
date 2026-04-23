@@ -69,6 +69,7 @@ export function createStrategySafetyValidator(args: {
     safetyState: StrategySafetyState
     blockedInstruments?: Set<string>
     reason?: string
+    blockedInstrumentReason?: string
 }): RiskValidator {
     return (intent) => {
         if (isRiskReducingIntent(intent)) {
@@ -78,7 +79,9 @@ export function createStrategySafetyValidator(args: {
         if (args.blockedInstruments?.has(intent.instrument)) {
             return {
                 allowed: false,
-                reason: `Instrument ${intent.instrument} is blocked due to unresolved execution safety faults. Only risk-reducing actions are allowed until provider state is clean.`,
+                reason: args.blockedInstrumentReason ??
+                    args.reason ??
+                    `Instrument ${intent.instrument} is blocked by strategy safety governance. Only risk-reducing actions are allowed until provider state is clean.`,
             }
         }
 

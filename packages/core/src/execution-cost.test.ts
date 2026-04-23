@@ -97,4 +97,39 @@ describe("Execution cost assessment", () => {
         expect(metrics.spreadPercent).toBeCloseTo(3.846153846, 6)
         expect(metrics.spreadBps).toBeCloseTo(384.6153846, 4)
     })
+
+    it("blocks prediction-market spreads on absolute terms even when the baseline is also wide", () => {
+        const metrics = resolveExecutionCostMetrics({
+            app: "polymarket",
+            instrument: "token-illiquid",
+            instrumentClass: "prediction_market",
+            capturedAt: Date.UTC(2026, 3, 23, 14, 0, 0),
+            bestBid: 0.27,
+            bestAsk: 0.81,
+            midpoint: 0.54,
+            referencePrice: 0.54,
+            absoluteSpread: 0.54,
+            nativeSpread: 0.54,
+            nativeSpreadUnit: "probability",
+        })
+
+        const assessment = assessExecutionCost(metrics, {
+            app: "polymarket",
+            instrument: "token-illiquid",
+            instrumentClass: "prediction_market",
+            regimeKey: "polymarket:weekday:us",
+            nativeSpreadUnit: "probability",
+            sampleCount: 25,
+            source: "rolling_observed",
+            lastObservedAt: Date.UTC(2026, 3, 23, 13, 59, 0),
+            absoluteSpread: 0.5,
+            nativeSpread: 0.5,
+            spreadPercent: 100,
+            spreadBps: 10_000,
+        })
+
+        expect(assessment.metrics.spreadPercent).toBeGreaterThan(15)
+        expect(assessment.status).toBe("blocked")
+        expect(assessment.blockNewEntries).toBe(true)
+    })
 })

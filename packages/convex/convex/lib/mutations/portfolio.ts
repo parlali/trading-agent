@@ -130,15 +130,25 @@ export const reconcileProviderPortfolio = mutation({
         )
         const providerPositionClosures = args.positionClosures ?? []
 
-        const liveWorkingOrderIds = new Set(args.workingOrders.map((order) => order.orderId))
         const statusMismatches: string[] = []
         const closedPersistedOrders: string[] = []
+        const matchedActiveOrderIds = new Set<string>()
+        const matchedWorkingOrdersByLiveId = new Map<string, OrderDoc>()
 
         for (const liveOrder of args.workingOrders) {
-            const existingOrder = activeOrdersById.get(liveOrder.orderId)
+            const existingOrder = resolveLiveWorkingOrderMatch({
+                app: args.app,
+                liveOrder,
+                activeOrders,
+                activeOrdersById,
+                matchedActiveOrderIds,
+            })
             if (!existingOrder) {
                 continue
             }
+
+            matchedActiveOrderIds.add(existingOrder.orderId)
+            matchedWorkingOrdersByLiveId.set(liveOrder.orderId, existingOrder)
 
             if (
                 existingOrder.status !== liveOrder.status ||
@@ -230,7 +240,7 @@ export const reconcileProviderPortfolio = mutation({
         })
 
         const resolvedWorkingOrders = args.workingOrders.map((order) => {
-            const existingOrder = activeOrdersById.get(order.orderId)
+            const existingOrder = matchedWorkingOrdersByLiveId.get(order.orderId)
             const ownership = resolveOwnership({
                 instrument: order.instrument,
                 claimsByInstrument: refreshedClaimsByInstrument,
@@ -248,13 +258,29 @@ export const reconcileProviderPortfolio = mutation({
                 action: existingOrder?.action,
                 runId: existingOrder?.runId,
                 cancelAt: order.cancelAt ?? readOrderCancelAt(existingOrder),
+                canonicalTracked: existingOrder !== undefined,
                 expectedExternal,
                 ...ownership,
             }
         })
 
+        const unresolvedOwnedWorkingOrders = resolvedWorkingOrders.filter((order) =>
+            order.ownershipStatus === "owned" &&
+            order.expectedExternal !== true &&
+            order.canonicalTracked !== true
+        )
+        const exposureViolations = detectExposureGovernanceViolations({
+            strategies,
+            positions: resolvedPositions,
+            workingOrders: resolvedWorkingOrders,
+        })
+
         for (const existingOrder of activeOrders) {
-            if (orderHasLiveWorkingOrder(existingOrder, liveWorkingOrderIds)) {
+            if (matchedActiveOrderIds.has(existingOrder.orderId)) {
+                continue
+            }
+
+            if (hasUnresolvedLiveWorkingOrderGap(existingOrder, unresolvedOwnedWorkingOrders)) {
                 continue
             }
 
@@ -445,9 +471,11 @@ export const reconcileProviderPortfolio = mutation({
         const driftSummary = createDriftSummary({
             unownedPositionCount: unownedPositions.length,
             unownedOrderCount: unownedOrders.length,
+            untrackedOwnedOrderCount: unresolvedOwnedWorkingOrders.length,
             closedPersistedOrders,
             statusMismatches,
             ownershipMismatches: Array.from(ownershipMismatches),
+            exposureViolations,
         })
         const driftDetected = driftSummary !== undefined
         const stale = false
@@ -1259,11 +1287,141 @@ function buildActiveOrderLookup(activeOrders: OrderDoc[]): Map<string, OrderDoc>
     return lookup
 }
 
-function orderHasLiveWorkingOrder(
-    order: Pick<OrderDoc, "orderId" | "providerOrderId" | "providerOrderAliases">,
-    liveWorkingOrderIds: Set<string>
+function resolveLiveWorkingOrderMatch(args: {
+    app: Doc<"strategies">["app"]
+    liveOrder: {
+        orderId: string
+        instrument: string
+        status: Doc<"orders">["status"]
+        quantity: number
+        filledQuantity: number
+        remainingQuantity: number
+        side?: "buy" | "sell"
+        limitPrice?: number
+        stopPrice?: number
+        metadata?: string
+    }
+    activeOrders: OrderDoc[]
+    activeOrdersById: Map<string, OrderDoc>
+    matchedActiveOrderIds: Set<string>
+}): OrderDoc | undefined {
+    const directMatch = args.activeOrdersById.get(args.liveOrder.orderId)
+    if (directMatch && !args.matchedActiveOrderIds.has(directMatch.orderId)) {
+        return directMatch
+    }
+
+    if (args.app !== "mt5") {
+        return undefined
+    }
+
+    const candidates = args.activeOrders.filter((order) =>
+        !args.matchedActiveOrderIds.has(order.orderId) &&
+        matchesMT5WorkingOrderContinuity(order, args.liveOrder)
+    )
+
+    return candidates.length === 1 ? candidates[0] : undefined
+}
+
+function hasUnresolvedLiveWorkingOrderGap(
+    order: OrderDoc,
+    unresolvedWorkingOrders: Array<{
+        instrument: string
+        quantity: number
+        remainingQuantity: number
+        side?: "buy" | "sell"
+        limitPrice?: number
+        stopPrice?: number
+        metadata?: string
+    }>
 ): boolean {
-    return getOrderIdentityCandidates(order).some((orderId) => liveWorkingOrderIds.has(orderId))
+    return unresolvedWorkingOrders.some((liveOrder) => matchesMT5WorkingOrderContinuity(order, liveOrder))
+}
+
+function matchesMT5WorkingOrderContinuity(
+    order: Pick<
+        OrderDoc,
+        "orderId" |
+        "providerOrderId" |
+        "providerOrderAliases" |
+        "venue" |
+        "instrument" |
+        "status" |
+        "action" |
+        "quantity" |
+        "filledQuantity" |
+        "remainingQuantity" |
+        "intent"
+    >,
+    liveOrder: {
+        instrument: string
+        quantity: number
+        remainingQuantity: number
+        side?: "buy" | "sell"
+        limitPrice?: number
+        stopPrice?: number
+        metadata?: string
+    }
+): boolean {
+    if (order.venue !== "mt5") {
+        return false
+    }
+
+    if (order.action !== "entry" && order.action !== "adjustment") {
+        return false
+    }
+
+    if (order.instrument !== liveOrder.instrument) {
+        return false
+    }
+
+    const intent = readOrderIntentRecord(order.intent)
+    const intentMetadata = readOrderIntentRecord(intent?.metadata)
+    const intentSide = intent?.side === "buy" || intent?.side === "sell"
+        ? intent.side
+        : undefined
+    const intentLimitPrice = readFiniteNumber(intent?.limitPrice)
+    const intentStopLoss = readFiniteNumber(intentMetadata?.stopLoss)
+    const intentTakeProfit = readFiniteNumber(intentMetadata?.takeProfit)
+    const liveMetadata = readMetadataRecord(liveOrder.metadata)
+    const liveTakeProfit = readFiniteNumber(liveMetadata?.takeProfit)
+
+    if (liveOrder.side && intentSide !== liveOrder.side) {
+        return false
+    }
+
+    if (!almostEqual(order.quantity, liveOrder.quantity)) {
+        return false
+    }
+
+    if (!almostEqual(order.remainingQuantity, liveOrder.remainingQuantity)) {
+        return false
+    }
+
+    if (liveOrder.limitPrice !== undefined && intentLimitPrice !== undefined && !almostEqual(intentLimitPrice, liveOrder.limitPrice)) {
+        return false
+    }
+
+    if (liveOrder.stopPrice !== undefined && intentStopLoss !== undefined && !almostEqual(intentStopLoss, liveOrder.stopPrice)) {
+        return false
+    }
+
+    if (liveTakeProfit !== undefined && intentTakeProfit !== undefined && !almostEqual(intentTakeProfit, liveTakeProfit)) {
+        return false
+    }
+
+    return true
+}
+
+function readOrderIntentRecord(intent: unknown): Record<string, unknown> | undefined {
+    return intent && typeof intent === "object"
+        ? intent as Record<string, unknown>
+        : undefined
+}
+
+function readFiniteNumber(value: unknown): number | undefined {
+    return typeof value === "number" && Number.isFinite(value)
+        ? value
+        : undefined
 }
 
 async function applyProviderWorkingOrderUpdate(
@@ -1437,12 +1595,137 @@ function mergeProviderOrderAliases(
     return Array.from(aliases).sort((left, right) => left.localeCompare(right))
 }
 
+function detectExposureGovernanceViolations(args: {
+    strategies: StrategyDoc[]
+    positions: Array<{
+        strategyId?: Id<"strategies">
+        ownershipStatus: Doc<"provider_positions">["ownershipStatus"]
+        expectedExternal?: boolean
+        instrument: string
+        side: "long" | "short"
+    }>
+    workingOrders: Array<{
+        strategyId?: Id<"strategies">
+        ownershipStatus: Doc<"provider_working_orders">["ownershipStatus"]
+        expectedExternal?: boolean
+        instrument: string
+        action?: Doc<"orders">["action"]
+        side?: "buy" | "sell"
+    }>
+}): string[] {
+    const strategyPolicies = new Map(
+        args.strategies.map((strategy) => [String(strategy._id), readStrategyExposurePolicy(strategy)])
+    )
+    const violations = new Set<string>()
+
+    const ownedPositions = args.positions.filter((position) =>
+        position.strategyId !== undefined &&
+        position.ownershipStatus === "owned" &&
+        position.expectedExternal !== true
+    )
+    const ownedWorkingOrders = args.workingOrders.filter((order) =>
+        order.strategyId !== undefined &&
+        order.ownershipStatus === "owned" &&
+        order.expectedExternal !== true
+    )
+
+    const strategyIds = new Set([
+        ...ownedPositions.map((position) => String(position.strategyId)),
+        ...ownedWorkingOrders.map((order) => String(order.strategyId)),
+    ])
+
+    for (const strategyId of strategyIds) {
+        const policy = strategyPolicies.get(strategyId)
+        if (!policy) {
+            continue
+        }
+
+        const strategyPositions = ownedPositions.filter((position) => String(position.strategyId) === strategyId)
+        const strategyWorkingOrders = ownedWorkingOrders.filter((order) => String(order.strategyId) === strategyId)
+
+        if (!policy.allowOverlappingExposure) {
+            for (const position of strategyPositions) {
+                const sameInstrumentOrders = strategyWorkingOrders.filter((order) =>
+                    order.instrument === position.instrument &&
+                    workingOrderIncreasesExposure(order, position.side)
+                )
+
+                if (sameInstrumentOrders.length > 0) {
+                    violations.add(`${strategyId}:overlap:${position.instrument}`)
+                }
+            }
+        }
+
+        if (!policy.allowMultiplePendingEntryOrdersPerInstrument) {
+            const grouped = new Map<string, number>()
+            for (const order of strategyWorkingOrders) {
+                if (!workingOrderCanOpenRisk(order)) {
+                    continue
+                }
+
+                const direction = order.side ?? "unknown"
+                const key = `${order.instrument}:${direction}`
+                grouped.set(key, (grouped.get(key) ?? 0) + 1)
+            }
+
+            for (const [key, count] of grouped) {
+                if (count > 1) {
+                    violations.add(`${strategyId}:multiple-working-orders:${key}`)
+                }
+            }
+        }
+    }
+
+    return Array.from(violations).sort((left, right) => left.localeCompare(right))
+}
+
+function readStrategyExposurePolicy(strategy: StrategyDoc): {
+    allowMultiplePendingEntryOrdersPerInstrument: boolean
+    allowOverlappingExposure: boolean
+} {
+    const policy = strategy.policy && typeof strategy.policy === "object"
+        ? strategy.policy as Record<string, unknown>
+        : {}
+
+    return {
+        allowMultiplePendingEntryOrdersPerInstrument: policy.allowMultiplePendingEntryOrdersPerInstrument === true,
+        allowOverlappingExposure: policy.allowOverlappingExposure === true,
+    }
+}
+
+function workingOrderCanOpenRisk(order: {
+    action?: Doc<"orders">["action"]
+    side?: "buy" | "sell"
+}): boolean {
+    if (order.action === "close" || order.action === "cancel" || order.action === "modify") {
+        return false
+    }
+
+    return order.side === "buy" || order.side === "sell"
+}
+
+function workingOrderIncreasesExposure(
+    order: {
+        action?: Doc<"orders">["action"]
+        side?: "buy" | "sell"
+    },
+    positionSide: "long" | "short"
+): boolean {
+    if (!workingOrderCanOpenRisk(order)) {
+        return false
+    }
+
+    return positionSide === "long"
+        ? order.side === "buy"
+        : order.side === "sell"
+}
+
 async function updateProviderSyncStateFromCurrentRows(
     ctx: PortfolioMutationCtx,
     app: Doc<"strategies">["app"],
     now: number
 ): Promise<void> {
-    const [state, positions, orders] = await Promise.all([
+    const [state, positions, orders, strategies] = await Promise.all([
         ctx.db
             .query("provider_sync_state")
             .withIndex("by_app", (q) => q.eq("app", app))
@@ -1455,11 +1738,17 @@ async function updateProviderSyncStateFromCurrentRows(
             .query("provider_working_orders")
             .withIndex("by_app", (q) => q.eq("app", app))
             .collect(),
+        ctx.db
+            .query("strategies")
+            .withIndex("by_app", (q) => q.eq("app", app))
+            .collect(),
     ])
 
     if (!state) {
         return
     }
+
+    const activeOrders = await listActiveOrdersForApp(ctx, strategies)
 
     const unownedPositionCount = positions.filter((position) =>
         position.ownershipStatus !== "owned" && position.expectedExternal !== true
@@ -1467,12 +1756,28 @@ async function updateProviderSyncStateFromCurrentRows(
     const unownedOrderCount = orders.filter((order) =>
         order.ownershipStatus !== "owned" && order.expectedExternal !== true
     ).length
+    const activeOrdersById = buildActiveOrderLookup(activeOrders)
+    const untrackedOwnedOrderCount = orders.filter((order) =>
+        order.ownershipStatus === "owned" &&
+        order.expectedExternal !== true &&
+        !activeOrdersById.has(order.orderId)
+    ).length
+    const exposureViolations = detectExposureGovernanceViolations({
+        strategies,
+        positions,
+        workingOrders: orders.map((order) => ({
+            ...order,
+            canonicalTracked: activeOrdersById.has(order.orderId),
+        })),
+    })
     const driftSummary = createDriftSummary({
         unownedPositionCount,
         unownedOrderCount,
+        untrackedOwnedOrderCount,
         closedPersistedOrders: [],
         statusMismatches: [],
         ownershipMismatches: [],
+        exposureViolations,
     })
     const driftDetected = driftSummary !== undefined
     const stale = isStale(state.lastVerifiedAt, now)
@@ -2196,9 +2501,11 @@ function isDryRunStrategy(strategy: StrategyDoc): boolean {
 function createDriftSummary(args: {
     unownedPositionCount: number
     unownedOrderCount: number
+    untrackedOwnedOrderCount: number
     closedPersistedOrders: string[]
     statusMismatches: string[]
     ownershipMismatches: string[]
+    exposureViolations: string[]
 }): string | undefined {
     const parts: string[] = []
 
@@ -2208,6 +2515,10 @@ function createDriftSummary(args: {
 
     if (args.unownedOrderCount > 0) {
         parts.push(`${args.unownedOrderCount} live working order(s) lack a clean strategy owner`)
+    }
+
+    if (args.untrackedOwnedOrderCount > 0) {
+        parts.push(`${args.untrackedOwnedOrderCount} owned live working order(s) were not matched to a canonical active order`)
     }
 
     if (args.closedPersistedOrders.length > 0) {
@@ -2220,6 +2531,10 @@ function createDriftSummary(args: {
 
     if (args.ownershipMismatches.length > 0) {
         parts.push(`${args.ownershipMismatches.length} provider position ownership mismatch(es) were detected`)
+    }
+
+    if (args.exposureViolations.length > 0) {
+        parts.push(`${args.exposureViolations.length} provider exposure governance violation(s) were detected`)
     }
 
     return parts.length > 0 ? parts.join("; ") : undefined
@@ -2326,10 +2641,12 @@ export const portfolioGovernanceTestables = {
     buildPositionClaimsByKey,
     buildProviderPositionKey,
     createDriftSummary,
+    detectExposureGovernanceViolations,
     hasPositionOwnershipMismatch,
     resolveProviderPositionId,
     resolvePositionOwnership,
     resolveOwnership,
+    resolveLiveWorkingOrderMatch,
     inferClosedOrderStatus,
     readOrderCancelAt,
 }

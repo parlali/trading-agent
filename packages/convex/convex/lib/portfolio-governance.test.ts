@@ -214,10 +214,103 @@ describe("portfolio governance helpers", () => {
         expect(portfolioGovernanceTestables.createDriftSummary({
             unownedPositionCount: 0,
             unownedOrderCount: 0,
+            untrackedOwnedOrderCount: 0,
             closedPersistedOrders: [],
             statusMismatches: [],
             ownershipMismatches: ["XAUUSD:1600791764"],
+            exposureViolations: [],
         })).toBe("1 provider position ownership mismatch(es) were detected")
+    })
+
+    it("matches MT5 live working orders to the canonical tracked order across provider ticket changes", () => {
+        const trackedOrder = {
+            orderId: "1608821812",
+            providerOrderId: "1608821812",
+            providerOrderAliases: [],
+            venue: "mt5",
+            instrument: "XAUUSD",
+            status: "pending",
+            action: "entry",
+            quantity: 0.01,
+            filledQuantity: 0,
+            remainingQuantity: 0.01,
+            intent: {
+                side: "sell",
+                limitPrice: 4748,
+                metadata: {
+                    stopLoss: 4756.5,
+                    takeProfit: 4729.3,
+                },
+            },
+        }
+
+        const matched = portfolioGovernanceTestables.resolveLiveWorkingOrderMatch({
+            app: "mt5",
+            liveOrder: {
+                orderId: "1608821205",
+                instrument: "XAUUSD",
+                status: "pending",
+                quantity: 0.01,
+                filledQuantity: 0,
+                remainingQuantity: 0.01,
+                side: "sell",
+                limitPrice: 4748,
+                stopPrice: 4756.5,
+                metadata: JSON.stringify({
+                    takeProfit: 4729.3,
+                }),
+            },
+            activeOrders: [trackedOrder],
+            activeOrdersById: new Map([
+                ["1608821812", trackedOrder],
+            ]),
+            matchedActiveOrderIds: new Set(),
+        } as never)
+
+        expect(matched).toBe(trackedOrder)
+    })
+
+    it("detects overlap violations from provider-truth positions and working orders", () => {
+        const violations = portfolioGovernanceTestables.detectExposureGovernanceViolations({
+            strategies: [{
+                _id: "strategy-a",
+                policy: {
+                    allowMultiplePendingEntryOrdersPerInstrument: false,
+                    allowOverlappingExposure: false,
+                },
+            }],
+            positions: [{
+                strategyId: "strategy-a",
+                ownershipStatus: "owned",
+                instrument: "XAUUSD",
+                side: "short",
+            }],
+            workingOrders: [{
+                strategyId: "strategy-a",
+                ownershipStatus: "owned",
+                instrument: "XAUUSD",
+                action: "entry",
+                side: "sell",
+            }],
+        } as never)
+
+        expect(violations).toEqual([
+            "strategy-a:overlap:XAUUSD",
+        ])
+    })
+
+    it("includes unmatched owned orders and exposure violations in the drift summary", () => {
+        expect(portfolioGovernanceTestables.createDriftSummary({
+            unownedPositionCount: 0,
+            unownedOrderCount: 0,
+            untrackedOwnedOrderCount: 1,
+            closedPersistedOrders: [],
+            statusMismatches: [],
+            ownershipMismatches: [],
+            exposureViolations: ["strategy-a:overlap:XAUUSD"],
+        })).toBe(
+            "1 owned live working order(s) were not matched to a canonical active order; 1 provider exposure governance violation(s) were detected"
+        )
     })
 
     it("infers MT5 closed-order fill from provider ticket match and cancels stale unmatched rows", () => {

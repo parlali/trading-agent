@@ -196,6 +196,8 @@ export function createAccountSnapshotPersister(config: {
 }
 
 export function getCurrentTimeInTimezone(timezone: string): { hours: number; minutes: number } {
+    const currentInstant = new Date(Date.now())
+
     try {
         const formatter = new Intl.DateTimeFormat("en-US", {
             timeZone: timezone,
@@ -203,7 +205,7 @@ export function getCurrentTimeInTimezone(timezone: string): { hours: number; min
             minute: "numeric",
             hour12: false,
         })
-        const parts = formatter.formatToParts(new Date())
+        const parts = formatter.formatToParts(currentInstant)
         const hourPart = parts.find((p) => p.type === "hour")
         const minutePart = parts.find((p) => p.type === "minute")
 
@@ -212,8 +214,10 @@ export function getCurrentTimeInTimezone(timezone: string): { hours: number; min
             minutes: Number(minutePart?.value ?? 0),
         }
     } catch {
-        const now = new Date()
-        return { hours: now.getUTCHours(), minutes: now.getUTCMinutes() }
+        return {
+            hours: currentInstant.getUTCHours(),
+            minutes: currentInstant.getUTCMinutes(),
+        }
     }
 }
 

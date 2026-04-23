@@ -72,7 +72,20 @@ describe("createStrategySafetyValidator", () => {
 
         const result = validator(buildIntent({ instrument: "ETH-USDT-SWAP" }), {}, accountState, positions)
         expect(result.allowed).toBe(false)
-        expect(result.reason).toContain("blocked")
+        expect(result.reason).toContain("strategy safety governance")
+    })
+
+    it("uses the cooldown reason for blocked instruments when cooldown is active", () => {
+        const validator = createStrategySafetyValidator({
+            safetyState: "cooldown",
+            blockedInstruments: new Set(["ETH-USDT-SWAP"]),
+            blockedInstrumentReason: "Instrument is blocked because strategy cooldown is active (forced_exit_cluster). Only risk-reducing actions are allowed until the cooldown expires.",
+        })
+
+        const result = validator(buildIntent({ instrument: "ETH-USDT-SWAP" }), {}, accountState, positions)
+        expect(result.allowed).toBe(false)
+        expect(result.reason).toContain("forced_exit_cluster")
+        expect(result.reason).not.toContain("unresolved execution safety faults")
     })
 
     it("allows explicitly risk-reducing adjustments", () => {

@@ -924,6 +924,9 @@ export async function runStrategy(
                 reason: currentRiskState.cooldown.active
                     ? `Strategy cooldown active (${currentRiskState.cooldown.reason ?? "risk"})`
                     : undefined,
+                blockedInstrumentReason: currentRiskState.cooldown.active
+                    ? `Instrument is blocked because strategy cooldown is active (${currentRiskState.cooldown.reason ?? "risk"}). Only risk-reducing actions are allowed until the cooldown expires.`
+                    : undefined,
             })
 
             return conflictMap.size > 0
