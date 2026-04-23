@@ -9,8 +9,11 @@
 import {
     createExecutionError,
     createExecutionErrorDetail,
+    ExecutionCostTracker,
     formatExecutionError,
     type AccountState,
+    type ExecutionCostAssessment,
+    type ExecutionCostSnapshot,
     type ExecutionResult,
     type OrderIntent,
     type PriceVerification,
@@ -29,7 +32,11 @@ import {
     type MT5SymbolInfo,
     type MT5WorkerCredentials,
 } from "./mt5-client"
-import { toMT5MarketSnapshot, type MT5MarketSnapshot } from "./market-context"
+import {
+    resolveMT5NormalizedSpread,
+    toMT5MarketSnapshot,
+    type MT5MarketSnapshot,
+} from "./market-context"
 
 export class MT5VenueAdapter implements VenueAdapter, PriceVerifier {
     private lastConnectedAt = 0
@@ -37,7 +44,8 @@ export class MT5VenueAdapter implements VenueAdapter, PriceVerifier {
 
     constructor(
         private readonly client: MT5Client,
-        private readonly credentials: MT5WorkerCredentials
+        private readonly credentials: MT5WorkerCredentials,
+        private readonly executionCostTracker: ExecutionCostTracker = new ExecutionCostTracker()
     ) {}
 
     /**
@@ -314,6 +322,7 @@ export class MT5VenueAdapter implements VenueAdapter, PriceVerifier {
             }
         }
 
+        const executionCost = await this.assessSymbolExecutionCost(symbolInfo)
         const mid = (symbolInfo.bid + symbolInfo.ask) / 2
         const comparisonPrice = resolveMT5ComparisonPrice(intent, symbolInfo)
         const proposedPrice = resolveMT5VerificationPrice(intent, symbolInfo)
@@ -333,6 +342,7 @@ export class MT5VenueAdapter implements VenueAdapter, PriceVerifier {
             proposedPrice,
             drift,
             driftPercent,
+            executionCost,
             message: proposedPrice !== undefined
                 ? `Compared proposed MT5 price ${proposedPrice} against live executable price ${comparisonPrice}.`
                 : "Captured live MT5 market prices before submission.",
@@ -352,7 +362,12 @@ export class MT5VenueAdapter implements VenueAdapter, PriceVerifier {
 
         await this.ensureConnected()
         const results = await this.client.getSymbolInfo(symbols)
-        return results.map(toMT5MarketSnapshot)
+        return await Promise.all(
+            results.map(async (symbolInfo) => toMT5MarketSnapshot(
+                symbolInfo,
+                await this.assessSymbolExecutionCost(symbolInfo)
+            ))
+        )
     }
 
     /**
@@ -366,6 +381,50 @@ export class MT5VenueAdapter implements VenueAdapter, PriceVerifier {
         return {
             closed: response.closed,
             results: response.results.map((r) => this.client.mapOrderResultToExecution(r)),
+        }
+    }
+
+    async assessSymbolExecutionCost(symbolInfo: MT5SymbolInfo): Promise<ExecutionCostAssessment> {
+        const snapshots = this.executionCostTracker.needsWarmup(this.buildExecutionCostSnapshot(symbolInfo))
+            ? await this.collectSymbolExecutionSnapshots(symbolInfo.symbol, symbolInfo, 3)
+            : [this.buildExecutionCostSnapshot(symbolInfo)]
+
+        return this.executionCostTracker.assessSnapshots(snapshots)
+    }
+
+    private async collectSymbolExecutionSnapshots(
+        symbol: string,
+        current: MT5SymbolInfo,
+        sampleCount: number
+    ): Promise<ExecutionCostSnapshot[]> {
+        const snapshots = [this.buildExecutionCostSnapshot(current)]
+        while (snapshots.length < sampleCount) {
+            const next = await this.getSymbolInfo(symbol)
+            if (!next) {
+                break
+            }
+            snapshots.push(this.buildExecutionCostSnapshot(next))
+        }
+        return snapshots
+    }
+
+    private buildExecutionCostSnapshot(symbolInfo: MT5SymbolInfo): ExecutionCostSnapshot {
+        const normalizedSpread = resolveMT5NormalizedSpread(symbolInfo)
+        const midpoint = (symbolInfo.bid + symbolInfo.ask) / 2
+        const instrument = symbolInfo.symbol.trim().toUpperCase()
+
+        return {
+            app: "mt5",
+            instrument,
+            instrumentClass: resolveMT5InstrumentClass(instrument),
+            capturedAt: Date.now(),
+            bestBid: symbolInfo.bid,
+            bestAsk: symbolInfo.ask,
+            midpoint,
+            referencePrice: midpoint,
+            absoluteSpread: Math.abs(symbolInfo.ask - symbolInfo.bid),
+            nativeSpread: normalizedSpread.value,
+            nativeSpreadUnit: normalizedSpread.unit,
         }
     }
 }
@@ -397,6 +456,18 @@ function mapMT5Position(raw: MT5Position): Position {
             openTime: raw.openTime,
         },
     }
+}
+
+function resolveMT5InstrumentClass(symbol: string): ExecutionCostSnapshot["instrumentClass"] {
+    if (symbol === "XAUUSD") {
+        return "metal"
+    }
+
+    if (symbol === "US30") {
+        return "index"
+    }
+
+    return "fx"
 }
 
 function resolveMT5VerificationPrice(

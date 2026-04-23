@@ -1,9 +1,11 @@
 import {
     createExecutionError,
     createExecutionErrorDetail,
+    ExecutionCostTracker,
     formatExecutionError,
     type AccountState,
     type DryRunOrderSimulator,
+    type ExecutionCostAssessment,
     type ExecutionResult,
     type OrderIntent,
     type PriceVerification,
@@ -19,19 +21,7 @@ import type {
     PolymarketOpenOrder,
     PolymarketOrderBook,
 } from "./polymarket-client"
-
-export interface PolymarketMarketPrice {
-    tokenId: string
-    midpoint: number
-    bestBid: number
-    bestAsk: number
-    spread: number
-    executablePrice?: number
-    executableSide?: "buy" | "sell"
-    liquidityWarning?: boolean
-    minimumOrderSize?: number
-    lastTradePrice?: number
-}
+import { getPolymarketMarketPrice, type PolymarketMarketPrice } from "./market-price"
 
 export interface PolymarketMarketSearchResult {
     conditionId: string
@@ -54,6 +44,7 @@ export interface PolymarketMarketSearchResult {
         bestBid?: number
         bestAsk?: number
         spread?: number
+        executionCost?: ExecutionCostAssessment
     }>
 }
 
@@ -73,7 +64,10 @@ export class PolymarketVenueAdapter implements VenueAdapter, PriceVerifier, DryR
     private readonly marketPriceCache = new Map<string, { value: PolymarketMarketPrice; fetchedAt: number }>()
     private readonly inFlightMarketPriceLookups = new Map<string, Promise<PolymarketMarketPrice>>()
 
-    constructor(private readonly client: PolymarketClient) {}
+    constructor(
+        private readonly client: PolymarketClient,
+        private readonly executionCostTracker: ExecutionCostTracker = new ExecutionCostTracker()
+    ) {}
 
     async getPrice(tokenId: string, side: "buy" | "sell"): Promise<number> {
         return this.client.getPrice(tokenId, side)
@@ -81,67 +75,18 @@ export class PolymarketVenueAdapter implements VenueAdapter, PriceVerifier, DryR
 
     async getMarketPrice(
         tokenId: string,
-        side?: "buy" | "sell"
+        side?: "buy" | "sell",
+        options: {
+            warmupSampleCount?: number
+        } = {}
     ): Promise<PolymarketMarketPrice> {
-        const orderBook = await this.client.getOrderBook(tokenId)
-        const minimumOrderSize = parseOptionalNumber(orderBook.min_order_size)
-        const minimumVisibleSize = minimumOrderSize !== undefined && minimumOrderSize > 0
-            ? minimumOrderSize
-            : 0
-        const lastTradePrice = parseOptionalNumber(orderBook.last_trade_price)
-
-        const sizedBid = selectTopOfBookLevel(orderBook.bids, "bid", minimumVisibleSize)
-        const sizedAsk = selectTopOfBookLevel(orderBook.asks, "ask", minimumVisibleSize)
-        const rawBid = selectTopOfBookLevel(orderBook.bids, "bid", 0)
-        const rawAsk = selectTopOfBookLevel(orderBook.asks, "ask", 0)
-        const liquidityWarning = sizedBid === undefined || sizedAsk === undefined
-
-        let bestBid = sizedBid?.price ?? rawBid?.price
-        let bestAsk = sizedAsk?.price ?? rawAsk?.price
-
-        if ((bestBid === undefined || bestAsk === undefined) && lastTradePrice !== undefined) {
-            bestBid = bestBid ?? lastTradePrice
-            bestAsk = bestAsk ?? lastTradePrice
-        }
-
-        if (bestBid === undefined || bestAsk === undefined) {
-            throw createExecutionError(
-                "venue",
-                `Polymarket order book returned no usable top-of-book levels for token ${tokenId}`,
-                {
-                    code: "EMPTY_ORDER_BOOK",
-                    retryable: false,
-                    details: {
-                        tokenId,
-                        minimumOrderSize,
-                        bidLevels: orderBook.bids.length,
-                        askLevels: orderBook.asks.length,
-                        hasLastTradePrice: lastTradePrice !== undefined,
-                    },
-                }
-            )
-        }
-
-        const midpoint = (bestBid + bestAsk) / 2
-        const spread = Math.max(bestAsk - bestBid, 0)
-        const executablePrice = side === "buy"
-            ? bestAsk
-            : side === "sell"
-                ? bestBid
-                : undefined
-
-        return {
+        return await getPolymarketMarketPrice({
+            client: this.client,
+            executionCostTracker: this.executionCostTracker,
             tokenId,
-            midpoint,
-            bestBid,
-            bestAsk,
-            spread,
-            executablePrice,
-            executableSide: side,
-            liquidityWarning,
-            minimumOrderSize,
-            lastTradePrice,
-        }
+            side,
+            warmupSampleCount: options.warmupSampleCount,
+        })
     }
 
     async getOrderBook(tokenId: string): Promise<PolymarketOrderBook> {
@@ -468,6 +413,7 @@ export class PolymarketVenueAdapter implements VenueAdapter, PriceVerifier, DryR
             proposedPrice,
             drift,
             driftPercent,
+            executionCost: marketPrice.executionCost,
             message: proposedPrice === undefined
                 ? "Captured live Polymarket prices before submission. No limit price was provided for drift comparison."
                 : `Compared proposed Polymarket price ${proposedPrice} against live midpoint ${marketPrice.midpoint}.`,
@@ -596,6 +542,7 @@ export class PolymarketVenueAdapter implements VenueAdapter, PriceVerifier, DryR
                     bestBid: price?.bestBid,
                     bestAsk: price?.bestAsk,
                     spread: price?.spread,
+                    executionCost: price?.executionCost,
                 }
             })
         )
@@ -690,7 +637,9 @@ export class PolymarketVenueAdapter implements VenueAdapter, PriceVerifier, DryR
             return await inFlight
         }
 
-        const lookup = this.getMarketPrice(tokenId)
+        const lookup = this.getMarketPrice(tokenId, undefined, {
+            warmupSampleCount: 1,
+        })
             .then((price) => {
                 this.marketPriceCache.set(tokenId, {
                     value: price,
@@ -802,43 +751,6 @@ function dedupeAndRankMarkets(markets: PolymarketMarket[]): PolymarketMarket[] {
 
     return Array.from(byConditionId.values())
         .sort((left, right) => (right.liquidity ?? 0) - (left.liquidity ?? 0))
-}
-
-function parseOptionalNumber(value: unknown): number | undefined {
-    if (typeof value === "number" && Number.isFinite(value)) {
-        return value
-    }
-
-    if (typeof value === "string" && value.trim().length > 0) {
-        const parsed = Number(value)
-        if (Number.isFinite(parsed)) {
-            return parsed
-        }
-    }
-
-    return undefined
-}
-
-function selectTopOfBookLevel(
-    levels: Array<{ price: string; size: string }>,
-    side: "bid" | "ask",
-    minimumSize: number
-): { price: number; size: number } | undefined {
-    const valid = levels
-        .map((level) => ({
-            price: Number(level.price),
-            size: Number(level.size),
-        }))
-        .filter((level) => Number.isFinite(level.price) && Number.isFinite(level.size) && level.size > 0)
-        .filter((level) => level.size >= minimumSize)
-
-    if (valid.length === 0) {
-        return undefined
-    }
-
-    return side === "bid"
-        ? valid.reduce((best, level) => (level.price > best.price ? level : best), valid[0]!)
-        : valid.reduce((best, level) => (level.price < best.price ? level : best), valid[0]!)
 }
 
 function readNonEmptyString(value: unknown): string | undefined {

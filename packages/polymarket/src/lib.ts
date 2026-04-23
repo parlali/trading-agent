@@ -12,8 +12,8 @@ export {
     resolvePolymarketCredentials,
 } from "./runtime-config"
 export { PolymarketVenueAdapter } from "./venue-adapter"
+export type { PolymarketMarketPrice } from "./market-price"
 export type {
-    PolymarketMarketPrice,
     PolymarketMarketSearchResult,
 } from "./venue-adapter"
 export {

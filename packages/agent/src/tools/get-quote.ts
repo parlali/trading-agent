@@ -18,6 +18,7 @@ export function createAlpacaGetQuoteTool(
                 venue.getQuote(validated.symbol),
                 venue.getEquitySnapshot(validated.symbol),
             ])
+            const executionCost = venue.assessEquityQuoteExecutionCost(validated.symbol, quote)
 
             return {
                 symbol: validated.symbol.toUpperCase(),
@@ -28,6 +29,7 @@ export function createAlpacaGetQuoteTool(
                 minuteBar: snapshot.minuteBar,
                 dailyBar: snapshot.dailyBar,
                 prevDailyBar: snapshot.prevDailyBar,
+                executionCost,
             }
         },
     })

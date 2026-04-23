@@ -17,7 +17,11 @@ import {
     ValiqDataClient,
     ValiqResearchAdapter,
 } from "@valiq-trading/valiq"
-import type { RiskValidator, VenueAdapter } from "@valiq-trading/core"
+import {
+    ExecutionCostTracker,
+    type RiskValidator,
+    type VenueAdapter,
+} from "@valiq-trading/core"
 import type { VenuePlugin, ExtraToolsConfig } from "../types"
 
 export class AlpacaPlugin implements VenuePlugin {
@@ -25,6 +29,7 @@ export class AlpacaPlugin implements VenuePlugin {
     readonly venueName = "alpaca"
 
     private environment?: "paper" | "live"
+    private readonly executionCostTracker = new ExecutionCostTracker()
 
     resolveSecretKeys(): string[] {
         return [
@@ -62,7 +67,7 @@ export class AlpacaPlugin implements VenuePlugin {
     ): VenueAdapter {
         const runtimeConfig = resolveAlpacaRuntimeConfig(secrets)
         const client = new AlpacaClient(runtimeConfig)
-        return new AlpacaOptionsVenueAdapter(client)
+        return new AlpacaOptionsVenueAdapter(client, this.executionCostTracker)
     }
 
     getRiskValidators(): readonly RiskValidator[] {

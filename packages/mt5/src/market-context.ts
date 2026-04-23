@@ -1,31 +1,30 @@
-import type { MT5Policy } from "@valiq-trading/core"
+import {
+    formatExecutionCostAssessment,
+    type MT5Policy,
+    type ExecutionCostAssessment,
+} from "@valiq-trading/core"
 import type { MT5SymbolInfo } from "./mt5-client"
 
 type SpreadUnit = "pips" | "points"
 
 const DEFAULT_INSTRUMENT_PROFILES: Record<string, {
     regions: string[]
-    normalSpread: number
     spreadUnit: SpreadUnit
 }> = {
     EURUSD: {
         regions: ["US", "GB", "EU"],
-        normalSpread: 1.0,
         spreadUnit: "pips",
     },
     USDJPY: {
         regions: ["US", "GB", "EU"],
-        normalSpread: 1.0,
         spreadUnit: "pips",
     },
     XAUUSD: {
         regions: ["US", "GB"],
-        normalSpread: 25,
         spreadUnit: "points",
     },
     US30: {
         regions: ["US"],
-        normalSpread: 20,
         spreadUnit: "points",
     },
 }
@@ -42,13 +41,12 @@ export interface MT5MarketSnapshot {
     ask: number
     spread: number
     spreadUnit: SpreadUnit
-    normalSpread?: number
+    executionCost: ExecutionCostAssessment
 }
 
 export interface MT5NormalizedSpread {
     value: number
     unit: SpreadUnit
-    normal?: number
 }
 
 export function resolveMT5InstrumentRegions(policy: MT5Policy): Record<string, string[]> {
@@ -79,20 +77,15 @@ export function createMT5SpreadContextLine(
 
     const parts = [...snapshots]
         .sort((left, right) => left.instrument.localeCompare(right.instrument))
-        .map((snapshot) => {
-            const currentSpread = formatSpreadValue(snapshot.spread)
+        .map((snapshot) => formatExecutionCostAssessment(snapshot.executionCost))
 
-            if (snapshot.normalSpread === undefined) {
-                return `${snapshot.instrument} ${currentSpread} ${snapshot.spreadUnit}`
-            }
-
-            return `${snapshot.instrument} ${currentSpread} ${snapshot.spreadUnit} (normal ~${formatSpreadValue(snapshot.normalSpread)})`
-        })
-
-    return `Current spreads: ${parts.join(", ")}`
+    return `Current MT5 execution context: ${parts.join(" | ")}`
 }
 
-export function toMT5MarketSnapshot(symbolInfo: MT5SymbolInfo): MT5MarketSnapshot {
+export function toMT5MarketSnapshot(
+    symbolInfo: MT5SymbolInfo,
+    executionCost: ExecutionCostAssessment
+): MT5MarketSnapshot {
     const spread = resolveMT5NormalizedSpread(symbolInfo)
     return {
         instrument: normalizeInstrument(symbolInfo.symbol),
@@ -100,7 +93,7 @@ export function toMT5MarketSnapshot(symbolInfo: MT5SymbolInfo): MT5MarketSnapsho
         ask: symbolInfo.ask,
         spread: spread.value,
         spreadUnit: spread.unit,
-        normalSpread: spread.normal,
+        executionCost,
     }
 }
 
@@ -154,7 +147,6 @@ export function resolveMT5NormalizedSpread(symbolInfo: MT5SymbolInfo): MT5Normal
     return {
         value,
         unit,
-        normal: profile?.normalSpread,
     }
 }
 
@@ -169,12 +161,4 @@ function resolveSpreadValue(symbolInfo: MT5SymbolInfo, unitSize: number): number
     }
 
     return symbolInfo.spread
-}
-
-function formatSpreadValue(value: number): string {
-    if (Math.abs(value) < 10) {
-        return value.toFixed(1)
-    }
-
-    return Number.isInteger(value) ? value.toFixed(0) : value.toFixed(1)
 }

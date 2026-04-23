@@ -1,6 +1,26 @@
 import { VENUE_APPS, type VenueApp } from "@valiq-trading/core"
 import { z } from "zod"
 import {
+    getOptionsChainJsonSchema,
+    getOptionsChainParamsSchema,
+    getQuoteJsonSchema,
+    getSymbolInfoJsonSchema,
+    okxMarketPriceJsonSchema,
+    okxOrderBookJsonSchema,
+    okxOrderBookParamsSchema,
+    polymarketMarketPriceJsonSchema,
+    polymarketMarketPriceParamsSchema,
+    polymarketOrderBookJsonSchema,
+    polymarketOrderBookParamsSchema,
+    searchMarketsJsonSchema,
+    searchMarketsParamsSchema,
+    singleSymbolParamsSchema,
+    webFetchJsonSchema,
+    webFetchParamsSchema,
+    webSearchJsonSchema,
+    webSearchParamsSchema,
+} from "./tool-contract-market-data-schemas"
+import {
     okxOrderJsonSchema,
     okxOrderParamsSchema,
 } from "./tools/okx-order-helpers"
@@ -9,6 +29,27 @@ import {
     mt5OrderParamsSchema,
 } from "./tools/mt5-order-helpers"
 import type { ToolCategory, ToolDefinition } from "./tool-registry"
+
+export {
+    getOptionsChainJsonSchema,
+    getOptionsChainParamsSchema,
+    getQuoteJsonSchema,
+    getSymbolInfoJsonSchema,
+    okxMarketPriceJsonSchema,
+    okxOrderBookJsonSchema,
+    okxOrderBookParamsSchema,
+    polymarketMarketPriceJsonSchema,
+    polymarketMarketPriceParamsSchema,
+    polymarketOrderBookJsonSchema,
+    polymarketOrderBookParamsSchema,
+    searchMarketsJsonSchema,
+    searchMarketsParamsSchema,
+    singleSymbolParamsSchema,
+    webFetchJsonSchema,
+    webFetchParamsSchema,
+    webSearchJsonSchema,
+    webSearchParamsSchema,
+} from "./tool-contract-market-data-schemas"
 
 export type ToolContractBoundary = "shared" | "venue-owned"
 
@@ -369,233 +410,6 @@ export const mt5ModifyOrderJsonSchema = {
     required: ["orderId"],
 } satisfies Record<string, unknown>
 
-export const getOptionsChainParamsSchema = z.object({
-    underlyingSymbol: z.string(),
-    expirationDate: z.string().optional(),
-    expirationDateFrom: z.string().optional(),
-    expirationDateTo: z.string().optional(),
-    strikePriceGte: z.number().optional(),
-    strikePriceLte: z.number().optional(),
-    optionType: z.enum(["call", "put"]).optional(),
-    limit: z.number().int().positive().max(1000).optional(),
-})
-
-export const getOptionsChainJsonSchema = {
-    type: "object",
-    properties: {
-        underlyingSymbol: {
-            type: "string",
-            description: "Underlying equity symbol such as SPY",
-        },
-        expirationDate: {
-            type: "string",
-            description: "Exact expiration date in YYYY-MM-DD format",
-        },
-        expirationDateFrom: {
-            type: "string",
-            description: "Earliest expiration date in YYYY-MM-DD format",
-        },
-        expirationDateTo: {
-            type: "string",
-            description: "Latest expiration date in YYYY-MM-DD format",
-        },
-        strikePriceGte: {
-            type: "number",
-            description: "Minimum strike price filter",
-        },
-        strikePriceLte: {
-            type: "number",
-            description: "Maximum strike price filter",
-        },
-        optionType: {
-            type: "string",
-            enum: ["call", "put"],
-        },
-        limit: {
-            type: "number",
-            description: "Maximum number of contracts to return",
-        },
-    },
-    required: ["underlyingSymbol"],
-} satisfies Record<string, unknown>
-
-export const singleSymbolParamsSchema = z.object({
-    symbol: z.string(),
-})
-
-export const getQuoteJsonSchema = {
-    type: "object",
-    properties: {
-        symbol: {
-            type: "string",
-            description: "Underlying equity symbol such as SPY",
-        },
-    },
-    required: ["symbol"],
-} satisfies Record<string, unknown>
-
-export const getSymbolInfoJsonSchema = {
-    type: "object",
-    properties: {
-        symbol: {
-            type: "string",
-            description: "MT5 symbol such as XAUUSD or US30",
-        },
-    },
-    required: ["symbol"],
-} satisfies Record<string, unknown>
-
-export const polymarketMarketPriceParamsSchema = z.object({
-    tokenId: z.string(),
-    side: z.enum(["buy", "sell"]).optional(),
-})
-
-export const polymarketMarketPriceJsonSchema = {
-    type: "object",
-    properties: {
-        tokenId: {
-            type: "string",
-            description: "Polymarket token ID",
-        },
-        side: {
-            type: "string",
-            enum: ["buy", "sell"],
-            description: "Optional side to include the current executable price",
-        },
-    },
-    required: ["tokenId"],
-} satisfies Record<string, unknown>
-
-export const okxMarketPriceJsonSchema = {
-    type: "object",
-    properties: {
-        symbol: {
-            type: "string",
-            description: "OKX swap instrument such as BTC-USDT-SWAP or ETH-USDT-SWAP",
-        },
-    },
-    required: ["symbol"],
-} satisfies Record<string, unknown>
-
-export const polymarketOrderBookParamsSchema = z.object({
-    tokenId: z.string(),
-    levels: z.number().int().positive().max(50).optional(),
-})
-
-export const polymarketOrderBookJsonSchema = {
-    type: "object",
-    properties: {
-        tokenId: {
-            type: "string",
-            description: "Polymarket token ID",
-        },
-        levels: {
-            type: "number",
-            description: "Optional number of bid and ask levels to return",
-        },
-    },
-    required: ["tokenId"],
-} satisfies Record<string, unknown>
-
-export const okxOrderBookParamsSchema = z.object({
-    symbol: z.string(),
-    limit: z.number().int().positive().max(1000).optional(),
-})
-
-export const okxOrderBookJsonSchema = {
-    type: "object",
-    properties: {
-        symbol: {
-            type: "string",
-            description: "OKX swap instrument such as BTC-USDT-SWAP or ETH-USDT-SWAP",
-        },
-        limit: {
-            type: "number",
-            description: "Depth limit passed to OKX",
-        },
-    },
-    required: ["symbol"],
-} satisfies Record<string, unknown>
-
-export const searchMarketsParamsSchema = z.object({
-    category: z.string().optional(),
-    query: z.string().optional(),
-    conditionId: z.string().optional(),
-    marketSlug: z.string().optional(),
-    limit: z.number()
-        .int()
-        .positive()
-        .transform((limit) => Math.min(limit, 25))
-        .optional(),
-    includeLivePrices: z.boolean().optional(),
-    livePriceTokenLimit: z.number()
-        .int()
-        .nonnegative()
-        .optional(),
-})
-
-export const searchMarketsJsonSchema = {
-    type: "object",
-    properties: {
-        category: {
-            type: "string",
-            description: "Polymarket category/tag slug such as politics, crypto, finance, or world",
-        },
-        query: {
-            type: "string",
-            description: "Optional search text to narrow the Gamma category or public-search results",
-        },
-        conditionId: {
-            type: "string",
-            description: "Exact Polymarket condition ID",
-        },
-        marketSlug: {
-            type: "string",
-            description: "Exact Polymarket market or event slug, for example from a Polymarket URL",
-        },
-        limit: {
-            type: "number",
-            description: "Maximum number of markets to return",
-        },
-        includeLivePrices: {
-            type: "boolean",
-            description: "Opt-in live Polymarket CLOB price enrichment for returned token IDs. Leave unset for Gamma-only discovery.",
-        },
-        livePriceTokenLimit: {
-            type: "number",
-            description: "Maximum number of token IDs to enrich with live prices when includeLivePrices is true. Use 0 to disable live price enrichment. The venue adapter applies the hard cap.",
-        },
-    },
-} satisfies Record<string, unknown>
-
-export const webSearchParamsSchema = z.object({
-    query: z.string(),
-    maxResults: z.number().int().positive().max(20).default(5),
-})
-
-export const webSearchJsonSchema = {
-    type: "object",
-    properties: {
-        query: { type: "string", description: "The search query" },
-        maxResults: { type: "number", description: "Maximum number of results (1-20, default 5)" },
-    },
-    required: ["query"],
-} satisfies Record<string, unknown>
-
-export const webFetchParamsSchema = z.object({
-    url: z.string().url(),
-    maxLength: z.number().int().positive().default(10000),
-})
-
-export const webFetchJsonSchema = {
-    type: "object",
-    properties: {
-        url: { type: "string", description: "The URL to fetch" },
-        maxLength: { type: "number", description: "Maximum characters to return (default 10000)" },
-    },
-    required: ["url"],
-} satisfies Record<string, unknown>
-
 const OPENROUTER_UNSUPPORTED_TOP_LEVEL_JSON_SCHEMA_KEYS = [
     "oneOf",
     "anyOf",
@@ -868,10 +682,10 @@ const toolContracts = createToolContractCatalog([
         owner: "alpaca-options",
         compatibleVenues: ["alpaca-options"],
         defaultVariant: {
-            description: "Fetch the live Alpaca options chain for an underlying. Returns contracts with current bid and ask, midpoint, latest trade, greeks, implied volatility, and open interest from Alpaca market data.",
+            description: "Fetch the live Alpaca options chain for an underlying. Returns contracts with current bid and ask, midpoint, latest trade, greeks, implied volatility, open interest, and canonical executionCost derived from Alpaca market data.",
             parameters: getOptionsChainParamsSchema,
             jsonSchema: getOptionsChainJsonSchema,
-            outputDescription: "Returns normalized options contracts and any pagination token from Alpaca.",
+            outputDescription: "Returns normalized options contracts with canonical executionCost fields and any pagination token from Alpaca.",
             errorSemantics: "Venue lookup failures throw.",
         },
     },
@@ -882,10 +696,10 @@ const toolContracts = createToolContractCatalog([
         owner: "alpaca-options",
         compatibleVenues: ["alpaca-options"],
         defaultVariant: {
-            description: "Fetch the latest live Alpaca quote for an equity underlying. Returns current bid, ask, last trade price, minute bar, and timestamps.",
+            description: "Fetch the latest live Alpaca quote for an equity underlying. Returns current bid, ask, last trade price, recent bars, and canonical executionCost.",
             parameters: singleSymbolParamsSchema,
             jsonSchema: getQuoteJsonSchema,
-            outputDescription: "Returns the current normalized equity quote and recent bar snapshot.",
+            outputDescription: "Returns the current normalized equity quote, recent bar snapshot, and canonical executionCost.",
             errorSemantics: "Venue lookup failures throw.",
         },
     },
@@ -896,10 +710,10 @@ const toolContracts = createToolContractCatalog([
         owner: "mt5",
         compatibleVenues: ["mt5"],
         defaultVariant: {
-            description: "Fetch live MT5 symbol information including bid, ask, normalized spread with its unit, tick value, contract size, and volume constraints.",
+            description: "Fetch live MT5 symbol information including bid, ask, normalized spread with its unit, canonical executionCost, tick value, contract size, and volume constraints.",
             parameters: singleSymbolParamsSchema,
             jsonSchema: getSymbolInfoJsonSchema,
-            outputDescription: "Returns normalized MT5 symbol metadata, including spread and spreadUnit, or a found:false payload when the symbol is unavailable.",
+            outputDescription: "Returns normalized MT5 symbol metadata, including spread, spreadUnit, and canonical executionCost, or a found:false payload when the symbol is unavailable.",
             errorSemantics: "Missing symbols return found:false. Worker or transport failures throw.",
         },
     },
@@ -911,17 +725,17 @@ const toolContracts = createToolContractCatalog([
         compatibleVenues: ["polymarket", "okx-swap"],
         variants: {
             polymarket: {
-                description: "Fetch the current Polymarket midpoint, best bid, best ask, spread, optional executable price, and liquidityWarning derived from one /book snapshot.",
+                description: "Fetch the current Polymarket midpoint, best bid, best ask, spread, optional executable price, liquidityWarning, and canonical executionCost derived from one /book snapshot.",
                 parameters: polymarketMarketPriceParamsSchema,
                 jsonSchema: polymarketMarketPriceJsonSchema,
-                outputDescription: "Returns normalized Polymarket pricing, spread, and liquidity warning information for the requested token.",
+                outputDescription: "Returns normalized Polymarket pricing, spread, liquidity warning, and canonical executionCost information for the requested token.",
                 errorSemantics: "Venue lookup failures throw.",
             },
             "okx-swap": {
-                description: "Fetch the current OKX swap mark price, last price, best bid, best ask, spread, funding rate, and next funding time for an instrument.",
+                description: "Fetch the current OKX swap mark price, last price, best bid, best ask, spread, funding rate, next funding time, and canonical executionCost for an instrument.",
                 parameters: singleSymbolParamsSchema,
                 jsonSchema: okxMarketPriceJsonSchema,
-                outputDescription: "Returns normalized OKX swap pricing, spread, and funding information for the requested instrument.",
+                outputDescription: "Returns normalized OKX swap pricing, spread, funding, and canonical executionCost information for the requested instrument.",
                 errorSemantics: "Venue lookup failures throw.",
             },
         },
@@ -959,7 +773,7 @@ const toolContracts = createToolContractCatalog([
             description: "Discover active Polymarket markets via Gamma, or look up a direct condition ID or market slug. Use this to get a top-liquid candidate list and token IDs first, then request live prices or order books only for your best candidate markets.",
             parameters: searchMarketsParamsSchema,
             jsonSchema: searchMarketsJsonSchema,
-            outputDescription: "Returns normalized Polymarket market discovery results. By default this is Gamma-only metadata plus token IDs; live price enrichment is explicit and tightly capped.",
+            outputDescription: "Returns normalized Polymarket market discovery results. By default this is Gamma-only metadata plus token IDs; optional live price enrichment adds venue pricing and executionCost for a tightly capped token subset.",
             errorSemantics: "Empty requests throw before venue lookup. Harmless optional enrichment fields are ignored when enrichment is disabled.",
         },
     },

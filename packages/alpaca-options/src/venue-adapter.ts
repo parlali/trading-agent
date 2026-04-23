@@ -1,7 +1,10 @@
 import {
     ACTIVE_ORDER_STATUSES,
     createExecutionError,
+    ExecutionCostTracker,
     type AccountState,
+    type ExecutionCostAssessment,
+    type ExecutionCostSnapshot,
     type ExecutionResult,
     type OrderIntent,
     type PriceVerification,
@@ -70,7 +73,10 @@ interface CreditVerticalUnit {
 }
 
 export class AlpacaOptionsVenueAdapter implements VenueAdapter, PriceVerifier {
-    constructor(private readonly client: AlpacaClient) {}
+    constructor(
+        private readonly client: AlpacaClient,
+        private readonly executionCostTracker: ExecutionCostTracker = new ExecutionCostTracker()
+    ) {}
 
     async getOptionsChain(
         underlyingSymbol: string,
@@ -114,6 +120,82 @@ export class AlpacaOptionsVenueAdapter implements VenueAdapter, PriceVerifier {
 
     async getEquitySnapshot(symbol: string): Promise<AlpacaEquitySnapshot> {
         return await this.client.getEquitySnapshot(symbol)
+    }
+
+    assessEquityQuoteExecutionCost(
+        symbol: string,
+        quote: AlpacaEquityQuote
+    ): ExecutionCostAssessment {
+        return this.executionCostTracker.assessSnapshot({
+            app: "alpaca-options",
+            instrument: symbol.trim().toUpperCase(),
+            instrumentClass: "equity",
+            capturedAt: Date.now(),
+            bestBid: quote.bidPrice,
+            bestAsk: quote.askPrice,
+            midpoint: quote.bidPrice !== undefined && quote.askPrice !== undefined
+                ? (quote.bidPrice + quote.askPrice) / 2
+                : undefined,
+            referencePrice: quote.bidPrice !== undefined && quote.askPrice !== undefined
+                ? (quote.bidPrice + quote.askPrice) / 2
+                : undefined,
+            absoluteSpread: quote.bidPrice !== undefined && quote.askPrice !== undefined
+                ? Math.max(quote.askPrice - quote.bidPrice, 0)
+                : undefined,
+            nativeSpread: quote.bidPrice !== undefined && quote.askPrice !== undefined
+                ? Math.max(quote.askPrice - quote.bidPrice, 0)
+                : undefined,
+            nativeSpreadUnit: "price",
+        })
+    }
+
+    assessOptionQuoteExecutionCost(
+        symbol: string,
+        snapshot?: AlpacaOptionSnapshotsResponse["snapshots"][string]
+    ): ExecutionCostAssessment {
+        const bid = snapshot?.latestQuote?.bidPrice
+        const ask = snapshot?.latestQuote?.askPrice
+        const midpoint = bid !== undefined && ask !== undefined
+            ? (bid + ask) / 2
+            : undefined
+        const lastTradePrice = snapshot?.latestTrade?.price
+
+        return this.executionCostTracker.assessSnapshot({
+            app: "alpaca-options",
+            instrument: symbol.trim().toUpperCase(),
+            instrumentClass: "equity_option",
+            capturedAt: Date.now(),
+            bestBid: bid,
+            bestAsk: ask,
+            midpoint,
+            referencePrice: midpoint ?? lastTradePrice,
+            absoluteSpread: bid !== undefined && ask !== undefined
+                ? Math.max(ask - bid, 0)
+                : undefined,
+            nativeSpread: bid !== undefined && ask !== undefined
+                ? Math.max(ask - bid, 0)
+                : undefined,
+            nativeSpreadUnit: "price",
+        })
+    }
+
+    assessStructureExecutionCost(
+        instrument: string,
+        livePrices: PriceVerification["livePrices"]
+    ): ExecutionCostAssessment {
+        return this.executionCostTracker.assessSnapshot({
+            app: "alpaca-options",
+            instrument,
+            instrumentClass: "option_structure",
+            capturedAt: Date.now(),
+            bestBid: livePrices.bid,
+            bestAsk: livePrices.ask,
+            midpoint: livePrices.mid,
+            referencePrice: livePrices.mid,
+            absoluteSpread: livePrices.spread,
+            nativeSpread: livePrices.spread,
+            nativeSpreadUnit: "price",
+        })
     }
 
     async getPositions(): Promise<Position[]> {
@@ -335,6 +417,7 @@ export class AlpacaOptionsVenueAdapter implements VenueAdapter, PriceVerifier {
             .filter((leg) => leg.bid === undefined || leg.ask === undefined)
             .map((leg) => leg.symbol)
         const livePrices = computeAlpacaStructurePrices(legQuotes)
+        const executionCost = this.assessStructureExecutionCost(intent.instrument, livePrices)
         const proposedPrice = intent.limitPrice
         const drift = livePrices.mid !== undefined && proposedPrice !== undefined
             ? proposedPrice - livePrices.mid
@@ -351,6 +434,7 @@ export class AlpacaOptionsVenueAdapter implements VenueAdapter, PriceVerifier {
                 proposedPrice,
                 drift,
                 driftPercent,
+                executionCost,
                 message: `Alpaca live snapshots were unavailable for ${missingSnapshots.join(", ")}.`,
                 details: {
                     ...details,
@@ -365,6 +449,7 @@ export class AlpacaOptionsVenueAdapter implements VenueAdapter, PriceVerifier {
             proposedPrice,
             drift,
             driftPercent,
+            executionCost,
             message: livePrices.mid !== undefined && proposedPrice !== undefined
                 ? `Compared proposed net price ${proposedPrice} against live midpoint ${roundPrice(livePrices.mid)}.`
                 : "Captured live Alpaca structure prices before submission.",

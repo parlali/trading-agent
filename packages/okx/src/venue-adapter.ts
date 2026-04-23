@@ -1,8 +1,11 @@
 import {
     createExecutionError,
     createExecutionErrorDetail,
+    ExecutionCostTracker,
     formatExecutionError,
     type AccountState,
+    type ExecutionCostAssessment,
+    type ExecutionCostSnapshot,
     type ExecutionResult,
     type OrderIntent,
     type PriceVerification,
@@ -65,6 +68,7 @@ export interface OKXMarketPrice {
     spread: number
     fundingRate?: number
     nextFundingTime?: number
+    executionCost: ExecutionCostAssessment
 }
 
 export class OKXVenueAdapter implements VenueAdapter, PriceVerifier {
@@ -76,7 +80,8 @@ export class OKXVenueAdapter implements VenueAdapter, PriceVerifier {
         private readonly config: {
             marginMode: OKXMarginMode
             positionMode: OKXPositionMode
-        }
+        },
+        private readonly executionCostTracker: ExecutionCostTracker = new ExecutionCostTracker()
     ) {}
 
     async getPositions(): Promise<Position[]> {
@@ -477,27 +482,15 @@ export class OKXVenueAdapter implements VenueAdapter, PriceVerifier {
 
     async getMarketPrice(symbol: string): Promise<OKXMarketPrice> {
         const instId = normalizeInstrument(symbol)
-        const [ticker, mark, funding] = await Promise.all([
-            this.client.getTicker(instId),
-            this.client.getMarkPrice(instId),
-            this.client.getFundingRate(instId).catch(async () => {
-                const history = await this.client.getFundingRateHistory(instId, 1)
-                return history[0]
-            }),
-        ])
-
-        const bestBid = Number(ticker.bidPx)
-        const bestAsk = Number(ticker.askPx)
+        const current = await this.fetchRawMarketPrice(instId)
+        const snapshots = this.executionCostTracker.needsWarmup(this.buildExecutionCostSnapshot(current))
+            ? await this.collectMarketPriceSnapshots(instId, current, 3)
+            : [this.buildExecutionCostSnapshot(current)]
+        const executionCost = this.executionCostTracker.assessSnapshots(snapshots)
 
         return {
-            symbol: instId,
-            markPrice: Number(mark.markPx),
-            lastPrice: Number(ticker.last),
-            bestBid,
-            bestAsk,
-            spread: Math.max(bestAsk - bestBid, 0),
-            fundingRate: funding?.fundingRate !== undefined ? Number(funding.fundingRate) : undefined,
-            nextFundingTime: funding?.nextFundingTime !== undefined ? Number(funding.nextFundingTime) : undefined,
+            ...current,
+            executionCost,
         }
     }
 
@@ -558,6 +551,7 @@ export class OKXVenueAdapter implements VenueAdapter, PriceVerifier {
             proposedPrice,
             drift,
             driftPercent,
+            executionCost: marketPrice.executionCost,
             message: proposedPrice === undefined
                 ? "Captured live OKX swap market prices before submission. No limit price was provided for drift comparison."
                 : `Compared proposed OKX swap price ${proposedPrice} against live midpoint ${mid}.`,
@@ -575,21 +569,78 @@ export class OKXVenueAdapter implements VenueAdapter, PriceVerifier {
         return await Promise.all(
             symbols.map(async (symbol) => {
                 const market = await this.getMarketPrice(symbol)
-                const markPrice = market.markPrice
-                const spreadPercent = markPrice > 0
-                    ? (market.spread / markPrice) * 100
-                    : 0
 
                 return {
                     instrument: normalizeInstrument(symbol),
                     bid: market.bestBid,
                     ask: market.bestAsk,
-                    markPrice,
-                    spreadPercent,
+                    markPrice: market.markPrice,
                     fundingRate: market.fundingRate ?? 0,
+                    executionCost: market.executionCost,
                 } satisfies OKXMarketSnapshot
             })
         )
+    }
+
+    private async fetchRawMarketPrice(symbol: string): Promise<Omit<OKXMarketPrice, "executionCost">> {
+        const [ticker, mark, funding] = await Promise.all([
+            this.client.getTicker(symbol),
+            this.client.getMarkPrice(symbol),
+            this.client.getFundingRate(symbol).catch(async () => {
+                const history = await this.client.getFundingRateHistory(symbol, 1)
+                return history[0]
+            }),
+        ])
+
+        const bestBid = Number(ticker.bidPx)
+        const bestAsk = Number(ticker.askPx)
+
+        return {
+            symbol,
+            markPrice: Number(mark.markPx),
+            lastPrice: Number(ticker.last),
+            bestBid,
+            bestAsk,
+            spread: Math.max(bestAsk - bestBid, 0),
+            fundingRate: funding?.fundingRate !== undefined ? Number(funding.fundingRate) : undefined,
+            nextFundingTime: funding?.nextFundingTime !== undefined ? Number(funding.nextFundingTime) : undefined,
+        }
+    }
+
+    private async collectMarketPriceSnapshots(
+        symbol: string,
+        current: Omit<OKXMarketPrice, "executionCost">,
+        sampleCount: number
+    ): Promise<ExecutionCostSnapshot[]> {
+        const snapshots = [this.buildExecutionCostSnapshot(current)]
+        while (snapshots.length < sampleCount) {
+            snapshots.push(this.buildExecutionCostSnapshot(
+                await this.fetchRawMarketPrice(symbol)
+            ))
+        }
+        return snapshots
+    }
+
+    private buildExecutionCostSnapshot(
+        marketPrice: Omit<OKXMarketPrice, "executionCost">
+    ): ExecutionCostSnapshot {
+        const midpoint = marketPrice.bestBid > 0 && marketPrice.bestAsk > 0
+            ? (marketPrice.bestBid + marketPrice.bestAsk) / 2
+            : marketPrice.markPrice
+
+        return {
+            app: "okx-swap",
+            instrument: marketPrice.symbol,
+            instrumentClass: "perpetual_swap",
+            capturedAt: Date.now(),
+            bestBid: marketPrice.bestBid,
+            bestAsk: marketPrice.bestAsk,
+            midpoint,
+            referencePrice: midpoint > 0 ? midpoint : marketPrice.markPrice,
+            absoluteSpread: marketPrice.spread,
+            nativeSpread: marketPrice.spread,
+            nativeSpreadUnit: "price",
+        }
     }
 
     async normalizeQuantity(

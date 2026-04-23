@@ -23,6 +23,7 @@ export function createAlpacaGetOptionsChainTool(
                 const midpoint = bid !== undefined && ask !== undefined
                     ? (bid + ask) / 2
                     : undefined
+                const executionCost = venue.assessOptionQuoteExecutionCost(contract.symbol, snapshot)
 
                 return {
                     symbol: contract.symbol,
@@ -42,6 +43,7 @@ export function createAlpacaGetOptionsChainTool(
                     openInterest: snapshot?.openInterest ?? contract.openInterest,
                     impliedVolatility: snapshot?.impliedVolatility,
                     greeks: snapshot?.greeks,
+                    executionCost,
                 }
             })
 

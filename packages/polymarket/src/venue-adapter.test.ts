@@ -189,6 +189,8 @@ describe("PolymarketVenueAdapter.searchMarkets", () => {
         )
         expect(countEnrichedTokens(first)).toBe(POLYMARKET_SEARCH_MARKETS_MAX_LIVE_PRICE_TOKENS)
         expect(countEnrichedTokens(second)).toBe(POLYMARKET_SEARCH_MARKETS_MAX_LIVE_PRICE_TOKENS)
+        expect(first.flatMap((market) => market.tokens).find((token) => token.executionCost !== undefined)?.executionCost?.metrics.instrument)
+            .toBeDefined()
 
         await venue.searchMarkets({
             ...params,
@@ -280,6 +282,8 @@ describe("PolymarketVenueAdapter.getMarketPrice", () => {
         expect(marketPrice.spread).toBe(topAsk - topBid)
         expect(marketPrice.executablePrice).toBe(topAsk)
         expect(marketPrice.liquidityWarning).toBe(false)
+        expect(marketPrice.executionCost.status).toBe("normal")
+        expect(marketPrice.executionCost.metrics.nativeSpreadUnit).toBe("probability")
     })
 
     it("flags liquidityWarning when only dust levels are present", async () => {
@@ -304,6 +308,7 @@ describe("PolymarketVenueAdapter.getMarketPrice", () => {
         expect(marketPrice.bestAsk).toBe(0.59)
         expect(marketPrice.executablePrice).toBe(0.41)
         expect(marketPrice.liquidityWarning).toBe(true)
+        expect(marketPrice.executionCost.status).toBe("blocked")
     })
 })
 

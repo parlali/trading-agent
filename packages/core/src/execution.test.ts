@@ -7,6 +7,7 @@ import {
     type TradeEventLogger,
     type VenueAdapter,
 } from "./execution.ts"
+import { assessExecutionCost, resolveExecutionCostMetrics } from "./execution-cost.ts"
 import { createLogger } from "./logger.ts"
 import type { AccountState, ExecutionResult, OrderIntent, Position, ValidationResult } from "./types.ts"
 
@@ -64,6 +65,25 @@ function createTradeLogger() {
         logSubmission: vi.fn(async () => {}),
         logFillUpdate: vi.fn(async () => {}),
     } satisfies TradeEventLogger
+}
+
+function createBlockedExecutionCost() {
+    return assessExecutionCost(
+        resolveExecutionCostMetrics({
+            app: "polymarket",
+            instrument: "token-yes",
+            instrumentClass: "prediction_market",
+            capturedAt: Date.UTC(2026, 3, 23, 14, 0, 0),
+            bestBid: 0.41,
+            bestAsk: 0.59,
+            midpoint: 0.5,
+            referencePrice: 0.5,
+            absoluteSpread: 0.18,
+            nativeSpread: 0.18,
+            nativeSpreadUnit: "probability",
+            liquidityWarning: true,
+        })
+    )
 }
 
 describe("ExecutionPipeline dry-run accounting", () => {
@@ -434,5 +454,115 @@ describe("ExecutionPipeline dry-run accounting", () => {
                 requestedBy: "agent",
             },
         })
+    })
+})
+
+describe("ExecutionPipeline execution-cost gating", () => {
+    it("blocks new entries when canonical execution cost is blocked", async () => {
+        const submitOrder = vi.fn(createVenue().submitOrder)
+        const venue: VenueAdapter & PriceVerifier = {
+            ...createVenue(),
+            submitOrder,
+            verify: async () => ({
+                ok: true,
+                livePrices: {
+                    bid: 0.41,
+                    ask: 0.59,
+                    mid: 0.5,
+                    spread: 0.18,
+                },
+                proposedPrice: 0.52,
+                drift: 0.02,
+                driftPercent: 4,
+                executionCost: createBlockedExecutionCost(),
+                message: "Captured live Polymarket prices before submission.",
+            }),
+        }
+        const pipeline = new ExecutionPipeline({
+            venue,
+            venueName: "polymarket",
+            policy: {
+                dryRun: false,
+            },
+            logger: createLogger({ minLevel: "fatal" }),
+            runId: "run-cost-1",
+            strategyId: "strategy-1",
+        })
+
+        const { result } = await pipeline.executeIntent({
+            instrument: "token-yes",
+            side: "buy",
+            quantity: 5,
+            orderType: "limit",
+            limitPrice: 0.52,
+            timeInForce: "gtc",
+            metadata: {
+                action: "entry",
+            },
+        }, account, [])
+
+        expect(result.status).toBe("rejected")
+        expect(result.error).toContain("Blocked by execution-cost validation")
+        expect(result.priceVerification?.status).toBe("block")
+        expect(submitOrder).not.toHaveBeenCalled()
+    })
+
+    it("allows risk-reducing adjustments even when execution cost is blocked", async () => {
+        const submitOrder = vi.fn(createVenue().submitOrder)
+        const venue: VenueAdapter & PriceVerifier = {
+            ...createVenue(),
+            submitOrder,
+            verify: async () => ({
+                ok: true,
+                livePrices: {
+                    bid: 0.41,
+                    ask: 0.59,
+                    mid: 0.5,
+                    spread: 0.18,
+                },
+                proposedPrice: 0.41,
+                drift: -0.09,
+                driftPercent: -18,
+                executionCost: createBlockedExecutionCost(),
+                message: "Captured live Polymarket prices before submission.",
+            }),
+        }
+        const pipeline = new ExecutionPipeline({
+            venue,
+            venueName: "polymarket",
+            policy: {
+                dryRun: false,
+            },
+            logger: createLogger({ minLevel: "fatal" }),
+            runId: "run-cost-2",
+            strategyId: "strategy-1",
+        })
+
+        const positions: Position[] = [
+            {
+                instrument: "token-yes",
+                side: "long",
+                quantity: 10,
+                entryPrice: 0.5,
+                currentPrice: 0.5,
+            },
+        ]
+
+        const { result } = await pipeline.executeIntent({
+            instrument: "token-yes",
+            side: "sell",
+            quantity: 5,
+            orderType: "limit",
+            limitPrice: 0.41,
+            timeInForce: "gtc",
+            metadata: {
+                action: "adjustment",
+                riskReducing: true,
+            },
+        }, account, positions, { action: "adjustment" })
+
+        expect(result.status).toBe("filled")
+        expect(result.priceVerification?.status).not.toBe("block")
+        expect(submitOrder).toHaveBeenCalledTimes(1)
     })
 })

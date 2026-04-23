@@ -61,6 +61,23 @@ function createClientMock() {
             unrealized_pl: "50",
             last_equity: "10000",
         }),
+        getOptionContracts: vi.fn().mockResolvedValue({
+            contracts: [],
+        }),
+        getOptionSnapshots: vi.fn().mockResolvedValue({
+            snapshots: {},
+        }),
+        getLatestEquityQuote: vi.fn().mockResolvedValue({
+            bidPrice: 600,
+            askPrice: 600.1,
+            timestamp: "2026-04-10T10:00:00Z",
+        }),
+        getEquitySnapshot: vi.fn().mockResolvedValue({
+            latestTrade: {
+                price: 600.05,
+                timestamp: "2026-04-10T10:00:00Z",
+            },
+        }),
     }
 }
 
@@ -493,5 +510,89 @@ describe("AlpacaOptionsVenueAdapter", () => {
             },
         })
         expect(client.createOrder).not.toHaveBeenCalled()
+    })
+
+    it("returns canonical executionCost during Alpaca structure verification", async () => {
+        const client = createClientMock()
+        client.getOptionContracts.mockResolvedValue({
+            contracts: [
+                {
+                    symbol: "SPY260424P00650000",
+                    underlyingSymbol: "SPY",
+                    expirationDate: "2026-04-24",
+                    optionType: "put",
+                    strikePrice: 650,
+                    status: "active",
+                    tradable: true,
+                    openInterest: 1200,
+                },
+                {
+                    symbol: "SPY260424P00649000",
+                    underlyingSymbol: "SPY",
+                    expirationDate: "2026-04-24",
+                    optionType: "put",
+                    strikePrice: 649,
+                    status: "active",
+                    tradable: true,
+                    openInterest: 900,
+                },
+            ],
+        })
+        client.getOptionSnapshots.mockResolvedValue({
+            snapshots: {
+                SPY260424P00650000: {
+                    latestQuote: {
+                        bidPrice: 2.1,
+                        askPrice: 2.3,
+                    },
+                    latestTrade: {
+                        price: 2.2,
+                        size: 1,
+                    },
+                    openInterest: 1200,
+                    impliedVolatility: 0.2,
+                    greeks: {},
+                },
+                SPY260424P00649000: {
+                    latestQuote: {
+                        bidPrice: 1.2,
+                        askPrice: 1.3,
+                    },
+                    latestTrade: {
+                        price: 1.25,
+                        size: 1,
+                    },
+                    openInterest: 900,
+                    impliedVolatility: 0.18,
+                    greeks: {},
+                },
+            },
+        })
+
+        const adapter = new AlpacaOptionsVenueAdapter(client as never)
+        const verification = await adapter.verify({
+            instrument: "VS:BULL_PUT_CREDIT:SPY:2026-04-24:SPY260424P00649000|SPY260424P00650000",
+            side: "sell",
+            quantity: 1,
+            orderType: "limit",
+            limitPrice: 0.85,
+            timeInForce: "day",
+            legs: [
+                {
+                    instrument: "SPY260424P00650000",
+                    side: "sell_to_open",
+                    quantity: 1,
+                },
+                {
+                    instrument: "SPY260424P00649000",
+                    side: "buy_to_open",
+                    quantity: 1,
+                },
+            ],
+        })
+
+        expect(verification.executionCost).toBeDefined()
+        expect(verification.executionCost?.metrics.instrumentClass).toBe("option_structure")
+        expect(verification.livePrices.spread).toBeCloseTo(0.3)
     })
 })

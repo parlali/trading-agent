@@ -262,7 +262,7 @@ POSITION MANAGEMENT:
 
 SIT-OUT RULES:
 - No clear range or volatility edge
-- Poor liquidity or spreads too wide for clean multi-leg execution
+- Poor liquidity or execution cost too wide for clean multi-leg execution
 - Existing pending order already needs attention
 - Existing filled structure already consumes the intended exposure for that expiry
 

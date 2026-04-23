@@ -9,6 +9,18 @@ import type {
     WorkingOrder,
 } from "./types"
 import {
+    buildDryRunAccountState,
+    createDryRunAccountLedgerPosition,
+    DRY_RUN_ACCOUNT_LEDGER_INSTRUMENT,
+    isDryRunAccountLedgerPosition,
+    resolveDryRunAccountState,
+    resolveDryRunCashDelta,
+    resolveDryRunCurrentPrice,
+    resolveDryRunOpeningCashDelta,
+    resolveDryRunRealizedPnl,
+    resolveDryRunUnrealizedPnl,
+} from "./dry-run-ledger"
+import {
     type OrderPersistenceAdapter,
     type OrderSnapshot,
     type TrackedOrderHandle,
@@ -16,11 +28,37 @@ import {
     type OrderUpdateDecision,
     type OrderUpdateContext,
 } from "./orders"
-import { BASE_RISK_VALIDATORS, type RiskValidator, validateIntent } from "./risk"
+import {
+    BASE_RISK_VALIDATORS,
+    isRiskReducingIntent,
+    type RiskValidator,
+    validateIntent,
+} from "./risk"
 import { filterPositionsByOwnership } from "./position-filter"
 import type { Logger } from "./logger"
 import { getIntentAction, hasIntentChanges, createSyntheticIntent } from "./intent"
 import { OrderLifecycleManager } from "./order-tracker"
+import {
+    finalizePriceVerification,
+    resolveIntentProposedPrice,
+    resolvePriceVerificationConfig,
+    type PriceVerification,
+    type PriceVerificationConfig,
+    type PriceVerifier,
+    type ResolvedPriceVerificationConfig,
+} from "./price-verification"
+import {
+    orderSideForPositionSide,
+    readNumber,
+    readPositionSide,
+    withLifecycleAction,
+} from "./execution-metadata"
+import {
+    createRejectedExecutionResultFromUnknownError,
+    mergeExecutionIntentUpdates,
+    normalizeModifyExecutionResult,
+    shouldPersistModifyIntentUpdates,
+} from "./execution-result-helpers"
 import {
     createExecutionErrorDetail,
     formatExecutionError,
@@ -28,38 +66,8 @@ import {
     getExecutionErrorDetail,
 } from "./utils"
 
-export const DRY_RUN_ACCOUNT_LEDGER_INSTRUMENT = "__DRY_RUN_ACCOUNT_LEDGER__"
-
-export function isDryRunAccountLedgerPosition(position: Pick<Position, "instrument">): boolean {
-    return position.instrument === DRY_RUN_ACCOUNT_LEDGER_INSTRUMENT
-}
-
-export const PRICE_VERIFICATION_STATUSES = ["pass", "warn", "block", "skipped"] as const
-export type PriceVerificationStatus = typeof PRICE_VERIFICATION_STATUSES[number]
-
-export interface PriceVerificationLivePrices {
-    bid?: number
-    ask?: number
-    mid?: number
-    spread?: number
-}
-
-export interface PriceVerification {
-    ok: boolean
-    status?: PriceVerificationStatus
-    livePrices: PriceVerificationLivePrices
-    proposedPrice?: number
-    drift?: number
-    driftPercent?: number
-    warningThresholdPercent?: number
-    blockingThresholdPercent?: number
-    message: string
-    details?: Record<string, unknown>
-}
-
-export interface PriceVerifier {
-    verify(intent: OrderIntent): Promise<PriceVerification>
-}
+export * from "./dry-run-ledger"
+export * from "./price-verification"
 
 export interface DryRunOrderSimulator {
     simulateDryRunOrder(intent: OrderIntent): Promise<ExecutionResult>
@@ -116,103 +124,18 @@ export interface OrderLifecycleConfig {
     timeout?: number
 }
 
-export interface PriceVerificationConfig {
-    warningThresholdPercent?: number
-    blockingThresholdPercent?: number
-    failClosedOnVerificationError?: boolean
-}
-
-export function resolveDryRunAccountState(args: {
-    policy: Record<string, unknown>
-    positions: Position[]
-}): AccountState {
-    let dryRunCashAdjustment = 0
-    let dryRunRealizedPnl = 0
-    const ledger = args.positions.find((position) => isDryRunAccountLedgerPosition(position))
-
-    if (ledger) {
-        dryRunCashAdjustment = readNumber(ledger.metadata?.cashAdjustment) ?? 0
-        dryRunRealizedPnl = readNumber(ledger.metadata?.realizedPnl) ?? 0
-    }
-
-    for (const position of args.positions) {
-        if (isDryRunAccountLedgerPosition(position)) {
-            continue
-        }
-
-        if (!ledger) {
-            dryRunCashAdjustment += resolveDryRunOpeningCashDelta(position)
-        }
-    }
-
-    return buildDryRunAccountState({
-        policy: args.policy,
-        positions: args.positions.filter((position) => !isDryRunAccountLedgerPosition(position)),
-        cashAdjustment: dryRunCashAdjustment,
-        realizedPnl: dryRunRealizedPnl,
-    })
-}
-
-function buildDryRunAccountState(args: {
-    policy: Record<string, unknown>
-    positions: Position[]
-    cashAdjustment: number
-    realizedPnl: number
-}): AccountState {
-    const initialCash = typeof args.policy.dryRunInitialCash === "number"
-        ? args.policy.dryRunInitialCash
-        : typeof args.policy.virtualCash === "number"
-            ? args.policy.virtualCash
-            : 1000
-    let currentValue = 0
-    let marginUsed = 0
-    let openPnl = 0
-
-    for (const position of args.positions) {
-        const mark = position.currentPrice ?? position.entryPrice
-        const marketValue = position.quantity * mark
-        currentValue += position.side === "short" ? -marketValue : marketValue
-        marginUsed += Math.abs(marketValue)
-        openPnl += position.unrealizedPnl ?? resolveDryRunUnrealizedPnl(
-            position.side,
-            position.quantity,
-            position.entryPrice,
-            mark
-        ) ?? 0
-    }
-
-    const balance = initialCash + args.cashAdjustment
-    const equity = balance + currentValue
-    const dayPnl = args.realizedPnl + openPnl
-
-    return {
-        balance,
-        equity,
-        buyingPower: Math.max(balance, 0),
-        marginUsed,
-        marginAvailable: Math.max(balance, 0),
-        openPnl,
-        dayPnl,
-    }
-}
-
 export type OrderStatusCallback = (
     update: OrderUpdateContext
 ) => OrderUpdateDecision | void | Promise<OrderUpdateDecision | void>
 
 const ALLOWED_VALIDATION: ValidationResult = { allowed: true }
-const DEFAULT_PRICE_VERIFICATION_CONFIG: Required<PriceVerificationConfig> = {
-    warningThresholdPercent: 10,
-    blockingThresholdPercent: 20,
-    failClosedOnVerificationError: false,
-}
 
 export class ExecutionPipeline {
     private venue: VenueAdapter
     private venueName: string
     private policy: Record<string, unknown>
     private riskValidators: readonly RiskValidator[]
-    private priceVerificationConfig: Required<PriceVerificationConfig>
+    private priceVerificationConfig: ResolvedPriceVerificationConfig
     private logger: Logger
     private tradeEventLogger?: TradeEventLogger
     private lifecycleManager: OrderLifecycleManager
@@ -788,7 +711,8 @@ export class ExecutionPipeline {
         try {
             const verification = finalizePriceVerification(
                 await this.venue.verify(intent),
-                this.priceVerificationConfig
+                this.priceVerificationConfig,
+                { riskReducing: isRiskReducingIntent(intent) }
             )
 
             this.logPriceVerification(intent, verification)
@@ -806,7 +730,7 @@ export class ExecutionPipeline {
                         venue: this.venueName,
                         verificationError: message,
                     },
-                }, this.priceVerificationConfig)
+                }, this.priceVerificationConfig, { riskReducing: isRiskReducingIntent(intent) })
 
                 this.logger.warn("Price verification failed closed", {
                     venue: this.venueName,
@@ -827,7 +751,7 @@ export class ExecutionPipeline {
                     venue: this.venueName,
                     verificationError: message,
                 },
-            }, this.priceVerificationConfig)
+            }, this.priceVerificationConfig, { riskReducing: isRiskReducingIntent(intent) })
 
             this.logger.warn("Price verification failed", {
                 venue: this.venueName,
@@ -990,31 +914,13 @@ export class ExecutionPipeline {
     }
 
     private createDryRunAccountLedgerPosition(): Position {
-        const state = buildDryRunAccountState({
+        return createDryRunAccountLedgerPosition({
             policy: this.policy,
             positions: this.getDryRunPositions(),
             cashAdjustment: this.dryRunCashAdjustment,
             realizedPnl: this.dryRunRealizedPnl,
+            runId: this.runId,
         })
-
-        return {
-            instrument: DRY_RUN_ACCOUNT_LEDGER_INSTRUMENT,
-            side: "long",
-            quantity: 0,
-            entryPrice: 0,
-            currentPrice: 0,
-            unrealizedPnl: 0,
-            metadata: {
-                dryRunLedger: true,
-                cashAdjustment: this.dryRunCashAdjustment,
-                realizedPnl: this.dryRunRealizedPnl,
-                balance: state.balance,
-                equity: state.equity,
-                openPnl: state.openPnl,
-                dayPnl: state.dayPnl,
-                sourceRunId: this.runId,
-            },
-        }
     }
 
     private updateOwnedInstruments(action: string, instrument: string, result: ExecutionResult): void {
@@ -1064,293 +970,10 @@ export class ExecutionPipeline {
     }
 }
 
-function createRejectedExecutionResultFromUnknownError(
-    orderId: string,
-    error: unknown,
-    filledQuantity: number = 0,
-    fillPrice?: number
-): ExecutionResult {
-    const errorDetail = getExecutionErrorDetail(error) ?? createExecutionErrorDetail("internal", getErrorMessage(error))
-
-    return {
-        orderId,
-        status: "rejected",
-        filledQuantity,
-        fillPrice,
-        timestamp: Date.now(),
-        error: formatExecutionError(errorDetail),
-        errorDetail,
-    }
-}
-
-function withLifecycleAction(intent: OrderIntent, lifecycleContext: OrderLifecycleContext): OrderIntent {
-    if (!lifecycleContext.action || intent.metadata?.action) {
-        return intent
-    }
-
-    return {
-        ...intent,
-        metadata: {
-            ...intent.metadata,
-            action: lifecycleContext.action,
-            ...lifecycleContext.metadata,
-        },
-    }
-}
-
-function mergeExecutionIntentUpdates(
-    requestedChanges: Partial<OrderIntent>,
-    venueUpdates: Partial<OrderIntent> | undefined
-): Partial<OrderIntent> {
-    return {
-        ...requestedChanges,
-        ...venueUpdates,
-        metadata: requestedChanges.metadata || venueUpdates?.metadata
-            ? {
-                ...requestedChanges.metadata,
-                ...venueUpdates?.metadata,
-            }
-            : undefined,
-    }
-}
-
-function shouldPersistModifyIntentUpdates(result: ExecutionResult): boolean {
-    return (
-        result.status === "pending" ||
-        result.status === "partially_filled" ||
-        result.status === "filled"
-    )
-}
-
-function normalizeModifyExecutionResult(
-    result: ExecutionResult,
-    existing: OrderSnapshot | null,
-    orderId: string
-): ExecutionResult {
-    if (!existing) {
-        return {
-            ...result,
-            orderId: result.orderId || orderId,
-        }
-    }
-
-    const preserveExistingLifecycle = existing.status !== "pending" && existing.status !== "partially_filled"
-    if (preserveExistingLifecycle) {
-        return {
-            ...result,
-            orderId: result.orderId || orderId,
-            status: existing.status,
-            filledQuantity: existing.filledQuantity,
-            fillPrice: existing.avgFillPrice,
-        }
-    }
-
-    const preserveFilledState = existing.status === "filled" &&
-        result.status === "filled" &&
-        result.filledQuantity === 0 &&
-        result.fillPrice === undefined
-
-    return {
-        ...result,
-        orderId: result.orderId || orderId,
-        status: preserveFilledState ? existing.status : result.status,
-        filledQuantity: preserveFilledState
-            ? existing.filledQuantity
-            : result.filledQuantity,
-        fillPrice: preserveFilledState
-            ? existing.avgFillPrice
-            : result.fillPrice ?? existing.avgFillPrice,
-    }
-}
-
-function resolvePriceVerificationConfig(
-    config: PriceVerificationConfig | undefined
-): Required<PriceVerificationConfig> {
-    const warningThresholdPercent = config?.warningThresholdPercent ?? DEFAULT_PRICE_VERIFICATION_CONFIG.warningThresholdPercent
-    const blockingThresholdPercent = config?.blockingThresholdPercent ?? DEFAULT_PRICE_VERIFICATION_CONFIG.blockingThresholdPercent
-
-    return {
-        warningThresholdPercent,
-        blockingThresholdPercent: Math.max(blockingThresholdPercent, warningThresholdPercent),
-        failClosedOnVerificationError: config?.failClosedOnVerificationError ?? DEFAULT_PRICE_VERIFICATION_CONFIG.failClosedOnVerificationError,
-    }
-}
-
 function hasPriceVerifier(venue: VenueAdapter): venue is VenueAdapter & PriceVerifier {
     return typeof (venue as Partial<PriceVerifier>).verify === "function"
 }
 
 function hasDryRunOrderSimulator(venue: VenueAdapter): venue is VenueAdapter & DryRunOrderSimulator {
     return typeof (venue as Partial<DryRunOrderSimulator>).simulateDryRunOrder === "function"
-}
-
-function resolveDryRunCurrentPrice(
-    metadata?: Record<string, unknown>,
-    result?: ExecutionResult
-): number | undefined {
-    if (typeof result?.priceVerification?.livePrices.mid === "number") {
-        return result.priceVerification.livePrices.mid
-    }
-
-    if (typeof metadata?.currentPrice === "number") {
-        return metadata.currentPrice
-    }
-
-    if (typeof metadata?.estimatedPrice === "number") {
-        return metadata.estimatedPrice
-    }
-
-    return undefined
-}
-
-function resolveDryRunUnrealizedPnl(
-    side: Position["side"],
-    quantity: number,
-    entryPrice: number,
-    currentPrice?: number
-): number | undefined {
-    if (currentPrice === undefined) {
-        return undefined
-    }
-
-    if (side === "short") {
-        return quantity * (entryPrice - currentPrice)
-    }
-
-    return quantity * (currentPrice - entryPrice)
-}
-
-function resolveDryRunOpeningCashDelta(position: Position): number {
-    const notional = position.quantity * position.entryPrice
-    return position.side === "short" ? notional : -notional
-}
-
-function resolveDryRunCashDelta(
-    side: "buy" | "sell",
-    quantity: number,
-    fillPrice: number
-): number {
-    const notional = quantity * fillPrice
-    return side === "buy" ? -notional : notional
-}
-
-function resolveDryRunRealizedPnl(
-    existing: Position,
-    closeSide: "buy" | "sell",
-    closedQty: number,
-    fillPrice: number
-): number {
-    if (existing.side === "long" && closeSide === "sell") {
-        return closedQty * (fillPrice - existing.entryPrice)
-    }
-
-    if (existing.side === "short" && closeSide === "buy") {
-        return closedQty * (existing.entryPrice - fillPrice)
-    }
-
-    return 0
-}
-
-function orderSideForPositionSide(side: Position["side"]): "buy" | "sell" {
-    return side === "long" ? "buy" : "sell"
-}
-
-function readPositionSide(value: unknown): Position["side"] | undefined {
-    return value === "long" || value === "short"
-        ? value
-        : undefined
-}
-
-function readNumber(value: unknown): number | undefined {
-    return typeof value === "number" && Number.isFinite(value)
-        ? value
-        : undefined
-}
-
-function finalizePriceVerification(
-    verification: PriceVerification,
-    config: Required<PriceVerificationConfig>
-): PriceVerification {
-    const driftPercent = typeof verification.driftPercent === "number"
-        ? Math.abs(verification.driftPercent)
-        : undefined
-
-    let status = verification.status ?? "pass"
-    let ok = verification.ok
-
-    if (!ok || status === "block") {
-        status = "block"
-        ok = false
-    } else if (driftPercent !== undefined && driftPercent > config.blockingThresholdPercent) {
-        status = "block"
-        ok = false
-    } else if (
-        status !== "warn" &&
-        driftPercent !== undefined &&
-        driftPercent > config.warningThresholdPercent
-    ) {
-        status = "warn"
-        ok = true
-    }
-
-    return {
-        ...verification,
-        ok,
-        status,
-        driftPercent,
-        warningThresholdPercent: config.warningThresholdPercent,
-        blockingThresholdPercent: config.blockingThresholdPercent,
-        message: buildPriceVerificationMessage(
-            verification,
-            driftPercent,
-            status,
-            config
-        ),
-    }
-}
-
-function buildPriceVerificationMessage(
-    verification: PriceVerification,
-    driftPercent: number | undefined,
-    status: PriceVerificationStatus,
-    config: Required<PriceVerificationConfig>
-): string {
-    if (driftPercent === undefined) {
-        return verification.message
-    }
-
-    const proposedPrice = verification.proposedPrice
-    const liveMid = verification.livePrices.mid
-    const drift = verification.drift
-
-    if (verification.status === "block" || verification.ok === false) {
-        return verification.message
-    }
-
-    const liveText = liveMid !== undefined ? `live mid ${liveMid}` : "live midpoint unavailable"
-    const proposedText = proposedPrice !== undefined ? `proposed price ${proposedPrice}` : "no proposed price"
-    const driftText = drift !== undefined ? `drift ${drift}` : "drift unavailable"
-
-    if (status === "block") {
-        return `Blocked by price verification: ${proposedText}, ${liveText}, ${driftText}, drift ${driftPercent.toFixed(2)}% exceeds ${config.blockingThresholdPercent}%`
-    }
-
-    if (status === "warn") {
-        return `Price verification warning: ${proposedText}, ${liveText}, ${driftText}, drift ${driftPercent.toFixed(2)}% exceeds ${config.warningThresholdPercent}%`
-    }
-
-    return `Price verification passed: ${proposedText}, ${liveText}, ${driftText}, drift ${driftPercent.toFixed(2)}%`
-}
-
-function resolveIntentProposedPrice(intent: OrderIntent): number | undefined {
-    if (typeof intent.limitPrice === "number") {
-        return intent.limitPrice
-    }
-
-    if (typeof intent.stopPrice === "number") {
-        return intent.stopPrice
-    }
-
-    const estimatedPrice = intent.metadata?.estimatedPrice
-    return typeof estimatedPrice === "number" ? estimatedPrice : undefined
 }

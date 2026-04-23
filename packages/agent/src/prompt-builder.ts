@@ -260,7 +260,7 @@ function buildPolicySection(context: StrategyRunContext): string {
             "Use `search_markets` as a Gamma-backed discovery pass only. Treat the returned list as candidate metadata plus token IDs, not execution-grade pricing.",
             "- Start with the top-liquid market list for the category or query you care about",
             "- Narrow to only your top candidate markets before requesting live venue data",
-            "- Call `get_market_price` and `get_order_book` individually for only those top candidate token IDs before sizing or placing any trade",
+            "- Call `get_market_price` and `get_order_book` individually for only those top candidate token IDs before sizing or placing any trade. Treat `executionCost` from venue tools as the canonical liquidity/tradability signal.",
             "- `propose_order` requires the exact `tokenId`, `conditionId`, `marketSlug`, `question`, and `outcome` from discovery. Never place an order using only a condition ID, event slug, or question string.",
             "- Only opt into `search_markets` live price enrichment if you have a specific reason, and keep the token count tightly bounded",
         )
@@ -299,7 +299,7 @@ function buildRulesSection(schedule?: string, trigger?: string): string {
         "",
         "1. Your current positions and account state are already provided above. Do NOT call get_positions or get_account at the start -- that data is already in this prompt. Only call them later if you need a refresh after placing an order.",
         "2. Follow the INFORMATION GATHERING order in your strategy context. Start with the research/data tools specified there, not with generic web searches.",
-        "3. Treat venue-owned market data as execution truth. Research/data tools can inform your thesis, but any live prices, spreads, or current levels from them are advisory only and must yield to venue tools when they disagree.",
+        "3. Treat venue-owned market data as execution truth. Research/data tools can inform your thesis, but any live prices, spreads, execution-cost readings, or current levels from them are advisory only and must yield to venue tools when they disagree.",
         "4. If an order is rejected by the risk engine, do not retry with the same parameters.",
         "5. For limit orders, monitor fill status and adjust or cancel if not filling.",
         "6. When your analysis is complete and all actions are taken, respond with a final summary.",

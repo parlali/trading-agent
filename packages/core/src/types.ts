@@ -1,4 +1,4 @@
-import type { PriceVerification } from "./execution"
+import type { PriceVerification } from "./price-verification"
 import type { OrderAction, OrderStatus } from "./orders"
 
 export const VENUE_APPS = ["alpaca-options", "polymarket", "mt5", "okx-swap"] as const

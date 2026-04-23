@@ -12,6 +12,7 @@ import {
     ValiqResearchAdapter,
 } from "@valiq-trading/valiq"
 import {
+    ExecutionCostTracker,
     isWithinSessionFlatWindow,
     okxPolicySchema,
     type RiskValidator,
@@ -35,6 +36,7 @@ import type {
 export class OKXPlugin implements VenuePlugin {
     readonly app = "okx-swap"
     readonly venueName = "okx"
+    private readonly executionCostTracker = new ExecutionCostTracker()
 
     resolveSecretKeys(): string[] {
         return [
@@ -84,7 +86,7 @@ export class OKXPlugin implements VenuePlugin {
         return new OKXVenueAdapter(client, {
             marginMode: runtimeConfig.marginMode,
             positionMode: runtimeConfig.positionMode,
-        })
+        }, this.executionCostTracker)
     }
 
     getRiskValidators(): readonly RiskValidator[] {

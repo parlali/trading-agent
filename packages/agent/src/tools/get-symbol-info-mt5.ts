@@ -25,6 +25,7 @@ export function createMT5GetSymbolInfoTool(
             }
 
             const spread = resolveMT5NormalizedSpread(info)
+            const executionCost = await venue.assessSymbolExecutionCost(info)
 
             return {
                 symbol: info.symbol,
@@ -33,7 +34,6 @@ export function createMT5GetSymbolInfoTool(
                 ask: info.ask,
                 spread: spread.value,
                 spreadUnit: spread.unit,
-                normalSpread: spread.normal,
                 rawSpreadPoints: info.spread,
                 tickValue: info.tickValue,
                 contractSize: info.contractSize,
@@ -45,6 +45,7 @@ export function createMT5GetSymbolInfoTool(
                 pipSize: info.pipSize,
                 currency: info.currency,
                 description: info.description,
+                executionCost,
             }
         },
     })

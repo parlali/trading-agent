@@ -11,6 +11,7 @@ import {
     ValiqResearchAdapter,
 } from "@valiq-trading/valiq"
 import {
+    ExecutionCostTracker,
     isWithinSessionFlatWindow,
     mt5PolicySchema,
     type RiskValidator,
@@ -37,6 +38,7 @@ export class MT5Plugin implements VenuePlugin {
     readonly app = "mt5"
     readonly venueName = "mt5"
     private readonly holidayGuard = new HolidayGuard()
+    private readonly executionCostTracker = new ExecutionCostTracker()
 
     resolveSecretKeys(): string[] {
         return [
@@ -75,7 +77,7 @@ export class MT5Plugin implements VenuePlugin {
             workerUrl: resolved.workerUrl,
             accessKey: resolved.accessKey,
         })
-        return new MT5VenueAdapter(client, resolved.credentials)
+        return new MT5VenueAdapter(client, resolved.credentials, this.executionCostTracker)
     }
 
     getRiskValidators(): readonly RiskValidator[] {
@@ -245,7 +247,7 @@ export class MT5Plugin implements VenuePlugin {
             const missing = instruments.filter((instrument) => !received.has(instrument))
 
             if (missing.length > 0) {
-                config.logger.warn("MT5 spread data is incomplete for this run", {
+                config.logger.warn("MT5 execution-cost data is incomplete for this run", {
                     strategyId: config.strategyId,
                     requested: instruments,
                     received: [...received],
@@ -253,29 +255,29 @@ export class MT5Plugin implements VenuePlugin {
                 })
 
                 return [
-                    `Spread data unavailable for: ${missing.join(", ")}. Sit out unless a later run provides complete liquidity context.`,
+                    `MT5 execution-cost context unavailable for: ${missing.join(", ")}. Sit out on new entries unless a later run provides complete venue pricing context.`,
                 ]
             }
 
-            const spreadContextLine = createMT5SpreadContextLine(snapshots)
-            if (!spreadContextLine) {
+            const executionCostContextLine = createMT5SpreadContextLine(snapshots)
+            if (!executionCostContextLine) {
                 return undefined
             }
 
-            config.logger.info("Collected MT5 spread context", {
+            config.logger.info("Collected MT5 execution-cost context", {
                 strategyId: config.strategyId,
-                spreadContextLine,
+                executionCostContextLine,
             })
 
-            return [spreadContextLine]
+            return [executionCostContextLine]
         } catch (error) {
-            config.logger.warn("Failed to collect MT5 spread context", {
+            config.logger.warn("Failed to collect MT5 execution-cost context", {
                 strategyId: config.strategyId,
                 error: error instanceof Error ? error.message : String(error),
             })
 
             return [
-                "Spread data unavailable for this run. Trade only if an open position requires active management.",
+                "MT5 execution-cost context unavailable for this run. Trade only if an open position requires active management.",
             ]
         }
     }

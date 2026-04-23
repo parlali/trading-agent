@@ -1,10 +1,15 @@
+import {
+    formatExecutionCostAssessment,
+    type ExecutionCostAssessment,
+} from "@valiq-trading/core"
+
 export interface OKXMarketSnapshot {
     instrument: string
     bid: number
     ask: number
     markPrice: number
-    spreadPercent: number
     fundingRate: number
+    executionCost: ExecutionCostAssessment
 }
 
 export function createOKXMarketContextLine(
@@ -17,12 +22,11 @@ export function createOKXMarketContextLine(
     const segments = [...snapshots]
         .sort((left, right) => left.instrument.localeCompare(right.instrument))
         .map((snapshot) => {
-            const spreadPct = `${snapshot.spreadPercent.toFixed(3)}%`
             const funding = formatFundingRate(snapshot.fundingRate)
-            return `${snapshot.instrument} mark ${snapshot.markPrice.toFixed(2)}, spread ${spreadPct}, funding ${funding}`
+            return `${formatExecutionCostAssessment(snapshot.executionCost)}, mark ${snapshot.markPrice.toFixed(2)}, funding ${funding}`
         })
 
-    return `Current OKX swap market context: ${segments.join(" | ")}`
+    return `Current OKX swap execution context: ${segments.join(" | ")}`
 }
 
 function formatFundingRate(rate: number): string {
