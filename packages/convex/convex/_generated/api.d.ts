@@ -34,8 +34,6 @@ import type * as lib_queries_runs from "../lib/queries/runs.js";
 import type * as lib_queries_strategies from "../lib/queries/strategies.js";
 import type * as lib_queries_system from "../lib/queries/system.js";
 import type * as lib_validators from "../lib/validators.js";
-import type * as migrations_replaceStrategies from "../migrations/replaceStrategies.js";
-import type * as migrations_simplifyPolicy from "../migrations/simplifyPolicy.js";
 import type * as mutations from "../mutations.js";
 import type * as queries from "../queries.js";
 import type * as seedUserAction from "../seedUserAction.js";
@@ -74,8 +72,6 @@ declare const fullApi: ApiFromModules<{
   "lib/queries/strategies": typeof lib_queries_strategies;
   "lib/queries/system": typeof lib_queries_system;
   "lib/validators": typeof lib_validators;
-  "migrations/replaceStrategies": typeof migrations_replaceStrategies;
-  "migrations/simplifyPolicy": typeof migrations_simplifyPolicy;
   mutations: typeof mutations;
   queries: typeof queries;
   seedUserAction: typeof seedUserAction;
