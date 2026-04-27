@@ -7,8 +7,14 @@ Windows machine where the MetaTrader 5 SDK is available.
 
 from __future__ import annotations
 
+import asyncio
+import os
+import socket
+import sys
+import threading
 import time
 from contextlib import asynccontextmanager
+from secrets import compare_digest
 from typing import Any
 
 import structlog
@@ -26,6 +32,155 @@ log = structlog.get_logger()
 # ---------------------------------------------------------------------------
 
 _client: MT5Client | None = None
+_watchdog_stop: threading.Event | None = None
+_watchdog_thread: threading.Thread | None = None
+
+
+def terminate_for_restart(reason: str, details: dict[str, Any] | None = None) -> None:
+    log.critical(
+        "mt5_worker_restart_required",
+        reason=reason,
+        **(details or {}),
+    )
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(70)
+
+
+def install_loop_exception_handler() -> None:
+    loop = asyncio.get_running_loop()
+    previous_handler = loop.get_exception_handler()
+
+    def handle_exception(
+        active_loop: asyncio.AbstractEventLoop,
+        context: dict[str, Any],
+    ) -> None:
+        if is_worker_accept_socket_failure(context):
+            exception = context.get("exception")
+            terminate_for_restart(
+                "worker_accept_socket_failed",
+                {
+                    "message": str(context.get("message", "")),
+                    "exceptionType": type(exception).__name__ if exception else None,
+                    "exception": str(exception) if exception else None,
+                    "port": settings.worker_port,
+                },
+            )
+
+        if previous_handler:
+            previous_handler(active_loop, context)
+        else:
+            active_loop.default_exception_handler(context)
+
+    loop.set_exception_handler(handle_exception)
+
+
+def is_worker_accept_socket_failure(context: dict[str, Any]) -> bool:
+    message = str(context.get("message", ""))
+    if "Accept failed on a socket" not in message:
+        return False
+
+    socket_obj = context.get("socket")
+    if socket_obj is None:
+        return True
+
+    try:
+        local_address = socket_obj.getsockname()
+    except OSError:
+        return True
+
+    if not isinstance(local_address, tuple) or len(local_address) < 2:
+        return True
+
+    return int(local_address[1]) == settings.worker_port
+
+
+def start_listener_watchdog() -> None:
+    global _watchdog_stop, _watchdog_thread
+
+    if not settings.worker_listener_watchdog_enabled:
+        log.info("mt5_listener_watchdog_disabled")
+        return
+
+    if _watchdog_thread is not None:
+        return
+
+    stop_event = threading.Event()
+    thread = threading.Thread(
+        target=run_listener_watchdog,
+        args=(stop_event,),
+        name="mt5-listener-watchdog",
+        daemon=True,
+    )
+    _watchdog_stop = stop_event
+    _watchdog_thread = thread
+    thread.start()
+
+
+def stop_listener_watchdog() -> None:
+    global _watchdog_stop, _watchdog_thread
+
+    if _watchdog_stop is not None:
+        _watchdog_stop.set()
+
+    if _watchdog_thread is not None:
+        _watchdog_thread.join(timeout=2.0)
+
+    _watchdog_stop = None
+    _watchdog_thread = None
+
+
+def run_listener_watchdog(stop_event: threading.Event) -> None:
+    if stop_event.wait(settings.worker_listener_watchdog_startup_grace_seconds):
+        return
+
+    failures = 0
+    threshold = max(1, settings.worker_listener_watchdog_failure_threshold)
+
+    while not stop_event.is_set():
+        if can_connect_worker_listener():
+            if failures > 0:
+                log.info("mt5_listener_watchdog_recovered", failures=failures)
+            failures = 0
+        else:
+            failures += 1
+            log.error(
+                "mt5_listener_watchdog_failed",
+                failures=failures,
+                threshold=threshold,
+                host=resolve_listener_probe_host(),
+                port=settings.worker_port,
+            )
+            if failures >= threshold:
+                terminate_for_restart(
+                    "worker_listener_not_accepting",
+                    {
+                        "failures": failures,
+                        "threshold": threshold,
+                        "host": resolve_listener_probe_host(),
+                        "port": settings.worker_port,
+                    },
+                )
+
+        stop_event.wait(settings.worker_listener_watchdog_interval_seconds)
+
+
+def can_connect_worker_listener() -> bool:
+    try:
+        with socket.create_connection(
+            (resolve_listener_probe_host(), settings.worker_port),
+            timeout=settings.worker_listener_watchdog_timeout_seconds,
+        ):
+            return True
+    except OSError:
+        return False
+
+
+def resolve_listener_probe_host() -> str:
+    host = settings.worker_host.strip()
+    if host in {"", "0.0.0.0", "::", "[::]"}:
+        return "127.0.0.1"
+    return host
 
 
 def get_client() -> MT5Client:
@@ -40,7 +195,8 @@ def get_client() -> MT5Client:
 
 def verify_access_key(x_worker_key: str = Header(default="")) -> None:
     key = settings.worker_access_key.strip()
-    if key and x_worker_key.strip() != key:
+    supplied_key = x_worker_key.strip()
+    if not key or not supplied_key or not compare_digest(supplied_key, key):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
 
@@ -88,7 +244,7 @@ class SymbolInfoRequest(BaseModel):
 
 
 class GetOrderRequest(BaseModel):
-    orderId: int
+    orderId: int = Field(gt=0)
 
 
 class PositionClosuresRequest(BaseModel):
@@ -102,7 +258,10 @@ class PositionClosuresRequest(BaseModel):
 @asynccontextmanager
 async def lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
     log.info("mt5_worker_starting", port=settings.worker_port)
+    install_loop_exception_handler()
+    start_listener_watchdog()
     yield
+    stop_listener_watchdog()
     # Disconnect on shutdown
     global _client
     if _client is not None:

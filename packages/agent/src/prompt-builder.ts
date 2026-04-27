@@ -26,13 +26,22 @@ export function buildSystemPrompt(
     sections.push(buildCurrentTimestamp(context.timestamp))
     sections.push(buildStrategyContext(context))
     if (context.previousRunSummary) {
-        sections.push(buildPreviousRunSection(context.previousRunSummary, context.timestamp))
+        sections.push(buildPreviousRunSection(
+            context.previousRunSummary,
+            context.timestamp,
+            context.promptSanitizer?.blockedIdentifiers ?? []
+        ))
     }
     if (context.pendingOrders && context.pendingOrders.length > 0) {
         sections.push(buildPendingOrdersSection(context))
     }
     if (context.runtimeContextLines && context.runtimeContextLines.length > 0) {
-        sections.push(buildRuntimeContextSection(context.runtimeContextLines))
+        sections.push(buildRuntimeContextSection(
+            sanitizePromptLines(
+                context.runtimeContextLines,
+                context.promptSanitizer?.blockedIdentifiers ?? []
+            )
+        ))
     }
     sections.push(buildAccountSnapshot(context))
     sections.push(buildPositionsSnapshot(context))
@@ -110,12 +119,17 @@ function buildPendingOrdersSection(context: StrategyRunContext): string {
 
 function buildPreviousRunSection(
     previousRun: { summary: string; endedAt: number; systemContextDigest?: RunSystemContextDigest },
-    currentTimestamp: number
+    currentTimestamp: number,
+    blockedIdentifiers: string[] = []
 ): string {
     const minutesAgo = Math.round((currentTimestamp - previousRun.endedAt) / 60000)
-    const cleanSummary = truncateHandoffSummary(sanitizeRunSummary(previousRun.summary))
+    const cleanSummary = sanitizePromptText(
+        truncateHandoffSummary(sanitizeRunSummary(previousRun.summary)),
+        blockedIdentifiers,
+        "Previous run handoff omitted because it referenced instruments outside this strategy's owned book."
+    )
     const previousDigestLines = previousRun.systemContextDigest
-        ? formatRunSystemContextDigestLines(previousRun.systemContextDigest)
+        ? sanitizePromptLines(formatRunSystemContextDigestLines(previousRun.systemContextDigest), blockedIdentifiers)
         : []
     return [
         "## Previous Run Handoff",
@@ -193,7 +207,7 @@ function buildPositionsSnapshot(context: StrategyRunContext): string {
 }
 
 function buildPolicySection(context: StrategyRunContext): string {
-    const policyLines = Object.entries(context.policy).map(
+    const policyLines = Object.entries(toModelVisiblePolicy(context.policy)).map(
         ([key, value]) => `- ${key}: ${JSON.stringify(value)}`
     )
 
@@ -267,6 +281,75 @@ function buildPolicySection(context: StrategyRunContext): string {
     }
 
     return lines.join("\n")
+}
+
+function sanitizePromptLines(lines: string[], blockedIdentifiers: string[]): string[] {
+    const blocked = normalizeBlockedIdentifiers(blockedIdentifiers)
+    if (blocked.length === 0) {
+        return lines
+    }
+
+    return lines.filter((line) => !containsBlockedIdentifier(line, blocked))
+}
+
+function sanitizePromptText(text: string, blockedIdentifiers: string[], fallback: string): string {
+    const sanitized = sanitizePromptLines(text.split("\n"), blockedIdentifiers)
+        .join("\n")
+        .trim()
+
+    return sanitized.length > 0 ? sanitized : fallback
+}
+
+function normalizeBlockedIdentifiers(blockedIdentifiers: string[]): string[] {
+    return Array.from(
+        new Set(
+            blockedIdentifiers
+                .map((identifier) => identifier.trim().toLowerCase())
+                .filter((identifier) => identifier.length >= 4)
+        )
+    )
+}
+
+function containsBlockedIdentifier(line: string, blockedIdentifiers: string[]): boolean {
+    const normalizedLine = line.toLowerCase()
+    return blockedIdentifiers.some((identifier) => normalizedLine.includes(identifier))
+}
+
+function toModelVisiblePolicy(policy: Record<string, unknown>): Record<string, unknown> {
+    const sanitized = sanitizePolicyValue(policy)
+
+    return sanitized && typeof sanitized === "object" && !Array.isArray(sanitized)
+        ? sanitized as Record<string, unknown>
+        : {}
+}
+
+function sanitizePolicyValue(value: unknown, path: string[] = []): unknown {
+    if (Array.isArray(value)) {
+        return value.map((entry) => sanitizePolicyValue(entry, path))
+    }
+
+    if (!value || typeof value !== "object") {
+        return value
+    }
+
+    const result: Record<string, unknown> = {}
+    for (const [key, entry] of Object.entries(value)) {
+        const nextPath = [...path, key]
+        if (isHiddenPolicyPath(nextPath)) {
+            continue
+        }
+
+        result[key] = sanitizePolicyValue(entry, nextPath)
+    }
+
+    return result
+}
+
+function isHiddenPolicyPath(path: string[]): boolean {
+    const joined = path.join(".")
+    return joined === "model" ||
+        joined === "reasoning" ||
+        joined === "safety.expectedExternalInstruments"
 }
 
 function formatTimestamp(timestampMs: number): string {

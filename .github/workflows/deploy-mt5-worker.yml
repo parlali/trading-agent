@@ -85,16 +85,55 @@ jobs:
                       Write-Host ""
                       Write-Host "--- Step 8: Verify service is running ---"
                       Start-Sleep -Seconds 5
-                      nssm status trading-mt5-worker 2>&1 | Out-String | Write-Host
+                      $serviceStatus = (nssm status trading-mt5-worker 2>&1 | Out-String).Trim()
+                      Write-Host $serviceStatus
+                      if ($serviceStatus -notmatch "SERVICE_RUNNING") {
+                          Write-Host "FATAL: trading-mt5-worker is not running after restart"
+                          exit 1
+                      }
 
                       Write-Host ""
                       Write-Host "--- Step 9: Health endpoint ---"
-                      Start-Sleep -Seconds 3
-                      try {
-                          $r = Invoke-WebRequest -Uri "http://localhost:8090/health" -UseBasicParsing
-                          Write-Host "Health check HTTP status: $($r.StatusCode)"
-                      } catch {
-                          Write-Host "Health check failed"
+                      $envPath = Join-Path $repoDir "apps\mt5-worker\.env"
+                      if (-not (Test-Path $envPath)) {
+                          Write-Host "FATAL: missing MT5 worker .env file"
+                          exit 1
+                      }
+
+                      $workerAccessKeyLine = Get-Content $envPath | Where-Object {
+                          $line = $_.Trim()
+                          $line -and -not $line.StartsWith("#") -and $line -match "^\s*WORKER_ACCESS_KEY\s*="
+                      } | Select-Object -Last 1
+                      $workerAccessKey = ""
+                      if ($workerAccessKeyLine) {
+                          $workerAccessKey = ($workerAccessKeyLine -replace "^\s*WORKER_ACCESS_KEY\s*=\s*", "").Trim().Trim('"').Trim("'")
+                      }
+                      if (-not $workerAccessKey) {
+                          Write-Host "FATAL: WORKER_ACCESS_KEY is not configured in MT5 worker .env"
+                          exit 1
+                      }
+
+                      $headers = @{ "x-worker-key" = $workerAccessKey }
+                      $healthOk = $false
+                      for ($attempt = 1; $attempt -le 10; $attempt++) {
+                          try {
+                              $r = Invoke-WebRequest -Uri "http://localhost:8090/health" -Headers $headers -UseBasicParsing -TimeoutSec 10
+                              $body = $r.Content | ConvertFrom-Json
+                              Write-Host "Health check HTTP status: $($r.StatusCode)"
+                              Write-Host "Health check worker status: $($body.status)"
+                              if ($r.StatusCode -eq 200 -and $body.status -eq "ok") {
+                                  $healthOk = $true
+                                  break
+                              }
+                          } catch {
+                              Write-Host "Health check attempt $attempt failed: $($_.Exception.Message)"
+                          }
+                          Start-Sleep -Seconds 3
+                      }
+
+                      if (-not $healthOk) {
+                          Write-Host "FATAL: MT5 worker health check failed"
+                          exit 1
                       }
 
                       Write-Host ""

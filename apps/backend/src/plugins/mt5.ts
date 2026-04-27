@@ -142,7 +142,7 @@ export class MT5Plugin implements VenuePlugin {
             mt5Venue, parsedPolicy, config.strategyId, config
         )
         if (eodFlattened) {
-            return { skip: true, reason: "End-of-day flatten executed" }
+            return { skip: true, reason: "End-of-day flatten executed", providerStateChanged: true }
         }
 
         const instrumentRegions = resolveMT5InstrumentRegions(parsedPolicy)
@@ -187,7 +187,7 @@ export class MT5Plugin implements VenuePlugin {
         venue: MT5VenueAdapter,
         policy: ReturnType<typeof mt5PolicySchema.parse>,
         strategyId: string,
-        config: { logger: PreRunHookConfig["logger"]; createAlert: PreRunHookConfig["createAlert"] }
+        config: Pick<PreRunHookConfig, "logger" | "createAlert" | "ownedPositions" | "ownedWorkingOrders">
     ): Promise<boolean> {
         const sessionFlatPolicy = policy.safety.sessionFlat
         if (!sessionFlatPolicy.enabled) {
@@ -205,8 +205,9 @@ export class MT5Plugin implements VenuePlugin {
             return false
         }
 
-        const positions = await venue.getPositions()
-        if (positions.length === 0) {
+        const positions = config.ownedPositions
+        const workingOrders = config.ownedWorkingOrders
+        if (positions.length === 0 && workingOrders.length === 0) {
             return false
         }
 
@@ -216,17 +217,22 @@ export class MT5Plugin implements VenuePlugin {
             endTime: policy.tradingHours.end,
             closeBufferMinutes: sessionFlatPolicy.closeBufferMinutes,
             openPositions: positions.length,
+            workingOrders: workingOrders.length,
         })
 
         await config.createAlert({
             strategyId,
             app: this.app,
             severity: "warning",
-            message: `Session-flat policy triggered: closing ${positions.length} position(s) before ${policy.tradingHours.end} ${timezone}`,
+            message: `Session-flat policy triggered: closing ${positions.length} position(s) and cancelling ${workingOrders.length} working order(s) before ${policy.tradingHours.end} ${timezone}`,
         })
 
-        const result = await venue.closeAllPositions()
-        config.logger.info("End-of-day flatten completed", { closed: result.closed })
+        const cancelled = await cancelOwnedWorkingOrders(venue, workingOrders)
+        const closed = await closeOwnedPositions(venue, positions)
+        config.logger.info("End-of-day flatten completed", {
+            closed,
+            cancelled,
+        })
 
         return true
     }
@@ -282,4 +288,38 @@ export class MT5Plugin implements VenuePlugin {
         }
     }
 
+}
+
+async function cancelOwnedWorkingOrders(
+    venue: MT5VenueAdapter,
+    workingOrders: PreRunHookConfig["ownedWorkingOrders"]
+): Promise<number> {
+    let cancelled = 0
+
+    for (const order of workingOrders) {
+        const result = await venue.cancelOrder(order.orderId)
+        if (result.status === "cancelled" || result.status === "filled") {
+            cancelled++
+        }
+    }
+
+    return cancelled
+}
+
+async function closeOwnedPositions(
+    venue: MT5VenueAdapter,
+    positions: PreRunHookConfig["ownedPositions"]
+): Promise<number> {
+    let closed = 0
+
+    for (const position of positions) {
+        const result = venue.closeProviderPosition
+            ? await venue.closeProviderPosition(position)
+            : await venue.closePosition(position.instrument)
+        if (result.status === "filled" || result.status === "partially_filled") {
+            closed++
+        }
+    }
+
+    return closed
 }

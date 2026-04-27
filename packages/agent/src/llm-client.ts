@@ -4,9 +4,15 @@ import type { Logger } from "@valiq-trading/core"
 export interface LLMClientConfig {
     apiKey: string
     model: string
+    reasoning?: OpenRouterReasoningConfig
     baseUrl?: string
     requestTimeoutMs?: number
     streamStallTimeoutMs?: number
+}
+
+export interface OpenRouterReasoningConfig {
+    effort: "low" | "medium" | "high"
+    exclude?: boolean
 }
 
 export interface ChatMessage {
@@ -71,6 +77,7 @@ const DEFAULT_STREAM_STALL_TIMEOUT_MS = 60 * 1000
 export class LLMClient {
     private apiKey: string
     private model: string
+    private reasoning?: OpenRouterReasoningConfig
     private baseUrl: string
     private controller: AbortController | null = null
     private requestTimeoutMs: number
@@ -79,6 +86,7 @@ export class LLMClient {
     constructor(config: LLMClientConfig) {
         this.apiKey = config.apiKey
         this.model = config.model
+        this.reasoning = config.reasoning
         this.baseUrl = config.baseUrl ?? DEFAULT_BASE_URL
         this.requestTimeoutMs = config.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS
         this.streamStallTimeoutMs = config.streamStallTimeoutMs ?? DEFAULT_STREAM_STALL_TIMEOUT_MS
@@ -120,6 +128,13 @@ export class LLMClient {
             model: this.model,
             messages,
             stream: true,
+        }
+
+        if (this.reasoning) {
+            body.reasoning = {
+                effort: this.reasoning.effort,
+                exclude: this.reasoning.exclude !== false,
+            }
         }
 
         if (tools && tools.length > 0) {

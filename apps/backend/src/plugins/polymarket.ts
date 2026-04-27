@@ -91,7 +91,7 @@ export class PolymarketPlugin implements VenuePlugin {
         const venue = config.venue as PolymarketVenueAdapter
 
         try {
-            const positions = await venue.getPositions()
+            const positions = config.ownedPositions
             if (positions.length === 0) {
                 return { skip: false }
             }

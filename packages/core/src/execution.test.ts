@@ -335,6 +335,11 @@ describe("ExecutionPipeline dry-run accounting", () => {
             venueName: "polymarket",
             policy: {
                 dryRun: false,
+                safety: {
+                    account: {
+                        allocationPercent: 100,
+                    },
+                },
             },
             riskValidators: [
                 (
@@ -420,6 +425,11 @@ describe("ExecutionPipeline dry-run accounting", () => {
             venueName: "alpaca-options",
             policy: {
                 dryRun: false,
+                safety: {
+                    account: {
+                        allocationPercent: 100,
+                    },
+                },
             },
             logger: createLogger({ minLevel: "fatal" }),
             runId: "run-6",
@@ -483,6 +493,11 @@ describe("ExecutionPipeline execution-cost gating", () => {
             venueName: "polymarket",
             policy: {
                 dryRun: false,
+                safety: {
+                    account: {
+                        allocationPercent: 100,
+                    },
+                },
             },
             logger: createLogger({ minLevel: "fatal" }),
             runId: "run-cost-1",
@@ -532,6 +547,11 @@ describe("ExecutionPipeline execution-cost gating", () => {
             venueName: "polymarket",
             policy: {
                 dryRun: false,
+                safety: {
+                    account: {
+                        allocationPercent: 100,
+                    },
+                },
             },
             logger: createLogger({ minLevel: "fatal" }),
             runId: "run-cost-2",

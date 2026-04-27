@@ -163,6 +163,11 @@ describe("order lifecycle persistence", () => {
             venueName: "alpaca-options",
             policy: {
                 dryRun: false,
+                safety: {
+                    account: {
+                        allocationPercent: 100,
+                    },
+                },
             },
             riskValidators: [allowIntent],
             logger: createLogger({ minLevel: "fatal" }),
@@ -209,6 +214,11 @@ describe("order lifecycle persistence", () => {
             venueName: "mt5",
             policy: {
                 dryRun: false,
+                safety: {
+                    account: {
+                        allocationPercent: 100,
+                    },
+                },
             },
             riskValidators: [allowIntent],
             logger: createLogger({ minLevel: "fatal" }),

@@ -21,6 +21,17 @@ function createContext(): StrategyRunContext {
         },
         policy: {
             dryRun: true,
+            model: "openai/gpt-5.5",
+            reasoning: {
+                effort: "medium",
+                exclude: true,
+            },
+            safety: {
+                expectedExternalInstruments: ["will-the-us-acquire-any-part-of-greenland-in-2026"],
+                account: {
+                    allocationPercent: 100,
+                },
+            },
         },
         context: "test context",
         previousRunSummary: {
@@ -65,5 +76,58 @@ describe("buildSystemPrompt previous-run handoff", () => {
         expect(prompt).toContain("Risk posture: cooldown")
         expect(prompt).toContain("[truncated for bounded handoff context]")
         expect(prompt.split("---METADATA---").length - 1).toBe(1)
+    })
+
+    it("removes expected-external identifiers from policy and handoff context", () => {
+        const context = createContext()
+        context.app = "polymarket"
+        context.previousRunSummary = {
+            summary: "Watch will-the-us-acquire-any-part-of-greenland-in-2026, token-greenland-yes, and Greenland question before acting.",
+            endedAt: Date.parse("2026-04-20T09:30:00.000Z"),
+            systemContextDigest: {
+                schemaVersion: 1,
+                generatedAt: Date.parse("2026-04-20T09:30:00.000Z"),
+                risk: {
+                    safetyState: "healthy",
+                    dayRealizedPnl: 0,
+                    weekRealizedPnl: 0,
+                    dayDrawdownLimit: 200,
+                    weekDrawdownLimit: 500,
+                    cooldownActive: false,
+                    blockedInstruments: ["will-the-us-acquire-any-part-of-greenland-in-2026"],
+                    forcedExitClusterInstruments: [],
+                    unresolvedExecutionFaultCount: 0,
+                },
+                recentTrades: {
+                    dayEntries: 0,
+                    dayCloses: 0,
+                    dayForcedExits: 0,
+                    dayRejectedOrTerminal: 0,
+                    weekRealizedPnl: 0,
+                    closeOutStreakDirection: undefined,
+                    closeOutStreakCount: 0,
+                },
+                pendingOrders: [],
+            },
+        }
+        context.runtimeContextLines = [
+            "Current Polymarket execution context: will-the-us-acquire-any-part-of-greenland-in-2026 token-greenland-yes",
+        ]
+        context.promptSanitizer = {
+            blockedIdentifiers: [
+                "will-the-us-acquire-any-part-of-greenland-in-2026",
+                "token-greenland-yes",
+                "Greenland question",
+            ],
+        }
+
+        const prompt = buildSystemPrompt(context, [])
+
+        expect(prompt).not.toContain("will-the-us-acquire-any-part-of-greenland-in-2026")
+        expect(prompt).not.toContain("token-greenland-yes")
+        expect(prompt).not.toContain("expectedExternalInstruments")
+        expect(prompt).not.toContain("Greenland question")
+        expect(prompt).not.toContain("openai/gpt-5.5")
+        expect(prompt).not.toContain("reasoning")
     })
 })

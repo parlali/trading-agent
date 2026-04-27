@@ -10,6 +10,7 @@ import {
 import { requireServiceToken } from "../authGuards"
 import {
     getClaimInstrumentsForOrder,
+    getProviderInstrumentClaimAliases,
     reconcileOrderInstrumentClaim,
     replacePositionClaims,
     upsertPositionInstrumentClaims,
@@ -182,10 +183,13 @@ export const reconcileProviderPortfolio = mutation({
         await repairMissingLivePositionClaimsFromFilledOrders(ctx, {
             app: args.app,
             strategyMap,
-            liveInstruments: new Set([
-                ...args.positions.map((position) => position.instrument),
-                ...args.workingOrders.map((order) => order.instrument),
-            ]),
+            liveInstrumentAliases: buildLiveInstrumentAliases(
+                args.app,
+                [
+                    ...args.positions.map((position) => position.instrument),
+                    ...args.workingOrders.map((order) => order.instrument),
+                ]
+            ),
             updatedAt: now,
         })
 
@@ -201,6 +205,7 @@ export const reconcileProviderPortfolio = mutation({
             const positionKey = buildProviderPositionKey(position)
             const previousPosition = existingProviderPositionsByKey.get(positionKey)
             const ownership = resolveOwnership({
+                app: args.app,
                 instrument: position.instrument,
                 positionKey,
                 claimsByInstrument: refreshedClaimsByInstrument,
@@ -242,6 +247,7 @@ export const reconcileProviderPortfolio = mutation({
         const resolvedWorkingOrders = args.workingOrders.map((order) => {
             const existingOrder = matchedWorkingOrdersByLiveId.get(order.orderId)
             const ownership = resolveOwnership({
+                app: args.app,
                 instrument: order.instrument,
                 claimsByInstrument: refreshedClaimsByInstrument,
                 existingOrder,
@@ -863,6 +869,29 @@ function collectExpectedExternalInstruments(
     return expected
 }
 
+function buildLiveInstrumentAliases(
+    app: Doc<"strategies">["app"],
+    instruments: string[]
+): Map<string, Set<string>> {
+    const aliases = new Map<string, Set<string>>()
+
+    for (const instrument of instruments) {
+        aliases.set(instrument, new Set(getProviderInstrumentClaimAliases(app, instrument)))
+    }
+
+    return aliases
+}
+
+function setsIntersect(left: Set<string>, right: Set<string>): boolean {
+    for (const value of left) {
+        if (right.has(value)) {
+            return true
+        }
+    }
+
+    return false
+}
+
 function readMetadataRecord(value: string | undefined): Record<string, unknown> | undefined {
     if (!value) {
         return undefined
@@ -931,11 +960,11 @@ async function repairMissingLivePositionClaimsFromFilledOrders(
     args: {
         app: Doc<"strategies">["app"]
         strategyMap: Map<string, StrategyDoc>
-        liveInstruments: Set<string>
+        liveInstrumentAliases: Map<string, Set<string>>
         updatedAt: number
     }
 ): Promise<void> {
-    if (args.liveInstruments.size === 0) {
+    if (args.liveInstrumentAliases.size === 0) {
         return
     }
 
@@ -958,15 +987,15 @@ async function repairMissingLivePositionClaimsFromFilledOrders(
             continue
         }
 
-        const instruments = getClaimInstrumentsForOrder(order.instrument, order.intent)
-        for (const instrument of instruments) {
-            if (!args.liveInstruments.has(instrument) || claimedInstruments.has(instrument)) {
+        const orderAliases = new Set(getClaimInstrumentsForOrder(order.instrument, order.intent))
+        for (const [liveInstrument, liveAliases] of args.liveInstrumentAliases) {
+            if (claimedInstruments.has(liveInstrument) || !setsIntersect(orderAliases, liveAliases)) {
                 continue
             }
 
-            const strategies = candidateStrategiesByInstrument.get(instrument) ?? new Set<Id<"strategies">>()
+            const strategies = candidateStrategiesByInstrument.get(liveInstrument) ?? new Set<Id<"strategies">>()
             strategies.add(order.strategyId)
-            candidateStrategiesByInstrument.set(instrument, strategies)
+            candidateStrategiesByInstrument.set(liveInstrument, strategies)
         }
     }
 
@@ -1826,6 +1855,7 @@ async function listActiveOrdersForApp(
 }
 
 function resolveOwnership(args: {
+    app: Doc<"strategies">["app"]
     instrument: string
     positionKey?: string
     claimsByInstrument: Map<string, Set<Id<"strategies">>>
@@ -1859,7 +1889,10 @@ function resolveOwnership(args: {
         }
     }
 
-    const claims = args.claimsByInstrument.get(args.instrument)
+    const claims = collectClaimsForAliases(
+        args.claimsByInstrument,
+        getProviderInstrumentClaimAliases(args.app, args.instrument)
+    )
     if (!claims || claims.size === 0) {
         return { ownershipStatus: "unowned" }
     }
@@ -1873,6 +1906,26 @@ function resolveOwnership(args: {
         strategyId,
         ownershipStatus: "owned",
     }
+}
+
+function collectClaimsForAliases(
+    claimsByInstrument: Map<string, Set<Id<"strategies">>>,
+    aliases: string[]
+): Set<Id<"strategies">> | undefined {
+    const claims = new Set<Id<"strategies">>()
+
+    for (const alias of aliases) {
+        const aliasClaims = claimsByInstrument.get(alias)
+        if (!aliasClaims) {
+            continue
+        }
+
+        for (const strategyId of aliasClaims) {
+            claims.add(strategyId)
+        }
+    }
+
+    return claims.size > 0 ? claims : undefined
 }
 
 function resolvePositionOwnership(args: {
@@ -2027,8 +2080,9 @@ function inferClosedOrderStatus(args: {
     }
 
     if (isEntryLikeOrder(order)) {
+        const orderAliases = new Set(getClaimInstrumentsForOrder(order.instrument, order.intent))
         const matchingPositions = args.livePositions.filter((position) =>
-            position.instrument === order.instrument &&
+            entryOrderMatchesLivePositionInstrument(args.app, orderAliases, position.instrument) &&
             positionMatchesOrderDirection(order, position.side)
         )
         if (matchingPositions.length === 1) {
@@ -2062,6 +2116,15 @@ function inferClosedOrderStatus(args: {
     return {
         status: "cancelled",
     }
+}
+
+function entryOrderMatchesLivePositionInstrument(
+    app: Doc<"strategies">["app"],
+    orderAliases: Set<string>,
+    liveInstrument: string
+): boolean {
+    const liveAliases = getProviderInstrumentClaimAliases(app, liveInstrument)
+    return liveAliases.some((alias) => orderAliases.has(alias))
 }
 
 function mt5PositionMatchesOrderDirection(order: OrderDoc, side: "long" | "short"): boolean {

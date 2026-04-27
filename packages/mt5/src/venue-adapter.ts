@@ -255,6 +255,35 @@ export class MT5VenueAdapter implements VenueAdapter, PriceVerifier {
         return aggregateMT5CloseResults(instrument, results)
     }
 
+    async closeProviderPosition(position: Position): Promise<ExecutionResult> {
+        await this.ensureConnected()
+
+        const ticket = readMT5Ticket(position)
+        if (ticket === undefined) {
+            const errorDetail = createExecutionErrorDetail("pre_validation", `No MT5 provider ticket found for ${position.instrument}`, {
+                code: "POSITION_NOT_FOUND",
+                retryable: false,
+                details: {
+                    instrument: position.instrument,
+                    providerPositionId: position.providerPositionId,
+                },
+            })
+            return {
+                orderId: "",
+                status: "rejected",
+                filledQuantity: 0,
+                timestamp: Date.now(),
+                error: formatExecutionError(errorDetail),
+                errorDetail,
+            }
+        }
+
+        const result = await this.client.closePosition({ ticket })
+        return this.client.mapOrderResultToExecution(result, {
+            fallbackOrderId: String(ticket),
+        })
+    }
+
     async getOrderStatus(orderId: string): Promise<ExecutionResult> {
         await this.ensureConnected()
 
@@ -463,6 +492,20 @@ function mapMT5Position(raw: MT5Position, observedAt: number = Date.now()): Posi
             openTime,
         },
     }
+}
+
+function readMT5Ticket(position: Position): number | undefined {
+    const fromProviderPositionId = Number(position.providerPositionId)
+    if (Number.isInteger(fromProviderPositionId) && fromProviderPositionId > 0) {
+        return fromProviderPositionId
+    }
+
+    const fromMetadata = Number(position.metadata?.ticket)
+    if (Number.isInteger(fromMetadata) && fromMetadata > 0) {
+        return fromMetadata
+    }
+
+    return undefined
 }
 
 function resolveMT5InstrumentClass(symbol: string): ExecutionCostSnapshot["instrumentClass"] {

@@ -17,6 +17,7 @@ import {
 import {
     OKXClient,
     type OKXAccountBalance,
+    type OKXAttachedAlgoOrderParams,
     type OKXAlgoOrder,
     type OKXApiPosSide,
     type OKXInstrument,
@@ -297,6 +298,7 @@ export class OKXVenueAdapter implements VenueAdapter, PriceVerifier {
         const px = intent.limitPrice !== undefined
             ? await this.normalizePrice(instId, intent.limitPrice)
             : undefined
+        const attachAlgoOrds = await this.buildAttachedProtectionOrders(instId, intent)
         const ack = await this.client.placeOrder({
             instId,
             tdMode: this.config.marginMode,
@@ -306,6 +308,7 @@ export class OKXVenueAdapter implements VenueAdapter, PriceVerifier {
             px: px !== undefined ? formatNumber(px) : undefined,
             posSide: this.resolveEntryPosSide(intent.side),
             reduceOnly: isCloseAction(intent),
+            attachAlgoOrds,
         })
 
         const order = await this.client.getOrder(instId, ack.ordId)
@@ -432,6 +435,10 @@ export class OKXVenueAdapter implements VenueAdapter, PriceVerifier {
 
         const order = await this.client.getOrder(instId, ack.ordId)
         return await this.mapExecutionResult(instId, order)
+    }
+
+    async closeProviderPosition(position: Position): Promise<ExecutionResult> {
+        return await this.closePosition(position.instrument)
     }
 
     async getOrderStatus(orderId: string): Promise<ExecutionResult> {
@@ -715,39 +722,84 @@ export class OKXVenueAdapter implements VenueAdapter, PriceVerifier {
         const createdOrderIds: string[] = []
         const closeSide = position.side === "long" ? "sell" : "buy"
         const posSide = this.resolvePositionPosSide(position.side)
+        const rules = await this.getInstrumentRules(instId)
+        const contracts = this.baseQuantityToContracts(rules, position.quantity)
+        const size = formatContracts(contracts)
 
-        if (config.stopLoss !== undefined) {
+        if (config.stopLoss !== undefined && config.takeProfit !== undefined) {
+            const ack = await this.client.placeAlgoOrder({
+                instId,
+                tdMode: this.config.marginMode,
+                side: closeSide,
+                posSide,
+                ordType: "oco",
+                sz: size,
+                slTriggerPx: formatNumber(await this.normalizePrice(instId, config.stopLoss)),
+                slOrdPx: "-1",
+                tpTriggerPx: formatNumber(await this.normalizePrice(instId, config.takeProfit)),
+                tpOrdPx: "-1",
+            })
+            createdOrderIds.push(toCompositeOrderId("algo", instId, ack.algoId))
+        } else if (config.stopLoss !== undefined) {
             const ack = await this.client.placeAlgoOrder({
                 instId,
                 tdMode: this.config.marginMode,
                 side: closeSide,
                 posSide,
                 ordType: "conditional",
-                closeFraction: "1",
+                sz: size,
                 slTriggerPx: formatNumber(await this.normalizePrice(instId, config.stopLoss)),
                 slOrdPx: "-1",
             })
             createdOrderIds.push(toCompositeOrderId("algo", instId, ack.algoId))
-        }
-
-        if (config.takeProfit !== undefined) {
+        } else if (config.takeProfit !== undefined) {
             const ack = await this.client.placeAlgoOrder({
                 instId,
                 tdMode: this.config.marginMode,
                 side: closeSide,
                 posSide,
                 ordType: "conditional",
-                closeFraction: "1",
+                sz: size,
                 tpTriggerPx: formatNumber(await this.normalizePrice(instId, config.takeProfit)),
                 tpOrdPx: "-1",
             })
             createdOrderIds.push(toCompositeOrderId("algo", instId, ack.algoId))
         }
 
+        if (createdOrderIds.length > 0) {
+            await this.assertProtectionOrdersPending(instId, createdOrderIds)
+        }
+
         return {
             cancelledOrderIds,
             createdOrderIds,
         }
+    }
+
+    private async assertProtectionOrdersPending(
+        instId: string,
+        createdOrderIds: string[]
+    ): Promise<void> {
+        const pending = await this.client.getAlgoOrdersPending("SWAP", instId)
+        const pendingIds = new Set(
+            pending.map((order) => toCompositeOrderId("algo", instId, order.algoId))
+        )
+        const missing = createdOrderIds.filter((orderId) => !pendingIds.has(orderId))
+
+        if (missing.length === 0) {
+            return
+        }
+
+        throw createExecutionError("venue", `OKX protection order placement did not appear in pending algo orders for ${instId}`, {
+            code: "PROTECTION_NOT_PENDING",
+            retryable: false,
+            details: {
+                instId,
+                createdOrderIds,
+                pendingOrderIds: Array.from(pendingIds),
+                missing,
+            },
+        })
     }
 
     async closeAllPositions(): Promise<{ closed: number; results: ExecutionResult[] }> {
@@ -932,6 +984,35 @@ export class OKXVenueAdapter implements VenueAdapter, PriceVerifier {
         return `${instId}:${posSide ?? "net"}`
     }
 
+    private async buildAttachedProtectionOrders(
+        instId: string,
+        intent: OrderIntent
+    ): Promise<OKXAttachedAlgoOrderParams[] | undefined> {
+        if (isCloseAction(intent)) {
+            return undefined
+        }
+
+        const stopLoss = readFiniteMetadataNumber(intent.metadata, "stopLoss")
+        const takeProfit = readFiniteMetadataNumber(intent.metadata, "takeProfit")
+
+        if (stopLoss === undefined && takeProfit === undefined) {
+            return undefined
+        }
+
+        return [
+            {
+                slTriggerPx: stopLoss !== undefined
+                    ? formatNumber(await this.normalizePrice(instId, stopLoss))
+                    : undefined,
+                slOrdPx: stopLoss !== undefined ? "-1" : undefined,
+                tpTriggerPx: takeProfit !== undefined
+                    ? formatNumber(await this.normalizePrice(instId, takeProfit))
+                    : undefined,
+                tpOrdPx: takeProfit !== undefined ? "-1" : undefined,
+            },
+        ]
+    }
+
     private async mapExecutionResult(
         instId: string,
         order: OKXOrder
@@ -1114,6 +1195,14 @@ function mapToOKXOrderType(
     }
 
     return "limit"
+}
+
+function readFiniteMetadataNumber(
+    metadata: OrderIntent["metadata"],
+    key: string
+): number | undefined {
+    const value = metadata?.[key]
+    return typeof value === "number" && Number.isFinite(value) ? value : undefined
 }
 
 function mapDepthSide(

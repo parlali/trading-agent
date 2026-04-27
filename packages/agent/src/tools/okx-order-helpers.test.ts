@@ -16,6 +16,9 @@ const policy: OKXPolicy = {
             closeBufferMinutes: 15,
             timezone: "UTC",
         },
+        account: {
+            allocationPercent: 100,
+        },
         expectedExternalInstruments: [],
         pendingEntryTtlMinutes: 30,
     },

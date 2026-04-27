@@ -1,5 +1,5 @@
 import type { ToolDefinition } from "@valiq-trading/agent"
-import type { Logger, RiskValidator, VenueAdapter, VenueApp } from "@valiq-trading/core"
+import type { AccountState, Logger, Position, RiskValidator, VenueAdapter, VenueApp, WorkingOrder } from "@valiq-trading/core"
 import type { App } from "@valiq-trading/core"
 
 export type { VenueApp } from "@valiq-trading/core"
@@ -36,6 +36,10 @@ export interface PreRunHookConfig {
     venue: VenueAdapter
     policy: Record<string, unknown>
     strategyId: string
+    ownedInstruments: Set<string>
+    ownedPositions: Position[]
+    ownedWorkingOrders: WorkingOrder[]
+    strategyAccountState: AccountState
     logger: Logger
     createAlert(alert: { strategyId?: string; app: App; severity: "critical" | "warning" | "info"; message: string }): Promise<void>
 }
@@ -44,6 +48,7 @@ export interface PreRunHookResult {
     skip: boolean
     reason?: string
     runtimeContextLines?: string[]
+    providerStateChanged?: boolean
 }
 
 export interface PostRunHookConfig {

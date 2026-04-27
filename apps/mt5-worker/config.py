@@ -30,6 +30,12 @@ class Settings(BaseSettings):
     # Auth -- shared secret between TS orchestrator and this worker
     worker_access_key: str = ""
 
+    worker_listener_watchdog_enabled: bool = True
+    worker_listener_watchdog_startup_grace_seconds: float = 15.0
+    worker_listener_watchdog_interval_seconds: float = 5.0
+    worker_listener_watchdog_timeout_seconds: float = 2.0
+    worker_listener_watchdog_failure_threshold: int = 3
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
 

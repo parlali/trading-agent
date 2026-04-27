@@ -120,15 +120,111 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 export function getClaimInstrumentsForOrder(instrument: string, intent?: unknown): string[] {
+    const structureAliases = getAlpacaStructureAliases(instrument)
+
     if (!isRecord(intent) || !Array.isArray(intent.legs)) {
-        return uniqueInstruments([instrument])
+        return uniqueInstruments([instrument, ...structureAliases])
     }
 
     const legInstruments = intent.legs
         .filter(isRecord)
         .map((leg) => typeof leg.instrument === "string" ? leg.instrument : "")
 
-    return uniqueInstruments([instrument, ...legInstruments])
+    return uniqueInstruments([instrument, ...structureAliases, ...legInstruments])
+}
+
+export function getProviderInstrumentClaimAliases(app: VenueApp, instrument: string): string[] {
+    if (app !== "alpaca-options") {
+        return uniqueInstruments([instrument])
+    }
+
+    return uniqueInstruments([instrument, ...getAlpacaStructureAliases(instrument)])
+}
+
+function getAlpacaStructureAliases(instrument: string): string[] {
+    const normalized = instrument.trim().toUpperCase()
+
+    if (normalized.startsWith("IC:")) {
+        return getAlpacaIronCondorAliases(normalized)
+    }
+
+    if (normalized.startsWith("VS:")) {
+        return getAlpacaVerticalAliases(normalized)
+    }
+
+    return []
+}
+
+function getAlpacaIronCondorAliases(instrument: string): string[] {
+    const parsed = parseAlpacaStructureInstrument(instrument)
+    if (!parsed || parsed.prefix !== "IC" || parsed.legs.length !== 4) {
+        return []
+    }
+
+    const callLegs = parsed.legs.filter((leg) => readAlpacaOptionType(leg) === "C").sort()
+    const putLegs = parsed.legs.filter((leg) => readAlpacaOptionType(leg) === "P").sort()
+    const aliases: string[] = [...parsed.legs]
+
+    if (callLegs.length === 2) {
+        aliases.push(`VS:BEAR_CALL_CREDIT:${parsed.underlying}:${parsed.expiration}:${callLegs.join("|")}`)
+    }
+
+    if (putLegs.length === 2) {
+        aliases.push(`VS:BULL_PUT_CREDIT:${parsed.underlying}:${parsed.expiration}:${putLegs.join("|")}`)
+    }
+
+    return aliases
+}
+
+function getAlpacaVerticalAliases(instrument: string): string[] {
+    const parsed = parseAlpacaStructureInstrument(instrument)
+    return parsed?.prefix === "VS" ? parsed.legs : []
+}
+
+function parseAlpacaStructureInstrument(instrument: string): {
+    prefix: "IC" | "VS"
+    underlying: string
+    expiration: string
+    legs: string[]
+} | undefined {
+    const parts = instrument.split(":")
+    const prefix = parts[0]
+
+    if (prefix === "IC" && parts.length === 4) {
+        return {
+            prefix,
+            underlying: parts[1] ?? "",
+            expiration: parts[2] ?? "",
+            legs: splitAlpacaLegs(parts[3]),
+        }
+    }
+
+    if (prefix === "VS" && parts.length === 5) {
+        return {
+            prefix,
+            underlying: parts[2] ?? "",
+            expiration: parts[3] ?? "",
+            legs: splitAlpacaLegs(parts[4]),
+        }
+    }
+
+    return undefined
+}
+
+function splitAlpacaLegs(value: string | undefined): string[] {
+    if (!value) {
+        return []
+    }
+
+    return value
+        .split("|")
+        .map((leg) => leg.trim().toUpperCase())
+        .filter((leg) => leg.length > 0)
+}
+
+function readAlpacaOptionType(symbol: string): "C" | "P" | undefined {
+    const match = symbol.match(/\d{6}([CP])\d{8}$/)
+    return match?.[1] === "C" || match?.[1] === "P" ? match[1] : undefined
 }
 
 export async function getLatestPositionsForStrategy(

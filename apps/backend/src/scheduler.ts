@@ -47,15 +47,18 @@ import {
     buildRunSystemContextDigest,
     formatRunSystemContextDigestLines,
     filterPositionsByOwnership,
+    filterWorkingOrdersByOwnership,
     okxPolicySchema,
     getNextCronFireMs,
     mt5PolicySchema,
     parseSummaryMetadata,
     sanitizeRunSummary,
     computeRecentTradeDigest,
+    isDryRunAccountLedgerPosition,
     readConfiguredStrategySafetyPolicy,
     resolveDryRunAccountState,
     resolveRuntimeStrategySafetyPolicy,
+    resolveStrategyAccountState,
     validatePolicy,
     withTimeout,
     type Logger,
@@ -65,6 +68,7 @@ import {
     type RunSystemContextDigest,
     type VenueAdapter,
     type StrategyRiskState,
+    type WorkingOrder,
 } from "@valiq-trading/core"
 import { AlpacaOptionsVenueAdapter } from "@valiq-trading/alpaca-options"
 import { OKXVenueAdapter } from "@valiq-trading/okx"
@@ -141,6 +145,136 @@ function mergeRuntimeContextLines(
     }
 
     return [...(existing ?? []), ...additional]
+}
+
+function readPolicyReasoningConfig(policy: Record<string, unknown>): { effort: "low" | "medium" | "high"; exclude: boolean } | undefined {
+    const reasoning = readRecord(policy.reasoning)
+    const effort = reasoning?.effort
+
+    if (effort !== "low" && effort !== "medium" && effort !== "high") {
+        return undefined
+    }
+
+    return {
+        effort,
+        exclude: reasoning?.exclude !== false,
+    }
+}
+
+function buildPromptBlockedIdentifiers(args: {
+    allPositions: Position[]
+    ownedPositions: Position[]
+    allWorkingOrders: WorkingOrder[]
+    ownedWorkingOrders: WorkingOrder[]
+    policy: Record<string, unknown>
+}): string[] {
+    const ownedPositionKeys = new Set(args.ownedPositions.map(buildPositionPromptKey))
+    const ownedOrderIds = new Set(args.ownedWorkingOrders.map((order) => order.orderId))
+    const expectedExternal = readExpectedExternalIdentifiers(args.policy)
+    const blocked = new Set<string>(expectedExternal)
+
+    for (const position of args.allPositions) {
+        if (ownedPositionKeys.has(buildPositionPromptKey(position)) && !matchesExpectedExternal(position, expectedExternal)) {
+            continue
+        }
+
+        addPositionIdentifiers(blocked, position)
+    }
+
+    for (const order of args.allWorkingOrders) {
+        if (ownedOrderIds.has(order.orderId) && !matchesExpectedExternal(order, expectedExternal)) {
+            continue
+        }
+
+        addWorkingOrderIdentifiers(blocked, order)
+    }
+
+    return Array.from(blocked).sort((left, right) => left.localeCompare(right))
+}
+
+function readRecord(value: unknown): Record<string, unknown> | undefined {
+    return value && typeof value === "object"
+        ? value as Record<string, unknown>
+        : undefined
+}
+
+function readExpectedExternalIdentifiers(policy: Record<string, unknown>): Set<string> {
+    const safety = readRecord(policy.safety)
+    const expected = safety?.expectedExternalInstruments
+    const identifiers = new Set<string>()
+
+    if (!Array.isArray(expected)) {
+        return identifiers
+    }
+
+    for (const value of expected) {
+        addPromptIdentifier(identifiers, value)
+    }
+
+    return identifiers
+}
+
+function buildPositionPromptKey(position: Position): string {
+    return `${position.instrument}:${position.providerPositionId ?? position.side}`
+}
+
+function matchesExpectedExternal(
+    value: Position | WorkingOrder,
+    expectedExternal: Set<string>
+): boolean {
+    if (expectedExternal.size === 0) {
+        return false
+    }
+
+    const identifiers = new Set<string>()
+    if ("orderId" in value) {
+        addWorkingOrderIdentifiers(identifiers, value)
+    } else {
+        addPositionIdentifiers(identifiers, value)
+    }
+
+    for (const identifier of identifiers) {
+        if (expectedExternal.has(identifier)) {
+            return true
+        }
+    }
+
+    return false
+}
+
+function addPositionIdentifiers(identifiers: Set<string>, position: Position): void {
+    addPromptIdentifier(identifiers, position.instrument)
+    addPromptIdentifier(identifiers, position.providerPositionId)
+    addMetadataIdentifiers(identifiers, position.metadata)
+}
+
+function addWorkingOrderIdentifiers(identifiers: Set<string>, order: WorkingOrder): void {
+    addPromptIdentifier(identifiers, order.instrument)
+    addPromptIdentifier(identifiers, order.orderId)
+    addMetadataIdentifiers(identifiers, order.metadata)
+}
+
+function addMetadataIdentifiers(identifiers: Set<string>, metadata: Record<string, unknown> | undefined): void {
+    if (!metadata) {
+        return
+    }
+
+    for (const key of ["tokenId", "conditionId", "market", "marketSlug", "slug", "question", "instrument"]) {
+        addPromptIdentifier(identifiers, metadata[key])
+    }
+}
+
+function addPromptIdentifier(identifiers: Set<string>, value: unknown): void {
+    if (typeof value !== "string") {
+        return
+    }
+
+    const normalized = value.trim()
+    if (normalized.length < 4) {
+        return
+    }
+
+    identifiers.add(normalized)
 }
 
 function mergePendingOrderBlockedInstrumentsIntoRiskState(
@@ -281,11 +415,7 @@ async function resolveRuntimeSafetyPolicyForRun(args: {
         })
     }
 
-    const providerAccountState = await args.venue.getAccountState()
-    return resolveRuntimeStrategySafetyPolicy({
-        policy: configuredSafety,
-        accountBalance: providerAccountState.balance,
-    })
+    throw new Error("Live safety policy resolution requires strategy-scoped account state")
 }
 
 function registerCanonicalTool(
@@ -849,6 +979,44 @@ export async function runStrategy(
     }
 
     const venue = plugin.createVenueAdapter(policy, strategySecrets)
+    const isDryRun = Boolean(policy.dryRun)
+    const storedPositionsPromise = isDryRun
+        ? backend.getLatestPositions(strategy._id)
+        : Promise.resolve(undefined)
+    const [
+        ownedInstrumentsList,
+        allOwnedInstruments,
+        storedPositions,
+        initialPositions,
+        initialWorkingOrders,
+        initialProviderAccountState,
+    ] = await Promise.all([
+        backend.getStrategyOwnedInstruments(strategy._id),
+        backend.getAllOwnedInstrumentsByApp(app),
+        storedPositionsPromise,
+        isDryRun
+            ? storedPositionsPromise
+            : venue.getPositions(),
+        !isDryRun && venue.getWorkingOrders ? venue.getWorkingOrders() : Promise.resolve([]),
+        isDryRun
+            ? Promise.resolve(undefined)
+            : venue.getAccountState(),
+    ])
+    const ownedInstruments = new Set(ownedInstrumentsList)
+    const initialOwnedPositions = isDryRun
+        ? (initialPositions ?? []).filter((position) => !isDryRunAccountLedgerPosition(position))
+        : filterPositionsByOwnership(initialPositions ?? [], ownedInstruments)
+    const initialOwnedWorkingOrders = filterWorkingOrdersByOwnership(initialWorkingOrders, ownedInstruments)
+    const initialStrategyAccountState = isDryRun
+        ? resolveDryRunAccountState({
+            policy,
+            positions: storedPositions ?? [],
+        })
+        : resolveStrategyAccountState({
+            providerAccountState: initialProviderAccountState!,
+            positions: initialOwnedPositions,
+            policy,
+        })
     let runtimeContextLines: string[] | undefined
 
     if (plugin.preRunHooks) {
@@ -857,6 +1025,10 @@ export async function runStrategy(
                 venue,
                 policy,
                 strategyId: strategy._id,
+                ownedInstruments,
+                ownedPositions: initialOwnedPositions,
+                ownedWorkingOrders: initialOwnedWorkingOrders,
+                strategyAccountState: initialStrategyAccountState,
                 logger,
                 createAlert: (alert) => backend.createAlert(alert),
             }),
@@ -869,6 +1041,14 @@ export async function runStrategy(
                 app,
                 reason: hookResult.reason,
             })
+            if (hookResult.providerStateChanged && !isDryRun) {
+                await reconcileProviderPortfolio({
+                    app,
+                    venueName: plugin.venueName,
+                    source: "post_run_sync",
+                    venue,
+                })
+            }
             return
         }
 
@@ -888,16 +1068,8 @@ export async function runStrategy(
     let currentAccountState: AccountState | undefined
 
     try {
-        const [ownedInstrumentsList, allOwnedInstruments, storedPositions] = await Promise.all([
-            backend.getStrategyOwnedInstruments(strategy._id),
-            backend.getAllOwnedInstrumentsByApp(app),
-            Boolean(policy.dryRun)
-                ? backend.getLatestPositions(strategy._id)
-                : Promise.resolve(undefined),
-        ])
         latestStoredPositions = storedPositions
 
-        const ownedInstruments = new Set(ownedInstrumentsList)
         const conflictMap = new Map<string, string>()
         for (const entry of allOwnedInstruments) {
             if (entry.strategyId !== strategy._id) {
@@ -909,6 +1081,7 @@ export async function runStrategy(
             policy,
             venue,
             latestStoredPositions,
+            accountState: initialStrategyAccountState,
         })
         const riskState = await backend.refreshStrategyRiskState({
             strategyId: strategy._id,
@@ -956,6 +1129,7 @@ export async function runStrategy(
             runId,
             strategyId: strategy._id,
             ownedInstruments,
+            strategyRealizedPnl: runRiskState.day.realizedPnl,
         })
         const activePipeline = pipeline
 
@@ -1037,9 +1211,7 @@ export async function runStrategy(
             const positions = isDryRun
                 ? activePipeline.getDryRunPositions()
                 : filterPositionsByOwnership(allPositions, ownedInstruments)
-            const accountState = isDryRun
-                ? await activePipeline.getAccountState()
-                : await venue.getAccountState()
+            const accountState = await activePipeline.getAccountState()
             currentAccountState = accountState
 
             const result = await executeAgentRun(
@@ -1057,11 +1229,21 @@ export async function runStrategy(
                     schedule: strategy.schedule,
                     pendingOrders,
                     previousRunSummary: previousRunSummary ?? undefined,
+                    promptSanitizer: {
+                        blockedIdentifiers: buildPromptBlockedIdentifiers({
+                            allPositions,
+                            ownedPositions: positions,
+                            allWorkingOrders: initialWorkingOrders,
+                            ownedWorkingOrders: initialOwnedWorkingOrders,
+                            policy,
+                        }),
+                    },
                 },
                 {
                     llm: {
                         apiKey: strategySecrets.OPENROUTER_API_KEY,
                         model: policy.model as string,
+                        reasoning: readPolicyReasoningConfig(policy),
                     },
                     tools,
                     logger: runLogger,
@@ -1096,9 +1278,7 @@ export async function runStrategy(
                 })
             }
 
-            currentAccountState = Boolean(policy.dryRun)
-                ? await activePipeline.getAccountState()
-                : await venue.getAccountState()
+            currentAccountState = await activePipeline.getAccountState()
             const postRunSafetyPolicy = await resolveRuntimeSafetyPolicyForRun({
                 policy,
                 venue,
@@ -1198,10 +1378,8 @@ export async function runStrategy(
         }
 
         try {
-            if (Boolean(policy.dryRun) && pipeline) {
+            if (pipeline) {
                 currentAccountState = await pipeline.getAccountState()
-            } else if (!Boolean(policy.dryRun)) {
-                currentAccountState = await venue.getAccountState()
             }
         } catch (accountStateError) {
             logger.warn("Failed to refresh account state before risk update after run failure", {

@@ -165,6 +165,7 @@ export interface OKXPlaceOrderParams {
     px?: string
     posSide?: OKXApiPosSide
     reduceOnly?: boolean
+    attachAlgoOrds?: OKXAttachedAlgoOrderParams[]
 }
 
 export interface OKXAmendOrderParams {
@@ -186,8 +187,17 @@ export interface OKXPlaceAlgoOrderParams {
     tdMode: OKXMarginMode
     side: "buy" | "sell"
     posSide?: OKXApiPosSide
-    ordType: "conditional"
-    closeFraction?: string
+    ordType: "conditional" | "oco"
+    sz: string
+    slTriggerPx?: string
+    slOrdPx?: string
+    tpTriggerPx?: string
+    tpOrdPx?: string
+}
+
+type OKXAlgoOrderType = "conditional" | "oco"
+
+export interface OKXAttachedAlgoOrderParams {
     slTriggerPx?: string
     slOrdPx?: string
     tpTriggerPx?: string
@@ -323,6 +333,7 @@ export class OKXClient {
             px: params.px,
             posSide: params.posSide,
             reduceOnly: params.reduceOnly === true ? "true" : undefined,
+            attachAlgoOrds: params.attachAlgoOrds,
         })
 
         const ack = requireFirst(data, "OKX place order acknowledgement")
@@ -414,21 +425,27 @@ export class OKXClient {
     }
 
     async placeAlgoOrder(params: OKXPlaceAlgoOrderParams): Promise<OKXAlgoOrderAck> {
-        const data = await this.privateRequest<OKXAlgoOrderAck>("POST", "/api/v5/trade/order-algo", undefined, {
+        const request = {
             instId: params.instId,
             tdMode: params.tdMode,
             side: params.side,
             posSide: params.posSide,
             ordType: params.ordType,
-            closeFraction: params.closeFraction,
+            sz: params.sz,
             slTriggerPx: params.slTriggerPx,
             slOrdPx: params.slOrdPx,
             tpTriggerPx: params.tpTriggerPx,
             tpOrdPx: params.tpOrdPx,
-        })
+        }
+        const data = await this.privateRequest<OKXAlgoOrderAck>("POST", "/api/v5/trade/order-algo", undefined, request)
 
         const ack = requireFirst(data, "OKX algo order acknowledgement")
-        assertAckSuccess(ack.sCode, ack.sMsg, "OKX algo order placement")
+        assertAckSuccess(ack.sCode, ack.sMsg, "OKX algo order placement", {
+            path: "/api/v5/trade/order-algo",
+            request,
+            sCode: ack.sCode,
+            sMsg: ack.sMsg,
+        })
         return ack
     }
 
@@ -454,13 +471,22 @@ export class OKXClient {
 
     async getAlgoOrdersPending(
         instType: "SWAP" = "SWAP",
-        instId?: string
+        instId?: string,
+        ordType?: OKXAlgoOrderType
     ): Promise<OKXAlgoOrder[]> {
+        if (!ordType) {
+            const [conditional, oco] = await Promise.all([
+                this.getAlgoOrdersPending(instType, instId, "conditional"),
+                this.getAlgoOrdersPending(instType, instId, "oco"),
+            ])
+            return [...conditional, ...oco]
+        }
+
         return await this.privateRequest<OKXAlgoOrder>(
             "GET",
             "/api/v5/trade/orders-algo-pending",
             {
-                ordType: "conditional",
+                ordType,
                 instType,
                 instId,
             }
@@ -585,7 +611,8 @@ export class OKXClient {
 function assertAckSuccess(
     code: string,
     message: string,
-    operation: string
+    operation: string,
+    details: Record<string, unknown> = {}
 ): void {
     if (code === "0") {
         return
@@ -597,6 +624,7 @@ function assertAckSuccess(
         code,
         {
             operation,
+            ...details,
         }
     )
 }

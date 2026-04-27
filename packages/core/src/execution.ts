@@ -35,6 +35,7 @@ import {
     validateIntent,
 } from "./risk"
 import { filterPositionsByOwnership } from "./position-filter"
+import { resolveStrategyAccountState } from "./strategy-account"
 import type { Logger } from "./logger"
 import { getIntentAction, hasIntentChanges, createSyntheticIntent } from "./intent"
 import { OrderLifecycleManager } from "./order-tracker"
@@ -82,6 +83,7 @@ export interface VenueAdapter {
     cancelOrder(orderId: string): Promise<ExecutionResult>
     modifyOrder(orderId: string, changes: Partial<OrderIntent>): Promise<ExecutionResult>
     closePosition(instrument: string, preparedIntent?: OrderIntent): Promise<ExecutionResult>
+    closeProviderPosition?(position: Position, preparedIntent?: OrderIntent): Promise<ExecutionResult>
     getOrderStatus(orderId: string): Promise<ExecutionResult>
     buildCloseIntent?(instrument: string): Promise<OrderIntent>
 }
@@ -106,6 +108,7 @@ export interface ExecutionPipelineConfig {
     strategyId: string
     lifecycle?: OrderLifecycleConfig
     ownedInstruments?: Set<string>
+    strategyRealizedPnl?: number
 }
 
 export interface ExecuteIntentResult {
@@ -143,6 +146,7 @@ export class ExecutionPipeline {
     private strategyId: string
     private ownedInstruments: Set<string> | null
     private dryRun: boolean
+    private strategyRealizedPnl: number
     private dryRunPositionBook: Map<string, Position>
     private dryRunCashAdjustment: number
     private dryRunRealizedPnl: number
@@ -159,6 +163,7 @@ export class ExecutionPipeline {
         this.strategyId = config.strategyId
         this.ownedInstruments = config.ownedInstruments ?? null
         this.dryRun = Boolean(config.policy.dryRun)
+        this.strategyRealizedPnl = config.strategyRealizedPnl ?? 0
         this.dryRunPositionBook = new Map()
         this.dryRunCashAdjustment = 0
         this.dryRunRealizedPnl = 0
@@ -677,7 +682,17 @@ export class ExecutionPipeline {
             return this.getDryRunAccountState()
         }
 
-        return this.venue.getAccountState()
+        const [providerAccountState, positions] = await Promise.all([
+            this.venue.getAccountState(),
+            this.getPositions(),
+        ])
+
+        return resolveStrategyAccountState({
+            providerAccountState,
+            positions,
+            policy: this.policy,
+            realizedPnl: this.strategyRealizedPnl,
+        })
     }
 
     private async simulateDryRunOrder(intent: OrderIntent): Promise<ExecutionResult> {

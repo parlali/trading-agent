@@ -3,6 +3,10 @@ import { z } from "zod/v4"
 export const baseStrategyPolicySchema = z.object({
     dryRun: z.boolean().default(false),
     model: z.string().trim().min(1, "OpenRouter model id is required"),
+    reasoning: z.object({
+        effort: z.enum(["low", "medium", "high"]).default("medium"),
+        exclude: z.boolean().default(true),
+    }).optional(),
     safety: z.object({
         maxDrawdownDay: z.number().positive().max(100).optional(),
         maxDrawdownWeek: z.number().positive().max(100).optional(),
@@ -18,6 +22,9 @@ export const baseStrategyPolicySchema = z.object({
             closeBufferMinutes: 15,
             timezone: "UTC",
         }),
+        account: z.object({
+            allocationPercent: z.number().positive().max(100),
+        }).optional(),
         expectedExternalInstruments: z.array(z.string().trim().min(1)).default([]),
         pendingEntryTtlMinutes: z.number().int().positive().max(7 * 24 * 60).optional(),
     }).default({
@@ -31,6 +38,7 @@ export const baseStrategyPolicySchema = z.object({
             closeBufferMinutes: 15,
             timezone: "UTC",
         },
+        account: undefined,
         expectedExternalInstruments: [],
         pendingEntryTtlMinutes: undefined,
     }),
@@ -226,6 +234,7 @@ export const ALPACA_OPTIONS_POLICY_DEFAULTS: AlpacaOptionsPolicy = {
             closeBufferMinutes: 15,
             timezone: "UTC",
         },
+        account: undefined,
         expectedExternalInstruments: [],
         pendingEntryTtlMinutes: undefined,
     },
@@ -283,6 +292,7 @@ export const POLYMARKET_POLICY_DEFAULTS: PolymarketPolicy = {
             closeBufferMinutes: 15,
             timezone: "UTC",
         },
+        account: undefined,
         expectedExternalInstruments: [],
         pendingEntryTtlMinutes: undefined,
     },
@@ -306,6 +316,7 @@ export const MT5_POLICY_DEFAULTS: MT5Policy = {
             closeBufferMinutes: 15,
             timezone: "UTC",
         },
+        account: undefined,
         expectedExternalInstruments: [],
         pendingEntryTtlMinutes: 120,
     },
@@ -330,6 +341,7 @@ export const OKX_POLICY_DEFAULTS: OKXPolicy = {
             closeBufferMinutes: 15,
             timezone: "UTC",
         },
+        account: undefined,
         expectedExternalInstruments: [],
         pendingEntryTtlMinutes: 120,
     },

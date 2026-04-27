@@ -393,6 +393,47 @@ describe("portfolio governance helpers", () => {
         })
     })
 
+    it("infers Alpaca vertical fills when provider truth groups the legs into an iron condor", () => {
+        const order = {
+            orderId: "alpaca-put-vertical",
+            providerOrderId: "alpaca-put-vertical",
+            providerOrderAliases: [],
+            action: "entry",
+            quantity: 1,
+            filledQuantity: 0,
+            avgFillPrice: undefined,
+            instrument: "VS:BULL_PUT_CREDIT:SPY:2026-05-01:SPY260501P00694000|SPY260501P00695000",
+            lastTransitionSequence: 0,
+            intent: {
+                side: "sell",
+                legs: [
+                    { instrument: "SPY260501P00694000", side: "buy_to_open" },
+                    { instrument: "SPY260501P00695000", side: "sell_to_open" },
+                ],
+            },
+        }
+
+        const inferredFill = portfolioGovernanceTestables.inferClosedOrderStatus({
+            app: "alpaca-options",
+            order,
+            livePositions: [
+                {
+                    instrument: "IC:SPY:2026-05-01:SPY260501C00720000|SPY260501C00721000|SPY260501P00694000|SPY260501P00695000",
+                    side: "short",
+                    quantity: 1,
+                    entryPrice: 0.44,
+                },
+            ],
+        } as never)
+
+        expect(inferredFill).toEqual({
+            status: "filled",
+            filledQuantity: 1,
+            remainingQuantity: 0,
+            avgFillPrice: 0.44,
+        })
+    })
+
     it("infers close fills when the targeted position is no longer live", () => {
         const order = {
             orderId: "provider-close:mt5:XAUUSD:123",

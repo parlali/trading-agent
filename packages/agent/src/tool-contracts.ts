@@ -469,10 +469,10 @@ const toolContracts = createToolContractCatalog([
         owner: "shared",
         compatibleVenues: VENUE_APPS,
         defaultVariant: {
-            description: "Get current account state including balance, buying power, margin usage, and P&L.",
+            description: "Get the strategy-scoped account state including allocated balance, buying power budget, margin usage, and strategy P&L.",
             parameters: emptyParamsSchema,
             jsonSchema: { type: "object", properties: {} },
-            outputDescription: "Returns the current normalized account snapshot.",
+            outputDescription: "Returns the current normalized strategy account snapshot.",
             errorSemantics: "Returns current broker or dry-run state. Transport or adapter failures throw.",
         },
     },

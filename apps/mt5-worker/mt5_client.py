@@ -618,8 +618,22 @@ class MT5Client:
 
     def get_order(self, order_id: int) -> dict[str, Any] | None:
         """Get pending order status."""
+        if order_id <= 0:
+            log.warning("mt5_order_status_invalid_ticket", order_id=order_id)
+            return None
+
         self.ensure_connected()
-        orders = mt5.orders_get(ticket=order_id)
+        try:
+            orders = mt5.orders_get(ticket=order_id)
+        except (OverflowError, SystemError) as exc:
+            log.error(
+                "mt5_orders_get_failed",
+                order_id=order_id,
+                error_type=type(exc).__name__,
+                error=str(exc),
+            )
+            return None
+
         if orders and len(orders) > 0:
             order = orders[0]
             return {
@@ -635,7 +649,17 @@ class MT5Client:
                 "timeDone": self._read_mt5_timestamp_ms(order, "time_done_msc", "time_done"),
             }
 
-        positions = mt5.positions_get(ticket=order_id)
+        try:
+            positions = mt5.positions_get(ticket=order_id)
+        except (OverflowError, SystemError) as exc:
+            log.error(
+                "mt5_positions_get_failed",
+                order_id=order_id,
+                error_type=type(exc).__name__,
+                error=str(exc),
+            )
+            return None
+
         if positions and len(positions) > 0:
             position = positions[0]
             return {

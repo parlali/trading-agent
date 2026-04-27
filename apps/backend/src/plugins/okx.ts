@@ -150,7 +150,7 @@ export class OKXPlugin implements VenuePlugin {
 
         const eodFlattened = await this.checkEndOfSessionFlatten(venue, policy, config.strategyId, config)
         if (eodFlattened) {
-            return { skip: true, reason: "End-of-session flatten executed" }
+            return { skip: true, reason: "End-of-session flatten executed", providerStateChanged: true }
         }
 
         const runtimeContextLines = await this.buildRuntimeContextLines(venue, policy, config)
@@ -164,7 +164,7 @@ export class OKXPlugin implements VenuePlugin {
         venue: OKXVenueAdapter,
         policy: ReturnType<typeof okxPolicySchema.parse>,
         strategyId: string,
-        config: { logger: PreRunHookConfig["logger"]; createAlert: PreRunHookConfig["createAlert"] }
+        config: Pick<PreRunHookConfig, "logger" | "createAlert" | "ownedPositions" | "ownedWorkingOrders">
     ): Promise<boolean> {
         const sessionFlatPolicy = policy.safety.sessionFlat
         if (!sessionFlatPolicy.enabled) {
@@ -182,8 +182,9 @@ export class OKXPlugin implements VenuePlugin {
             return false
         }
 
-        const positions = await venue.getPositions()
-        if (positions.length === 0) {
+        const positions = config.ownedPositions
+        const workingOrders = config.ownedWorkingOrders
+        if (positions.length === 0 && workingOrders.length === 0) {
             return false
         }
 
@@ -193,19 +194,22 @@ export class OKXPlugin implements VenuePlugin {
             endTime: policy.tradingHours.end,
             closeBufferMinutes: sessionFlatPolicy.closeBufferMinutes,
             openPositions: positions.length,
+            workingOrders: workingOrders.length,
         })
 
         await config.createAlert({
             strategyId,
             app: this.app,
             severity: "warning",
-            message: `Session-flat policy triggered: closing ${positions.length} position(s) before ${policy.tradingHours.end} ${timezone}`,
+            message: `Session-flat policy triggered: closing ${positions.length} position(s) and cancelling ${workingOrders.length} working order(s) before ${policy.tradingHours.end} ${timezone}`,
         })
 
-        const result = await venue.closeAllPositions()
+        const cancelled = await cancelOwnedWorkingOrders(venue, workingOrders)
+        const closed = await closeOwnedPositions(venue, positions)
         config.logger.info("OKX end-of-session flatten completed", {
             strategyId,
-            closed: result.closed,
+            closed,
+            cancelled,
         })
 
         return true
@@ -241,4 +245,38 @@ export class OKXPlugin implements VenuePlugin {
             ]
         }
     }
+}
+
+async function cancelOwnedWorkingOrders(
+    venue: OKXVenueAdapter,
+    workingOrders: PreRunHookConfig["ownedWorkingOrders"]
+): Promise<number> {
+    let cancelled = 0
+
+    for (const order of workingOrders) {
+        const result = await venue.cancelOrder(order.orderId)
+        if (result.status === "cancelled" || result.status === "filled") {
+            cancelled++
+        }
+    }
+
+    return cancelled
+}
+
+async function closeOwnedPositions(
+    venue: OKXVenueAdapter,
+    positions: PreRunHookConfig["ownedPositions"]
+): Promise<number> {
+    let closed = 0
+
+    for (const position of positions) {
+        const result = venue.closeProviderPosition
+            ? await venue.closeProviderPosition(position)
+            : await venue.closePosition(position.instrument)
+        if (result.status === "filled" || result.status === "partially_filled") {
+            closed++
+        }
+    }
+
+    return closed
 }

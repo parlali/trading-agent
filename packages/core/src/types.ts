@@ -170,6 +170,11 @@ export interface StrategyRunContext {
         endedAt: number
         systemContextDigest?: RunSystemContextDigest
     }
+    promptSanitizer?: PromptSanitizerContext
+}
+
+export interface PromptSanitizerContext {
+    blockedIdentifiers: string[]
 }
 
 export interface PendingOrderContext {
