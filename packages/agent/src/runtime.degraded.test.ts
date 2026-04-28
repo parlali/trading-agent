@@ -10,6 +10,7 @@ const baseUsage = {
     completionTokens: 5,
     reasoningTokens: 0,
     cost: 0,
+    responseIds: [],
 }
 
 beforeEach(() => {

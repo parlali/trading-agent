@@ -87,10 +87,41 @@ function renderOwnershipLabel(row: {
     }
 
     if (row.ownershipStatus === "owned") {
-        return row.strategyName ?? "Owned"
+        return (
+            <span className="inline-flex items-center gap-1.5">
+                <span>{row.strategyName ?? "Owned"}</span>
+                <Badge variant="outline" className="text-[10px] leading-none">owned</Badge>
+            </span>
+        )
+    }
+
+    if (row.ownershipStatus === "orphaned") {
+        return (
+            <span className="inline-flex items-center gap-1.5">
+                <span>Orphaned</span>
+                <Badge variant="destructive" className="text-[10px] leading-none">conflict</Badge>
+            </span>
+        )
     }
 
     return "Unowned"
+}
+
+function renderPendingOrderOwnershipLabel(order: PortfolioPendingOrder) {
+    if (!isLiveWorkingOrderStatus(order.status)) {
+        return (
+            <span className="inline-flex items-center gap-1.5">
+                <span>Stale Persisted</span>
+                <Badge variant="outline" className="text-[10px] leading-none">terminal</Badge>
+            </span>
+        )
+    }
+
+    return renderOwnershipLabel(order)
+}
+
+function isLiveWorkingOrderStatus(status: string): boolean {
+    return status === "pending" || status === "partially_filled"
 }
 
 function getPositionKey(pos: PortfolioPosition) {
@@ -186,7 +217,7 @@ const pendingOrderColumns: Column<PortfolioPendingOrder>[] = [
         key: "strategy",
         header: "Strategy",
         cellClassName: "truncate max-w-[120px]",
-        render: (order) => renderOwnershipLabel(order),
+        render: (order) => renderPendingOrderOwnershipLabel(order),
     },
     {
         key: "instrument",
@@ -368,7 +399,13 @@ function PendingOrdersTab({ orders }: { orders: PortfolioPendingOrder[] }) {
                                 <div className="flex items-center gap-2">
                                     <VenueBadge app={order.app} />
                                     <span className="truncate max-w-[100px]">
-                                        {order.expectedExternal ? "Expected External" : (order.strategyName ?? "Unowned")}
+                                        {order.expectedExternal
+                                            ? "Expected External"
+                                            : !isLiveWorkingOrderStatus(order.status)
+                                                ? "Stale Persisted"
+                                                : order.ownershipStatus === "orphaned"
+                                                    ? "Orphaned"
+                                                    : order.strategyName ?? "Unowned"}
                                     </span>
                                 </div>
                                 <div className="flex items-center gap-3 font-mono tabular-nums shrink-0">

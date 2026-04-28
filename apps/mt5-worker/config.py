@@ -35,6 +35,7 @@ class Settings(BaseSettings):
     worker_listener_watchdog_interval_seconds: float = 5.0
     worker_listener_watchdog_timeout_seconds: float = 2.0
     worker_listener_watchdog_failure_threshold: int = 3
+    worker_expected_repo_suffix: str = "Desktop\\trading"
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 

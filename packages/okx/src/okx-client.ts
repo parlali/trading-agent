@@ -324,7 +324,7 @@ export class OKXClient {
     }
 
     async placeOrder(params: OKXPlaceOrderParams): Promise<OKXOrderAck> {
-        const data = await this.privateRequest<OKXOrderAck>("POST", "/api/v5/trade/order", undefined, {
+        const request = {
             instId: params.instId,
             tdMode: params.tdMode,
             side: params.side,
@@ -334,34 +334,52 @@ export class OKXClient {
             posSide: params.posSide,
             reduceOnly: params.reduceOnly === true ? "true" : undefined,
             attachAlgoOrds: params.attachAlgoOrds,
-        })
+        }
+        const data = await this.privateRequest<OKXOrderAck>("POST", "/api/v5/trade/order", undefined, request)
 
         const ack = requireFirst(data, "OKX place order acknowledgement")
-        assertAckSuccess(ack.sCode, ack.sMsg, "OKX order placement")
+        assertAckSuccess(ack.sCode, ack.sMsg, "OKX order placement", {
+            path: "/api/v5/trade/order",
+            request,
+            sCode: ack.sCode,
+            sMsg: ack.sMsg,
+        })
         return ack
     }
 
     async cancelOrder(instId: string, ordId: string): Promise<OKXOrderAck> {
-        const data = await this.privateRequest<OKXOrderAck>("POST", "/api/v5/trade/cancel-order", undefined, {
+        const request = {
             instId,
             ordId,
-        })
+        }
+        const data = await this.privateRequest<OKXOrderAck>("POST", "/api/v5/trade/cancel-order", undefined, request)
 
         const ack = requireFirst(data, "OKX cancel order acknowledgement")
-        assertAckSuccess(ack.sCode, ack.sMsg, "OKX order cancellation")
+        assertAckSuccess(ack.sCode, ack.sMsg, "OKX order cancellation", {
+            path: "/api/v5/trade/cancel-order",
+            request,
+            sCode: ack.sCode,
+            sMsg: ack.sMsg,
+        })
         return ack
     }
 
     async amendOrder(params: OKXAmendOrderParams): Promise<OKXOrderAck> {
-        const data = await this.privateRequest<OKXOrderAck>("POST", "/api/v5/trade/amend-order", undefined, {
+        const request = {
             instId: params.instId,
             ordId: params.ordId,
             newSz: params.newSz,
             newPx: params.newPx,
-        })
+        }
+        const data = await this.privateRequest<OKXOrderAck>("POST", "/api/v5/trade/amend-order", undefined, request)
 
         const ack = requireFirst(data, "OKX amend order acknowledgement")
-        assertAckSuccess(ack.sCode, ack.sMsg, "OKX order amend")
+        assertAckSuccess(ack.sCode, ack.sMsg, "OKX order amend", {
+            path: "/api/v5/trade/amend-order",
+            request,
+            sCode: ack.sCode,
+            sMsg: ack.sMsg,
+        })
         return ack
     }
 
@@ -406,21 +424,27 @@ export class OKXClient {
     }
 
     async setLeverage(params: OKXSetLeverageParams): Promise<void> {
+        const request = {
+            instId: params.instId,
+            lever: params.lever,
+            mgnMode: params.mgnMode,
+            posSide: params.posSide,
+        }
         const data = await this.privateRequest<{ lever: string; sCode?: string; sMsg?: string }>(
             "POST",
             "/api/v5/account/set-leverage",
             undefined,
-            {
-                instId: params.instId,
-                lever: params.lever,
-                mgnMode: params.mgnMode,
-                posSide: params.posSide,
-            }
+            request
         )
 
         const response = requireFirst(data, "OKX leverage acknowledgement")
         if (response.sCode !== undefined || response.sMsg !== undefined) {
-            assertAckSuccess(response.sCode ?? "0", response.sMsg ?? "", "OKX leverage update")
+            assertAckSuccess(response.sCode ?? "0", response.sMsg ?? "", "OKX leverage update", {
+                path: "/api/v5/account/set-leverage",
+                request,
+                sCode: response.sCode,
+                sMsg: response.sMsg,
+            })
         }
     }
 
@@ -463,7 +487,12 @@ export class OKXClient {
         )
 
         for (const ack of data) {
-            assertAckSuccess(ack.sCode, ack.sMsg, "OKX algo cancellation")
+            assertAckSuccess(ack.sCode, ack.sMsg, "OKX algo cancellation", {
+                path: "/api/v5/trade/cancel-algos",
+                request: orders,
+                sCode: ack.sCode,
+                sMsg: ack.sMsg,
+            })
         }
 
         return data
@@ -593,7 +622,7 @@ export class OKXClient {
             `OKX request ${config.path}`
         )
 
-        return await parseOKXResponse<T>(response, config.path)
+        return await parseOKXResponse<T>(response, config.path, buildRequestContext(config))
     }
 
     private sign(
@@ -631,7 +660,8 @@ function assertAckSuccess(
 
 async function parseOKXResponse<T>(
     response: Response,
-    path: string
+    path: string,
+    requestContext: Record<string, unknown> = {}
 ): Promise<T[]> {
     let payload: OKXResponseEnvelope<T> | undefined
 
@@ -649,6 +679,10 @@ async function parseOKXResponse<T>(
             payload?.code,
             {
                 path,
+                ...requestContext,
+                responseCode: payload?.code,
+                responseMessage: payload?.msg,
+                responseData: payload?.data,
             }
         )
     }
@@ -660,6 +694,7 @@ async function parseOKXResponse<T>(
             undefined,
             {
                 path,
+                ...requestContext,
             }
         )
     }
@@ -671,11 +706,37 @@ async function parseOKXResponse<T>(
             payload.code,
             {
                 path,
+                ...requestContext,
+                responseCode: payload.code,
+                responseMessage: payload.msg,
+                responseData: payload.data,
             }
         )
     }
 
     return payload.data
+}
+
+function buildRequestContext(config: {
+    method: "GET" | "POST"
+    path: string
+    params?: Record<string, string | number | boolean | undefined>
+    body?: Record<string, unknown> | Record<string, unknown>[]
+}): Record<string, unknown> {
+    const context: Record<string, unknown> = {
+        method: config.method,
+        endpoint: config.path,
+    }
+    const params = config.params ? stripUndefined(config.params) : undefined
+    if (params && Object.keys(params).length > 0) {
+        context.params = params
+    }
+    if (config.body) {
+        context.request = Array.isArray(config.body)
+            ? config.body.map((entry) => stripUndefined(entry))
+            : stripUndefined(config.body)
+    }
+    return context
 }
 
 function buildQuery(

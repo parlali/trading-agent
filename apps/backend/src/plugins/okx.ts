@@ -20,6 +20,7 @@ import {
 } from "@valiq-trading/core"
 import {
     createOKXMarketContextLine,
+    createOKXSetupClassifierLine,
     OKXClient,
     OKX_RUNTIME_SECRET_KEYS,
     okxRiskValidators,
@@ -223,6 +224,9 @@ export class OKXPlugin implements VenuePlugin {
         try {
             const snapshots = await venue.getMarketSnapshot(policy.allowedInstruments)
             const contextLine = createOKXMarketContextLine(snapshots)
+            const setupClassifierLine = createOKXSetupClassifierLine(snapshots, {
+                fundingRateThreshold: policy.fundingRateThreshold,
+            })
 
             if (!contextLine) {
                 return undefined
@@ -233,7 +237,9 @@ export class OKXPlugin implements VenuePlugin {
                 contextLine,
             })
 
-            return [contextLine]
+            return setupClassifierLine
+                ? [contextLine, setupClassifierLine]
+                : [contextLine]
         } catch (error) {
             config.logger.warn("Failed to collect OKX market context", {
                 strategyId: config.strategyId,

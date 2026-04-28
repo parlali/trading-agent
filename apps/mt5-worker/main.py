@@ -36,6 +36,28 @@ _watchdog_stop: threading.Event | None = None
 _watchdog_thread: threading.Thread | None = None
 
 
+def assert_expected_repo_path() -> None:
+    if os.name != "nt":
+        return
+
+    expected_suffix = settings.worker_expected_repo_suffix.strip()
+    if not expected_suffix:
+        return
+
+    repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+    expected_parts = tuple(part.lower() for part in expected_suffix.replace("/", "\\").split("\\") if part)
+    root_parts = tuple(part.lower() for part in repo_root.replace("/", "\\").split("\\") if part)
+
+    if expected_parts and root_parts[-len(expected_parts):] != expected_parts:
+        terminate_for_restart(
+            "worker_repo_path_mismatch",
+            {
+                "repoRoot": repo_root,
+                "expectedSuffix": expected_suffix,
+            },
+        )
+
+
 def terminate_for_restart(reason: str, details: dict[str, Any] | None = None) -> None:
     log.critical(
         "mt5_worker_restart_required",
@@ -257,6 +279,7 @@ class PositionClosuresRequest(BaseModel):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
+    assert_expected_repo_path()
     log.info("mt5_worker_starting", port=settings.worker_port)
     install_loop_exception_handler()
     start_listener_watchdog()

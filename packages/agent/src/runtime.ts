@@ -35,6 +35,7 @@ export interface AgentRunResult {
     error?: string
     iterations: number
     usage: LLMUsage
+    opportunityCoverage: OpportunityCoverageMetrics
     degradedResearch?: {
         active: boolean
         reasons: string[]
@@ -42,6 +43,17 @@ export interface AgentRunResult {
         retryCount: number
         decisionUnderDegradedContext: boolean
     }
+}
+
+export interface OpportunityCoverageMetrics {
+    researched: number
+    qualified: number
+    rejectedByModel: number
+    rejectedByRisk: number
+    submitted: number
+    filled: number
+    closed: number
+    realizedPnl: number
 }
 
 const DEFAULT_MAX_ITERATIONS = 25
@@ -55,6 +67,14 @@ const RESEARCH_TOOL_NAMES = new Set([
     "search_markets",
     "web_search",
     "web_fetch",
+])
+const PROPOSAL_TOOL_NAMES = new Set([
+    "propose_order",
+    "propose_adjustment",
+    "propose_close",
+])
+const CLOSE_TOOL_NAMES = new Set([
+    "propose_close",
 ])
 
 export async function executeAgentRun(
@@ -78,6 +98,17 @@ export async function executeAgentRun(
         completionTokens: 0,
         reasoningTokens: 0,
         cost: 0,
+        responseIds: [],
+    }
+    const opportunityCoverage: OpportunityCoverageMetrics = {
+        researched: 0,
+        qualified: 0,
+        rejectedByModel: 0,
+        rejectedByRisk: 0,
+        submitted: 0,
+        filled: 0,
+        closed: 0,
+        realizedPnl: 0,
     }
     const runStartedAt = Date.now()
 
@@ -134,6 +165,7 @@ export async function executeAgentRun(
                     error: `Run timed out after ${Math.round(elapsed / 1000)}s (limit: ${Math.round(runTimeoutMs / 1000)}s)`,
                     iterations: iteration,
                     usage: aggregatedUsage,
+                    opportunityCoverage: finalizeOpportunityCoverage(opportunityCoverage),
                     degradedResearch: buildDegradedResearch(false),
                 }
             }
@@ -153,6 +185,7 @@ export async function executeAgentRun(
                             error: "Kill switch activated during run",
                             iterations: iteration,
                             usage: aggregatedUsage,
+                            opportunityCoverage: finalizeOpportunityCoverage(opportunityCoverage),
                             degradedResearch: buildDegradedResearch(false),
                         }
                     }
@@ -191,6 +224,7 @@ export async function executeAgentRun(
                         error: `Circuit breaker: ${consecutiveErrors} consecutive LLM failures. Last: ${errorMsg}`,
                         iterations: iteration,
                         usage: aggregatedUsage,
+                        opportunityCoverage: finalizeOpportunityCoverage(opportunityCoverage),
                         degradedResearch: buildDegradedResearch(false),
                     }
                 }
@@ -201,6 +235,11 @@ export async function executeAgentRun(
             aggregatedUsage.completionTokens += response.usage.completionTokens
             aggregatedUsage.reasoningTokens += response.usage.reasoningTokens
             aggregatedUsage.cost += response.usage.cost
+            for (const responseId of response.usage.responseIds) {
+                if (!aggregatedUsage.responseIds.includes(responseId)) {
+                    aggregatedUsage.responseIds.push(responseId)
+                }
+            }
 
             if (response.toolCalls.length > 0) {
                 conversation.addAssistantMessage(response.content, response.toolCalls)
@@ -242,7 +281,7 @@ export async function executeAgentRun(
                                 )
                                 continue
                             }
-                            return repeatedToolErrorResult(context.runId, toolName, errorResult, iteration, aggregatedUsage)
+                                    return repeatedToolErrorResult(context.runId, toolName, errorResult, iteration, aggregatedUsage)
                         }
                         continue
                     }
@@ -365,6 +404,7 @@ export async function executeAgentRun(
                             }
                         }
 
+                        recordOpportunityCoverage(toolName, toolResult, opportunityCoverage)
                         conversation.addToolResult(toolCall.id, toolName, toolResult)
                         void agentLogger?.log(
                             context.runId, context.strategyId,
@@ -394,6 +434,7 @@ export async function executeAgentRun(
                     summary: response.content,
                     iterations: iteration,
                     usage: aggregatedUsage,
+                    opportunityCoverage: finalizeOpportunityCoverage(opportunityCoverage),
                     degradedResearch: buildDegradedResearch(true),
                 }
             }
@@ -411,6 +452,7 @@ export async function executeAgentRun(
             error: `Reached max iterations (${maxIterations})`,
             iterations: iteration,
             usage: aggregatedUsage,
+            opportunityCoverage: finalizeOpportunityCoverage(opportunityCoverage),
             degradedResearch: buildDegradedResearch(false),
         }
     } finally {
@@ -470,5 +512,87 @@ function repeatedToolErrorResult(
         error: `Circuit breaker: repeated identical ${toolName} tool error in run ${runId}: ${toolResult}`,
         iterations: iteration,
         usage,
+        opportunityCoverage: {
+            researched: 0,
+            qualified: 0,
+            rejectedByModel: 0,
+            rejectedByRisk: 0,
+            submitted: 0,
+            filled: 0,
+            closed: 0,
+            realizedPnl: 0,
+        },
     }
+}
+
+function recordOpportunityCoverage(
+    toolName: string,
+    toolResult: string,
+    metrics: OpportunityCoverageMetrics
+): void {
+    if (RESEARCH_TOOL_NAMES.has(toolName)) {
+        metrics.researched++
+    }
+
+    if (!PROPOSAL_TOOL_NAMES.has(toolName)) {
+        return
+    }
+
+    metrics.qualified++
+
+    const parsed = parseToolResult(toolResult)
+    if (!parsed) {
+        return
+    }
+
+    const riskValidation = readRecord(parsed.riskValidation)
+    if (riskValidation?.allowed === false) {
+        metrics.rejectedByRisk++
+    }
+
+    const orderId = parsed.orderId
+    const status = parsed.status
+    if (typeof orderId === "string" && orderId.length > 0 && status !== "rejected") {
+        metrics.submitted++
+    }
+
+    if (status === "filled" || status === "partially_filled") {
+        metrics.filled++
+        if (CLOSE_TOOL_NAMES.has(toolName)) {
+            metrics.closed++
+        }
+    }
+
+    const realizedPnl = readFiniteNumber(parsed.realizedPnl)
+    if (realizedPnl !== undefined) {
+        metrics.realizedPnl += realizedPnl
+    }
+}
+
+function finalizeOpportunityCoverage(metrics: OpportunityCoverageMetrics): OpportunityCoverageMetrics {
+    return {
+        ...metrics,
+        rejectedByModel: metrics.qualified === 0 && metrics.researched > 0 ? 1 : metrics.rejectedByModel,
+    }
+}
+
+function parseToolResult(value: string): Record<string, unknown> | undefined {
+    try {
+        const parsed = JSON.parse(value) as unknown
+        return readRecord(parsed)
+    } catch {
+        return undefined
+    }
+}
+
+function readRecord(value: unknown): Record<string, unknown> | undefined {
+    return value && typeof value === "object" && !Array.isArray(value)
+        ? value as Record<string, unknown>
+        : undefined
+}
+
+function readFiniteNumber(value: unknown): number | undefined {
+    return typeof value === "number" && Number.isFinite(value)
+        ? value
+        : undefined
 }

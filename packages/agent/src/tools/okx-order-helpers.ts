@@ -321,20 +321,32 @@ async function verifyProtectionFromProviderTruth(config: {
     venue: OKXVenueAdapter
     instrument: string
     requireTakeProfit: boolean
-}): Promise<{ ok: boolean; reason?: string }> {
+}): Promise<{ ok: boolean; reason?: string; protectionOrderIds: string[] }> {
     const positions = await config.venue.getPositions()
     const position = positions.find((entry) => entry.instrument === config.instrument)
     if (!position) {
         return {
             ok: false,
             reason: `position_not_found:${config.instrument}`,
+            protectionOrderIds: [],
         }
     }
+
+    const workingOrders = config.venue.getWorkingOrders
+        ? await config.venue.getWorkingOrders()
+        : []
+    const protectionOrderIds = workingOrders
+        .filter((order) =>
+            order.instrument === config.instrument &&
+            order.metadata?.kind === "protection"
+        )
+        .map((order) => order.orderId)
 
     if (position.stopLoss === undefined) {
         return {
             ok: false,
             reason: `stop_loss_missing:${config.instrument}`,
+            protectionOrderIds,
         }
     }
 
@@ -342,10 +354,14 @@ async function verifyProtectionFromProviderTruth(config: {
         return {
             ok: false,
             reason: `take_profit_missing:${config.instrument}`,
+            protectionOrderIds,
         }
     }
 
-    return { ok: true }
+    return {
+        ok: true,
+        protectionOrderIds,
+    }
 }
 
 async function ensureProtectionOrders(config: {
@@ -391,6 +407,32 @@ async function ensureProtectionOrders(config: {
 
     let lastError: string | undefined
     let lastCategory: "position_not_found_yet" | "provider_rejected" | "already_exists_conflict" | "invalid_params" | "unknown" | undefined
+
+    for (let attempt = 0; attempt < 3; attempt++) {
+        const verification = await verifyProtectionFromProviderTruth({
+            venue: config.venue,
+            instrument: config.instrument,
+            requireTakeProfit: config.requireTakeProfit,
+        })
+        if (verification.ok) {
+            await config.callbacks?.resolveFaults?.({
+                instrument: config.instrument,
+                resolutionNote: "Attached OKX protection verified from provider truth after entry fill",
+            })
+
+            return {
+                cancelledOrderIds: [],
+                createdOrderIds: verification.protectionOrderIds,
+            }
+        }
+
+        lastError = verification.reason
+        lastCategory = classifyProtectionAttachmentFailure(verification.reason ?? "unknown")
+
+        if (attempt < 2) {
+            await delay((attempt + 1) * 500)
+        }
+    }
 
     for (let attempt = 0; attempt < 3; attempt++) {
         try {

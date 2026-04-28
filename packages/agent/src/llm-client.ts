@@ -46,6 +46,7 @@ export interface LLMUsage {
     completionTokens: number
     reasoningTokens: number
     cost: number
+    responseIds: string[]
 }
 
 export interface LLMResponse {
@@ -56,6 +57,7 @@ export interface LLMResponse {
 }
 
 interface StreamChunk {
+    id?: string
     choices?: Array<{
         delta?: {
             content?: string | null
@@ -186,6 +188,7 @@ export class LLMClient {
             completionTokens: 0,
             reasoningTokens: 0,
             cost: 0,
+            responseIds: [],
         }
         let finishReason = ""
 
@@ -224,6 +227,10 @@ export class LLMClient {
 
                     if (chunk.usage) {
                         this.extractUsage(chunk.usage, usage)
+                    }
+
+                    if (typeof chunk.id === "string" && chunk.id.length > 0 && !usage.responseIds.includes(chunk.id)) {
+                        usage.responseIds.push(chunk.id)
                     }
 
                     const choice = chunk.choices?.[0]

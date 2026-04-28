@@ -28,5 +28,9 @@ export {
     resolveOKXRuntimeConfig,
 } from "./runtime-config"
 export type { OKXRuntimeConfig } from "./runtime-config"
-export { createOKXMarketContextLine } from "./market-context"
-export type { OKXMarketSnapshot } from "./market-context"
+export {
+    classifyOKXSetups,
+    createOKXMarketContextLine,
+    createOKXSetupClassifierLine,
+} from "./market-context"
+export type { OKXMarketSnapshot, OKXSetupClassification } from "./market-context"

@@ -82,6 +82,19 @@ export interface StoredRun {
     toolFailureCount?: number
     toolRetryCount?: number
     decisionUnderDegradedContext?: boolean
+    promptTokens?: number
+    completionTokens?: number
+    reasoningTokens?: number
+    llmCost?: number
+    openRouterResponseIds?: string[]
+    opportunityResearched?: number
+    opportunityQualified?: number
+    opportunityRejectedByModel?: number
+    opportunityRejectedByRisk?: number
+    opportunitySubmitted?: number
+    opportunityFilled?: number
+    opportunityClosed?: number
+    opportunityRealizedPnl?: number
     systemContextDigest?: RunSystemContextDigest
 }
 
@@ -184,6 +197,12 @@ export interface ProviderPortfolioReconciliationResult {
     pendingOrderCount: number
     driftDetected: boolean
     driftSummary?: string
+}
+
+export interface StrategyOwnershipScopeRow {
+    instruments: string[]
+    positionKeys: string[]
+    workingOrderIds: string[]
 }
 
 export interface PortfolioFreshnessRow {
@@ -359,8 +378,21 @@ export interface TradingBackendClient extends TradeEventLoggerMethods {
             toolFailureCount?: number
             toolRetryCount?: number
             decisionUnderDegradedContext?: boolean
-            systemContextDigest?: RunSystemContextDigest
-        }
+            promptTokens?: number
+            completionTokens?: number
+            reasoningTokens?: number
+    llmCost?: number
+    openRouterResponseIds?: string[]
+    opportunityResearched?: number
+    opportunityQualified?: number
+    opportunityRejectedByModel?: number
+    opportunityRejectedByRisk?: number
+    opportunitySubmitted?: number
+    opportunityFilled?: number
+    opportunityClosed?: number
+    opportunityRealizedPnl?: number
+    systemContextDigest?: RunSystemContextDigest
+}
     ): Promise<void>
     recordRunCallback(runId: Id<"strategy_runs">, callbackRequestedMinutes: number, callbackFiresAt: number): Promise<void>
     syncPositions(strategyId: Id<"strategies">, app: App, positions: Position[]): Promise<void>
@@ -472,6 +504,7 @@ export interface TradingBackendClient extends TradeEventLoggerMethods {
     triggerManualRun(strategyId: Id<"strategies">): Promise<Id<"manual_run_requests">>
     acknowledgeAlert(alertId: Id<"alerts">): Promise<void>
     getStrategyOwnedInstruments(strategyId: Id<"strategies">): Promise<string[]>
+    getStrategyOwnershipScope(strategyId: Id<"strategies">): Promise<StrategyOwnershipScopeRow>
     getAllOwnedInstrumentsByApp(app: Exclude<App, "backend">): Promise<Array<{ instrument: string, strategyId: string }>>
     getLatestPositions(strategyId: Id<"strategies">): Promise<Position[]>
     getAllStrategies(): Promise<StoredStrategy[]>
@@ -598,6 +631,19 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
                 toolFailureCount?: number
                 toolRetryCount?: number
                 decisionUnderDegradedContext?: boolean
+                promptTokens?: number
+                completionTokens?: number
+                reasoningTokens?: number
+                llmCost?: number
+                openRouterResponseIds?: string[]
+                opportunityResearched?: number
+                opportunityQualified?: number
+                opportunityRejectedByModel?: number
+                opportunityRejectedByRisk?: number
+                opportunitySubmitted?: number
+                opportunityFilled?: number
+                opportunityClosed?: number
+                opportunityRealizedPnl?: number
                 systemContextDigest?: RunSystemContextDigest
             }
         ): Promise<void> {
@@ -1144,6 +1190,12 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
             return await runWithTimeout(
                 "Convex query getStrategyOwnedInstruments",
                 async () => await client.query(api.queries.getStrategyOwnedInstruments, { ...requireMachineAuth(), strategyId } as never) as string[]
+            )
+        },
+        async getStrategyOwnershipScope(strategyId: Id<"strategies">): Promise<StrategyOwnershipScopeRow> {
+            return await runWithTimeout(
+                "Convex query getStrategyOwnershipScope",
+                async () => await client.query(api.queries.getStrategyOwnershipScope, { ...requireMachineAuth(), strategyId } as never) as StrategyOwnershipScopeRow
             )
         },
         async getAllOwnedInstrumentsByApp(app: Exclude<App, "backend">): Promise<Array<{ instrument: string, strategyId: string }>> {

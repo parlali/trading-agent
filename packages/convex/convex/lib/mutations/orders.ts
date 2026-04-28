@@ -176,6 +176,19 @@ export const updateRun = mutation({
             toolFailureCount: v.optional(v.number()),
             toolRetryCount: v.optional(v.number()),
             decisionUnderDegradedContext: v.optional(v.boolean()),
+            promptTokens: v.optional(v.number()),
+            completionTokens: v.optional(v.number()),
+            reasoningTokens: v.optional(v.number()),
+            llmCost: v.optional(v.number()),
+            openRouterResponseIds: v.optional(v.array(v.string())),
+            opportunityResearched: v.optional(v.number()),
+            opportunityQualified: v.optional(v.number()),
+            opportunityRejectedByModel: v.optional(v.number()),
+            opportunityRejectedByRisk: v.optional(v.number()),
+            opportunitySubmitted: v.optional(v.number()),
+            opportunityFilled: v.optional(v.number()),
+            opportunityClosed: v.optional(v.number()),
+            opportunityRealizedPnl: v.optional(v.number()),
             systemContextDigest: v.optional(runSystemContextDigestV),
         })),
     },
@@ -192,6 +205,21 @@ export const updateRun = mutation({
             if (args.diagnostics.decisionUnderDegradedContext !== undefined) {
                 patch.decisionUnderDegradedContext = args.diagnostics.decisionUnderDegradedContext
             }
+            if (args.diagnostics.promptTokens !== undefined) patch.promptTokens = args.diagnostics.promptTokens
+            if (args.diagnostics.completionTokens !== undefined) patch.completionTokens = args.diagnostics.completionTokens
+            if (args.diagnostics.reasoningTokens !== undefined) patch.reasoningTokens = args.diagnostics.reasoningTokens
+            if (args.diagnostics.llmCost !== undefined) patch.llmCost = args.diagnostics.llmCost
+            if (args.diagnostics.openRouterResponseIds !== undefined) {
+                patch.openRouterResponseIds = args.diagnostics.openRouterResponseIds
+            }
+            if (args.diagnostics.opportunityResearched !== undefined) patch.opportunityResearched = args.diagnostics.opportunityResearched
+            if (args.diagnostics.opportunityQualified !== undefined) patch.opportunityQualified = args.diagnostics.opportunityQualified
+            if (args.diagnostics.opportunityRejectedByModel !== undefined) patch.opportunityRejectedByModel = args.diagnostics.opportunityRejectedByModel
+            if (args.diagnostics.opportunityRejectedByRisk !== undefined) patch.opportunityRejectedByRisk = args.diagnostics.opportunityRejectedByRisk
+            if (args.diagnostics.opportunitySubmitted !== undefined) patch.opportunitySubmitted = args.diagnostics.opportunitySubmitted
+            if (args.diagnostics.opportunityFilled !== undefined) patch.opportunityFilled = args.diagnostics.opportunityFilled
+            if (args.diagnostics.opportunityClosed !== undefined) patch.opportunityClosed = args.diagnostics.opportunityClosed
+            if (args.diagnostics.opportunityRealizedPnl !== undefined) patch.opportunityRealizedPnl = args.diagnostics.opportunityRealizedPnl
             if (args.diagnostics.systemContextDigest !== undefined) {
                 patch.systemContextDigest = args.diagnostics.systemContextDigest
             }

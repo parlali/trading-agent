@@ -10,7 +10,7 @@ describe("LLMClient", () => {
         let requestBody: Record<string, unknown> | undefined
         const stream = new ReadableStream({
             start(controller) {
-                controller.enqueue(new TextEncoder().encode("data: {\"choices\":[{\"delta\":{\"content\":\"done\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1,\"reasoning_tokens\":3}}\n\n"))
+                controller.enqueue(new TextEncoder().encode("data: {\"id\":\"gen-123\",\"choices\":[{\"delta\":{\"content\":\"done\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1,\"reasoning_tokens\":3}}\n\n"))
                 controller.enqueue(new TextEncoder().encode("data: [DONE]\n\n"))
                 controller.close()
             },
@@ -45,5 +45,6 @@ describe("LLMClient", () => {
             },
         })
         expect(response.usage.reasoningTokens).toBe(3)
+        expect(response.usage.responseIds).toEqual(["gen-123"])
     })
 })

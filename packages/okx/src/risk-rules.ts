@@ -181,10 +181,14 @@ function fundingRateValidator(
         return { allowed: true }
     }
 
-    if (Math.abs(fundingRate) > policy.fundingRateThreshold) {
+    const hostileCarry = intent.side === "buy"
+        ? fundingRate > policy.fundingRateThreshold
+        : fundingRate < -policy.fundingRateThreshold
+
+    if (hostileCarry) {
         return {
             allowed: false,
-            reason: `Funding rate ${fundingRate.toFixed(6)} exceeds threshold ${policy.fundingRateThreshold.toFixed(6)}`,
+            reason: `Funding rate ${fundingRate.toFixed(6)} is hostile to ${intent.side} exposure beyond threshold ${policy.fundingRateThreshold.toFixed(6)}`,
         }
     }
 

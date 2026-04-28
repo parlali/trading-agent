@@ -96,4 +96,43 @@ describe("okxRiskValidators", () => {
 
         expect(result.allowed).toBe(true)
     })
+
+    it("blocks only funding carry that is hostile to the proposed side", () => {
+        const positiveFundingShort = validateIntent(
+            entryIntent({
+                side: "sell",
+                metadata: {
+                    action: "entry",
+                    stopLoss: 70_000,
+                    takeProfit: 50_000,
+                    riskPercent: 0.5,
+                    fundingRate: 0.02,
+                },
+            }),
+            policy,
+            account,
+            positions,
+            okxRiskValidators
+        )
+        const positiveFundingLong = validateIntent(
+            entryIntent({
+                side: "buy",
+                metadata: {
+                    action: "entry",
+                    stopLoss: 50_000,
+                    takeProfit: 70_000,
+                    riskPercent: 0.5,
+                    fundingRate: 0.02,
+                },
+            }),
+            policy,
+            account,
+            positions,
+            okxRiskValidators
+        )
+
+        expect(positiveFundingShort.allowed).toBe(true)
+        expect(positiveFundingLong.allowed).toBe(false)
+        expect(positiveFundingLong.reason).toContain("hostile to buy exposure")
+    })
 })

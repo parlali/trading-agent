@@ -126,4 +126,37 @@ describe("OKXVenueAdapter protection orders", () => {
             tpOrdPx: "-1",
         })
     })
+
+    it("fails closed when created protection does not appear in pending algo truth", async () => {
+        const client = {
+            getPositions: vi.fn().mockResolvedValue([
+                {
+                    instId: "BTC-USDT-SWAP",
+                    instType: "SWAP",
+                    posId: "pos-1",
+                    pos: "-190.24",
+                    posSide: "net",
+                    avgPx: "78195",
+                    markPx: "78050",
+                    upl: "0",
+                    lever: "3",
+                    mgnMode: "isolated",
+                },
+            ]),
+            getAlgoOrdersPending: vi.fn().mockResolvedValue([]),
+            getInstruments: vi.fn().mockResolvedValue([btcInstrument]),
+            placeAlgoOrder: vi.fn().mockResolvedValue({ algoId: "algo-missing", sCode: "0", sMsg: "" }),
+        }
+
+        const adapter = new OKXVenueAdapter(client as never, {
+            marginMode: "isolated",
+            positionMode: "net_mode",
+        })
+
+        await expect(adapter.updateProtectionOrders({
+            instrument: "BTC-USDT-SWAP",
+            stopLoss: 78620,
+            takeProfit: 77132.5,
+        })).rejects.toThrow("did not appear in pending algo orders")
+    })
 })

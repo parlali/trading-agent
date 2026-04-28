@@ -3,6 +3,7 @@ export {
     getStrategyById,
     getAllStrategies,
     getStrategyOwnedInstruments,
+    getStrategyOwnershipScope,
     getAllOwnedInstrumentsByApp,
 } from "./lib/queries/strategies"
 

@@ -46,8 +46,8 @@ import {
     createKillSwitchGuardedVenue as createRuntimeKillSwitchGuardedVenue,
     buildRunSystemContextDigest,
     formatRunSystemContextDigestLines,
-    filterPositionsByOwnership,
-    filterWorkingOrdersByOwnership,
+    filterPositionsByOwnershipScope,
+    filterWorkingOrdersByOwnershipScope,
     okxPolicySchema,
     getNextCronFireMs,
     mt5PolicySchema,
@@ -94,6 +94,7 @@ import {
 } from "./state"
 import { reconcileProviderPortfolio, recordProviderSyncFailure } from "./provider-sync"
 import { reconcilePendingOrdersForRun } from "./pending-orders"
+import { findRemainingOwnedWorkingOrdersAfterSessionFlat } from "./session-flat-assertions"
 
 const PRE_RUN_HOOK_TIMEOUT_MS = 90_000
 const POST_RUN_HOOK_TIMEOUT_MS = 90_000
@@ -335,6 +336,23 @@ function logVenueToolMismatch(
 }
 
 function buildRunDiagnostics(result: {
+    usage: {
+        promptTokens: number
+        completionTokens: number
+        reasoningTokens: number
+        cost: number
+        responseIds: string[]
+    }
+    opportunityCoverage: {
+        researched: number
+        qualified: number
+        rejectedByModel: number
+        rejectedByRisk: number
+        submitted: number
+        filled: number
+        closed: number
+        realizedPnl: number
+    }
     degradedResearch?: {
         active: boolean
         reasons: string[]
@@ -348,6 +366,19 @@ function buildRunDiagnostics(result: {
     toolFailureCount?: number
     toolRetryCount?: number
     decisionUnderDegradedContext?: boolean
+    promptTokens?: number
+    completionTokens?: number
+    reasoningTokens?: number
+    llmCost?: number
+    openRouterResponseIds?: string[]
+    opportunityResearched?: number
+    opportunityQualified?: number
+    opportunityRejectedByModel?: number
+    opportunityRejectedByRisk?: number
+    opportunitySubmitted?: number
+    opportunityFilled?: number
+    opportunityClosed?: number
+    opportunityRealizedPnl?: number
     systemContextDigest?: RunSystemContextDigest
 } | undefined {
     const diagnostics: {
@@ -356,8 +387,35 @@ function buildRunDiagnostics(result: {
         toolFailureCount?: number
         toolRetryCount?: number
         decisionUnderDegradedContext?: boolean
+        promptTokens?: number
+        completionTokens?: number
+        reasoningTokens?: number
+        llmCost?: number
+        openRouterResponseIds?: string[]
+        opportunityResearched?: number
+        opportunityQualified?: number
+        opportunityRejectedByModel?: number
+        opportunityRejectedByRisk?: number
+        opportunitySubmitted?: number
+        opportunityFilled?: number
+        opportunityClosed?: number
+        opportunityRealizedPnl?: number
         systemContextDigest?: RunSystemContextDigest
     } = {}
+
+    diagnostics.promptTokens = result.usage.promptTokens
+    diagnostics.completionTokens = result.usage.completionTokens
+    diagnostics.reasoningTokens = result.usage.reasoningTokens
+    diagnostics.llmCost = result.usage.cost
+    diagnostics.openRouterResponseIds = result.usage.responseIds
+    diagnostics.opportunityResearched = result.opportunityCoverage.researched
+    diagnostics.opportunityQualified = result.opportunityCoverage.qualified
+    diagnostics.opportunityRejectedByModel = result.opportunityCoverage.rejectedByModel
+    diagnostics.opportunityRejectedByRisk = result.opportunityCoverage.rejectedByRisk
+    diagnostics.opportunitySubmitted = result.opportunityCoverage.submitted
+    diagnostics.opportunityFilled = result.opportunityCoverage.filled
+    diagnostics.opportunityClosed = result.opportunityCoverage.closed
+    diagnostics.opportunityRealizedPnl = result.opportunityCoverage.realizedPnl
 
     if (result.degradedResearch) {
         diagnostics.degradedResearch = result.degradedResearch.active
@@ -984,14 +1042,14 @@ export async function runStrategy(
         ? backend.getLatestPositions(strategy._id)
         : Promise.resolve(undefined)
     const [
-        ownedInstrumentsList,
+        ownershipScopeRow,
         allOwnedInstruments,
         storedPositions,
         initialPositions,
         initialWorkingOrders,
         initialProviderAccountState,
     ] = await Promise.all([
-        backend.getStrategyOwnedInstruments(strategy._id),
+        backend.getStrategyOwnershipScope(strategy._id),
         backend.getAllOwnedInstrumentsByApp(app),
         storedPositionsPromise,
         isDryRun
@@ -1002,11 +1060,16 @@ export async function runStrategy(
             ? Promise.resolve(undefined)
             : venue.getAccountState(),
     ])
-    const ownedInstruments = new Set(ownedInstrumentsList)
+    const ownershipScope = {
+        instruments: new Set(ownershipScopeRow.instruments),
+        positionKeys: new Set(ownershipScopeRow.positionKeys),
+        workingOrderIds: new Set(ownershipScopeRow.workingOrderIds),
+    }
+    const ownedInstruments = ownershipScope.instruments
     const initialOwnedPositions = isDryRun
         ? (initialPositions ?? []).filter((position) => !isDryRunAccountLedgerPosition(position))
-        : filterPositionsByOwnership(initialPositions ?? [], ownedInstruments)
-    const initialOwnedWorkingOrders = filterWorkingOrdersByOwnership(initialWorkingOrders, ownedInstruments)
+        : filterPositionsByOwnershipScope(initialPositions ?? [], ownershipScope)
+    const initialOwnedWorkingOrders = filterWorkingOrdersByOwnershipScope(initialWorkingOrders, ownershipScope)
     const initialStrategyAccountState = isDryRun
         ? resolveDryRunAccountState({
             policy,
@@ -1042,12 +1105,27 @@ export async function runStrategy(
                 reason: hookResult.reason,
             })
             if (hookResult.providerStateChanged && !isDryRun) {
-                await reconcileProviderPortfolio({
+                const reconciliation = await reconcileProviderPortfolio({
                     app,
                     venueName: plugin.venueName,
                     source: "post_run_sync",
                     venue,
                 })
+                const remainingOwnedWorkingOrders = findRemainingOwnedWorkingOrdersAfterSessionFlat(
+                    reconciliation.workingOrders,
+                    ownershipScope
+                )
+
+                if (remainingOwnedWorkingOrders.length > 0) {
+                    const orderIds = remainingOwnedWorkingOrders.map((order) => order.orderId).join(", ")
+                    await backend.createAlert({
+                        strategyId: strategy._id,
+                        app,
+                        severity: "critical",
+                        message: `Session-flat provider-sync assertion failed: ${remainingOwnedWorkingOrders.length} owned working order(s) still live after flat/cancel for ${strategy.name}: ${orderIds}`,
+                    })
+                    throw new Error(`Session-flat provider-sync assertion failed for ${strategy.name}: owned working order(s) still live after flat/cancel: ${orderIds}`)
+                }
             }
             return
         }
@@ -1210,7 +1288,7 @@ export async function runStrategy(
 
             const positions = isDryRun
                 ? activePipeline.getDryRunPositions()
-                : filterPositionsByOwnership(allPositions, ownedInstruments)
+                : filterPositionsByOwnershipScope(allPositions, ownershipScope)
             const accountState = await activePipeline.getAccountState()
             currentAccountState = accountState
 

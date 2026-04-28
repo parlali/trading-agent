@@ -59,12 +59,17 @@ export class MT5Plugin implements VenuePlugin {
 
     async validateEnvironment(secrets: Record<string, string | null>): Promise<void> {
         const runtimeConfig = resolveMT5RuntimeConfig(secrets)
+        const healthClient = new MT5Client({
+            workerUrl: runtimeConfig.workerUrl,
+            accessKey: runtimeConfig.accessKey,
+            timeout: 2_000,
+        })
+        await healthClient.getHealth()
+
         const client = new MT5Client({
             workerUrl: runtimeConfig.workerUrl,
             accessKey: runtimeConfig.accessKey,
         })
-
-        await client.getHealth()
         await client.connect(runtimeConfig.credentials)
     }
 

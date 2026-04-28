@@ -98,6 +98,71 @@ function createVenueMock() {
 }
 
 describe("prepareOKXOrder protection fail-closed", () => {
+    it("accepts provider-verified attached protection without replacing it", async () => {
+        const pipeline = createPipelineMock()
+        const venue = createVenueMock()
+        venue.getPositions.mockResolvedValue([
+            {
+                instrument: "BTC-USDT-SWAP",
+                side: "long",
+                quantity: 1,
+                entryPrice: 100,
+                currentPrice: 100,
+                stopLoss: 95,
+                takeProfit: 110,
+            },
+        ])
+        Object.assign(venue, {
+            getWorkingOrders: vi.fn().mockResolvedValue([
+                {
+                    orderId: "algo:BTC-USDT-SWAP:attached-1",
+                    instrument: "BTC-USDT-SWAP",
+                    status: "pending",
+                    quantity: 1,
+                    filledQuantity: 0,
+                    remainingQuantity: 1,
+                    submittedAt: Date.now(),
+                    updatedAt: Date.now(),
+                    metadata: {
+                        kind: "protection",
+                    },
+                },
+            ]),
+        })
+        const resolveFaults = vi.fn(async () => {})
+
+        const result = await prepareOKXOrder(
+            {
+                instrument: "BTC-USDT-SWAP",
+                side: "buy",
+                leverage: 2,
+                orderType: "market",
+                timeInForce: "gtc",
+                stopLoss: 95,
+                takeProfit: 110,
+                reason: "test",
+            },
+            pipeline as never,
+            venue as never,
+            policy,
+            "entry",
+            {
+                resolveFaults,
+            }
+        )
+
+        expect(result.protectionOrders).toEqual({
+            cancelledOrderIds: [],
+            createdOrderIds: ["algo:BTC-USDT-SWAP:attached-1"],
+        })
+        expect(venue.updateProtectionOrders).not.toHaveBeenCalled()
+        expect(pipeline.closePosition).not.toHaveBeenCalled()
+        expect(resolveFaults).toHaveBeenCalledWith({
+            instrument: "BTC-USDT-SWAP",
+            resolutionNote: "Attached OKX protection verified from provider truth after entry fill",
+        })
+    })
+
     it("flattens and records provider-rejected /api/v5/trade/order-algo protection failures", async () => {
         const pipeline = createPipelineMock()
         const venue = createVenueMock()
