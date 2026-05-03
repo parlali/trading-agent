@@ -132,7 +132,8 @@ export async function fetchWithTimeout(
     input: RequestInfo | URL,
     init: RequestInit = {},
     timeoutMs: number,
-    operation: string
+    operation: string,
+    fetchImpl: typeof fetch = fetch
 ): Promise<Response> {
     const controller = new AbortController()
     const parentSignal = init.signal
@@ -156,7 +157,7 @@ export async function fetchWithTimeout(
     }, timeoutMs)
 
     try {
-        return await fetch(input, {
+        return await fetchImpl(input, {
             ...init,
             signal: controller.signal,
         })

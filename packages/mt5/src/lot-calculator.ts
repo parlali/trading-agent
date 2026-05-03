@@ -16,6 +16,8 @@ export interface LotSizeResult {
     slDistancePoints: number
 }
 
+type PriceDirection = "above" | "below"
+
 export function calculateLotSize(input: LotSizeInput): LotSizeResult | { error: string } {
     const { accountBalance, maxRiskPercent, entryPrice, stopLossPrice, side, symbolInfo } = input
 
@@ -27,18 +29,17 @@ export function calculateLotSize(input: LotSizeInput): LotSizeResult | { error: 
         return { error: `Invalid symbol info: point=${symbolInfo.point}, tickValue=${symbolInfo.tickValue}` }
     }
 
-    const slDistance = Math.abs(entryPrice - stopLossPrice)
-    if (slDistance === 0) {
-        return { error: "Stop-loss cannot equal entry price" }
-    }
+    const slDistance = resolveStopLossDistance(entryPrice, stopLossPrice)
+    if (typeof slDistance !== "number") return slDistance
 
-    if (side === "buy" && stopLossPrice >= entryPrice) {
-        return { error: `Stop-loss ${stopLossPrice} must be below entry ${entryPrice} for buy orders` }
-    }
-
-    if (side === "sell" && stopLossPrice <= entryPrice) {
-        return { error: `Stop-loss ${stopLossPrice} must be above entry ${entryPrice} for sell orders` }
-    }
+    const stopLossDirectionError = validatePriceDirection(
+        side,
+        stopLossPrice,
+        entryPrice,
+        "Stop-loss",
+        { buy: "below", sell: "above" }
+    )
+    if (stopLossDirectionError) return stopLossDirectionError
 
     const slDistancePoints = slDistance / symbolInfo.point
     const riskPerLot = slDistancePoints * symbolInfo.tickValue
@@ -89,21 +90,53 @@ export function computeImpliedRR(
     takeProfitPrice: number,
     side: "buy" | "sell"
 ): number | { error: string } {
-    const slDistance = Math.abs(entryPrice - stopLossPrice)
-    if (slDistance === 0) {
-        return { error: "Stop-loss cannot equal entry price" }
-    }
+    const slDistance = resolveStopLossDistance(entryPrice, stopLossPrice)
+    if (typeof slDistance !== "number") return slDistance
 
-    if (side === "buy" && takeProfitPrice <= entryPrice) {
-        return { error: `Take-profit ${takeProfitPrice} must be above entry ${entryPrice} for buy orders` }
-    }
-
-    if (side === "sell" && takeProfitPrice >= entryPrice) {
-        return { error: `Take-profit ${takeProfitPrice} must be below entry ${entryPrice} for sell orders` }
-    }
+    const takeProfitDirectionError = validatePriceDirection(
+        side,
+        takeProfitPrice,
+        entryPrice,
+        "Take-profit",
+        { buy: "above", sell: "below" }
+    )
+    if (takeProfitDirectionError) return takeProfitDirectionError
 
     const tpDistance = Math.abs(takeProfitPrice - entryPrice)
     return tpDistance / slDistance
+}
+
+function validatePriceDirection(
+    side: "buy" | "sell",
+    price: number,
+    entryPrice: number,
+    label: string,
+    expected: Record<"buy" | "sell", PriceDirection>
+): { error: string } | undefined {
+    const direction = expected[side]
+    const valid = direction === "above"
+        ? price > entryPrice
+        : price < entryPrice
+
+    if (valid) {
+        return undefined
+    }
+
+    return {
+        error: `${label} ${price} must be ${direction} entry ${entryPrice} for ${side} orders`,
+    }
+}
+
+function resolveStopLossDistance(
+    entryPrice: number,
+    stopLossPrice: number
+): number | { error: string } {
+    const distance = Math.abs(entryPrice - stopLossPrice)
+    if (distance === 0) {
+        return { error: "Stop-loss cannot equal entry price" }
+    }
+
+    return distance
 }
 
 function countDecimals(value: number): number {

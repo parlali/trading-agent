@@ -25,24 +25,17 @@ function createClient(): MT5Client {
 describe("MT5VenueAdapter", () => {
     it("keeps successful limit submissions pending until provider status confirms a fill", async () => {
         const client = createClient()
-        client.submitOrder = async (): Promise<MT5OrderResult> => ({
+        client.submitOrder = async (): Promise<MT5OrderResult> => createOrderResult({
             retcode: 10008,
             retcodeDescription: "Order placed",
             orderId: "1588167645",
-            volume: 0.01,
-            price: 4715.5,
-            success: true,
         })
 
         const adapter = new MT5VenueAdapter(client, credentials)
-        const result = await adapter.submitOrder({
-            instrument: "XAUUSD",
-            side: "buy",
-            quantity: 0.01,
+        const result = await adapter.submitOrder(createSubmissionIntent({
             orderType: "limit",
             limitPrice: 4715.5,
-            timeInForce: "gtc",
-        })
+        }))
 
         expect(result.orderId).toBe("1588167645")
         expect(result.status).toBe("pending")
@@ -52,24 +45,15 @@ describe("MT5VenueAdapter", () => {
 
     it("keeps market submissions filled on successful MT5 execution", async () => {
         const client = createClient()
-        client.submitOrder = async (): Promise<MT5OrderResult> => ({
-            retcode: 10009,
-            retcodeDescription: "Request completed",
+        client.submitOrder = async (): Promise<MT5OrderResult> => createOrderResult({
             orderId: "1588140268",
             dealId: "1588140268",
-            volume: 0.01,
-            price: 4715.5,
-            success: true,
         })
 
         const adapter = new MT5VenueAdapter(client, credentials)
-        const result = await adapter.submitOrder({
-            instrument: "XAUUSD",
-            side: "buy",
-            quantity: 0.01,
+        const result = await adapter.submitOrder(createSubmissionIntent({
             orderType: "market",
-            timeInForce: "gtc",
-        })
+        }))
 
         expect(result.orderId).toBe("1588140268")
         expect(result.status).toBe("filled")
@@ -139,22 +123,32 @@ describe("MT5VenueAdapter", () => {
     it("closes every MT5 position for the requested symbol", async () => {
         const client = createClient()
         const closedTickets: number[] = []
+        let activeCloses = 0
+        let maxActiveCloses = 0
         client.getPositions = async () => [
             createPosition(1588140268, "XAUUSD", 4715.5),
             createPosition(1588167645, "XAUUSD", 4715.47),
             createPosition(1589000000, "US30.cash", 39000),
         ]
         client.closePosition = async ({ ticket }): Promise<MT5OrderResult> => {
-            closedTickets.push(ticket)
+            activeCloses++
+            maxActiveCloses = Math.max(maxActiveCloses, activeCloses)
 
-            return {
-                retcode: 10009,
-                retcodeDescription: "Request completed",
-                orderId: String(ticket),
-                dealId: String(ticket),
-                volume: 0.01,
-                price: ticket === 1588140268 ? 4719 : 4718.5,
-                success: true,
+            try {
+                await new Promise((resolve) => setTimeout(resolve, 0))
+                closedTickets.push(ticket)
+
+                return {
+                    retcode: 10009,
+                    retcodeDescription: "Request completed",
+                    orderId: String(ticket),
+                    dealId: String(ticket),
+                    volume: 0.01,
+                    price: ticket === 1588140268 ? 4719 : 4718.5,
+                    success: true,
+                }
+            } finally {
+                activeCloses--
             }
         }
 
@@ -162,6 +156,7 @@ describe("MT5VenueAdapter", () => {
         const result = await adapter.closePosition("XAUUSD")
 
         expect(closedTickets).toEqual([1588140268, 1588167645])
+        expect(maxActiveCloses).toBe(1)
         expect(result.orderId).toBe("1588140268,1588167645")
         expect(result.status).toBe("filled")
         expect(result.filledQuantity).toBe(0.02)
@@ -265,5 +260,30 @@ function createPosition(ticket: number, symbol: string, openPrice: number): MT5P
         comment: "",
         openTime: 0,
         identifier: ticket,
+    }
+}
+
+function createOrderResult(overrides: Partial<MT5OrderResult>): MT5OrderResult {
+    return {
+        retcode: 10009,
+        retcodeDescription: "Request completed",
+        orderId: "1588140268",
+        volume: 0.01,
+        price: 4715.5,
+        success: true,
+        ...overrides,
+    }
+}
+
+function createSubmissionIntent(overrides: {
+    orderType: "market" | "limit"
+    limitPrice?: number
+}) {
+    return {
+        instrument: "XAUUSD",
+        side: "buy" as const,
+        quantity: 0.01,
+        timeInForce: "gtc" as const,
+        ...overrides,
     }
 }

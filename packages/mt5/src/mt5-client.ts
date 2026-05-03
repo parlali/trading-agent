@@ -28,6 +28,8 @@ export interface MT5ClientConfig {
     accessKey?: string
     /** Request timeout in ms */
     timeout?: number
+    connectTimeout?: number
+    fetchImpl?: typeof fetch
 }
 
 export interface MT5AccountInfo {
@@ -125,26 +127,44 @@ export interface MT5SymbolInfo {
     ask: number
 }
 
+type MT5WorkerErrorDetail = {
+    error?: string
+    errorType?: string
+    retryable?: boolean
+    [key: string]: unknown
+}
+
+type MT5WorkerErrorBody = {
+    detail?: string | MT5WorkerErrorDetail
+    error?: string
+    errorType?: string
+    retryable?: boolean
+}
+
 export class MT5Client {
     private readonly workerUrl: string
     private readonly accessKey: string
     private readonly timeout: number
+    private readonly connectTimeout: number
+    private readonly fetchImpl: typeof fetch
     private connected = false
 
     constructor(config: MT5ClientConfig) {
         this.workerUrl = config.workerUrl.replace(/\/$/, "")
         this.accessKey = config.accessKey ?? ""
         this.timeout = config.timeout ?? 30_000
+        this.connectTimeout = config.connectTimeout ?? Math.max(this.timeout, 90_000)
+        this.fetchImpl = config.fetchImpl ?? fetch
     }
 
     async connect(credentials: MT5WorkerCredentials): Promise<MT5AccountInfo> {
-        const response = await this.post<{
+        const response = await this.postMutation<{
             success: boolean
             accountInfo?: MT5AccountInfo
             error?: string
             errorType?: string
             retryable?: boolean
-        }>("/connect", credentials)
+        }>("/connect", credentials, this.connectTimeout)
 
         if (!response.success) {
             throw new Error(
@@ -158,7 +178,7 @@ export class MT5Client {
 
     async disconnect(): Promise<void> {
         try {
-            await this.post("/disconnect", {})
+            await this.postMutation("/disconnect", {})
         } catch {
             // Best effort
         }
@@ -182,7 +202,7 @@ export class MT5Client {
     }
 
     async getPositionClosures(lookbackHours: number = 24): Promise<MT5PositionClosure[]> {
-        return await this.post<MT5PositionClosure[]>("/position/closures", {
+        return await this.postRead<MT5PositionClosure[]>("/position/closures", {
             lookbackHours,
         })
     }
@@ -199,7 +219,7 @@ export class MT5Client {
         comment?: string
         deviation?: number
     }): Promise<MT5OrderResult> {
-        return await this.post<MT5OrderResult>("/order/submit", params)
+        return await this.postMutation<MT5OrderResult>("/order/submit", params)
     }
 
     async modifyPosition(params: {
@@ -207,17 +227,17 @@ export class MT5Client {
         stopLoss?: number
         takeProfit?: number
     }): Promise<MT5OrderResult> {
-        return await this.post<MT5OrderResult>("/order/modify", params)
+        return await this.postMutation<MT5OrderResult>("/order/modify", params)
     }
 
     async cancelOrder(params: {
         ticket: number
     }): Promise<MT5OrderResult> {
-        return await this.post<MT5OrderResult>("/order/cancel", params)
+        return await this.postMutation<MT5OrderResult>("/order/cancel", params)
     }
 
     async cancelAllOrders(): Promise<{ cancelled: number; results: MT5OrderResult[] }> {
-        return await this.post("/order/cancel-all", {})
+        return await this.postMutation("/order/cancel-all", {})
     }
 
     async closePosition(params: {
@@ -225,15 +245,15 @@ export class MT5Client {
         volume?: number
         deviation?: number
     }): Promise<MT5OrderResult> {
-        return await this.post<MT5OrderResult>("/position/close", params)
+        return await this.postMutation<MT5OrderResult>("/position/close", params)
     }
 
     async closeAllPositions(): Promise<{ closed: number; results: MT5OrderResult[] }> {
-        return await this.post("/position/close-all", {})
+        return await this.postMutation("/position/close-all", {})
     }
 
     async getSymbolInfo(symbols: string[]): Promise<MT5SymbolInfo[]> {
-        return await this.post<MT5SymbolInfo[]>("/symbol/info", { symbols })
+        return await this.postRead<MT5SymbolInfo[]>("/symbol/info", { symbols })
     }
 
     async getOrderStatus(orderId: number): Promise<{
@@ -246,7 +266,7 @@ export class MT5Client {
         state: string
     } | null> {
         try {
-            return await this.post("/order/status", { orderId })
+            return await this.postRead("/order/status", { orderId })
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error)
             if (message.includes("404")) {
@@ -298,69 +318,62 @@ export class MT5Client {
 
     private async get<T = unknown>(path: string): Promise<T> {
         return await retryWithBackoff(async () => {
-            const controller = new AbortController()
-            const timeoutId = setTimeout(() => controller.abort(), this.timeout)
-
-            try {
-                const response = await fetchWithTimeout(`${this.workerUrl}${path}`, {
-                    method: "GET",
-                    headers: this.headers(),
-                    signal: controller.signal,
-                }, this.timeout, `MT5 worker GET ${path}`)
-
-                if (!response.ok) {
-                    const body = await response.text().catch(() => "")
-                    throw createExecutionError("venue", `MT5 worker error: ${response.status} ${response.statusText} ${body}`.trim(), {
-                        code: String(response.status),
-                        retryable: response.status >= 500 || response.status === 429,
-                        details: {
-                            path,
-                            status: response.status,
-                            statusText: response.statusText,
-                            body,
-                        },
-                    })
-                }
-
-                return (await response.json()) as T
-            } finally {
-                clearTimeout(timeoutId)
-            }
+            return await this.request<T>("GET", path, undefined, this.timeout)
         }, 3, 1000)
     }
 
-    private async post<T = unknown>(path: string, body: unknown): Promise<T> {
+    private async postRead<T = unknown>(path: string, body: unknown): Promise<T> {
         return await retryWithBackoff(async () => {
-            const controller = new AbortController()
-            const timeoutId = setTimeout(() => controller.abort(), this.timeout)
-
-            try {
-                const response = await fetchWithTimeout(`${this.workerUrl}${path}`, {
-                    method: "POST",
-                    headers: this.headers(),
-                    body: JSON.stringify(body),
-                    signal: controller.signal,
-                }, this.timeout, `MT5 worker POST ${path}`)
-
-                if (!response.ok) {
-                    const text = await response.text().catch(() => "")
-                    throw createExecutionError("venue", `MT5 worker error: ${response.status} ${response.statusText} ${text}`.trim(), {
-                        code: String(response.status),
-                        retryable: response.status >= 500 || response.status === 429,
-                        details: {
-                            path,
-                            status: response.status,
-                            statusText: response.statusText,
-                            body: text,
-                        },
-                    })
-                }
-
-                return (await response.json()) as T
-            } finally {
-                clearTimeout(timeoutId)
-            }
+            return await this.request<T>("POST", path, body, this.timeout)
         }, 3, 1000)
+    }
+
+    private async postMutation<T = unknown>(
+        path: string,
+        body: unknown,
+        timeout: number = this.timeout
+    ): Promise<T> {
+        return await this.request<T>("POST", path, body, timeout)
+    }
+
+    private async request<T = unknown>(
+        method: "GET" | "POST",
+        path: string,
+        body: unknown,
+        timeout: number
+    ): Promise<T> {
+        const controller = new AbortController()
+        const timeoutId = setTimeout(() => controller.abort(), timeout)
+
+        try {
+            const response = await fetchWithTimeout(`${this.workerUrl}${path}`, {
+                method,
+                headers: this.headers(),
+                body: body === undefined ? undefined : JSON.stringify(body),
+                signal: controller.signal,
+            }, timeout, `MT5 worker ${method} ${path}`, this.fetchImpl)
+
+            if (!response.ok) {
+                const text = await response.text().catch(() => "")
+                const workerError = parseWorkerError(text)
+                const message = workerError?.error ?? text
+                throw createExecutionError("venue", `MT5 worker error: ${response.status} ${response.statusText} ${message}`.trim(), {
+                    code: workerError?.errorType ?? String(response.status),
+                    retryable: workerError?.retryable ?? (response.status >= 500 || response.status === 429),
+                    details: {
+                        path,
+                        status: response.status,
+                        statusText: response.statusText,
+                        body: text,
+                        workerError,
+                    },
+                })
+            }
+
+            return (await response.json()) as T
+        } finally {
+            clearTimeout(timeoutId)
+        }
     }
 
     private headers(): Record<string, string> {
@@ -370,4 +383,41 @@ export class MT5Client {
         }
         return h
     }
+}
+
+function parseWorkerError(text: string): MT5WorkerErrorDetail | undefined {
+    if (!text.trim()) {
+        return undefined
+    }
+
+    let parsed: MT5WorkerErrorBody
+    try {
+        parsed = JSON.parse(text) as MT5WorkerErrorBody
+    } catch {
+        return undefined
+    }
+
+    if (typeof parsed.detail === "string") {
+        return {
+            error: parsed.detail,
+        }
+    }
+
+    if (isRecord(parsed.detail)) {
+        return parsed.detail as MT5WorkerErrorDetail
+    }
+
+    if (parsed.error || parsed.errorType || parsed.retryable !== undefined) {
+        return {
+            error: parsed.error,
+            errorType: parsed.errorType,
+            retryable: parsed.retryable,
+        }
+    }
+
+    return undefined
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return value !== null && typeof value === "object" && !Array.isArray(value)
 }

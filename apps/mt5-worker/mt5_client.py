@@ -6,7 +6,7 @@ import os
 import shutil
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, NoReturn
 
 import structlog
 
@@ -16,67 +16,27 @@ except ImportError:
     mt5 = None  # Allow import on non-Windows for type checking
 
 from config import settings
+from mt5_errors import (
+    MT5ConnectionError,
+    classify_connection_error,
+    read_mt5_error_details,
+)
+from mt5_mappers import (
+    failed_order_result,
+    map_deal_status,
+    map_history_order_status,
+    map_open_order,
+    map_open_order_status,
+    map_order_result,
+    map_position,
+    map_position_closure,
+    map_position_status,
+    map_symbol_info,
+    resolve_filling_mode,
+    resolve_order_type,
+)
 
 log = structlog.get_logger()
-MAX_PROVIDER_FUTURE_SKEW_MS = 60_000
-
-
-# ---------------------------------------------------------------------------
-# Error classification
-# ---------------------------------------------------------------------------
-
-class MT5ConnectionError(Exception):
-    def __init__(self, message: str, error_type: str = "unknown", retryable: bool = True):
-        super().__init__(message)
-        self.error_type = error_type
-        self.retryable = retryable
-
-
-def _classify_mt5_error(err: tuple[Any, Any] | None) -> dict[str, Any]:
-    """Classify MT5 SDK error into actionable categories."""
-    code = 0
-    message = "MT5 connection failed"
-
-    if isinstance(err, tuple) and len(err) >= 2:
-        code = err[0]
-        message = str(err[1]).strip() if isinstance(err[1], str) else message
-
-    normalized = message.lower()
-
-    if code == -6 or "authorization failed" in normalized:
-        return {
-            "code": code,
-            "message": "MT5 rejected credentials. Check login, password, and server.",
-            "error_type": "auth_failed",
-            "retryable": False,
-            "raw_message": message,
-        }
-
-    if "timeout" in normalized:
-        return {
-            "code": code,
-            "message": f"MT5 connection timed out: {message}",
-            "error_type": "timeout",
-            "retryable": True,
-            "raw_message": message,
-        }
-
-    if "connect" in normalized or "server" in normalized:
-        return {
-            "code": code,
-            "message": f"MT5 server unreachable: {message}",
-            "error_type": "server_unreachable",
-            "retryable": True,
-            "raw_message": message,
-        }
-
-    return {
-        "code": code,
-        "message": message,
-        "error_type": "unknown",
-        "retryable": True,
-        "raw_message": message,
-    }
 
 
 # ---------------------------------------------------------------------------
@@ -157,7 +117,7 @@ class MT5Client:
             return True
 
         err = mt5.last_error()
-        failure = _classify_mt5_error(err)
+        failure = classify_connection_error(err)
         mt5.shutdown()
 
         # Retry once if retryable
@@ -184,7 +144,7 @@ class MT5Client:
                 return True
 
             err = mt5.last_error()
-            failure = _classify_mt5_error(err)
+            failure = classify_connection_error(err)
             mt5.shutdown()
 
         raise MT5ConnectionError(
@@ -200,18 +160,28 @@ class MT5Client:
             log.info("mt5_disconnected", login=self.login)
 
     def ensure_connected(self) -> None:
-        """Reconnect if the session dropped."""
+        """Verify the active MT5 terminal session."""
         if not self._connected:
-            self.connect()
-            return
+            raise MT5ConnectionError(
+                "MT5 session is not connected. Call /connect before broker operations.",
+                error_type="not_connected",
+            )
 
-        # Quick health check -- try to read terminal info
         info = mt5.terminal_info()
         if info is None:
-            log.warning("mt5_session_lost_reconnecting", login=self.login)
+            detail = self._last_error_details()
+            log.warning(
+                "mt5_session_lost",
+                login=self.login,
+                code=detail["code"],
+                message=detail["message"],
+            )
             self._connected = False
             mt5.shutdown()
-            self.connect()
+            raise MT5ConnectionError(
+                f"MT5 terminal health check failed: {detail['message']} ({detail['code']})",
+                error_type="session_lost",
+            )
 
     def _log_account_info(self) -> None:
         info = mt5.account_info()
@@ -227,13 +197,52 @@ class MT5Client:
                 leverage=info.leverage,
             )
 
+    def _last_error_details(self) -> dict[str, Any]:
+        detail = read_mt5_error_details(mt5)
+        return {
+            "code": detail.code,
+            "message": detail.message,
+            "raw": detail.raw,
+        }
+
+    def _raise_mt5_error(
+        self,
+        operation: str,
+        error_type: str = "query_failed",
+        retryable: bool = True,
+    ) -> NoReturn:
+        detail = self._last_error_details()
+        log.error(
+            "mt5_sdk_call_failed",
+            login=self.login,
+            operation=operation,
+            code=detail["code"],
+            message=detail["message"],
+            rawError=detail["raw"],
+        )
+        raise MT5ConnectionError(
+            f"{operation} failed: {detail['message']} ({detail['code']})",
+            error_type=error_type,
+            retryable=retryable,
+        )
+
+    def _require_mt5_result(
+        self,
+        operation: str,
+        result: Any,
+        error_type: str = "query_failed",
+        retryable: bool = True,
+    ) -> Any:
+        if result is None:
+            self._raise_mt5_error(operation, error_type=error_type, retryable=retryable)
+
+        return result
+
     # -- Account & positions ---------------------------------------------------
 
     def get_account_info(self) -> dict[str, Any]:
         self.ensure_connected()
-        info = mt5.account_info()
-        if info is None:
-            raise MT5ConnectionError("Failed to fetch account info", error_type="query_failed")
+        info = self._require_mt5_result("account_info", mt5.account_info())
 
         return {
             "login": info.login,
@@ -252,101 +261,34 @@ class MT5Client:
 
     def get_positions(self) -> list[dict[str, Any]]:
         self.ensure_connected()
-        positions = mt5.positions_get()
+        positions = self._require_mt5_result("positions_get", mt5.positions_get())
 
-        if positions is None:
-            return []
-
-        result: list[dict[str, Any]] = []
-        for pos in positions:
-            result.append({
-                "ticket": int(pos.ticket),
-                "symbol": pos.symbol,
-                "type": "buy" if pos.type == mt5.ORDER_TYPE_BUY else "sell",
-                "volume": float(pos.volume),
-                "openPrice": float(pos.price_open),
-                "currentPrice": float(pos.price_current),
-                "stopLoss": float(pos.sl),
-                "takeProfit": float(pos.tp),
-                "profit": float(pos.profit),
-                "swap": float(pos.swap),
-                "commission": float(getattr(pos, "commission", 0.0)),
-                "magic": int(pos.magic),
-                "comment": pos.comment,
-                "openTime": self._read_mt5_timestamp_ms(pos, "time_msc", "time"),
-                "identifier": int(pos.identifier),
-            })
-
-        return result
+        return [map_position(mt5, pos) for pos in positions]
 
     def get_open_orders(self) -> list[dict[str, Any]]:
         self.ensure_connected()
-        orders = mt5.orders_get()
+        orders = self._require_mt5_result("orders_get", mt5.orders_get())
 
-        if orders is None:
-            return []
-
-        result: list[dict[str, Any]] = []
-        for order in orders:
-            result.append({
-                "ticket": int(order.ticket),
-                "symbol": order.symbol,
-                "type": self._order_type_str(order.type),
-                "volumeInitial": float(order.volume_initial),
-                "volumeCurrent": float(order.volume_current),
-                "priceOpen": float(order.price_open),
-                "stopLoss": float(order.sl),
-                "takeProfit": float(order.tp),
-                "state": self._order_state_str(order.state),
-                "comment": order.comment,
-                "magic": int(order.magic),
-                "timeSetup": self._read_mt5_timestamp_ms(order, "time_setup_msc", "time_setup"),
-                "timeDone": self._read_mt5_timestamp_ms(order, "time_done_msc", "time_done"),
-            })
-
-        return result
+        return [map_open_order(order) for order in orders]
 
     def get_position_closures(self, lookback_hours: int = 24) -> list[dict[str, Any]]:
         self.ensure_connected()
 
         now = datetime.now(timezone.utc)
         start = now - timedelta(hours=max(1, lookback_hours))
-        deals = mt5.history_deals_get(start, now)
+        deals = self._require_mt5_result(
+            "history_deals_get",
+            mt5.history_deals_get(start, now),
+        )
 
-        if not deals:
+        if len(deals) == 0:
             return []
 
         result: list[dict[str, Any]] = []
         for deal in deals:
-            deal_type = getattr(deal, "type", None)
-            if deal_type not in (mt5.DEAL_TYPE_BUY, mt5.DEAL_TYPE_SELL):
-                continue
-
-            entry = int(getattr(deal, "entry", -1))
-            if entry not in (
-                mt5.DEAL_ENTRY_OUT,
-                mt5.DEAL_ENTRY_OUT_BY,
-                mt5.DEAL_ENTRY_INOUT,
-            ):
-                continue
-
-            position_id = int(getattr(deal, "position_id", 0) or 0)
-            if position_id <= 0:
-                continue
-
-            result.append({
-                "ticket": int(getattr(deal, "ticket", 0)),
-                "orderId": int(getattr(deal, "order", 0) or 0),
-                "positionId": position_id,
-                "symbol": deal.symbol,
-                "side": "short" if deal_type == mt5.DEAL_TYPE_BUY else "long",
-                "volume": abs(float(deal.volume)),
-                "price": float(deal.price),
-                "profit": float(getattr(deal, "profit", 0.0)),
-                "timeDone": self._read_mt5_timestamp_ms(deal, "time_msc", "time"),
-                "entry": entry,
-                "reason": int(getattr(deal, "reason", -1)),
-            })
+            mapped = map_position_closure(mt5, deal)
+            if mapped is not None:
+                result.append(mapped)
 
         return sorted(result, key=lambda deal: int(deal["timeDone"]), reverse=True)
 
@@ -368,17 +310,13 @@ class MT5Client:
         """Submit a new order to MT5."""
         self.ensure_connected()
 
-        # Ensure symbol is enabled
         selected = mt5.symbol_select(symbol, True)
         if not selected:
-            raise ValueError(f"Symbol {symbol} not available or could not be selected")
+            self._raise_mt5_error("symbol_select", error_type="symbol_unavailable", retryable=False)
 
-        tick = mt5.symbol_info_tick(symbol)
-        if tick is None:
-            raise ValueError(f"Could not get tick data for {symbol}")
+        tick = self._require_mt5_result("symbol_info_tick", mt5.symbol_info_tick(symbol))
 
-        # Determine order type and fill price
-        mt5_type = self._resolve_order_type(side, order_type)
+        mt5_type = resolve_order_type(mt5, side, order_type)
         fill_price = price if price is not None else (tick.ask if side == "buy" else tick.bid)
 
         request: dict[str, Any] = {
@@ -403,13 +341,9 @@ class MT5Client:
 
         result = mt5.order_send(request)
         if result is None:
-            err = mt5.last_error()
-            raise MT5ConnectionError(
-                f"order_send returned None: {err}",
-                error_type="order_failed",
-            )
+            self._raise_mt5_error("order_send", error_type="order_failed")
 
-        return self._map_order_result(result)
+        return map_order_result(mt5, result)
 
     def modify_position(
         self,
@@ -434,13 +368,9 @@ class MT5Client:
 
         result = mt5.order_send(request)
         if result is None:
-            err = mt5.last_error()
-            raise MT5ConnectionError(
-                f"modify position failed: {err}",
-                error_type="order_failed",
-            )
+            self._raise_mt5_error("order_send.modify_position", error_type="order_failed")
 
-        return self._map_order_result(result)
+        return map_order_result(mt5, result)
 
     def cancel_order(self, ticket: int) -> dict[str, Any]:
         self.ensure_connected()
@@ -459,19 +389,15 @@ class MT5Client:
 
         result = mt5.order_send(request)
         if result is None:
-            err = mt5.last_error()
-            raise MT5ConnectionError(
-                f"cancel order failed: {err}",
-                error_type="order_failed",
-            )
+            self._raise_mt5_error("order_send.cancel_order", error_type="order_failed")
 
-        return self._map_order_result(result, fallback_order_id=ticket)
+        return map_order_result(mt5, result, fallback_order_id=ticket)
 
     def cancel_all_orders(self) -> list[dict[str, Any]]:
         self.ensure_connected()
 
-        orders = mt5.orders_get()
-        if not orders:
+        orders = self._require_mt5_result("orders_get", mt5.orders_get())
+        if len(orders) == 0:
             return []
 
         results: list[dict[str, Any]] = []
@@ -480,21 +406,11 @@ class MT5Client:
             try:
                 result = self.cancel_order(ticket)
                 results.append(result)
+            except MT5ConnectionError:
+                raise
             except Exception as exc:
                 log.error("cancel_pending_order_failed", ticket=ticket, error=str(exc))
-                results.append({
-                    "retcode": -1,
-                    "retcodeDescription": str(exc),
-                    "retcodeExternal": None,
-                    "orderId": str(ticket),
-                    "dealId": "",
-                    "volume": 0.0,
-                    "price": 0.0,
-                    "comment": str(exc),
-                    "bid": None,
-                    "ask": None,
-                    "success": False,
-                })
+                results.append(failed_order_result(str(exc), order_id=str(ticket)))
 
         return results
 
@@ -514,9 +430,7 @@ class MT5Client:
         close_volume = volume if volume is not None else pos.volume
         close_side = mt5.ORDER_TYPE_SELL if pos.type == mt5.ORDER_TYPE_BUY else mt5.ORDER_TYPE_BUY
 
-        tick = mt5.symbol_info_tick(pos.symbol)
-        if tick is None:
-            raise ValueError(f"Could not get tick for {pos.symbol}")
+        tick = self._require_mt5_result("symbol_info_tick", mt5.symbol_info_tick(pos.symbol))
 
         close_price = tick.bid if pos.type == mt5.ORDER_TYPE_BUY else tick.ask
 
@@ -536,18 +450,15 @@ class MT5Client:
 
         result = mt5.order_send(request)
         if result is None:
-            err = mt5.last_error()
-            raise MT5ConnectionError(
-                f"close position failed: {err}",
-                error_type="order_failed",
-            )
+            self._raise_mt5_error("order_send.close_position", error_type="order_failed")
 
-        return self._map_order_result(result)
+        return map_order_result(mt5, result)
 
     def close_all_positions(self, deviation: int = 20) -> list[dict[str, Any]]:
         """Close every open position."""
-        positions = mt5.positions_get()
-        if not positions:
+        self.ensure_connected()
+        positions = self._require_mt5_result("positions_get", mt5.positions_get())
+        if len(positions) == 0:
             return []
 
         results: list[dict[str, Any]] = []
@@ -555,63 +466,33 @@ class MT5Client:
             try:
                 result = self.close_position(int(pos.ticket), deviation=deviation)
                 results.append(result)
+            except MT5ConnectionError:
+                raise
             except Exception as exc:
                 log.error("close_all_positions_failed", ticket=pos.ticket, error=str(exc))
-                results.append({
-                    "ticket": int(pos.ticket),
-                    "retcode": -1,
-                    "retcodeDescription": str(exc),
-                    "retcodeExternal": None,
-                    "orderId": "",
-                    "volume": 0.0,
-                    "price": 0.0,
-                    "comment": str(exc),
-                    "bid": None,
-                    "ask": None,
-                })
+                results.append(failed_order_result(str(exc), ticket=int(pos.ticket)))
 
         return results
 
     # -- Symbol info -----------------------------------------------------------
 
-    def get_symbol_info(self, symbol: str) -> dict[str, Any] | None:
+    def get_symbol_info(self, symbol: str) -> dict[str, Any]:
         self.ensure_connected()
-        mt5.symbol_select(symbol, True)
-        info = mt5.symbol_info(symbol)
-        if info is None:
-            return None
+        selected = mt5.symbol_select(symbol, True)
+        if not selected:
+            self._raise_mt5_error("symbol_select", error_type="symbol_unavailable", retryable=False)
 
-        point = 10 ** (-info.digits) if info.digits > 0 else 1.0
-        pip_size = point * 10 if info.digits in (3, 5) else point
+        info = self._require_mt5_result("symbol_info", mt5.symbol_info(symbol))
 
-        tick = mt5.symbol_info_tick(symbol)
-        bid = float(tick.bid) if tick else 0.0
-        ask = float(tick.ask) if tick else 0.0
+        tick = self._require_mt5_result("symbol_info_tick", mt5.symbol_info_tick(symbol))
 
-        return {
-            "symbol": info.name,
-            "digits": info.digits,
-            "point": point,
-            "pipSize": pip_size,
-            "tickValue": float(info.trade_tick_value),
-            "contractSize": float(info.trade_contract_size),
-            "currency": info.currency_profit,
-            "description": info.description,
-            "spread": info.spread,
-            "volumeMin": float(info.volume_min),
-            "volumeMax": float(info.volume_max),
-            "volumeStep": float(info.volume_step),
-            "fillingMode": info.filling_mode,
-            "bid": bid,
-            "ask": ask,
-        }
+        return map_symbol_info(info, tick)
 
     def get_symbol_info_batch(self, symbols: list[str]) -> list[dict[str, Any]]:
         result: list[dict[str, Any]] = []
         for symbol in symbols:
             info = self.get_symbol_info(symbol)
-            if info:
-                result.append(info)
+            result.append(info)
         return result
 
     # -- Order status ----------------------------------------------------------
@@ -624,7 +505,10 @@ class MT5Client:
 
         self.ensure_connected()
         try:
-            orders = mt5.orders_get(ticket=order_id)
+            orders = self._require_mt5_result(
+                "orders_get",
+                mt5.orders_get(ticket=order_id),
+            )
         except (OverflowError, SystemError) as exc:
             log.error(
                 "mt5_orders_get_failed",
@@ -635,22 +519,13 @@ class MT5Client:
             return None
 
         if orders and len(orders) > 0:
-            order = orders[0]
-            return {
-                "ticket": int(order.ticket),
-                "symbol": order.symbol,
-                "type": self._order_type_str(order.type),
-                "volume": float(order.volume_current),
-                "volumeInitial": float(order.volume_initial),
-                "price": float(order.price_open),
-                "stopLoss": float(order.sl),
-                "takeProfit": float(order.tp),
-                "state": self._order_state_str(order.state),
-                "timeDone": self._read_mt5_timestamp_ms(order, "time_done_msc", "time_done"),
-            }
+            return map_open_order_status(orders[0])
 
         try:
-            positions = mt5.positions_get(ticket=order_id)
+            positions = self._require_mt5_result(
+                "positions_get",
+                mt5.positions_get(ticket=order_id),
+            )
         except (OverflowError, SystemError) as exc:
             log.error(
                 "mt5_positions_get_failed",
@@ -661,95 +536,61 @@ class MT5Client:
             return None
 
         if positions and len(positions) > 0:
-            position = positions[0]
-            return {
-                "ticket": int(position.ticket),
-                "symbol": position.symbol,
-                "type": self._order_type_str(position.type),
-                "volume": float(position.volume),
-                "volumeInitial": float(position.volume),
-                "price": float(position.price_open),
-                "stopLoss": float(position.sl),
-                "takeProfit": float(position.tp),
-                "state": "filled",
-                "timeDone": self._read_mt5_timestamp_ms(position, "time_msc", "time"),
-            }
+            return map_position_status(positions[0])
 
-        deals = mt5.history_deals_get(ticket=order_id)
-        if not deals:
+        deals = self._require_mt5_result(
+            "history_deals_get.ticket",
+            mt5.history_deals_get(ticket=order_id),
+        )
+        if len(deals) == 0:
             epoch = datetime(2020, 1, 1, tzinfo=timezone.utc)
             now = datetime.now(timezone.utc)
-            deals = mt5.history_deals_get(epoch, now, ticket=order_id)
+            deals = self._require_mt5_result(
+                "history_deals_get.range",
+                mt5.history_deals_get(epoch, now, ticket=order_id),
+            )
 
         if deals and len(deals) > 0:
-            order_deals = [
-                deal for deal in deals
-                if int(getattr(deal, "order", 0)) == order_id and deal.type in (mt5.DEAL_TYPE_BUY, mt5.DEAL_TYPE_SELL)
-            ]
-            if order_deals:
-                total_volume = sum(abs(float(deal.volume)) for deal in order_deals)
-                weighted_price = sum(abs(float(deal.volume)) * float(deal.price) for deal in order_deals)
-                latest_deal = max(order_deals, key=lambda deal: int(getattr(deal, "time", 0)))
-                if total_volume > 0:
-                    return {
-                        "ticket": int(latest_deal.order),
-                        "symbol": latest_deal.symbol,
-                        "type": "buy" if latest_deal.type == mt5.DEAL_TYPE_BUY else "sell",
-                        "volume": total_volume,
-                        "volumeInitial": total_volume,
-                        "price": weighted_price / total_volume,
-                        "profit": float(latest_deal.profit),
-                        "state": "filled",
-                        "timeDone": self._read_mt5_timestamp_ms(latest_deal, "time_msc", "time"),
-                    }
+            mapped_deal = map_deal_status(mt5, order_id, deals)
+            if mapped_deal is not None:
+                return mapped_deal
 
-        history_orders = mt5.history_orders_get(ticket=order_id)
-        if not history_orders:
+        history_orders = self._require_mt5_result(
+            "history_orders_get.ticket",
+            mt5.history_orders_get(ticket=order_id),
+        )
+        if len(history_orders) == 0:
             epoch = datetime(2020, 1, 1, tzinfo=timezone.utc)
             now = datetime.now(timezone.utc)
-            history_orders = mt5.history_orders_get(epoch, now, ticket=order_id)
+            history_orders = self._require_mt5_result(
+                "history_orders_get.range",
+                mt5.history_orders_get(epoch, now, ticket=order_id),
+            )
 
         if history_orders and len(history_orders) > 0:
-            order = history_orders[0]
-            return {
-                "ticket": int(order.ticket),
-                "symbol": order.symbol,
-                "type": self._order_type_str(order.type),
-                "volume": float(order.volume_current if hasattr(order, "volume_current") else order.volume_initial),
-                "volumeInitial": float(order.volume_initial),
-                "price": float(order.price_open),
-                "stopLoss": float(order.sl),
-                "takeProfit": float(order.tp),
-                "state": self._order_state_str(order.state),
-                "timeDone": self._read_mt5_timestamp_ms(order, "time_done_msc", "time_done"),
-            }
+            return map_history_order_status(history_orders[0])
 
         return None
 
     # -- Helpers ---------------------------------------------------------------
 
     def _find_position(self, ticket: int) -> Any:
-        positions = mt5.positions_get(ticket=ticket)
+        positions = self._require_mt5_result(
+            "positions_get",
+            mt5.positions_get(ticket=ticket),
+        )
         if positions and len(positions) > 0:
             return positions[0]
         return None
 
     def _find_open_order(self, ticket: int) -> Any:
-        orders = mt5.orders_get(ticket=ticket)
+        orders = self._require_mt5_result(
+            "orders_get",
+            mt5.orders_get(ticket=ticket),
+        )
         if orders and len(orders) > 0:
             return orders[0]
         return None
-
-    def _resolve_order_type(self, side: str, order_type: str) -> int:
-        if order_type == "market":
-            return mt5.ORDER_TYPE_BUY if side == "buy" else mt5.ORDER_TYPE_SELL
-        if order_type == "limit":
-            return mt5.ORDER_TYPE_BUY_LIMIT if side == "buy" else mt5.ORDER_TYPE_SELL_LIMIT
-        if order_type == "stop":
-            return mt5.ORDER_TYPE_BUY_STOP if side == "buy" else mt5.ORDER_TYPE_SELL_STOP
-        if order_type == "stop_limit":
-            return mt5.ORDER_TYPE_BUY_STOP_LIMIT if side == "buy" else mt5.ORDER_TYPE_SELL_STOP_LIMIT
-        return mt5.ORDER_TYPE_BUY if side == "buy" else mt5.ORDER_TYPE_SELL
 
     def _resolve_filling_mode(self, symbol: str) -> int:
         """Pick a fill mode the broker supports for this symbol.
@@ -760,137 +601,6 @@ class MT5Client:
             bit 2 (4) = ORDER_FILLING_BOC (book-or-cancel)
         We prefer IOC > FOK > RETURN as the fallback order.
         """
-        info = mt5.symbol_info(symbol)
-        if info is None:
-            return mt5.ORDER_FILLING_IOC
+        info = self._require_mt5_result("symbol_info", mt5.symbol_info(symbol))
 
-        mask = info.filling_mode
-        if mask & 2:
-            return mt5.ORDER_FILLING_IOC
-        if mask & 1:
-            return mt5.ORDER_FILLING_FOK
-        return mt5.ORDER_FILLING_RETURN
-
-    def _read_mt5_timestamp_ms(self, payload: Any, millis_attr: str, seconds_attr: str) -> int:
-        raw_millis = getattr(payload, millis_attr, 0) or 0
-        if raw_millis:
-            return self._normalize_timestamp_ms(int(raw_millis))
-
-        raw_seconds = getattr(payload, seconds_attr, 0) or 0
-        if raw_seconds:
-            return self._normalize_timestamp_ms(int(raw_seconds) * 1000)
-
-        return 0
-
-    def _normalize_timestamp_ms(self, timestamp_ms: int) -> int:
-        if timestamp_ms <= 0:
-            return 0
-
-        now_ms = int(time.time() * 1000)
-        if timestamp_ms > now_ms + MAX_PROVIDER_FUTURE_SKEW_MS:
-            log.warning(
-                "mt5_future_timestamp_clamped",
-                timestamp_ms=timestamp_ms,
-                now_ms=now_ms,
-            )
-            return now_ms
-
-        return timestamp_ms
-
-    def _map_order_result(self, result: Any, fallback_order_id: int | None = None) -> dict[str, Any]:
-        retcode = int(result.retcode)
-        success_retcodes = {
-            mt5.TRADE_RETCODE_DONE,
-            mt5.TRADE_RETCODE_PLACED,
-            mt5.TRADE_RETCODE_DONE_PARTIAL,
-        }
-
-        return {
-            "retcode": retcode,
-            "retcodeDescription": self._retcode_description(retcode),
-            "retcodeExternal": int(getattr(result, "retcode_external", 0)) if hasattr(result, "retcode_external") else None,
-            "orderId": str(result.order) if result.order else (str(fallback_order_id) if fallback_order_id is not None else ""),
-            "dealId": str(result.deal) if result.deal else "",
-            "volume": float(result.volume),
-            "price": float(result.price),
-            "comment": result.comment if hasattr(result, "comment") else "",
-            "bid": float(getattr(result, "bid", 0.0)) if hasattr(result, "bid") else None,
-            "ask": float(getattr(result, "ask", 0.0)) if hasattr(result, "ask") else None,
-            "success": retcode in success_retcodes,
-        }
-
-    @staticmethod
-    def _retcode_description(retcode: int) -> str:
-        descriptions: dict[int, str] = {
-            10004: "Requote",
-            10006: "Request rejected",
-            10007: "Request cancelled by trader",
-            10008: "Order placed",
-            10009: "Request completed",
-            10010: "Request partially completed",
-            10011: "Request processing error",
-            10012: "Request cancelled by timeout",
-            10013: "Invalid request",
-            10014: "Invalid volume",
-            10015: "Invalid price",
-            10016: "Invalid stops",
-            10017: "Trade disabled",
-            10018: "Market closed",
-            10019: "Insufficient funds",
-            10020: "Prices changed",
-            10021: "No quotes",
-            10022: "Invalid expiration",
-            10023: "Order state changed",
-            10024: "Too many requests",
-            10025: "No changes",
-            10026: "Autotrading disabled",
-            10027: "Protection triggered",
-            10028: "Modification failed (locked)",
-            10029: "Order/position frozen",
-            10030: "Invalid fill mode",
-            10031: "Connection problem",
-            10032: "Only real accounts allowed",
-            10033: "Pending orders limit reached",
-            10034: "Volume limit for orders/positions reached",
-            10035: "Invalid or prohibited order type",
-            10036: "Position already closed",
-            10038: "Close volume exceeds position volume",
-            10039: "Close order already exists for position",
-            10040: "Limit orders reached",
-            10041: "Pending volume limit reached",
-            10042: "Order prohibited (only long allowed)",
-            10043: "Order prohibited (only short allowed)",
-            10044: "Order prohibited (only close allowed)",
-            10045: "Position close not allowed by FIFO",
-        }
-        return descriptions.get(retcode, f"Unknown retcode {retcode}")
-
-    @staticmethod
-    def _order_type_str(order_type: int) -> str:
-        mapping = {
-            0: "buy",
-            1: "sell",
-            2: "buy_limit",
-            3: "sell_limit",
-            4: "buy_stop",
-            5: "sell_stop",
-            6: "buy_stop_limit",
-            7: "sell_stop_limit",
-        }
-        return mapping.get(order_type, f"unknown_{order_type}")
-
-    @staticmethod
-    def _order_state_str(state: int) -> str:
-        mapping = {
-            0: "started",
-            1: "placed",
-            2: "canceled",
-            3: "partial",
-            4: "filled",
-            5: "rejected",
-            6: "expired",
-            7: "request_add",
-            8: "request_modify",
-            9: "request_cancel",
-        }
-        return mapping.get(state, f"unknown_{state}")
+        return resolve_filling_mode(mt5, info.filling_mode)

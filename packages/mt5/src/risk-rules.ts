@@ -3,115 +3,62 @@ import {
     getCurrentTimeInTimezone,
     mt5PolicySchema,
     padTime,
-    type AccountState,
     type OrderIntent,
-    type Position,
     type RiskValidator,
 } from "@valiq-trading/core"
 
-export const mt5RiskValidators: readonly RiskValidator[] = [
-    slTpRequiredValidator,
-    minRiskRewardValidator,
-    maxRiskPercentValidator,
-    tradingHoursValidator,
-]
+const ALLOWED = { allowed: true } as const
 
-function slTpRequiredValidator(
-    intent: OrderIntent,
-    _rawPolicy: Record<string, unknown>,
-    _state: AccountState,
-    _positions: Position[]
-) {
-    if (isCloseAction(intent)) {
-        return { allowed: true }
-    }
-
+const slTpRequiredValidator: RiskValidator = openIntentValidator((intent) => {
     const sl = intent.metadata?.stopLoss as number | undefined
     const tp = intent.metadata?.takeProfit as number | undefined
 
     if (sl === undefined || sl === null) {
-        return {
-            allowed: false,
-            reason: "MT5 orders require a stopLoss. Provide stopLoss with your order.",
-        }
+        return rejectRisk("MT5 orders require a stopLoss. Provide stopLoss with your order.")
     }
 
     if (tp === undefined || tp === null) {
-        return {
-            allowed: false,
-            reason: "MT5 orders require a takeProfit. Provide takeProfit (or riskRewardRatio) with your order.",
-        }
+        return rejectRisk("MT5 orders require a takeProfit. Provide takeProfit (or riskRewardRatio) with your order.")
     }
 
-    return { allowed: true }
-}
+    return ALLOWED
+})
 
-function minRiskRewardValidator(
-    intent: OrderIntent,
-    rawPolicy: Record<string, unknown>,
-    _state: AccountState,
-    _positions: Position[]
-) {
-    if (isCloseAction(intent)) {
-        return { allowed: true }
-    }
-
+const minRiskRewardValidator: RiskValidator = openIntentValidator((intent, rawPolicy) => {
     const policy = mt5PolicySchema.parse(rawPolicy)
     const impliedRR = intent.metadata?.impliedRR as number | undefined
 
     if (impliedRR === undefined) {
-        return { allowed: true }
+        return ALLOWED
     }
 
     if (impliedRR < policy.minRiskReward) {
-        return {
-            allowed: false,
-            reason: `Risk-reward ratio ${impliedRR.toFixed(2)} is below minimum ${policy.minRiskReward}. Widen your TP or tighten your SL.`,
-        }
+        return rejectRisk(`Risk-reward ratio ${impliedRR.toFixed(2)} is below minimum ${policy.minRiskReward}. Widen your TP or tighten your SL.`)
     }
 
-    return { allowed: true }
-}
+    return ALLOWED
+})
 
-function maxRiskPercentValidator(
-    intent: OrderIntent,
-    rawPolicy: Record<string, unknown>,
-    state: AccountState,
-    _positions: Position[]
-) {
-    if (isCloseAction(intent)) {
-        return { allowed: true }
-    }
-
+const maxRiskPercentValidator: RiskValidator = openIntentValidator((intent, rawPolicy, state) => {
     const policy = mt5PolicySchema.parse(rawPolicy)
 
     if (getRiskBudgetBase(state) <= 0) {
-        return { allowed: true }
+        return ALLOWED
     }
 
     const riskPercent = intent.metadata?.riskPercent as number | undefined
     if (riskPercent === undefined) {
-        return { allowed: true }
+        return ALLOWED
     }
 
     if (riskPercent > policy.maxRiskPercent) {
-        return {
-            allowed: false,
-            reason: `Risk ${riskPercent.toFixed(1)}% exceeds max ${policy.maxRiskPercent}%`,
-        }
+        return rejectRisk(`Risk ${riskPercent.toFixed(1)}% exceeds max ${policy.maxRiskPercent}%`)
     }
 
-    return { allowed: true }
-}
+    return ALLOWED
+})
 
-function tradingHoursValidator(
-    intent: OrderIntent,
-    rawPolicy: Record<string, unknown>
-) {
-    if (isCloseAction(intent)) {
-        return { allowed: true }
-    }
-
+const tradingHoursValidator: RiskValidator = openIntentValidator((_intent, rawPolicy) => {
     const policy = mt5PolicySchema.parse(rawPolicy)
     const { start, end, timezone } = policy.tradingHours
 
@@ -132,16 +79,34 @@ function tradingHoursValidator(
     }
 
     if (!withinWindow) {
-        return {
-            allowed: false,
-            reason: `Outside trading hours. Current time: ${padTime(now.hours)}:${padTime(now.minutes)} ${timezone}. Allowed: ${start}-${end}`,
-        }
+        return rejectRisk(`Outside trading hours. Current time: ${padTime(now.hours)}:${padTime(now.minutes)} ${timezone}. Allowed: ${start}-${end}`)
     }
 
-    return { allowed: true }
-}
+    return ALLOWED
+})
+
+export const mt5RiskValidators: readonly RiskValidator[] = [
+    slTpRequiredValidator,
+    minRiskRewardValidator,
+    maxRiskPercentValidator,
+    tradingHoursValidator,
+]
 
 function isCloseAction(intent: OrderIntent): boolean {
     const action = intent.metadata?.action
     return action === "close" || action === "close_position" || action === "cancel" || action === "cancel_order"
+}
+
+function openIntentValidator(validate: RiskValidator): RiskValidator {
+    return (intent, policy, state, positions) => {
+        if (isCloseAction(intent)) {
+            return ALLOWED
+        }
+
+        return validate(intent, policy, state, positions)
+    }
+}
+
+function rejectRisk(reason: string): { allowed: false; reason: string } {
+    return { allowed: false, reason }
 }
