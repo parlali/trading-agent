@@ -34,7 +34,11 @@ import {
     type RiskValidator,
     validateIntent,
 } from "./risk"
-import { filterPositionsByOwnership } from "./position-filter"
+import {
+    filterPositionsByOwnership,
+    filterPositionsByOwnershipScope,
+    type ProviderOwnershipScope,
+} from "./position-filter"
 import { resolveStrategyAccountState } from "./strategy-account"
 import type { Logger } from "./logger"
 import { getIntentAction, hasIntentChanges, createSyntheticIntent } from "./intent"
@@ -108,6 +112,7 @@ export interface ExecutionPipelineConfig {
     strategyId: string
     lifecycle?: OrderLifecycleConfig
     ownedInstruments?: Set<string>
+    ownershipScope?: ProviderOwnershipScope
     strategyRealizedPnl?: number
 }
 
@@ -145,6 +150,7 @@ export class ExecutionPipeline {
     private runId: string
     private strategyId: string
     private ownedInstruments: Set<string> | null
+    private ownershipScope: ProviderOwnershipScope | null
     private dryRun: boolean
     private strategyRealizedPnl: number
     private dryRunPositionBook: Map<string, Position>
@@ -162,6 +168,7 @@ export class ExecutionPipeline {
         this.runId = config.runId
         this.strategyId = config.strategyId
         this.ownedInstruments = config.ownedInstruments ?? null
+        this.ownershipScope = config.ownershipScope ?? null
         this.dryRun = Boolean(config.policy.dryRun)
         this.strategyRealizedPnl = config.strategyRealizedPnl ?? 0
         this.dryRunPositionBook = new Map()
@@ -588,6 +595,75 @@ export class ExecutionPipeline {
         return { result, validation: ALLOWED_VALIDATION, handle }
     }
 
+    async closeProviderPosition(
+        position: Position,
+        reason?: string,
+        options: ClosePositionOptions = {}
+    ): Promise<ExecuteIntentResult> {
+        const closeSide = position.side === "long" ? "sell" : "buy"
+        const intent: OrderIntent = {
+            instrument: position.instrument,
+            side: closeSide,
+            quantity: position.quantity,
+            orderType: "market",
+            timeInForce: "ioc",
+            metadata: {
+                ...position.metadata,
+                ...options.metadata,
+                action: "close",
+                reason,
+                providerPositionId: position.providerPositionId,
+                entryPrice: position.entryPrice,
+                positionSide: position.side,
+                estimatedPrice: options.estimatedPrice ?? position.currentPrice ?? position.entryPrice,
+            },
+        }
+
+        this.logger.info("Closing provider position", {
+            instrument: position.instrument,
+            providerPositionId: position.providerPositionId,
+            reason,
+        })
+        void this.tradeEventLogger?.logIntent(this.runId, this.strategyId, intent)
+        void this.tradeEventLogger?.logValidation(this.runId, this.strategyId, ALLOWED_VALIDATION, intent)
+
+        if (this.policy.dryRun) {
+            const result: ExecutionResult = {
+                orderId: `dry-run-close-${position.instrument}-${Date.now()}`,
+                status: "filled",
+                filledQuantity: position.quantity,
+                fillPrice: options.estimatedPrice ?? position.currentPrice ?? position.entryPrice,
+                timestamp: Date.now(),
+            }
+            void this.tradeEventLogger?.logSubmission(this.runId, this.strategyId, result, intent)
+            const handle = await this.lifecycleManager.registerSubmittedOrder(intent, result, "close", { reason })
+            this.updateOwnedInstruments("close", position.instrument, result)
+            this.netDryRunPosition(
+                position.instrument,
+                closeSide,
+                position.quantity,
+                result.fillPrice ?? position.currentPrice ?? position.entryPrice,
+                "close",
+                intent.metadata,
+                result
+            )
+            return { result, validation: ALLOWED_VALIDATION, handle }
+        }
+
+        let result: ExecutionResult
+        try {
+            result = this.venue.closeProviderPosition
+                ? await this.venue.closeProviderPosition(position, intent)
+                : await this.venue.closePosition(position.instrument, intent)
+        } catch (error) {
+            result = createRejectedExecutionResultFromUnknownError("", error)
+        }
+        void this.tradeEventLogger?.logSubmission(this.runId, this.strategyId, result, intent)
+        const handle = await this.lifecycleManager.registerSubmittedOrder(intent, result, "close", { reason })
+        this.updateOwnedInstruments("close", position.instrument, result)
+        return { result, validation: ALLOWED_VALIDATION, handle }
+    }
+
     async getOrderStatus(orderId: string): Promise<ExecutionResult> {
         const existing = await this.lifecycleManager.getOrderSnapshot(orderId)
         const canonicalOrderId = existing?.orderId ?? orderId
@@ -625,6 +701,10 @@ export class ExecutionPipeline {
         this.riskValidators = [...validators]
     }
 
+    setStrategyRealizedPnl(value: number): void {
+        this.strategyRealizedPnl = value
+    }
+
     stopTracking(orderId: string): void {
         this.lifecycleManager.stopTracking(orderId)
     }
@@ -638,6 +718,9 @@ export class ExecutionPipeline {
             return Array.from(this.dryRunPositionBook.values())
         }
         const positions = await this.venue.getPositions()
+        if (this.ownershipScope) {
+            return filterPositionsByOwnershipScope(positions, this.ownershipScope)
+        }
         if (this.ownedInstruments) {
             return filterPositionsByOwnership(positions, this.ownedInstruments)
         }

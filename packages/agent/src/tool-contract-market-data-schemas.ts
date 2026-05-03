@@ -1,4 +1,8 @@
 import { z } from "zod"
+import {
+    POLYMARKET_TOKEN_HANDLE_PATTERN,
+    POLYMARKET_TOKEN_ID_PATTERN,
+} from "./tools/polymarket-market-handles"
 
 export const getOptionsChainParamsSchema = z.object({
     underlyingSymbol: z.string(),
@@ -76,17 +80,42 @@ export const getSymbolInfoJsonSchema = {
     required: ["symbol"],
 } satisfies Record<string, unknown>
 
-export const polymarketMarketPriceParamsSchema = z.object({
-    tokenId: z.string(),
+const polymarketTokenReferenceBaseSchema = z.object({
+    tokenId: z.string()
+        .trim()
+        .regex(POLYMARKET_TOKEN_ID_PATTERN, "Polymarket tokenId must be the canonical 20-80 digit decimal token ID returned by search_markets")
+        .optional(),
+    tokenHandle: z.string()
+        .trim()
+        .regex(POLYMARKET_TOKEN_HANDLE_PATTERN, "Polymarket tokenHandle must be returned by search_markets")
+        .optional(),
+})
+
+const requirePolymarketTokenReference = (value: { tokenId?: string; tokenHandle?: string }): boolean =>
+    Boolean(value.tokenId || value.tokenHandle)
+
+export const polymarketTokenReferenceSchema = polymarketTokenReferenceBaseSchema.refine(requirePolymarketTokenReference, {
+    message: "Provide tokenHandle from search_markets or a canonical Polymarket tokenId",
+    path: ["tokenHandle"],
+})
+
+export const polymarketMarketPriceParamsSchema = polymarketTokenReferenceBaseSchema.extend({
     side: z.enum(["buy", "sell"]).optional(),
+}).refine(requirePolymarketTokenReference, {
+    message: "Provide tokenHandle from search_markets or a canonical Polymarket tokenId",
+    path: ["tokenHandle"],
 })
 
 export const polymarketMarketPriceJsonSchema = {
     type: "object",
     properties: {
+        tokenHandle: {
+            type: "string",
+            description: "Preferred short token handle returned by search_markets for this run",
+        },
         tokenId: {
             type: "string",
-            description: "Polymarket token ID",
+            description: "Canonical long decimal Polymarket token ID returned by search_markets. Prefer tokenHandle when available.",
         },
         side: {
             type: "string",
@@ -94,7 +123,6 @@ export const polymarketMarketPriceJsonSchema = {
             description: "Optional side to include the current executable price",
         },
     },
-    required: ["tokenId"],
 } satisfies Record<string, unknown>
 
 export const okxMarketPriceJsonSchema = {
@@ -108,24 +136,29 @@ export const okxMarketPriceJsonSchema = {
     required: ["symbol"],
 } satisfies Record<string, unknown>
 
-export const polymarketOrderBookParamsSchema = z.object({
-    tokenId: z.string(),
+export const polymarketOrderBookParamsSchema = polymarketTokenReferenceBaseSchema.extend({
     levels: z.number().int().positive().max(50).optional(),
+}).refine(requirePolymarketTokenReference, {
+    message: "Provide tokenHandle from search_markets or a canonical Polymarket tokenId",
+    path: ["tokenHandle"],
 })
 
 export const polymarketOrderBookJsonSchema = {
     type: "object",
     properties: {
+        tokenHandle: {
+            type: "string",
+            description: "Preferred short token handle returned by search_markets for this run",
+        },
         tokenId: {
             type: "string",
-            description: "Polymarket token ID",
+            description: "Canonical long decimal Polymarket token ID returned by search_markets. Prefer tokenHandle when available.",
         },
         levels: {
             type: "number",
             description: "Optional number of bid and ask levels to return",
         },
     },
-    required: ["tokenId"],
 } satisfies Record<string, unknown>
 
 export const okxOrderBookParamsSchema = z.object({
@@ -149,10 +182,14 @@ export const okxOrderBookJsonSchema = {
 } satisfies Record<string, unknown>
 
 export const searchMarketsParamsSchema = z.object({
-    category: z.string().optional(),
-    query: z.string().optional(),
-    conditionId: z.string().optional(),
-    marketSlug: z.string().optional(),
+    category: z.string().trim().max(80).optional(),
+    query: z.string()
+        .trim()
+        .max(500)
+        .transform(normalizePolymarketSearchQuery)
+        .optional(),
+    conditionId: z.string().trim().max(120).optional(),
+    marketSlug: z.string().trim().max(160).optional(),
     limit: z.number()
         .int()
         .positive()
@@ -162,6 +199,7 @@ export const searchMarketsParamsSchema = z.object({
     livePriceTokenLimit: z.number()
         .int()
         .nonnegative()
+        .max(25)
         .optional(),
 })
 
@@ -198,6 +236,15 @@ export const searchMarketsJsonSchema = {
         },
     },
 } satisfies Record<string, unknown>
+
+export function normalizePolymarketSearchQuery(query: string): string {
+    return query
+        .replace(/[()[\]{}"`]/g, " ")
+        .replace(/\b(?:and|or|not)\b/gi, " ")
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 160)
+}
 
 export const webSearchParamsSchema = z.object({
     query: z.string(),

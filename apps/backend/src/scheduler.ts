@@ -32,6 +32,7 @@ import {
     createWebFetchTool,
     createWebSearchTool,
     executeAgentRun,
+    PolymarketMarketHandleRegistry,
     withCallBudget,
     type ToolCategory,
     type ToolDefinition,
@@ -94,7 +95,11 @@ import {
 } from "./state"
 import { reconcileProviderPortfolio, recordProviderSyncFailure } from "./provider-sync"
 import { reconcilePendingOrdersForRun } from "./pending-orders"
-import { findRemainingOwnedWorkingOrdersAfterSessionFlat } from "./session-flat-assertions"
+import {
+    findRemainingOwnedPositionsAfterSessionFlat,
+    findRemainingOwnedWorkingOrdersAfterSessionFlat,
+} from "./session-flat-assertions"
+import { executeAuditedSessionFlat } from "./session-flat"
 
 const PRE_RUN_HOOK_TIMEOUT_MS = 90_000
 const POST_RUN_HOOK_TIMEOUT_MS = 90_000
@@ -514,6 +519,9 @@ function buildToolPool(config: {
     const toolPool = new ToolPool({
         logger: runLogger,
     })
+    const polymarketHandles = app === "polymarket"
+        ? new PolymarketMarketHandleRegistry()
+        : undefined
 
     for (const tool of extraTools) {
         toolPool.registerTool({
@@ -609,7 +617,7 @@ function buildToolPool(config: {
                     return null
                 }
 
-                return createPolymarketProposeOrderTool(pipeline, venue)
+                return createPolymarketProposeOrderTool(pipeline, venue, polymarketHandles)
             }
 
             if (app === "okx-swap") {
@@ -799,7 +807,7 @@ function buildToolPool(config: {
                     return null
                 }
 
-                return createPolymarketGetMarketPriceTool(venue)
+                return createPolymarketGetMarketPriceTool(venue, polymarketHandles)
             }
 
             if (app === "okx-swap") {
@@ -824,7 +832,7 @@ function buildToolPool(config: {
                     return null
                 }
 
-                return createPolymarketGetOrderBookTool(venue)
+                return createPolymarketGetOrderBookTool(venue, polymarketHandles)
             }
 
             if (app === "okx-swap") {
@@ -848,7 +856,7 @@ function buildToolPool(config: {
                 return null
             }
 
-            return createPolymarketSearchMarketsTool(venue)
+            return createPolymarketSearchMarketsTool(venue, polymarketHandles)
         },
     })
     registerCanonicalTool(toolPool, {
@@ -1080,59 +1088,6 @@ export async function runStrategy(
             positions: initialOwnedPositions,
             policy,
         })
-    let runtimeContextLines: string[] | undefined
-
-    if (plugin.preRunHooks) {
-        const hookResult = await withTimeout(
-            async () => await plugin.preRunHooks!({
-                venue,
-                policy,
-                strategyId: strategy._id,
-                ownedInstruments,
-                ownedPositions: initialOwnedPositions,
-                ownedWorkingOrders: initialOwnedWorkingOrders,
-                strategyAccountState: initialStrategyAccountState,
-                logger,
-                createAlert: (alert) => backend.createAlert(alert),
-            }),
-            PRE_RUN_HOOK_TIMEOUT_MS,
-            `pre-run hooks for strategy ${strategy._id}`
-        )
-        if (hookResult.skip) {
-            logger.warn("Pre-run hook skipped strategy", {
-                strategyId: strategy._id,
-                app,
-                reason: hookResult.reason,
-            })
-            if (hookResult.providerStateChanged && !isDryRun) {
-                const reconciliation = await reconcileProviderPortfolio({
-                    app,
-                    venueName: plugin.venueName,
-                    source: "post_run_sync",
-                    venue,
-                })
-                const remainingOwnedWorkingOrders = findRemainingOwnedWorkingOrdersAfterSessionFlat(
-                    reconciliation.workingOrders,
-                    ownershipScope
-                )
-
-                if (remainingOwnedWorkingOrders.length > 0) {
-                    const orderIds = remainingOwnedWorkingOrders.map((order) => order.orderId).join(", ")
-                    await backend.createAlert({
-                        strategyId: strategy._id,
-                        app,
-                        severity: "critical",
-                        message: `Session-flat provider-sync assertion failed: ${remainingOwnedWorkingOrders.length} owned working order(s) still live after flat/cancel for ${strategy.name}: ${orderIds}`,
-                    })
-                    throw new Error(`Session-flat provider-sync assertion failed for ${strategy.name}: owned working order(s) still live after flat/cancel: ${orderIds}`)
-                }
-            }
-            return
-        }
-
-        runtimeContextLines = hookResult.runtimeContextLines
-    }
-
     const runId = await backend.createRun(strategy._id, app, trigger)
     const runLogger = logger.child({
         runId,
@@ -1144,6 +1099,7 @@ export async function runStrategy(
     let runSystemContextDigest: RunSystemContextDigest | undefined
     let latestStoredPositions: Position[] | undefined
     let currentAccountState: AccountState | undefined
+    let runtimeContextLines: string[] | undefined
 
     try {
         latestStoredPositions = storedPositions
@@ -1153,6 +1109,117 @@ export async function runStrategy(
             if (entry.strategyId !== strategy._id) {
                 conflictMap.set(entry.instrument, entry.strategyId)
             }
+        }
+
+        const pluginValidators = plugin.getRiskValidators()
+        const orderPersistence = createConvexOrderPersistenceAdapter({
+            url: convexUrl,
+            machineAuth: {
+                serviceToken: backendServiceToken,
+            },
+        })
+        const guardedVenue = createKillSwitchGuardedVenue(venue, app, strategy._id)
+
+        pipeline = new ExecutionPipeline({
+            venue: guardedVenue,
+            venueName: plugin.venueName,
+            policy,
+            riskValidators: pluginValidators,
+            logger: runLogger,
+            tradeEventLogger: backend,
+            orderPersistence,
+            priceVerification: {
+                failClosedOnVerificationError: app === "polymarket",
+            },
+            runId,
+            strategyId: strategy._id,
+            ownedInstruments,
+            ownershipScope,
+            strategyRealizedPnl: 0,
+        })
+        const activePipeline = pipeline
+
+        if (plugin.preRunHooks) {
+            const hookResult = await withTimeout(
+                async () => await plugin.preRunHooks!({
+                    venue,
+                    policy,
+                    strategyId: strategy._id,
+                    ownedInstruments,
+                    ownedPositions: initialOwnedPositions,
+                    ownedWorkingOrders: initialOwnedWorkingOrders,
+                    strategyAccountState: initialStrategyAccountState,
+                    logger: runLogger,
+                    createAlert: (alert) => backend.createAlert(alert),
+                    sessionFlat: {
+                        execute: async (args) => await executeAuditedSessionFlat({
+                            pipeline: activePipeline,
+                            logger: runLogger,
+                            strategyId: strategy._id,
+                            app,
+                            positions: args.positions,
+                            workingOrders: args.workingOrders,
+                            reason: args.reason,
+                        }),
+                    },
+                }),
+                PRE_RUN_HOOK_TIMEOUT_MS,
+                `pre-run hooks for strategy ${strategy._id}`
+            )
+            if (hookResult.skip) {
+                runLogger.warn("Pre-run hook skipped strategy", {
+                    strategyId: strategy._id,
+                    app,
+                    reason: hookResult.reason,
+                })
+                if (hookResult.providerStateChanged && !isDryRun) {
+                    const reconciliation = await reconcileProviderPortfolio({
+                        app,
+                        venueName: plugin.venueName,
+                        source: "post_run_sync",
+                        venue,
+                    })
+                    const remainingOwnedWorkingOrders = findRemainingOwnedWorkingOrdersAfterSessionFlat(
+                        reconciliation.workingOrders,
+                        ownershipScope
+                    )
+                    const remainingOwnedPositions = findRemainingOwnedPositionsAfterSessionFlat(
+                        reconciliation.positions,
+                        ownershipScope
+                    )
+
+                    if (remainingOwnedWorkingOrders.length > 0) {
+                        const orderIds = remainingOwnedWorkingOrders.map((order) => order.orderId).join(", ")
+                        await backend.createAlert({
+                            strategyId: strategy._id,
+                            app,
+                            severity: "critical",
+                            message: `Session-flat provider-sync assertion failed: ${remainingOwnedWorkingOrders.length} owned working order(s) still live after flat/cancel for ${strategy.name}: ${orderIds}`,
+                        })
+                        throw new Error(`Session-flat provider-sync assertion failed for ${strategy.name}: owned working order(s) still live after flat/cancel: ${orderIds}`)
+                    }
+
+                    if (remainingOwnedPositions.length > 0) {
+                        const positionIds = remainingOwnedPositions.map((position) =>
+                            position.providerPositionId ?? `${position.instrument}:${position.side}`
+                        ).join(", ")
+                        await backend.createAlert({
+                            strategyId: strategy._id,
+                            app,
+                            severity: "critical",
+                            message: `Session-flat provider-sync assertion failed: ${remainingOwnedPositions.length} owned position(s) still live after flat/cancel for ${strategy.name}: ${positionIds}`,
+                        })
+                        throw new Error(`Session-flat provider-sync assertion failed for ${strategy.name}: owned position(s) still live after flat/cancel: ${positionIds}`)
+                    }
+                }
+
+                const summary = hookResult.reason ?? "Strategy skipped by pre-run hook"
+                await backend.updateRun(runId, "completed", summary)
+                updateHealth("completed", summary)
+                return
+            }
+
+            runtimeContextLines = hookResult.runtimeContextLines
         }
 
         const preRunSafetyPolicy = await resolveRuntimeSafetyPolicyForRun({
@@ -1166,7 +1233,6 @@ export async function runStrategy(
             app,
             policy: preRunSafetyPolicy,
         })
-        const pluginValidators = plugin.getRiskValidators()
         let runRiskState = riskState
         const buildRiskValidators = (currentRiskState: StrategyRiskState) => {
             const safetyValidator = createStrategySafetyValidator({
@@ -1185,31 +1251,8 @@ export async function runStrategy(
                 : [safetyValidator, ...pluginValidators]
         }
 
-        const orderPersistence = createConvexOrderPersistenceAdapter({
-            url: convexUrl,
-            machineAuth: {
-                serviceToken: backendServiceToken,
-            },
-        })
-        const guardedVenue = createKillSwitchGuardedVenue(venue, app, strategy._id)
-
-        pipeline = new ExecutionPipeline({
-            venue: guardedVenue,
-            venueName: plugin.venueName,
-            policy,
-            riskValidators: buildRiskValidators(runRiskState),
-            logger: runLogger,
-            tradeEventLogger: backend,
-            orderPersistence,
-            priceVerification: {
-                failClosedOnVerificationError: app === "polymarket",
-            },
-            runId,
-            strategyId: strategy._id,
-            ownedInstruments,
-            strategyRealizedPnl: runRiskState.day.realizedPnl,
-        })
-        const activePipeline = pipeline
+        activePipeline.setRiskValidators(buildRiskValidators(runRiskState))
+        activePipeline.setStrategyRealizedPnl(runRiskState.day.realizedPnl)
 
         const extraTools = plugin.getExtraTools({
             secrets: strategySecrets,

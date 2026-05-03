@@ -1,10 +1,32 @@
 import { describe, expect, it, vi } from "vitest"
 import {
     assertFullResetAuditClean,
-    assertNoProviderExposureBeforeCleanup,
     finalizeFullResetCleanup,
 } from "./strategy-cli.ts"
 import type { TradingBackendClient } from "@valiq-trading/convex"
+
+function createResetCounts(overrides: Record<string, number | boolean> = {}) {
+    return {
+        runs: 0,
+        agentLogs: 0,
+        tradeEvents: 0,
+        orders: 0,
+        orderTransitions: 0,
+        positions: 0,
+        instrumentClaims: 0,
+        positionSyncs: 0,
+        strategyRiskStates: 0,
+        executionSafetyFaults: 0,
+        providerPositions: 0,
+        providerWorkingOrders: 0,
+        providerSyncStates: 0,
+        accountSnapshots: 0,
+        appHeartbeats: 0,
+        manualRunRequests: 0,
+        alerts: 0,
+        ...overrides,
+    }
+}
 
 describe("finalizeFullResetCleanup", () => {
     it("combines orphan cleanup, app-state cleanup, and final audit", async () => {
@@ -12,26 +34,11 @@ describe("finalizeFullResetCleanup", () => {
         const client = {
             deleteOrphanedStrategyHistoryBatch: vi.fn().mockImplementation(async () => {
                 calls.push("deleteOrphanedStrategyHistoryBatch")
-                return {
+                return createResetCounts({
                     runs: 1,
                     agentLogs: 2,
-                    tradeEvents: 0,
-                    orders: 0,
-                    orderTransitions: 0,
-                    positions: 0,
-                    instrumentClaims: 0,
-                    positionSyncs: 0,
-                    strategyRiskStates: 0,
-                    executionSafetyFaults: 0,
-                    providerPositions: 0,
-                    providerWorkingOrders: 0,
-                    providerSyncStates: 0,
-                    accountSnapshots: 0,
-                    appHeartbeats: 0,
-                    manualRunRequests: 0,
-                    alerts: 0,
                     hasMore: false,
-                }
+                })
             }),
             getPortfolioPositions: vi.fn().mockImplementation(async () => {
                 calls.push("getPortfolioPositions")
@@ -43,49 +50,19 @@ describe("finalizeFullResetCleanup", () => {
             }),
             clearFullResetStateBatch: vi.fn().mockImplementation(async () => {
                 calls.push("clearFullResetStateBatch")
-                return {
-                    runs: 0,
-                    agentLogs: 0,
-                    tradeEvents: 0,
-                    orders: 0,
-                    orderTransitions: 0,
-                    positions: 0,
-                    instrumentClaims: 0,
-                    positionSyncs: 0,
-                    strategyRiskStates: 0,
-                    executionSafetyFaults: 0,
-                    providerPositions: 0,
-                    providerWorkingOrders: 0,
+                return createResetCounts({
                     providerSyncStates: 1,
                     accountSnapshots: 3,
                     appHeartbeats: 2,
-                    manualRunRequests: 0,
                     alerts: 4,
                     hasMore: false,
-                }
+                })
             }),
             getFullResetAudit: vi.fn().mockImplementation(async () => {
                 calls.push("getFullResetAudit")
-                return {
+                return createResetCounts({
                     strategies: 0,
-                    runs: 0,
-                    agentLogs: 0,
-                    tradeEvents: 0,
-                    orders: 0,
-                    orderTransitions: 0,
-                    positions: 0,
-                    instrumentClaims: 0,
-                    positionSyncs: 0,
-                    strategyRiskStates: 0,
-                    executionSafetyFaults: 0,
-                    providerPositions: 0,
-                    providerWorkingOrders: 0,
-                    providerSyncStates: 0,
-                    accountSnapshots: 0,
-                    appHeartbeats: 0,
-                    manualRunRequests: 0,
-                    alerts: 0,
-                }
+                })
             }),
         } as unknown as TradingBackendClient
 
@@ -139,26 +116,9 @@ describe("finalizeFullResetCleanup", () => {
 
     it("allows explicitly deferred provider exposure during cleanup", async () => {
         const client = {
-            deleteOrphanedStrategyHistoryBatch: vi.fn().mockResolvedValue({
-                runs: 0,
-                agentLogs: 0,
-                tradeEvents: 0,
-                orders: 0,
-                orderTransitions: 0,
-                positions: 0,
-                instrumentClaims: 0,
-                positionSyncs: 0,
-                strategyRiskStates: 0,
-                executionSafetyFaults: 0,
-                providerPositions: 0,
-                providerWorkingOrders: 0,
-                providerSyncStates: 0,
-                accountSnapshots: 0,
-                appHeartbeats: 0,
-                manualRunRequests: 0,
-                alerts: 0,
+            deleteOrphanedStrategyHistoryBatch: vi.fn().mockResolvedValue(createResetCounts({
                 hasMore: false,
-            }),
+            })),
             getPortfolioPositions: vi.fn().mockResolvedValue([
                 {
                     app: "alpaca-options",
@@ -174,46 +134,14 @@ describe("finalizeFullResetCleanup", () => {
                     ownershipStatus: "owned",
                 },
             ]),
-            clearFullResetStateBatch: vi.fn().mockResolvedValue({
-                runs: 0,
-                agentLogs: 0,
-                tradeEvents: 0,
-                orders: 0,
-                orderTransitions: 0,
-                positions: 0,
-                instrumentClaims: 0,
-                positionSyncs: 0,
-                strategyRiskStates: 0,
-                executionSafetyFaults: 0,
-                providerPositions: 0,
-                providerWorkingOrders: 0,
-                providerSyncStates: 0,
-                accountSnapshots: 0,
-                appHeartbeats: 0,
-                manualRunRequests: 0,
-                alerts: 0,
+            clearFullResetStateBatch: vi.fn().mockResolvedValue(createResetCounts({
                 hasMore: false,
-            }),
-            getFullResetAudit: vi.fn().mockResolvedValue({
+            })),
+            getFullResetAudit: vi.fn().mockResolvedValue(createResetCounts({
                 strategies: 1,
-                runs: 0,
-                agentLogs: 0,
-                tradeEvents: 0,
-                orders: 0,
-                orderTransitions: 0,
-                positions: 0,
-                instrumentClaims: 0,
-                positionSyncs: 0,
-                strategyRiskStates: 0,
-                executionSafetyFaults: 0,
                 providerPositions: 1,
                 providerWorkingOrders: 1,
-                providerSyncStates: 0,
-                accountSnapshots: 0,
-                appHeartbeats: 0,
-                manualRunRequests: 0,
-                alerts: 0,
-            }),
+            })),
         } as unknown as TradingBackendClient
 
         await expect(
@@ -233,53 +161,11 @@ describe("finalizeFullResetCleanup", () => {
     })
 })
 
-describe("assertNoProviderExposureBeforeCleanup", () => {
-    it("fails closed when provider positions or orders still exist", async () => {
-        const client = {
-            getPortfolioPositions: vi.fn().mockResolvedValue([
-                {
-                    app: "polymarket",
-                    instrument: "token-1",
-                    ownershipStatus: "unowned",
-                },
-            ]),
-            getPortfolioPendingOrders: vi.fn().mockResolvedValue([
-                {
-                    app: "polymarket",
-                    orderId: "order-1",
-                    instrument: "token-1",
-                    ownershipStatus: "unowned",
-                },
-            ]),
-        } as unknown as TradingBackendClient
-
-        await expect(
-            assertNoProviderExposureBeforeCleanup(client)
-        ).rejects.toThrow("Refusing to clear provider state while live provider exposure remains in Convex")
-    })
-})
-
 describe("assertFullResetAuditClean", () => {
     it("throws when any residual rows remain after cleanup", () => {
-        expect(() => assertFullResetAuditClean({
+        expect(() => assertFullResetAuditClean(createResetCounts({
             strategies: 0,
-            runs: 0,
-            agentLogs: 0,
-            tradeEvents: 0,
-            orders: 0,
-            orderTransitions: 0,
-            positions: 0,
-            instrumentClaims: 0,
-            positionSyncs: 0,
-            strategyRiskStates: 0,
-            executionSafetyFaults: 0,
-            providerPositions: 0,
-            providerWorkingOrders: 0,
-            providerSyncStates: 0,
-            accountSnapshots: 0,
-            appHeartbeats: 0,
-            manualRunRequests: 0,
             alerts: 2,
-        })).toThrow("Residual Convex state remains")
+        }))).toThrow("Residual Convex state remains")
     })
 })

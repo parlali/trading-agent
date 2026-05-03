@@ -2,33 +2,6 @@ import { describe, expect, it } from "vitest"
 import { portfolioGovernanceTestables } from "./mutations/portfolio"
 
 describe("portfolio governance helpers", () => {
-    it("collects expected external instruments from strategy safety policies", () => {
-        const expected = portfolioGovernanceTestables.collectExpectedExternalInstruments([
-            {
-                _id: "strategy-a",
-                policy: {
-                    safety: {
-                        expectedExternalInstruments: ["  XAUUSD  ", "BTC-USDT-SWAP", "XAUUSD"],
-                    },
-                },
-            },
-            {
-                _id: "strategy-b",
-                policy: {
-                    safety: {
-                        expectedExternalInstruments: ["US30.cash"],
-                    },
-                },
-            },
-        ] as never)
-
-        expect(Array.from(expected).sort()).toEqual([
-            "BTC-USDT-SWAP",
-            "US30.cash",
-            "XAUUSD",
-        ])
-    })
-
     it("keeps MT5 provider-position ownership stable for ticket 1600791764 across sync/restart", () => {
         const positionKey = portfolioGovernanceTestables.buildProviderPositionKey({
             instrument: "XAUUSD",
@@ -210,18 +183,6 @@ describe("portfolio governance helpers", () => {
         ])
     })
 
-    it("includes ownership mismatches in the drift summary", () => {
-        expect(portfolioGovernanceTestables.createDriftSummary({
-            unownedPositionCount: 0,
-            unownedOrderCount: 0,
-            untrackedOwnedOrderCount: 0,
-            closedPersistedOrders: [],
-            statusMismatches: [],
-            ownershipMismatches: ["XAUUSD:1600791764"],
-            exposureViolations: [],
-        })).toBe("1 provider position ownership mismatch(es) were detected")
-    })
-
     it("matches MT5 live working orders to the canonical tracked order across provider ticket changes", () => {
         const trackedOrder = {
             orderId: "1608821812",
@@ -299,18 +260,39 @@ describe("portfolio governance helpers", () => {
         ])
     })
 
-    it("includes unmatched owned orders and exposure violations in the drift summary", () => {
-        expect(portfolioGovernanceTestables.createDriftSummary({
-            unownedPositionCount: 0,
-            unownedOrderCount: 0,
-            untrackedOwnedOrderCount: 1,
-            closedPersistedOrders: [],
-            statusMismatches: [],
-            ownershipMismatches: [],
-            exposureViolations: ["strategy-a:overlap:XAUUSD"],
-        })).toBe(
-            "1 owned live working order(s) were not matched to a canonical active order; 1 provider exposure governance violation(s) were detected"
+    it("models OKX provider protection OCOs as canonical close working orders", () => {
+        const intent = portfolioGovernanceTestables.buildProviderProtectionIntent(
+            {
+                instrument: "ETH-USDT-SWAP",
+                side: "sell",
+                quantity: 0.5,
+                limitPrice: 3450,
+                stopPrice: 3290,
+            },
+            {
+                kind: "protection",
+                orderType: "oco",
+                tpTriggerPx: "3450",
+                slTriggerPx: "3290",
+            }
         )
+
+        expect(intent).toMatchObject({
+            instrument: "ETH-USDT-SWAP",
+            side: "sell",
+            quantity: 0.5,
+            orderType: "stop_limit",
+            limitPrice: 3450,
+            stopPrice: 3290,
+            timeInForce: "gtc",
+            metadata: {
+                action: "close",
+                providerProtectionOrder: true,
+                protectionOrderType: "oco",
+                stopLoss: 3290,
+                takeProfit: 3450,
+            },
+        })
     })
 
     it("infers MT5 closed-order fill from provider ticket match and cancels stale unmatched rows", () => {

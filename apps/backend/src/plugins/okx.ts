@@ -162,10 +162,10 @@ export class OKXPlugin implements VenuePlugin {
     }
 
     private async checkEndOfSessionFlatten(
-        venue: OKXVenueAdapter,
+        _venue: OKXVenueAdapter,
         policy: ReturnType<typeof okxPolicySchema.parse>,
         strategyId: string,
-        config: Pick<PreRunHookConfig, "logger" | "createAlert" | "ownedPositions" | "ownedWorkingOrders">
+        config: Pick<PreRunHookConfig, "logger" | "createAlert" | "ownedPositions" | "ownedWorkingOrders" | "sessionFlat">
     ): Promise<boolean> {
         const sessionFlatPolicy = policy.safety.sessionFlat
         if (!sessionFlatPolicy.enabled) {
@@ -205,12 +205,19 @@ export class OKXPlugin implements VenuePlugin {
             message: `Session-flat policy triggered: closing ${positions.length} position(s) and cancelling ${workingOrders.length} working order(s) before ${policy.tradingHours.end} ${timezone}`,
         })
 
-        const cancelled = await cancelOwnedWorkingOrders(venue, workingOrders)
-        const closed = await closeOwnedPositions(venue, positions)
+        if (!config.sessionFlat) {
+            throw new Error("Audited session-flat executor is unavailable for OKX")
+        }
+
+        const result = await config.sessionFlat.execute({
+            positions,
+            workingOrders,
+            reason: `Session-flat before ${policy.tradingHours.end} ${timezone}`,
+        })
         config.logger.info("OKX end-of-session flatten completed", {
             strategyId,
-            closed,
-            cancelled,
+            closed: result.closed,
+            cancelled: result.cancelled,
         })
 
         return true
@@ -251,38 +258,4 @@ export class OKXPlugin implements VenuePlugin {
             ]
         }
     }
-}
-
-async function cancelOwnedWorkingOrders(
-    venue: OKXVenueAdapter,
-    workingOrders: PreRunHookConfig["ownedWorkingOrders"]
-): Promise<number> {
-    let cancelled = 0
-
-    for (const order of workingOrders) {
-        const result = await venue.cancelOrder(order.orderId)
-        if (result.status === "cancelled" || result.status === "filled") {
-            cancelled++
-        }
-    }
-
-    return cancelled
-}
-
-async function closeOwnedPositions(
-    venue: OKXVenueAdapter,
-    positions: PreRunHookConfig["ownedPositions"]
-): Promise<number> {
-    let closed = 0
-
-    for (const position of positions) {
-        const result = venue.closeProviderPosition
-            ? await venue.closeProviderPosition(position)
-            : await venue.closePosition(position.instrument)
-        if (result.status === "filled" || result.status === "partially_filled") {
-            closed++
-        }
-    }
-
-    return closed
 }

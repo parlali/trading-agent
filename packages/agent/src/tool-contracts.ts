@@ -28,6 +28,10 @@ import {
     mt5OrderJsonSchema,
     mt5OrderParamsSchema,
 } from "./tools/mt5-order-helpers"
+import {
+    POLYMARKET_TOKEN_HANDLE_PATTERN,
+    POLYMARKET_TOKEN_ID_PATTERN,
+} from "./tools/polymarket-market-handles"
 import type { ToolCategory, ToolDefinition } from "./tool-registry"
 
 export {
@@ -150,11 +154,18 @@ export const genericOrderJsonSchema = {
 } satisfies Record<string, unknown>
 
 export const polymarketOrderParamsSchema = z.object({
-    tokenId: z.string().trim().min(1),
-    conditionId: z.string().trim().min(1),
-    marketSlug: z.string().trim().min(1),
-    question: z.string().trim().min(1),
-    outcome: z.string().trim().min(1),
+    tokenHandle: z.string()
+        .trim()
+        .regex(POLYMARKET_TOKEN_HANDLE_PATTERN, "Polymarket tokenHandle must be returned by search_markets")
+        .optional(),
+    tokenId: z.string()
+        .trim()
+        .regex(POLYMARKET_TOKEN_ID_PATTERN, "Polymarket tokenId must be the canonical 20-80 digit decimal token ID returned by search_markets")
+        .optional(),
+    conditionId: z.string().trim().min(1).optional(),
+    marketSlug: z.string().trim().min(1).optional(),
+    question: z.string().trim().min(1).optional(),
+    outcome: z.string().trim().min(1).optional(),
     side: z.enum(["buy", "sell"]),
     quantity: z.number().positive(),
     orderType: z.enum(["market", "limit"]),
@@ -165,14 +176,38 @@ export const polymarketOrderParamsSchema = z.object({
     liquidity: z.number().optional(),
     volume: z.number().optional(),
     negRisk: z.boolean().optional(),
+}).superRefine((value, ctx) => {
+    if (!value.tokenHandle && !value.tokenId) {
+        ctx.addIssue({
+            code: "custom",
+            path: ["tokenHandle"],
+            message: "Provide tokenHandle from search_markets or a canonical Polymarket tokenId",
+        })
+    }
+
+    if (!value.tokenHandle) {
+        for (const field of ["conditionId", "marketSlug", "question", "outcome"] as const) {
+            if (!value[field]) {
+                ctx.addIssue({
+                    code: "custom",
+                    path: [field],
+                    message: `${field} is required when tokenHandle is not provided`,
+                })
+            }
+        }
+    }
 })
 
 export const polymarketOrderJsonSchema = {
     type: "object",
     properties: {
+        tokenHandle: {
+            type: "string",
+            description: "Preferred short token handle returned by search_markets for this run",
+        },
         tokenId: {
             type: "string",
-            description: "Canonical Polymarket token ID returned by search_markets, get_market_price, or direct market lookup",
+            description: "Canonical long decimal Polymarket token ID returned by search_markets. Prefer tokenHandle when available.",
         },
         conditionId: {
             type: "string",
@@ -227,7 +262,7 @@ export const polymarketOrderJsonSchema = {
             description: "Whether the market uses Polymarket negative-risk settlement",
         },
     },
-    required: ["tokenId", "conditionId", "marketSlug", "question", "outcome", "side", "quantity", "orderType"],
+    required: ["side", "quantity", "orderType"],
 } satisfies Record<string, unknown>
 
 export const alpacaOrderParamsSchema = z.object({

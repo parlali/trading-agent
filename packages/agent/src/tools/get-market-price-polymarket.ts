@@ -5,16 +5,19 @@ import {
     createToolDefinition,
     polymarketMarketPriceParamsSchema,
 } from "../tool-contracts"
+import { PolymarketMarketHandleRegistry } from "./polymarket-market-handles"
 
 export function createPolymarketGetMarketPriceTool(
-    venue: PolymarketVenueAdapter
+    venue: PolymarketVenueAdapter,
+    handles: PolymarketMarketHandleRegistry = new PolymarketMarketHandleRegistry()
 ): ToolDefinition {
     return createToolDefinition({
         name: "get_market_price",
         venue: "polymarket",
         handler: async (params) => {
             const validated = params as z.infer<typeof polymarketMarketPriceParamsSchema>
-            return await venue.getMarketPrice(validated.tokenId, validated.side)
+            const token = handles.resolveToken(validated)
+            return await venue.getMarketPrice(token.tokenId, validated.side)
         },
     })
 }

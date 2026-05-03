@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest"
-import { findRemainingOwnedWorkingOrdersAfterSessionFlat } from "./session-flat-assertions"
-import type { WorkingOrder } from "@valiq-trading/core"
+import {
+    findRemainingOwnedPositionsAfterSessionFlat,
+    findRemainingOwnedWorkingOrdersAfterSessionFlat,
+} from "./session-flat-assertions"
+import type { Position, WorkingOrder } from "@valiq-trading/core"
 
 describe("session-flat provider-sync assertions", () => {
     it("flags only exact strategy-owned working orders that remain live after session flat", () => {
@@ -42,5 +45,30 @@ describe("session-flat provider-sync assertions", () => {
             positionKeys: new Set(),
             workingOrderIds: new Set(["order:BTC-USDT-SWAP:owned", "order:BTC-USDT-SWAP:cancelled"]),
         })).toEqual([orders[0]])
+    })
+
+    it("flags only exact strategy-owned positions that remain live after session flat", () => {
+        const positions: Position[] = [
+            {
+                instrument: "XAUUSD",
+                providerPositionId: "1600791764",
+                side: "long",
+                quantity: 0.01,
+                entryPrice: 3330,
+            },
+            {
+                instrument: "XAUUSD",
+                providerPositionId: "1600791765",
+                side: "long",
+                quantity: 0.01,
+                entryPrice: 3331,
+            },
+        ]
+
+        expect(findRemainingOwnedPositionsAfterSessionFlat(positions, {
+            instruments: new Set(["XAUUSD"]),
+            positionKeys: new Set(["XAUUSD:1600791764"]),
+            workingOrderIds: new Set(),
+        })).toEqual([positions[0]])
     })
 })

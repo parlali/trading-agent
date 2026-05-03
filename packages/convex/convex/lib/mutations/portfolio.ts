@@ -244,7 +244,10 @@ export const reconcileProviderPortfolio = mutation({
             }
         })
 
-        const resolvedWorkingOrders = args.workingOrders.map((order) => {
+        const latestRunIdsByStrategy = new Map<string, Id<"strategy_runs"> | undefined>()
+        const resolvedWorkingOrders = []
+
+        for (const order of args.workingOrders) {
             const existingOrder = matchedWorkingOrdersByLiveId.get(order.orderId)
             const ownership = resolveOwnership({
                 app: args.app,
@@ -253,22 +256,33 @@ export const reconcileProviderPortfolio = mutation({
                 existingOrder,
                 strategyMap,
             })
+            const importedProtectionOrder = existingOrder === undefined
+                ? await importCanonicalProviderProtectionOrder(ctx, {
+                    app: args.app,
+                    venue: args.venue,
+                    order,
+                    ownership,
+                    strategyMap,
+                    latestRunIdsByStrategy,
+                    updatedAt: now,
+                })
+                : undefined
             const expectedExternal = ownership.ownershipStatus !== "owned" && isExpectedExternalProviderRow(
                 expectedExternalInstruments,
                 order
             )
 
-            return {
+            resolvedWorkingOrders.push({
                 ...order,
-                venue: existingOrder?.venue ?? args.venue,
-                action: existingOrder?.action,
-                runId: existingOrder?.runId,
+                venue: existingOrder?.venue ?? importedProtectionOrder?.venue ?? args.venue,
+                action: existingOrder?.action ?? importedProtectionOrder?.action,
+                runId: existingOrder?.runId ?? importedProtectionOrder?.runId,
                 cancelAt: order.cancelAt ?? readOrderCancelAt(existingOrder),
-                canonicalTracked: existingOrder !== undefined,
+                canonicalTracked: existingOrder !== undefined || importedProtectionOrder !== undefined,
                 expectedExternal,
                 ...ownership,
-            }
-        })
+            })
+        }
 
         const unresolvedOwnedWorkingOrders = resolvedWorkingOrders.filter((order) =>
             order.ownershipStatus === "owned" &&
@@ -1314,6 +1328,180 @@ function buildActiveOrderLookup(activeOrders: OrderDoc[]): Map<string, OrderDoc>
     }
 
     return lookup
+}
+
+async function importCanonicalProviderProtectionOrder(
+    ctx: PortfolioMutationCtx,
+    args: {
+        app: Doc<"strategies">["app"]
+        venue: string
+        order: {
+            orderId: string
+            instrument: string
+            status: Doc<"orders">["status"]
+            quantity: number
+            filledQuantity: number
+            remainingQuantity: number
+            submittedAt: number
+            updatedAt: number
+            side?: "buy" | "sell"
+            limitPrice?: number
+            stopPrice?: number
+            avgFillPrice?: number
+            metadata?: string
+        }
+        ownership: ResolvedOwnership
+        strategyMap: Map<string, StrategyDoc>
+        latestRunIdsByStrategy: Map<string, Id<"strategy_runs"> | undefined>
+        updatedAt: number
+    }
+): Promise<{ runId: Id<"strategy_runs">; action: Doc<"orders">["action"]; venue: string } | undefined> {
+    if (args.app !== "okx-swap" || args.ownership.ownershipStatus !== "owned" || !args.ownership.strategyId) {
+        return undefined
+    }
+
+    const metadata = readMetadataRecord(args.order.metadata)
+    if (metadata?.kind !== "protection") {
+        return undefined
+    }
+
+    const strategy = args.strategyMap.get(String(args.ownership.strategyId))
+    if (!strategy) {
+        return undefined
+    }
+
+    const existingOrder = await ctx.db
+        .query("orders")
+        .withIndex("by_order_id", (q) => q.eq("orderId", args.order.orderId))
+        .first()
+    if (existingOrder) {
+        return {
+            runId: existingOrder.runId,
+            action: existingOrder.action,
+            venue: existingOrder.venue,
+        }
+    }
+
+    const strategyKey = String(args.ownership.strategyId)
+    const runId = args.latestRunIdsByStrategy.has(strategyKey)
+        ? args.latestRunIdsByStrategy.get(strategyKey)
+        : await resolveLatestRunIdForStrategy(ctx, args.ownership.strategyId)
+    args.latestRunIdsByStrategy.set(strategyKey, runId)
+    if (!runId) {
+        return undefined
+    }
+
+    const intent = buildProviderProtectionIntent(args.order, metadata)
+    await upsertOrderRow(ctx, {
+        orderId: args.order.orderId,
+        providerOrderId: args.order.orderId,
+        providerOrderAliases: [],
+        runId,
+        strategyId: args.ownership.strategyId,
+        venue: args.venue,
+        instrument: args.order.instrument,
+        status: args.order.status,
+        action: "close",
+        quantity: args.order.quantity,
+        filledQuantity: args.order.filledQuantity,
+        remainingQuantity: args.order.remainingQuantity,
+        avgFillPrice: args.order.avgFillPrice,
+        submittedAt: args.order.submittedAt,
+        updatedAt: args.order.updatedAt,
+        intent,
+        metadata: {
+            providerImportedWorkingOrder: true,
+            providerOrderKind: "protection",
+            providerMetadata: metadata,
+        },
+        lastTransitionSequence: 0,
+        polling: {
+            pollIntervalMs: 5_000,
+            timeoutMs: 120_000,
+            startedAt: args.order.submittedAt,
+            lastCheckedAt: args.updatedAt,
+            nextCheckAt: args.updatedAt + 5_000,
+        },
+    })
+
+    await appendOrderTransition(ctx, {
+        orderId: args.order.orderId,
+        runId,
+        strategyId: args.ownership.strategyId,
+        type: "submission",
+        status: args.order.status,
+        reason: "Provider reconciliation imported a live OKX protection algo order as canonical working-order state",
+        details: {
+            providerOrderId: args.order.orderId,
+            providerMetadata: metadata,
+        },
+        timestamp: args.order.submittedAt,
+    })
+
+    await ctx.db.insert("trade_events", {
+        runId,
+        strategyId: args.ownership.strategyId,
+        app: args.app,
+        eventType: "submission",
+        payload: JSON.stringify({
+            providerImportedWorkingOrder: true,
+            result: {
+                orderId: args.order.orderId,
+                status: args.order.status,
+                filledQuantity: args.order.filledQuantity,
+                fillPrice: args.order.avgFillPrice,
+                timestamp: args.order.updatedAt,
+            },
+            intent,
+        }),
+        timestamp: args.order.submittedAt,
+    })
+
+    return {
+        runId,
+        action: "close",
+        venue: args.venue,
+    }
+}
+
+function buildProviderProtectionIntent(
+    order: {
+        instrument: string
+        side?: "buy" | "sell"
+        quantity: number
+        limitPrice?: number
+        stopPrice?: number
+    },
+    metadata: Record<string, unknown> | undefined
+): Record<string, unknown> {
+    return {
+        instrument: order.instrument,
+        side: order.side ?? "sell",
+        quantity: order.quantity,
+        orderType: resolveProviderProtectionOrderType(order),
+        limitPrice: order.limitPrice,
+        stopPrice: order.stopPrice,
+        timeInForce: "gtc",
+        metadata: {
+            action: "close",
+            providerProtectionOrder: true,
+            protectionOrderType: metadata?.orderType,
+            stopLoss: order.stopPrice,
+            takeProfit: order.limitPrice,
+            providerMetadata: metadata,
+        },
+    }
+}
+
+function resolveProviderProtectionOrderType(order: {
+    limitPrice?: number
+    stopPrice?: number
+}): "limit" | "stop" | "stop_limit" {
+    if (order.limitPrice !== undefined && order.stopPrice !== undefined) {
+        return "stop_limit"
+    }
+
+    return order.stopPrice !== undefined ? "stop" : "limit"
 }
 
 function resolveLiveWorkingOrderMatch(args: {
@@ -2614,6 +2802,7 @@ function isStale(lastVerifiedAt: number | undefined, now: number): boolean {
 function buildProtectionLevels(
     orders: Array<{
         instrument: string
+        limitPrice?: number
         stopPrice?: number
         metadata?: string
     }>
@@ -2622,14 +2811,23 @@ function buildProtectionLevels(
 
     for (const order of orders) {
         const metadata = parseJson<Record<string, unknown>>(order.metadata)
-        const orderType = typeof metadata?.type === "string" ? metadata.type : undefined
+        const orderType = typeof metadata?.type === "string"
+            ? metadata.type
+            : typeof metadata?.orderType === "string"
+                ? metadata.orderType
+                : undefined
         const current = levels.get(order.instrument) ?? {}
 
-        if (orderType === "STOP_MARKET" || orderType === "STOP") {
+        if (metadata?.kind === "protection") {
+            if (order.stopPrice !== undefined) {
+                current.stopLoss = order.stopPrice
+            }
+            if (order.limitPrice !== undefined) {
+                current.takeProfit = order.limitPrice
+            }
+        } else if (orderType === "STOP_MARKET" || orderType === "STOP") {
             current.stopLoss = order.stopPrice
-        }
-
-        if (orderType === "TAKE_PROFIT_MARKET" || orderType === "TAKE_PROFIT") {
+        } else if (orderType === "TAKE_PROFIT_MARKET" || orderType === "TAKE_PROFIT") {
             current.takeProfit = order.stopPrice
         }
 
@@ -2710,6 +2908,8 @@ export const portfolioGovernanceTestables = {
     resolvePositionOwnership,
     resolveOwnership,
     resolveLiveWorkingOrderMatch,
+    buildProviderCloseIntent,
+    buildProviderProtectionIntent,
     inferClosedOrderStatus,
     readOrderCancelAt,
 }

@@ -11,6 +11,7 @@ import {
     type PriceVerification,
     type PriceVerifier,
     type Position,
+    type ProviderPositionClosure,
     type VenueAdapter,
     type WorkingOrder,
 } from "@valiq-trading/core"
@@ -20,6 +21,7 @@ import {
     type OKXAttachedAlgoOrderParams,
     type OKXAlgoOrder,
     type OKXApiPosSide,
+    type OKXFill,
     type OKXInstrument,
     type OKXMarginMode,
     type OKXOrder,
@@ -152,8 +154,11 @@ export class OKXVenueAdapter implements VenueAdapter, PriceVerifier {
     }
 
     async getAccountState(): Promise<AccountState> {
-        const balance = await this.client.getBalance()
-        return mapAccountState(balance)
+        const [balance, positions] = await Promise.all([
+            this.client.getBalance(),
+            this.client.getPositions("SWAP"),
+        ])
+        return await this.mapAccountState(balance, positions)
     }
 
     async getWorkingOrders(): Promise<WorkingOrder[]> {
@@ -397,10 +402,7 @@ export class OKXVenueAdapter implements VenueAdapter, PriceVerifier {
 
     async closePosition(instrument: string): Promise<ExecutionResult> {
         const instId = normalizeInstrument(instrument)
-        const [positions] = await Promise.all([
-            this.getPositions(),
-            this.cancelProtectionOrders(instId),
-        ])
+        const positions = await this.getPositions()
         const position = positions.find((entry) => entry.instrument === instId)
 
         if (!position) {
@@ -422,6 +424,12 @@ export class OKXVenueAdapter implements VenueAdapter, PriceVerifier {
             }
         }
 
+        return await this.closeProviderPosition(position)
+    }
+
+    async closeProviderPosition(position: Position): Promise<ExecutionResult> {
+        const instId = normalizeInstrument(position.instrument)
+        await this.cancelProtectionOrders(instId, position.side)
         const sizing = await this.normalizeQuantity(instId, position.quantity)
         const ack = await this.client.placeOrder({
             instId,
@@ -437,8 +445,61 @@ export class OKXVenueAdapter implements VenueAdapter, PriceVerifier {
         return await this.mapExecutionResult(instId, order)
     }
 
-    async closeProviderPosition(position: Position): Promise<ExecutionResult> {
-        return await this.closePosition(position.instrument)
+    async getRecentPositionClosures(): Promise<ProviderPositionClosure[]> {
+        const fills = await this.client.getFillsHistory("SWAP", {
+            begin: Date.now() - 24 * 60 * 60 * 1000,
+            limit: 100,
+        })
+        const closureFills = fills.filter(isOKXClosingFill)
+        const grouped = new Map<string, OKXFill[]>()
+
+        for (const fill of closureFills) {
+            const key = `${fill.instId}:${fill.posSide ?? "net"}:${fill.ordId || fill.tradeId}:${resolveOKXClosurePositionSide(fill)}`
+            const existing = grouped.get(key) ?? []
+            existing.push(fill)
+            grouped.set(key, existing)
+        }
+
+        const closures: ProviderPositionClosure[] = []
+        for (const group of grouped.values()) {
+            const first = group[0]
+            if (!first) {
+                continue
+            }
+
+            const rules = await this.getInstrumentRules(first.instId)
+            const contracts = group.reduce((sum, fill) => sum + Math.abs(Number(fill.fillSz)), 0)
+            const quantity = this.contractsToBaseQuantity(rules, contracts)
+            if (!Number.isFinite(quantity) || quantity <= 0 || contracts <= 0) {
+                continue
+            }
+
+            const weightedPrice = group.reduce((sum, fill) => {
+                const size = Math.abs(Number(fill.fillSz))
+                return sum + size * Number(fill.fillPx)
+            }, 0) / contracts
+            const closedAt = Math.max(...group.map((fill) => Number(fill.ts)).filter(Number.isFinite))
+
+            closures.push({
+                instrument: first.instId,
+                side: resolveOKXClosurePositionSide(first),
+                quantity,
+                fillPrice: weightedPrice,
+                closedAt: Number.isFinite(closedAt) ? closedAt : Date.now(),
+                metadata: {
+                    orderId: first.ordId,
+                    tradeIds: group.map((fill) => fill.tradeId).filter(Boolean),
+                    side: first.side,
+                    posSide: first.posSide,
+                    fillPnl: sumOptionalNumberStrings(group.map((fill) => fill.fillPnl)),
+                    fee: sumOptionalNumberStrings(group.map((fill) => fill.fee)),
+                    feeCcy: first.feeCcy,
+                    source: "okx_fills_history",
+                },
+            })
+        }
+
+        return closures.sort((left, right) => right.closedAt - left.closedAt)
     }
 
     async getOrderStatus(orderId: string): Promise<ExecutionResult> {
@@ -855,15 +916,18 @@ export class OKXVenueAdapter implements VenueAdapter, PriceVerifier {
         this.accountConfigValidated = true
     }
 
-    private async cancelProtectionOrders(instId: string): Promise<void> {
+    private async cancelProtectionOrders(instId: string, side?: Position["side"]): Promise<void> {
         const algoOrders = await this.client.getAlgoOrdersPending("SWAP", instId)
+        const relevantOrders = side
+            ? algoOrders.filter((order) => this.matchesPositionProtection(order, side))
+            : algoOrders
 
-        if (algoOrders.length === 0) {
+        if (relevantOrders.length === 0) {
             return
         }
 
         await this.client.cancelAlgoOrders(
-            algoOrders.map((order) => ({
+            relevantOrders.map((order) => ({
                 algoId: order.algoId,
                 instId: order.instId,
             }))
@@ -1046,28 +1110,64 @@ export class OKXVenueAdapter implements VenueAdapter, PriceVerifier {
             errorDetail,
         }
     }
-}
 
-function mapAccountState(balance: OKXAccountBalance): AccountState {
-    const equity = Number(balance.totalEq)
-    const openPnl = Number(balance.upl)
-    const marginUsed = firstDefinedNumber(balance.imr, balance.mmr) ?? 0
-    const available = firstDefinedNumber(
-        balance.availEq,
-        balance.adjEq,
-        balance.details[0]?.availEq,
-        balance.details[0]?.availBal,
-        balance.details[0]?.cashBal
-    ) ?? Math.max(equity - marginUsed, 0)
+    private async mapAccountState(
+        balance: OKXAccountBalance,
+        positions: OKXPosition[]
+    ): Promise<AccountState> {
+        const equity = readFiniteNumberString(balance.totalEq) ?? 0
+        const positionOpenPnl = positions.reduce((sum, position) =>
+            sum + (readFiniteNumberString(position.upl) ?? 0), 0)
+        const accountOpenPnl = readFiniteNumberString(balance.upl)
+        const openPnl = accountOpenPnl !== undefined && accountOpenPnl !== 0
+            ? accountOpenPnl
+            : positionOpenPnl
+        const accountMarginUsed = firstDefinedNumber(balance.imr, balance.mmr)
+        const positionMarginUsed = await this.resolvePositionMarginUsed(positions)
+        const marginUsed = accountMarginUsed !== undefined && accountMarginUsed !== 0
+            ? accountMarginUsed
+            : positionMarginUsed
+        const available = firstDefinedNumber(
+            balance.availEq,
+            balance.adjEq,
+            balance.details[0]?.availEq,
+            balance.details[0]?.availBal,
+            balance.details[0]?.cashBal
+        ) ?? Math.max(equity - marginUsed, 0)
 
-    return {
-        balance: Math.max(equity - openPnl, 0),
-        equity,
-        buyingPower: available,
-        marginUsed,
-        marginAvailable: available,
-        openPnl,
-        dayPnl: openPnl,
+        return {
+            balance: Math.max(equity - openPnl, 0),
+            equity,
+            buyingPower: available,
+            marginUsed,
+            marginAvailable: available,
+            openPnl,
+            dayPnl: 0,
+        }
+    }
+
+    private async resolvePositionMarginUsed(positions: OKXPosition[]): Promise<number> {
+        let total = 0
+
+        for (const position of positions) {
+            const providerMargin = firstDefinedNumber(position.imr, position.margin, position.mmr)
+            if (providerMargin !== undefined) {
+                total += providerMargin
+                continue
+            }
+
+            const contracts = Math.abs(readFiniteNumberString(position.pos) ?? 0)
+            const markPrice = readFiniteNumberString(position.markPx) ?? 0
+            const leverage = readFiniteNumberString(position.lever)
+            if (contracts <= 0 || markPrice <= 0 || leverage === undefined || leverage <= 0) {
+                continue
+            }
+
+            const rules = await this.getInstrumentRules(position.instId)
+            total += this.contractsToBaseQuantity(rules, contracts) * markPrice / leverage
+        }
+
+        return total
     }
 }
 
@@ -1283,6 +1383,58 @@ function firstDefinedNumber(...values: Array<string | undefined>): number | unde
     }
 
     return undefined
+}
+
+function readFiniteNumberString(value?: string): number | undefined {
+    return isFiniteNumberString(value) ? Number(value) : undefined
+}
+
+function isOKXClosingFill(fill: OKXFill): boolean {
+    if (!isFiniteNumberString(fill.fillSz) ||
+        Number(fill.fillSz) <= 0 ||
+        !isFiniteNumberString(fill.fillPx) ||
+        !isFiniteNumberString(fill.ts)
+    ) {
+        return false
+    }
+
+    if (fill.posSide === "long") {
+        return fill.side === "sell"
+    }
+
+    if (fill.posSide === "short") {
+        return fill.side === "buy"
+    }
+
+    return isFiniteNumberString(fill.fillPnl)
+}
+
+function resolveOKXClosurePositionSide(fill: OKXFill): Position["side"] {
+    if (fill.posSide === "long") {
+        return "long"
+    }
+
+    if (fill.posSide === "short") {
+        return "short"
+    }
+
+    return fill.side === "sell" ? "long" : "short"
+}
+
+function sumOptionalNumberStrings(values: Array<string | undefined>): number | undefined {
+    let total = 0
+    let found = false
+
+    for (const value of values) {
+        if (!isFiniteNumberString(value)) {
+            continue
+        }
+
+        total += Number(value)
+        found = true
+    }
+
+    return found ? total : undefined
 }
 
 function parseUnixMs(value?: string): number | undefined {

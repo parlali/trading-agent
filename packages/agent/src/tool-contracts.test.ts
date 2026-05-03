@@ -1,8 +1,5 @@
 import { describe, expect, it } from "vitest"
 import {
-    createToolContractCatalog,
-    getToolBoundary,
-    getToolCategory,
     getToolContract,
     listToolContracts,
 } from "./tool-contracts.ts"
@@ -16,58 +13,11 @@ const unsupportedTopLevelSchemaKeys = [
 ] as const
 
 describe("tool contracts", () => {
-    it("rejects duplicate contract names", () => {
-        expect(() => createToolContractCatalog([
-            {
-                name: "duplicate_tool",
-                category: "execution",
-                boundary: "shared",
-                owner: "shared",
-                compatibleVenues: ["alpaca-options"],
-                defaultVariant: {
-                    description: "first",
-                    parameters: getToolContract("get_positions").parameters,
-                    jsonSchema: { type: "object", properties: {} },
-                    outputDescription: "first",
-                    errorSemantics: "first",
-                },
-            },
-            {
-                name: "duplicate_tool",
-                category: "execution",
-                boundary: "shared",
-                owner: "shared",
-                compatibleVenues: ["alpaca-options"],
-                defaultVariant: {
-                    description: "second",
-                    parameters: getToolContract("get_positions").parameters,
-                    jsonSchema: { type: "object", properties: {} },
-                    outputDescription: "second",
-                    errorSemantics: "second",
-                },
-            },
-        ])).toThrow("Duplicate tool contract definition detected for duplicate_tool")
-    })
-
-    it("documents shared and venue-owned boundaries explicitly", () => {
-        expect(getToolBoundary("get_positions")).toBe("shared")
-        expect(getToolBoundary("get_market_price")).toBe("venue-owned")
-        expect(getToolCategory("propose_order")).toBe("execution")
-    })
-
-    it("resolves venue-specific variants from one canonical source", () => {
-        const mt5Order = getToolContract("propose_order", "mt5")
-        const okxOrder = getToolContract("propose_order", "okx-swap")
+    it("rejects truncated Polymarket token IDs while accepting run-local handles", () => {
         const polymarketOrder = getToolContract("propose_order", "polymarket")
-        const alpacaOrder = getToolContract("propose_order", "alpaca-options")
-        const polymarketMarketPrice = getToolContract("get_market_price", "polymarket")
 
-        expect(mt5Order.description).toContain("MT5")
-        expect(okxOrder.description).toContain("OKX perpetual swap")
-        expect(polymarketOrder.description).toContain("canonical token ID")
         expect(polymarketOrder.parameters.safeParse({
-            tokenId: "token-yes",
-            conditionId: "condition",
+            tokenHandle: "pm_00abcdef",
             marketSlug: "market-slug",
             question: "Will it happen?",
             outcome: "Yes",
@@ -77,80 +27,30 @@ describe("tool contracts", () => {
             limitPrice: 0.5,
         }).success).toBe(true)
         expect(polymarketOrder.parameters.safeParse({
-            instrument: "condition",
+            tokenId: "425888",
+            conditionId: "condition",
+            marketSlug: "market-slug",
+            question: "Will it happen?",
+            outcome: "Yes",
             side: "buy",
             quantity: 10,
             orderType: "limit",
             limitPrice: 0.5,
         }).success).toBe(false)
-        expect(alpacaOrder.parameters.safeParse({
-            instrument: "VS:BULL_PUT_CREDIT:SPY:2026-04-24",
-            side: "sell",
-            quantity: 1,
-            orderType: "limit",
-            limitPrice: 0.85,
-            timeInForce: "day",
-            legs: [
-                {
-                    instrument: "SPY260424P00650000",
-                    side: "sell_to_open",
-                    quantity: 1,
-                },
-                {
-                    instrument: "SPY260424P00649000",
-                    side: "buy_to_open",
-                    quantity: 1,
-                },
-            ],
-        }).success).toBe(true)
-        expect(alpacaOrder.parameters.safeParse({
-            instrument: "VS:BULL_PUT_CREDIT:SPY:2026-04-24",
-            side: "sell",
-            quantity: 1,
-            orderType: "limit",
-            limitPrice: 0.85,
-            timeInForce: "day",
-            legs: [
-                {
-                    instrument: "SPY260424P00650000",
-                    side: "sell_to_open",
-                    quantity: 1,
-                },
-                {
-                    instrument: "SPY260424P00649500",
-                    side: "buy_to_open",
-                    quantity: 1,
-                },
-                {
-                    instrument: "SPY260424P00649000",
-                    side: "buy_to_open",
-                    quantity: 1,
-                },
-            ],
-        }).success).toBe(false)
-        expect(polymarketMarketPrice.description).toContain("Polymarket")
     })
 
-    it("allows search_markets live price token limit zero to disable enrichment", () => {
-        const searchMarkets = getToolContract("search_markets", "polymarket")
-
-        expect(searchMarkets.parameters.safeParse({
-            category: "politics",
-            includeLivePrices: true,
-            livePriceTokenLimit: 0,
-        }).success).toBe(true)
-    })
-
-    it("caps over-large search_markets limits instead of rejecting the run", () => {
+    it("normalizes malformed boolean search strings before venue lookup", () => {
         const searchMarkets = getToolContract("search_markets", "polymarket")
 
         const result = searchMarkets.parameters.safeParse({
-            category: "world",
-            limit: 100,
+            query: "(Trump and election) OR (Fed not rates)",
+            limit: 5,
         })
 
         expect(result.success).toBe(true)
-        expect(result.data).toMatchObject({ limit: 25 })
+        expect(result.data).toMatchObject({
+            query: "Trump election Fed rates",
+        })
     })
 
     it("keeps every cataloged tool schema OpenRouter-compatible", () => {

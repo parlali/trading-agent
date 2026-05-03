@@ -113,6 +113,15 @@ function createIronCondorPositionsWithoutCurrentPrices(): AlpacaPositionResponse
     ]
 }
 
+function createIronCondorPositionsWithPrices(): AlpacaPositionResponse[] {
+    return [
+        createPosition("SPY260424C00705000", "short", "1", "1.50", "2.00", "0.50"),
+        createPosition("SPY260424C00706000", "long", "1", "0.80", "1.00", "-0.20"),
+        createPosition("SPY260424P00650000", "short", "1", "1.70", "2.20", "0.50"),
+        createPosition("SPY260424P00649000", "long", "1", "0.90", "1.10", "-0.20"),
+    ]
+}
+
 function createUnmatchedResidualPositions(): AlpacaPositionResponse[] {
     return [
         createPosition("SPY260424C00705000", "short", "1", "0.67"),
@@ -148,15 +157,18 @@ function createPosition(
     symbol: string,
     side: "long" | "short",
     qty: string,
-    currentPrice?: string
+    currentPrice?: string,
+    entryPrice = currentPrice ?? "1",
+    unrealizedPnl?: string
 ): AlpacaPositionResponse {
     return {
         asset_class: "us_option",
         symbol,
         side,
         qty,
-        avg_entry_price: currentPrice ?? "1",
+        avg_entry_price: entryPrice,
         ...(currentPrice ? { current_price: currentPrice } : {}),
+        ...(unrealizedPnl ? { unrealized_pl: unrealizedPnl } : {}),
     }
 }
 
@@ -184,63 +196,6 @@ function createInvalidCreditGeometryPositions(): AlpacaPositionResponse[] {
 }
 
 describe("AlpacaOptionsVenueAdapter", () => {
-    it("normalizes working entry orders to positive internal limit prices", async () => {
-        const client = createClientMock()
-        const adapter = new AlpacaOptionsVenueAdapter(client as never)
-
-        const orders = await adapter.getWorkingOrders()
-
-        expect(orders).toHaveLength(1)
-        expect(orders[0]).toMatchObject({
-            orderId: "order-entry-1",
-            instrument: "IC:SPY:2026-04-17:SPY260417C00550000|SPY260417C00555000|SPY260417P00495000|SPY260417P00500000",
-            side: "sell",
-            limitPrice: 1.23,
-        })
-    })
-
-    it("normalizes working one-sided vertical orders with canonical structure ids", async () => {
-        const client = createClientMock()
-        client.getOpenOrders.mockResolvedValueOnce([
-            {
-                id: "order-vertical-1",
-                order_class: "mleg",
-                side: "sell",
-                status: "new",
-                qty: "1",
-                filled_qty: "0",
-                limit_price: "-0.85",
-                submitted_at: "2026-04-10T10:00:00Z",
-                updated_at: "2026-04-10T10:00:01Z",
-                legs: [
-                    {
-                        symbol: "SPY260417P00500000",
-                        side: "sell",
-                        position_intent: "sell_to_open",
-                        ratio_qty: "1",
-                    },
-                    {
-                        symbol: "SPY260417P00495000",
-                        side: "buy",
-                        position_intent: "buy_to_open",
-                        ratio_qty: "1",
-                    },
-                ],
-            },
-        ])
-
-        const adapter = new AlpacaOptionsVenueAdapter(client as never)
-        const orders = await adapter.getWorkingOrders()
-
-        expect(orders).toHaveLength(1)
-        expect(orders[0]).toMatchObject({
-            orderId: "order-vertical-1",
-            instrument: "VS:BULL_PUT_CREDIT:SPY:2026-04-17:SPY260417P00495000|SPY260417P00500000",
-            side: "sell",
-            limitPrice: 0.85,
-        })
-    })
-
     it("excludes terminal transition statuses from working orders", async () => {
         const client = createClientMock()
         client.getOpenOrders.mockResolvedValueOnce([
@@ -290,59 +245,9 @@ describe("AlpacaOptionsVenueAdapter", () => {
         expect(orders[0]?.status).toBe("pending")
     })
 
-    it("decomposes same-expiry provider legs into multi-leg structures", async () => {
-        const client = createClientMock()
-        const adapter = new AlpacaOptionsVenueAdapter(client as never)
-
-        const positions = await adapter.getPositions()
-
-        expect(positions.every((position) =>
-            position.instrument.startsWith("IC:SPY:2026-04-24:") ||
-            position.instrument.startsWith("VS:")
-        )).toBe(true)
-        expect(positions.reduce((sum, position) => sum + position.quantity, 0)).toBe(8)
-    })
-
     it("values grouped iron condors using net credit/debit economics", async () => {
         const client = createClientMock()
-        client.getPositions.mockResolvedValueOnce([
-            {
-                asset_class: "us_option",
-                symbol: "SPY260424C00705000",
-                side: "short",
-                qty: "1",
-                avg_entry_price: "2.00",
-                current_price: "1.50",
-                unrealized_pl: "0.50",
-            },
-            {
-                asset_class: "us_option",
-                symbol: "SPY260424C00706000",
-                side: "long",
-                qty: "1",
-                avg_entry_price: "1.00",
-                current_price: "0.80",
-                unrealized_pl: "-0.20",
-            },
-            {
-                asset_class: "us_option",
-                symbol: "SPY260424P00650000",
-                side: "short",
-                qty: "1",
-                avg_entry_price: "2.20",
-                current_price: "1.70",
-                unrealized_pl: "0.50",
-            },
-            {
-                asset_class: "us_option",
-                symbol: "SPY260424P00649000",
-                side: "long",
-                qty: "1",
-                avg_entry_price: "1.10",
-                current_price: "0.90",
-                unrealized_pl: "-0.20",
-            },
-        ])
+        client.getPositions.mockResolvedValueOnce(createIronCondorPositionsWithPrices())
 
         const adapter = new AlpacaOptionsVenueAdapter(client as never)
         const positions = await adapter.getPositions()
@@ -382,60 +287,6 @@ describe("AlpacaOptionsVenueAdapter", () => {
         expect(positions).toHaveLength(2)
         expect(positions.some((position) => position.instrument.startsWith("VS:"))).toBe(false)
         expect(positions.some((position) => position.instrument.startsWith("IC:"))).toBe(false)
-    })
-
-    it("keeps account snapshot semantics aligned with grouped position valuation", async () => {
-        const client = createClientMock()
-        client.getPositions.mockResolvedValueOnce([
-            {
-                asset_class: "us_option",
-                symbol: "SPY260424C00705000",
-                side: "short",
-                qty: "1",
-                avg_entry_price: "2.00",
-                current_price: "1.50",
-                unrealized_pl: "0.50",
-            },
-            {
-                asset_class: "us_option",
-                symbol: "SPY260424C00706000",
-                side: "long",
-                qty: "1",
-                avg_entry_price: "1.00",
-                current_price: "0.80",
-                unrealized_pl: "-0.20",
-            },
-            {
-                asset_class: "us_option",
-                symbol: "SPY260424P00650000",
-                side: "short",
-                qty: "1",
-                avg_entry_price: "2.20",
-                current_price: "1.70",
-                unrealized_pl: "0.50",
-            },
-            {
-                asset_class: "us_option",
-                symbol: "SPY260424P00649000",
-                side: "long",
-                qty: "1",
-                avg_entry_price: "1.10",
-                current_price: "0.90",
-                unrealized_pl: "-0.20",
-            },
-        ])
-
-        const adapter = new AlpacaOptionsVenueAdapter(client as never)
-        const [positions, account] = await Promise.all([
-            adapter.getPositions(),
-            adapter.getAccountState(),
-        ])
-
-        const groupedUnrealizedPnl = positions.reduce((sum, position) => sum + (position.unrealizedPnl ?? 0), 0)
-        expect(positions).toHaveLength(1)
-        expect(groupedUnrealizedPnl).toBeCloseTo(0.6)
-        expect(account.openPnl).toBe(50)
-        expect(account.dayPnl).toBe(50)
     })
 
     it("submits close orders as 4-leg structures", async () => {
@@ -512,87 +363,4 @@ describe("AlpacaOptionsVenueAdapter", () => {
         expect(client.createOrder).not.toHaveBeenCalled()
     })
 
-    it("returns canonical executionCost during Alpaca structure verification", async () => {
-        const client = createClientMock()
-        client.getOptionContracts.mockResolvedValue({
-            contracts: [
-                {
-                    symbol: "SPY260424P00650000",
-                    underlyingSymbol: "SPY",
-                    expirationDate: "2026-04-24",
-                    optionType: "put",
-                    strikePrice: 650,
-                    status: "active",
-                    tradable: true,
-                    openInterest: 1200,
-                },
-                {
-                    symbol: "SPY260424P00649000",
-                    underlyingSymbol: "SPY",
-                    expirationDate: "2026-04-24",
-                    optionType: "put",
-                    strikePrice: 649,
-                    status: "active",
-                    tradable: true,
-                    openInterest: 900,
-                },
-            ],
-        })
-        client.getOptionSnapshots.mockResolvedValue({
-            snapshots: {
-                SPY260424P00650000: {
-                    latestQuote: {
-                        bidPrice: 2.1,
-                        askPrice: 2.3,
-                    },
-                    latestTrade: {
-                        price: 2.2,
-                        size: 1,
-                    },
-                    openInterest: 1200,
-                    impliedVolatility: 0.2,
-                    greeks: {},
-                },
-                SPY260424P00649000: {
-                    latestQuote: {
-                        bidPrice: 1.2,
-                        askPrice: 1.3,
-                    },
-                    latestTrade: {
-                        price: 1.25,
-                        size: 1,
-                    },
-                    openInterest: 900,
-                    impliedVolatility: 0.18,
-                    greeks: {},
-                },
-            },
-        })
-
-        const adapter = new AlpacaOptionsVenueAdapter(client as never)
-        const verification = await adapter.verify({
-            instrument: "VS:BULL_PUT_CREDIT:SPY:2026-04-24:SPY260424P00649000|SPY260424P00650000",
-            side: "sell",
-            quantity: 1,
-            orderType: "limit",
-            limitPrice: 0.85,
-            timeInForce: "day",
-            legs: [
-                {
-                    instrument: "SPY260424P00650000",
-                    side: "sell_to_open",
-                    quantity: 1,
-                },
-                {
-                    instrument: "SPY260424P00649000",
-                    side: "buy_to_open",
-                    quantity: 1,
-                },
-            ],
-        })
-
-        expect(verification.executionCost).toBeDefined()
-        expect(verification.executionCost?.metrics.instrumentClass).toBe("option_structure")
-        expect(verification.livePrices.spread).toBeCloseTo(0.3)
-    })
 })

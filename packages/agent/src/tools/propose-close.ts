@@ -12,6 +12,7 @@ import {
     resolveEstimatedPrice as resolvePolymarketEstimatedPrice,
     type PolymarketPriceProvider,
 } from "./polymarket-order-helpers"
+import { normalizePolymarketTokenId } from "./polymarket-market-handles"
 
 interface ClosePriceResolverContext {
     instrument: string
@@ -59,13 +60,21 @@ export function createPolymarketProposeCloseTool(
     pipeline: ExecutionPipeline,
     venue: PolymarketPriceProvider
 ): ToolDefinition {
+    const base = createProposeCloseTool(pipeline, {
+        resolveEstimatedPrice: async ({ instrument, closeSide }) =>
+            await resolvePolymarketEstimatedPrice(venue, instrument, closeSide),
+    })
+
     return createToolDefinition({
         name: "propose_close",
         venue: "polymarket",
-        handler: createProposeCloseTool(pipeline, {
-            resolveEstimatedPrice: async ({ instrument, closeSide }) =>
-                await resolvePolymarketEstimatedPrice(venue, instrument, closeSide),
-        }).handler,
+        handler: async (params) => {
+            const validated = params as z.infer<typeof closeParamsSchema>
+            return await base.handler({
+                ...validated,
+                instrument: normalizePolymarketTokenId(validated.instrument),
+            })
+        },
     })
 }
 

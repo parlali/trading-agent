@@ -4,6 +4,7 @@ import { executeAgentRun } from "./runtime"
 import { ToolRegistry } from "./tool-registry"
 import type { LLMResponse } from "./llm-client"
 import { createLogger } from "@valiq-trading/core"
+import { createPolymarketGetMarketPriceTool } from "./tools/get-market-price-polymarket"
 
 const baseUsage = {
     promptTokens: 10,
@@ -18,27 +19,28 @@ beforeEach(() => {
 })
 
 describe("executeAgentRun degraded research", () => {
-    it("keeps the run alive in degraded mode after repeated research tool failures", async () => {
+    it("rejects observed truncated Polymarket token IDs before provider access", async () => {
+        const invalidTokenIds = ["425888", "575692", "453795", "463591", "515959"]
         const chat = vi.fn(async (): Promise<LLMResponse> => {
             const callIndex = chat.mock.calls.length
-            if (callIndex <= 3) {
+            if (callIndex === 1) {
                 return {
                     content: null,
-                    toolCalls: [{
-                        id: `call-${callIndex}`,
+                    toolCalls: invalidTokenIds.map((tokenId, index) => ({
+                        id: `call-invalid-${index}`,
                         type: "function",
                         function: {
-                            name: "query_valiq_research",
-                            arguments: "{}",
+                            name: "get_market_price",
+                            arguments: JSON.stringify({ tokenId }),
                         },
-                    }],
+                    })),
                     usage: baseUsage,
                     finishReason: "tool_calls",
                 }
             }
 
             return {
-                content: "Final decision with bounded context",
+                content: "Invalid Polymarket identifiers rejected before CLOB access",
                 toolCalls: [],
                 usage: baseUsage,
                 finishReason: "stop",
@@ -48,25 +50,17 @@ describe("executeAgentRun degraded research", () => {
         const llm = await import("./llm-client")
         vi.spyOn(llm.LLMClient.prototype, "chat").mockImplementation(chat)
 
+        const venue = {
+            getMarketPrice: vi.fn(),
+        }
         const tools = new ToolRegistry()
-        tools.register({
-            name: "query_valiq_research",
-            description: "Research tool",
-            parameters: z.object({}),
-            jsonSchema: {
-                type: "object",
-                properties: {},
-            },
-            handler: async () => {
-                throw new Error("upstream timeout")
-            },
-        })
+        tools.register(createPolymarketGetMarketPriceTool(venue as never))
 
         const result = await executeAgentRun(
             {
-                runId: "run-1",
+                runId: "run-invalid-polymarket",
                 strategyId: "strategy-1",
-                app: "okx-swap",
+                app: "polymarket",
                 timestamp: Date.now(),
                 trigger: "cron",
                 positions: [],
@@ -83,7 +77,7 @@ describe("executeAgentRun degraded research", () => {
                     dryRun: true,
                     model: "gpt-5.4",
                 },
-                context: "Research then act",
+                context: "Replay invalid Grok token IDs",
             },
             {
                 llm: {
@@ -92,15 +86,14 @@ describe("executeAgentRun degraded research", () => {
                 },
                 tools,
                 logger: createLogger({ minLevel: "fatal" }),
-                maxIterations: 8,
+                maxIterations: 3,
             }
         )
 
-        expect(result.error).toBeUndefined()
-        expect(result.summary).toContain("Final decision")
-        expect(result.degradedResearch?.active).toBe(true)
-        expect(result.degradedResearch?.toolFailureCount).toBeGreaterThan(0)
-        expect(result.degradedResearch?.decisionUnderDegradedContext).toBe(true)
+        expect(result.error).toContain("Circuit breaker")
+        expect(result.error).toContain("Polymarket tokenId must be the canonical")
+        expect(result.summary).toBe("")
+        expect(venue.getMarketPrice).not.toHaveBeenCalled()
     })
 
     it("treats repeated search_markets failures as degraded research instead of a hard run failure", async () => {

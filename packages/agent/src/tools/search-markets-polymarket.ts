@@ -5,9 +5,11 @@ import {
     createToolDefinition,
     searchMarketsParamsSchema,
 } from "../tool-contracts"
+import { PolymarketMarketHandleRegistry } from "./polymarket-market-handles"
 
 export function createPolymarketSearchMarketsTool(
-    venue: PolymarketVenueAdapter
+    venue: PolymarketVenueAdapter,
+    handles: PolymarketMarketHandleRegistry = new PolymarketMarketHandleRegistry()
 ): ToolDefinition {
     return createToolDefinition({
         name: "search_markets",
@@ -24,7 +26,7 @@ export function createPolymarketSearchMarketsTool(
                     ? validated.livePriceTokenLimit
                     : undefined,
             })
-            return { markets }
+            return { markets: handles.registerMarkets(markets) }
         },
     })
 }

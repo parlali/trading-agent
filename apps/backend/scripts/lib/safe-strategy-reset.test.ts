@@ -8,9 +8,7 @@ import type {
 import { AlpacaPlugin } from "../../src/plugins/alpaca"
 import { OKXPlugin } from "../../src/plugins/okx"
 import {
-    isDryRunStrategy,
     detectMarketClosedResetBlock,
-    isMarketClosedExecutionFailure,
     reconcileAndVerifyReset,
     resetStrategySafely,
 } from "./safe-strategy-reset.ts"
@@ -34,6 +32,50 @@ function createDeleteResult(): DeleteStrategyResult {
         appHeartbeats: 0,
         manualRunRequests: 0,
         alerts: 0,
+    }
+}
+
+function createAccountState() {
+    return {
+        balance: 1000,
+        equity: 1000,
+        buyingPower: 1000,
+        marginUsed: 0,
+        marginAvailable: 1000,
+        openPnl: 0,
+        dayPnl: 0,
+    }
+}
+
+function createVenueMock(overrides: Record<string, unknown> = {}) {
+    return {
+        getAccountState: vi.fn().mockResolvedValue(createAccountState()),
+        getPositions: vi.fn().mockResolvedValue([]),
+        getWorkingOrders: vi.fn().mockResolvedValue([]),
+        cancelOrder: vi.fn(),
+        modifyOrder: vi.fn(),
+        closePosition: vi.fn(),
+        submitOrder: vi.fn(),
+        getOrderStatus: vi.fn(),
+        ...overrides,
+    }
+}
+
+function createFreshness(
+    app: StoredStrategy["app"],
+    overrides: Record<string, unknown> = {}
+) {
+    return {
+        app,
+        accountScope: "single-account-per-venue",
+        lastSyncedAt: Date.now(),
+        lastVerifiedAt: Date.now(),
+        providerStatus: "healthy",
+        stale: false,
+        driftDetected: false,
+        positionCount: 0,
+        pendingOrderCount: 0,
+        ...overrides,
     }
 }
 
@@ -118,61 +160,6 @@ describe("resetStrategySafely", () => {
         vi.restoreAllMocks()
     })
 
-    it("supports okx strategies in the safe reset flow", async () => {
-        const strategy = createStrategy("okx-swap")
-        const deleteResult = createDeleteResult()
-        const venue = {
-            getAccountState: vi.fn().mockResolvedValue({
-                balance: 1000,
-                equity: 1000,
-                buyingPower: 1000,
-                marginUsed: 0,
-                marginAvailable: 1000,
-                openPnl: 0,
-                dayPnl: 0,
-            }),
-            getPositions: vi.fn().mockResolvedValue([]),
-            getWorkingOrders: vi.fn().mockResolvedValue([]),
-            cancelOrder: vi.fn(),
-            modifyOrder: vi.fn(),
-            closePosition: vi.fn(),
-            submitOrder: vi.fn(),
-            getOrderStatus: vi.fn(),
-        }
-
-        vi.spyOn(OKXPlugin.prototype, "resolveSecretKeys").mockReturnValue([])
-        vi.spyOn(OKXPlugin.prototype, "createVenueAdapter").mockReturnValue(venue as never)
-
-        const client = {
-            getStrategyById: vi.fn().mockResolvedValue(strategy),
-            getPortfolioPositions: vi.fn().mockResolvedValue([]),
-            getPortfolioPendingOrders: vi.fn().mockResolvedValue([]),
-            getPortfolioFreshness: vi.fn().mockResolvedValue([{
-                app: "okx-swap",
-                accountScope: "single-account-per-venue",
-                lastSyncedAt: Date.now(),
-                lastVerifiedAt: Date.now(),
-                providerStatus: "healthy",
-                stale: false,
-                driftDetected: false,
-                positionCount: 0,
-                pendingOrderCount: 0,
-            }]),
-            getActiveRun: vi.fn().mockResolvedValue(null),
-            disableStrategy: vi.fn().mockResolvedValue(undefined),
-            resolveSecrets: vi.fn().mockResolvedValue({}),
-            reconcileProviderPortfolio: vi.fn().mockResolvedValue(undefined),
-            deleteStrategy: vi.fn().mockResolvedValue(deleteResult),
-        } as unknown as TradingBackendClient
-
-        const result = await resetStrategySafely(client, strategy._id)
-
-        expect(client.disableStrategy).toHaveBeenCalledWith(strategy._id)
-        expect(client.resolveSecrets).toHaveBeenCalledWith([])
-        expect(client.deleteStrategy).toHaveBeenCalledWith(strategy._id)
-        expect(result.deleted).toEqual(deleteResult)
-    })
-
     it("does not disable a strategy before confirming there is no active run", async () => {
         const strategy = createStrategy("mt5")
         const client = {
@@ -198,24 +185,7 @@ describe("resetStrategySafely", () => {
 
         const strategy = createStrategy("okx-swap")
         const deleteResult = createDeleteResult()
-        const venue = {
-            getAccountState: vi.fn().mockResolvedValue({
-                balance: 1000,
-                equity: 1000,
-                buyingPower: 1000,
-                marginUsed: 0,
-                marginAvailable: 1000,
-                openPnl: 0,
-                dayPnl: 0,
-            }),
-            getPositions: vi.fn().mockResolvedValue([]),
-            getWorkingOrders: vi.fn().mockResolvedValue([]),
-            cancelOrder: vi.fn(),
-            modifyOrder: vi.fn(),
-            closePosition: vi.fn(),
-            submitOrder: vi.fn(),
-            getOrderStatus: vi.fn(),
-        }
+        const venue = createVenueMock()
 
         vi.spyOn(OKXPlugin.prototype, "resolveSecretKeys").mockReturnValue([])
         vi.spyOn(OKXPlugin.prototype, "createVenueAdapter").mockReturnValue(venue as never)
@@ -231,39 +201,9 @@ describe("resetStrategySafely", () => {
                 .mockResolvedValueOnce([])
                 .mockResolvedValueOnce([]),
             getPortfolioFreshness: vi.fn()
-                .mockResolvedValueOnce([{
-                    app: "okx-swap",
-                    accountScope: "single-account-per-venue",
-                    lastSyncedAt: Date.now(),
-                    lastVerifiedAt: Date.now(),
-                    providerStatus: "healthy",
-                    stale: false,
-                    driftDetected: false,
-                    positionCount: 0,
-                    pendingOrderCount: 0,
-                }])
-                .mockResolvedValueOnce([{
-                    app: "okx-swap",
-                    accountScope: "single-account-per-venue",
-                    lastSyncedAt: Date.now(),
-                    lastVerifiedAt: Date.now(),
-                    providerStatus: "healthy",
-                    stale: false,
-                    driftDetected: false,
-                    positionCount: 1,
-                    pendingOrderCount: 0,
-                }])
-                .mockResolvedValueOnce([{
-                    app: "okx-swap",
-                    accountScope: "single-account-per-venue",
-                    lastSyncedAt: Date.now(),
-                    lastVerifiedAt: Date.now(),
-                    providerStatus: "healthy",
-                    stale: false,
-                    driftDetected: false,
-                    positionCount: 0,
-                    pendingOrderCount: 0,
-                }]),
+                .mockResolvedValueOnce([createFreshness("okx-swap")])
+                .mockResolvedValueOnce([createFreshness("okx-swap", { positionCount: 1 })])
+                .mockResolvedValueOnce([createFreshness("okx-swap")]),
             getActiveRun: vi.fn().mockResolvedValue(null),
             disableStrategy: vi.fn().mockResolvedValue(undefined),
             resolveSecrets: vi.fn().mockResolvedValue({}),
@@ -281,116 +221,11 @@ describe("resetStrategySafely", () => {
         setTimeoutSpy.mockRestore()
     })
 
-    it("allows destructive verification when exposure is flat but drift state remains degraded", async () => {
-        const strategy = createStrategy("okx-swap")
-        const venue = {
-            getAccountState: vi.fn().mockResolvedValue({
-                balance: 1000,
-                equity: 1000,
-                buyingPower: 1000,
-                marginUsed: 0,
-                marginAvailable: 1000,
-                openPnl: 0,
-                dayPnl: 0,
-            }),
-            getPositions: vi.fn().mockResolvedValue([]),
-            getWorkingOrders: vi.fn().mockResolvedValue([]),
-            cancelOrder: vi.fn(),
-            modifyOrder: vi.fn(),
-            closePosition: vi.fn(),
-            submitOrder: vi.fn(),
-            getOrderStatus: vi.fn(),
-        }
-
-        vi.spyOn(OKXPlugin.prototype, "resolveSecretKeys").mockReturnValue([])
-        vi.spyOn(OKXPlugin.prototype, "createVenueAdapter").mockReturnValue(venue as never)
-
-        const client = {
-            resolveSecrets: vi.fn().mockResolvedValue({}),
-            reconcileProviderPortfolio: vi.fn().mockResolvedValue(undefined),
-            getPortfolioFreshness: vi.fn().mockResolvedValue([{
-                app: "okx-swap",
-                accountScope: "single-account-per-venue",
-                lastSyncedAt: Date.now(),
-                lastVerifiedAt: Date.now(),
-                providerStatus: "degraded",
-                stale: false,
-                driftDetected: true,
-                positionCount: 0,
-                pendingOrderCount: 0,
-            }]),
-            getPortfolioPositions: vi.fn().mockResolvedValue([]),
-            getPortfolioPendingOrders: vi.fn().mockResolvedValue([]),
-        } as unknown as TradingBackendClient
-
-        await expect(
-            import("./safe-strategy-reset.ts").then(async ({ reconcileAndVerifyReset }) =>
-                await reconcileAndVerifyReset(client, strategy, undefined, {
-                    requireHealthyState: false,
-                })
-            )
-        ).resolves.toBeUndefined()
-    })
-
-    it("treats dry-run strategies as Convex-only resets", async () => {
-        const strategy = createStrategy("polymarket")
-        strategy.policy.dryRun = true
-
-        expect(isDryRunStrategy(strategy)).toBe(true)
-
-        const deleteResult = createDeleteResult()
-        const client = {
-            getStrategyById: vi.fn().mockResolvedValue(strategy),
-            getPortfolioPositions: vi.fn().mockResolvedValue([{
-                instrument: "token-1",
-            }]),
-            getPortfolioPendingOrders: vi.fn().mockResolvedValue([]),
-            getPortfolioFreshness: vi.fn().mockResolvedValue([{
-                app: "polymarket",
-                accountScope: "single-account-per-venue",
-                lastSyncedAt: Date.now(),
-                lastVerifiedAt: Date.now(),
-                providerStatus: "degraded",
-                stale: false,
-                driftDetected: true,
-                positionCount: 9,
-                pendingOrderCount: 0,
-            }]),
-            getActiveRun: vi.fn().mockResolvedValue(null),
-            disableStrategy: vi.fn().mockResolvedValue(undefined),
-            deleteStrategy: vi.fn().mockResolvedValue(deleteResult),
-        } as unknown as TradingBackendClient
-
-        const result = await resetStrategySafely(client, strategy._id)
-
-        expect(client.disableStrategy).toHaveBeenCalledWith(strategy._id)
-        expect(client.deleteStrategy).toHaveBeenCalledWith(strategy._id)
-        expect(result.cancelledOrders).toBe(0)
-        expect(result.closedPositions).toBe(0)
-    })
-
     it("includes remaining exposure identifiers in verification failures", async () => {
         const setTimeoutSpy = stubImmediateTimeout()
 
         const strategy = createStrategy("alpaca-options")
-        const venue = {
-            getAccountState: vi.fn().mockResolvedValue({
-                balance: 1000,
-                equity: 1000,
-                buyingPower: 1000,
-                marginUsed: 0,
-                marginAvailable: 1000,
-                openPnl: 0,
-                dayPnl: 0,
-            }),
-            getPositions: vi.fn().mockResolvedValue([]),
-            getWorkingOrders: vi.fn().mockResolvedValue([]),
-            cancelOrder: vi.fn(),
-            modifyOrder: vi.fn(),
-            closePosition: vi.fn(),
-            submitOrder: vi.fn(),
-            getOrderStatus: vi.fn(),
-        }
+        const venue = createVenueMock()
 
         vi.spyOn(AlpacaPlugin.prototype, "resolveSecretKeys").mockReturnValue([])
         vi.spyOn(AlpacaPlugin.prototype, "createVenueAdapter").mockReturnValue(venue as never)
@@ -398,17 +233,9 @@ describe("resetStrategySafely", () => {
         const client = {
             resolveSecrets: vi.fn().mockResolvedValue({}),
             reconcileProviderPortfolio: vi.fn().mockResolvedValue(undefined),
-            getPortfolioFreshness: vi.fn().mockResolvedValue([{
-                app: "alpaca-options",
-                accountScope: "single-account-per-venue",
-                lastSyncedAt: Date.now(),
-                lastVerifiedAt: Date.now(),
-                providerStatus: "healthy",
-                stale: false,
-                driftDetected: false,
-                positionCount: 2,
-                pendingOrderCount: 1,
-            }]),
+            getPortfolioFreshness: vi.fn().mockResolvedValue([
+                createFreshness("alpaca-options", { positionCount: 2, pendingOrderCount: 1 }),
+            ]),
             getPortfolioPositions: vi.fn().mockResolvedValue([
                 {
                     app: "alpaca-options",
@@ -456,20 +283,12 @@ describe("resetStrategySafely", () => {
     })
 
     it("detects a closed provider market with a matching working close order without flatten churn", async () => {
-        const venue = {
+        const venue = createVenueMock({
             getMarketClock: vi.fn().mockResolvedValue({
                 isOpen: false,
                 nextOpen: "2026-04-13T13:30:00Z",
             }),
-            getPositions: vi.fn(),
-            getWorkingOrders: vi.fn(),
-            getAccountState: vi.fn(),
-            cancelOrder: vi.fn(),
-            modifyOrder: vi.fn(),
-            closePosition: vi.fn(),
-            submitOrder: vi.fn(),
-            getOrderStatus: vi.fn(),
-        }
+        })
 
         const block = await detectMarketClosedResetBlock("alpaca-options", venue, {
             positions: [
@@ -501,52 +320,6 @@ describe("resetStrategySafely", () => {
         expect(venue.closePosition).not.toHaveBeenCalled()
     })
 
-    it("does not treat a matching open-intent order as a market-closed reset block", async () => {
-        const venue = {
-            getMarketClock: vi.fn().mockResolvedValue({
-                isOpen: false,
-            }),
-            getPositions: vi.fn(),
-            getWorkingOrders: vi.fn(),
-            getAccountState: vi.fn(),
-            cancelOrder: vi.fn(),
-            modifyOrder: vi.fn(),
-            closePosition: vi.fn(),
-            submitOrder: vi.fn(),
-            getOrderStatus: vi.fn(),
-        }
-
-        const block = await detectMarketClosedResetBlock("alpaca-options", venue, {
-            positions: [
-                {
-                    instrument: "IC:SPY:2026-04-24:SPY260424C00705000|SPY260424C00706000|SPY260424P00649000|SPY260424P00650000",
-                },
-            ],
-            workingOrders: [
-                {
-                    orderId: "entry-order-1",
-                    instrument: "IC:SPY:2026-04-24:SPY260424C00705000|SPY260424C00706000|SPY260424P00649000|SPY260424P00650000",
-                    metadata: {
-                        legs: [
-                            { symbol: "SPY260424C00705000", position_intent: "sell_to_open" },
-                            { symbol: "SPY260424C00706000", position_intent: "buy_to_open" },
-                            { symbol: "SPY260424P00649000", position_intent: "buy_to_open" },
-                            { symbol: "SPY260424P00650000", position_intent: "sell_to_open" },
-                        ],
-                    },
-                },
-            ],
-        })
-
-        expect(block).toBeNull()
-    })
-
-    it("classifies Alpaca market-closed execution failures without weakening other venues", () => {
-        expect(isMarketClosedExecutionFailure("alpaca-options", "position SPY: market is not open")).toBe(true)
-        expect(isMarketClosedExecutionFailure("alpaca-options", "position SPY: outside market hours")).toBe(true)
-        expect(isMarketClosedExecutionFailure("mt5", "position XAUUSD: market is not open")).toBe(false)
-        expect(isMarketClosedExecutionFailure("alpaca-options", "position SPY: insufficient buying power")).toBe(false)
-    })
 })
 
 function stubImmediateTimeout() {

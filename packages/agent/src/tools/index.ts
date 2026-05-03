@@ -28,6 +28,14 @@ export { createPolymarketGetOrderBookTool } from "./get-order-book-polymarket"
 export { createPolymarketSearchMarketsTool } from "./search-markets-polymarket"
 export { createPolymarketProposeOrderTool } from "./propose-order-polymarket"
 export { createPolymarketProposeAdjustmentTool } from "./propose-adjustment-polymarket"
+export {
+    PolymarketMarketHandleRegistry,
+    normalizePolymarketTokenId,
+} from "./polymarket-market-handles"
+export type {
+    PolymarketTokenHandleRecord,
+    PolymarketTokenHandleInput,
+} from "./polymarket-market-handles"
 export { createOKXProposeOrderTool } from "./propose-order-okx"
 export { createOKXProposeAdjustmentTool } from "./propose-adjustment-okx"
 export { withCallBudget } from "./with-call-budget"

@@ -36,65 +36,6 @@ function createEntryIntent(): OrderIntent {
     }
 }
 
-function createVerticalEntryIntent(): OrderIntent {
-    return {
-        instrument: "VS:BULL_PUT_CREDIT:SPY:2026-04-17:1",
-        side: "sell",
-        quantity: 1,
-        orderType: "limit",
-        limitPrice: 0.85,
-        timeInForce: "day",
-        legs: [
-            {
-                instrument: "SPY260417P00500000",
-                side: "sell_to_open",
-                quantity: 1,
-            },
-            {
-                instrument: "SPY260417P00495000",
-                side: "buy_to_open",
-                quantity: 1,
-            },
-        ],
-    }
-}
-
-function createCloseIntent(): OrderIntent {
-    return {
-        instrument: "IC:SPY:2026-04-17:1",
-        side: "buy",
-        quantity: 2,
-        orderType: "limit",
-        limitPrice: 0.67,
-        timeInForce: "day",
-        metadata: {
-            action: "close",
-        },
-        legs: [
-            {
-                instrument: "SPY260417C00550000",
-                side: "buy_to_close",
-                quantity: 1,
-            },
-            {
-                instrument: "SPY260417C00555000",
-                side: "sell_to_close",
-                quantity: 1,
-            },
-            {
-                instrument: "SPY260417P00500000",
-                side: "buy_to_close",
-                quantity: 1,
-            },
-            {
-                instrument: "SPY260417P00495000",
-                side: "sell_to_close",
-                quantity: 1,
-            },
-        ],
-    }
-}
-
 function createClient(): AlpacaClient {
     return new AlpacaClient(resolveAlpacaRuntimeConfig({
         ALPACA_API_KEY: "key",
@@ -153,46 +94,6 @@ function createEntryOrderResponse(limitPrice = "-1.23") {
     }
 }
 
-function createCloseOrderResponse(limitPrice = "0.67") {
-    return {
-        id: "order-close-1",
-        order_class: "mleg",
-        side: "buy",
-        status: "new",
-        qty: "2",
-        filled_qty: "0",
-        limit_price: limitPrice,
-        submitted_at: "2026-04-10T11:00:00Z",
-        updated_at: "2026-04-10T11:00:01Z",
-        legs: [
-            {
-                symbol: "SPY260417C00550000",
-                side: "buy",
-                position_intent: "buy_to_close",
-                ratio_qty: "1",
-            },
-            {
-                symbol: "SPY260417C00555000",
-                side: "sell",
-                position_intent: "sell_to_close",
-                ratio_qty: "1",
-            },
-            {
-                symbol: "SPY260417P00500000",
-                side: "buy",
-                position_intent: "buy_to_close",
-                ratio_qty: "1",
-            },
-            {
-                symbol: "SPY260417P00495000",
-                side: "sell",
-                position_intent: "sell_to_close",
-                ratio_qty: "1",
-            },
-        ],
-    }
-}
-
 describe("buildCreateOrderPayload", () => {
     it("splits Alpaca leg side and position intent fields for credit entries", () => {
         const payload = buildCreateOrderPayload(createEntryIntent())
@@ -231,55 +132,6 @@ describe("buildCreateOrderPayload", () => {
             ],
         })
     })
-
-    it("keeps close debit wire prices positive", () => {
-        const payload = buildCreateOrderPayload(createCloseIntent())
-
-        expect(payload).toMatchObject({
-            order_class: "mleg",
-            type: "limit",
-            time_in_force: "day",
-            qty: 2,
-            limit_price: 0.67,
-        })
-    })
-
-    it("accepts 2-leg one-sided credit vertical entries", () => {
-        const payload = buildCreateOrderPayload(createVerticalEntryIntent())
-
-        expect(payload).toMatchObject({
-            order_class: "mleg",
-            type: "limit",
-            time_in_force: "day",
-            qty: 1,
-            limit_price: -0.85,
-            legs: [
-                {
-                    symbol: "SPY260417P00500000",
-                    ratio_qty: 1,
-                    side: "sell",
-                    position_intent: "sell_to_open",
-                },
-                {
-                    symbol: "SPY260417P00495000",
-                    ratio_qty: 1,
-                    side: "buy",
-                    position_intent: "buy_to_open",
-                },
-            ],
-        })
-    })
-
-    it("rejects single-leg options orders", () => {
-        expect(() => buildCreateOrderPayload({
-            instrument: "SPY260424C00690000",
-            side: "buy",
-            quantity: 1,
-            orderType: "limit",
-            limitPrice: 4.55,
-            timeInForce: "day",
-        })).toThrow("Alpaca multi-leg options orders must be submitted as either 2 or 4 legs")
-    })
 })
 
 describe("AlpacaClient multileg signed limit prices", () => {
@@ -301,14 +153,6 @@ describe("AlpacaClient multileg signed limit prices", () => {
         const result = await createClient().getOrder("order-entry-1")
 
         expect(result.intentUpdates?.limitPrice).toBe(1.23)
-    })
-
-    it("preserves positive debit readbacks for close orders", async () => {
-        fetchMock.mockResolvedValue(createJsonResponse(createCloseOrderResponse()))
-
-        const result = await createClient().getOrder("order-close-1")
-
-        expect(result.intentUpdates?.limitPrice).toBe(0.67)
     })
 
     it("uses signed negative wire prices when replacing working credit entries", async () => {

@@ -57,10 +57,28 @@ export interface OKXPosition {
     markPx: string
     upl: string
     lever?: string
+    imr?: string
+    margin?: string
+    mmr?: string
     mgnMode: string
     liqPx?: string
     cTime?: string
     uTime?: string
+}
+
+export interface OKXFill {
+    instId: string
+    tradeId: string
+    ordId: string
+    side: "buy" | "sell"
+    posSide?: string
+    fillSz: string
+    fillPx: string
+    fillPnl?: string
+    fee?: string
+    feeCcy?: string
+    execType?: string
+    ts: string
 }
 
 export interface OKXInstrument {
@@ -320,6 +338,24 @@ export class OKXClient {
         return await this.privateRequest<OKXOrder>("GET", "/api/v5/trade/orders-pending", {
             instType,
             instId,
+        })
+    }
+
+    async getFillsHistory(
+        instType: "SWAP" = "SWAP",
+        params: {
+            instId?: string
+            begin?: number
+            end?: number
+            limit?: number
+        } = {}
+    ): Promise<OKXFill[]> {
+        return await this.privateRequest<OKXFill>("GET", "/api/v5/trade/fills-history", {
+            instType,
+            instId: params.instId,
+            begin: params.begin,
+            end: params.end,
+            limit: params.limit,
         })
     }
 

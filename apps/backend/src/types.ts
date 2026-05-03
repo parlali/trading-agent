@@ -1,6 +1,7 @@
 import type { ToolDefinition } from "@valiq-trading/agent"
 import type { AccountState, Logger, Position, RiskValidator, VenueAdapter, VenueApp, WorkingOrder } from "@valiq-trading/core"
 import type { App } from "@valiq-trading/core"
+import type { AuditedSessionFlatResult } from "./session-flat"
 
 export type { VenueApp } from "@valiq-trading/core"
 
@@ -42,6 +43,13 @@ export interface PreRunHookConfig {
     strategyAccountState: AccountState
     logger: Logger
     createAlert(alert: { strategyId?: string; app: App; severity: "critical" | "warning" | "info"; message: string }): Promise<void>
+    sessionFlat?: {
+        execute(args: {
+            positions: Position[]
+            workingOrders: WorkingOrder[]
+            reason: string
+        }): Promise<AuditedSessionFlatResult>
+    }
 }
 
 export interface PreRunHookResult {

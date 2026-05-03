@@ -274,8 +274,9 @@ function buildPolicySection(context: StrategyRunContext): string {
             "Use `search_markets` as a Gamma-backed discovery pass only. Treat the returned list as candidate metadata plus token IDs, not execution-grade pricing.",
             "- Start with the top-liquid market list for the category or query you care about",
             "- Narrow to only your top candidate markets before requesting live venue data",
-            "- Call `get_market_price` and `get_order_book` individually for only those top candidate token IDs before sizing or placing any trade. Treat `executionCost` from venue tools as the canonical liquidity/tradability signal.",
-            "- `propose_order` requires the exact `tokenId`, `conditionId`, `marketSlug`, `question`, and `outcome` from discovery. Never place an order using only a condition ID, event slug, or question string.",
+            "- Prefer the returned `tokenHandle` for `get_market_price`, `get_order_book`, and `propose_order`; do not shorten or rewrite token IDs",
+            "- Call `get_market_price` and `get_order_book` individually for only those top candidate token handles before sizing or placing any trade. Treat `executionCost` from venue tools as the canonical liquidity/tradability signal.",
+            "- `propose_order` requires the exact `tokenHandle` from discovery, or the exact canonical token ID plus condition ID, market slug, question, and outcome. Never place an order using only a condition ID, event slug, or question string.",
             "- Only opt into `search_markets` live price enrichment if you have a specific reason, and keep the token count tightly bounded",
         )
     }

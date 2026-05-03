@@ -3,6 +3,7 @@ import {
     DRY_RUN_ACCOUNT_LEDGER_INSTRUMENT,
     ExecutionPipeline,
     resolveDryRunAccountState,
+    type ExecutionPipelineConfig,
     type PriceVerifier,
     type TradeEventLogger,
     type VenueAdapter,
@@ -20,6 +21,8 @@ const account: AccountState = {
     openPnl: 0,
     dayPnl: 0,
 }
+
+const testLogger = createLogger({ minLevel: "fatal" })
 
 function createVenue(): VenueAdapter {
     return {
@@ -67,6 +70,25 @@ function createTradeLogger() {
     } satisfies TradeEventLogger
 }
 
+function createPipeline(config: Partial<ExecutionPipelineConfig> = {}): ExecutionPipeline {
+    return new ExecutionPipeline({
+        venue: createVenue(),
+        venueName: "polymarket",
+        policy: {
+            dryRun: false,
+            safety: {
+                account: {
+                    allocationPercent: 100,
+                },
+            },
+        },
+        logger: testLogger,
+        runId: "run-1",
+        strategyId: "strategy-1",
+        ...config,
+    })
+}
+
 function createBlockedExecutionCost() {
     return assessExecutionCost(
         resolveExecutionCostMetrics({
@@ -89,17 +111,13 @@ function createBlockedExecutionCost() {
 describe("ExecutionPipeline dry-run accounting", () => {
     it("keeps deterministic cash and realized PnL after closing a virtual position", async () => {
         const tradeLogger = createTradeLogger()
-        const pipeline = new ExecutionPipeline({
-            venue: createVenue(),
-            venueName: "polymarket",
+        const pipeline = createPipeline({
             policy: {
                 dryRun: true,
                 virtualCash: 1000,
             },
-            logger: createLogger({ minLevel: "fatal" }),
             tradeEventLogger: tradeLogger,
             runId: "run-1",
-            strategyId: "strategy-1",
         })
 
         pipeline.seedDryRunPositions([
@@ -160,9 +178,7 @@ describe("ExecutionPipeline dry-run accounting", () => {
     })
 
     it("persists canonical dry-run position metadata with fill accounting fields", async () => {
-        const pipeline = new ExecutionPipeline({
-            venue: createVenue(),
-            venueName: "polymarket",
+        const pipeline = createPipeline({
             policy: {
                 dryRun: true,
                 virtualCash: 1000,
@@ -175,9 +191,7 @@ describe("ExecutionPipeline dry-run accounting", () => {
                     _positions: Position[]
                 ): ValidationResult => ({ allowed: true, adjustedIntent: intent }),
             ],
-            logger: createLogger({ minLevel: "fatal" }),
             runId: "run-2",
-            strategyId: "strategy-1",
         })
 
         await pipeline.executeIntent(
@@ -216,16 +230,12 @@ describe("ExecutionPipeline dry-run accounting", () => {
     })
 
     it("seeds virtual account cash from the persisted dry-run ledger row", async () => {
-        const pipeline = new ExecutionPipeline({
-            venue: createVenue(),
-            venueName: "polymarket",
+        const pipeline = createPipeline({
             policy: {
                 dryRun: true,
                 virtualCash: 1000,
             },
-            logger: createLogger({ minLevel: "fatal" }),
             runId: "run-3",
-            strategyId: "strategy-1",
         })
 
         pipeline.seedDryRunPositions([
@@ -290,16 +300,13 @@ describe("ExecutionPipeline dry-run accounting", () => {
     })
 
     it("values virtual short positions as liabilities instead of long inventory", async () => {
-        const pipeline = new ExecutionPipeline({
-            venue: createVenue(),
+        const pipeline = createPipeline({
             venueName: "mt5",
             policy: {
                 dryRun: true,
                 virtualCash: 1000,
             },
-            logger: createLogger({ minLevel: "fatal" }),
             runId: "run-4",
-            strategyId: "strategy-1",
         })
 
         pipeline.seedDryRunPositions([
@@ -330,17 +337,9 @@ describe("ExecutionPipeline dry-run accounting", () => {
                 throw new Error("provider price unavailable")
             },
         }
-        const pipeline = new ExecutionPipeline({
+        const pipeline = createPipeline({
             venue,
             venueName: "polymarket",
-            policy: {
-                dryRun: false,
-                safety: {
-                    account: {
-                        allocationPercent: 100,
-                    },
-                },
-            },
             riskValidators: [
                 (
                     intent: OrderIntent,
@@ -352,9 +351,7 @@ describe("ExecutionPipeline dry-run accounting", () => {
             priceVerification: {
                 failClosedOnVerificationError: true,
             },
-            logger: createLogger({ minLevel: "fatal" }),
             runId: "run-5",
-            strategyId: "strategy-1",
         })
 
         const { result } = await pipeline.executeIntent(
@@ -420,20 +417,10 @@ describe("ExecutionPipeline dry-run accounting", () => {
                 }
             },
         }
-        const pipeline = new ExecutionPipeline({
+        const pipeline = createPipeline({
             venue,
             venueName: "alpaca-options",
-            policy: {
-                dryRun: false,
-                safety: {
-                    account: {
-                        allocationPercent: 100,
-                    },
-                },
-            },
-            logger: createLogger({ minLevel: "fatal" }),
             runId: "run-6",
-            strategyId: "strategy-1",
         })
 
         const { result, validation } = await pipeline.closePosition(
@@ -488,20 +475,10 @@ describe("ExecutionPipeline execution-cost gating", () => {
                 message: "Captured live Polymarket prices before submission.",
             }),
         }
-        const pipeline = new ExecutionPipeline({
+        const pipeline = createPipeline({
             venue,
             venueName: "polymarket",
-            policy: {
-                dryRun: false,
-                safety: {
-                    account: {
-                        allocationPercent: 100,
-                    },
-                },
-            },
-            logger: createLogger({ minLevel: "fatal" }),
             runId: "run-cost-1",
-            strategyId: "strategy-1",
         })
 
         const { result } = await pipeline.executeIntent({
@@ -542,20 +519,10 @@ describe("ExecutionPipeline execution-cost gating", () => {
                 message: "Captured live Polymarket prices before submission.",
             }),
         }
-        const pipeline = new ExecutionPipeline({
+        const pipeline = createPipeline({
             venue,
             venueName: "polymarket",
-            policy: {
-                dryRun: false,
-                safety: {
-                    account: {
-                        allocationPercent: 100,
-                    },
-                },
-            },
-            logger: createLogger({ minLevel: "fatal" }),
             runId: "run-cost-2",
-            strategyId: "strategy-1",
         })
 
         const positions: Position[] = [

@@ -808,6 +808,7 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
                     },
                     positions: positions.map((position) => ({
                         instrument: position.instrument,
+                        providerPositionId: position.providerPositionId,
                         side: position.side,
                         quantity: position.quantity,
                         entryPrice: position.entryPrice,

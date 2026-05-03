@@ -53,6 +53,8 @@ export {
     createPolymarketProposeAdjustmentTool,
     createOKXProposeOrderTool,
     createOKXProposeAdjustmentTool,
+    PolymarketMarketHandleRegistry,
+    normalizePolymarketTokenId,
     withCallBudget,
 } from "./tools"
 export type { WebSearchProvider, SearchResult } from "./tools"

@@ -189,10 +189,10 @@ export class MT5Plugin implements VenuePlugin {
     }
 
     private async checkEndOfDayFlatten(
-        venue: MT5VenueAdapter,
+        _venue: MT5VenueAdapter,
         policy: ReturnType<typeof mt5PolicySchema.parse>,
         strategyId: string,
-        config: Pick<PreRunHookConfig, "logger" | "createAlert" | "ownedPositions" | "ownedWorkingOrders">
+        config: Pick<PreRunHookConfig, "logger" | "createAlert" | "ownedPositions" | "ownedWorkingOrders" | "sessionFlat">
     ): Promise<boolean> {
         const sessionFlatPolicy = policy.safety.sessionFlat
         if (!sessionFlatPolicy.enabled) {
@@ -232,11 +232,18 @@ export class MT5Plugin implements VenuePlugin {
             message: `Session-flat policy triggered: closing ${positions.length} position(s) and cancelling ${workingOrders.length} working order(s) before ${policy.tradingHours.end} ${timezone}`,
         })
 
-        const cancelled = await cancelOwnedWorkingOrders(venue, workingOrders)
-        const closed = await closeOwnedPositions(venue, positions)
+        if (!config.sessionFlat) {
+            throw new Error("Audited session-flat executor is unavailable for MT5")
+        }
+
+        const result = await config.sessionFlat.execute({
+            positions,
+            workingOrders,
+            reason: `Session-flat before ${policy.tradingHours.end} ${timezone}`,
+        })
         config.logger.info("End-of-day flatten completed", {
-            closed,
-            cancelled,
+            closed: result.closed,
+            cancelled: result.cancelled,
         })
 
         return true
@@ -293,38 +300,4 @@ export class MT5Plugin implements VenuePlugin {
         }
     }
 
-}
-
-async function cancelOwnedWorkingOrders(
-    venue: MT5VenueAdapter,
-    workingOrders: PreRunHookConfig["ownedWorkingOrders"]
-): Promise<number> {
-    let cancelled = 0
-
-    for (const order of workingOrders) {
-        const result = await venue.cancelOrder(order.orderId)
-        if (result.status === "cancelled" || result.status === "filled") {
-            cancelled++
-        }
-    }
-
-    return cancelled
-}
-
-async function closeOwnedPositions(
-    venue: MT5VenueAdapter,
-    positions: PreRunHookConfig["ownedPositions"]
-): Promise<number> {
-    let closed = 0
-
-    for (const position of positions) {
-        const result = venue.closeProviderPosition
-            ? await venue.closeProviderPosition(position)
-            : await venue.closePosition(position.instrument)
-        if (result.status === "filled" || result.status === "partially_filled") {
-            closed++
-        }
-    }
-
-    return closed
 }

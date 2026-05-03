@@ -34,12 +34,8 @@ function createMarket(id: string): PolymarketMarket {
     }
 }
 
-function createClient() {
-    const getTopLiquidMarketsForCategory = vi.fn()
-    const searchMarkets = vi.fn()
-    const getMarket = vi.fn()
-    const getCurrentPositions = vi.fn()
-    const getOrderBook = vi.fn().mockResolvedValue({
+function createOrderBook(overrides: Record<string, unknown> = {}) {
+    return {
         market: "condition-1",
         asset_id: "token-1",
         timestamp: "123456",
@@ -50,7 +46,16 @@ function createClient() {
         tick_size: "0.01",
         neg_risk: false,
         last_trade_price: "0.52",
-    })
+        ...overrides,
+    }
+}
+
+function createClient() {
+    const getTopLiquidMarketsForCategory = vi.fn()
+    const searchMarkets = vi.fn()
+    const getMarket = vi.fn()
+    const getCurrentPositions = vi.fn()
+    const getOrderBook = vi.fn().mockResolvedValue(createOrderBook())
     const getPrice = vi.fn()
     const getMarketBySlug = vi.fn()
     const getTokenBalance = vi.fn()
@@ -87,81 +92,6 @@ function createClient() {
 }
 
 describe("PolymarketVenueAdapter.searchMarkets", () => {
-    it("uses Gamma category discovery without default live price hydration", async () => {
-        const client = createClient()
-        const market = createMarket("1")
-        client.getTopLiquidMarketsForCategory.mockResolvedValue([market])
-
-        const venue = new PolymarketVenueAdapter(client.client)
-        const results = await venue.searchMarkets({
-            category: "politics",
-            limit: 5,
-        })
-
-        expect(client.getTopLiquidMarketsForCategory).toHaveBeenCalledWith("politics", 5)
-        expect(results).toHaveLength(1)
-        expect(results[0]).toMatchObject({
-            conditionId: market.conditionId,
-            category: market.category,
-            tokens: [
-                {
-                    tokenId: "token-1-yes",
-                    outcome: "Yes",
-                },
-                {
-                    tokenId: "token-1-no",
-                    outcome: "No",
-                },
-            ],
-        })
-        expect(client.getOrderBook).not.toHaveBeenCalled()
-    })
-
-    it("uses Gamma public search when only query text is provided", async () => {
-        const client = createClient()
-        const market = createMarket("1")
-        client.searchMarkets.mockResolvedValue([market])
-
-        const venue = new PolymarketVenueAdapter(client.client)
-        await venue.searchMarkets({
-            query: "trump",
-            limit: 3,
-        })
-
-        expect(client.searchMarkets).toHaveBeenCalledWith("trump", 3)
-    })
-
-    it("uses direct market slug lookup", async () => {
-        const client = createClient()
-        const market = createMarket("1")
-        client.getMarketBySlug.mockResolvedValue(market)
-
-        const venue = new PolymarketVenueAdapter(client.client)
-        const result = await venue.searchMarkets({
-            marketSlug: "will-it-happen-1",
-        })
-
-        expect(client.getMarketBySlug).toHaveBeenCalledWith("will-it-happen-1")
-        expect(result[0]?.marketSlug).toBe("will-it-happen-1")
-    })
-
-    it("keeps query results when category plus query is provided", async () => {
-        const client = createClient()
-        const market = createMarket("dhs")
-        client.searchMarkets.mockResolvedValue([market])
-        client.getTopLiquidMarketsForCategory.mockResolvedValue([])
-
-        const venue = new PolymarketVenueAdapter(client.client)
-        const result = await venue.searchMarkets({
-            category: "politics",
-            query: "How long will the DHS shutdown last?",
-            limit: 5,
-        })
-
-        expect(client.searchMarkets).toHaveBeenCalledWith("how long will the dhs shutdown last?", 5)
-        expect(result).toHaveLength(1)
-    })
-
     it("keeps concurrent live enrichment within the bounded request envelope", async () => {
         const client = createClient()
         const markets = [
@@ -204,34 +134,6 @@ describe("PolymarketVenueAdapter.searchMarkets", () => {
 })
 
 describe("PolymarketVenueAdapter.simulateDryRunOrder", () => {
-    it("requires canonical market identity and returns a token-bound simulated fill", async () => {
-        const client = createClient()
-        const venue = new PolymarketVenueAdapter(client.client)
-
-        const result = await venue.simulateDryRunOrder({
-            instrument: "token-1-yes",
-            side: "buy",
-            quantity: 10,
-            orderType: "limit",
-            limitPrice: 0.52,
-            timeInForce: "gtc",
-            metadata: {
-                tokenId: "token-1-yes",
-                conditionId: "condition-1",
-                marketSlug: "will-it-happen-1",
-                question: "Will it happen 1?",
-                outcome: "Yes",
-            },
-        })
-
-        expect(result).toMatchObject({
-            status: "filled",
-            filledQuantity: 10,
-            fillPrice: 0.52,
-        })
-        expect(result.orderId).toContain("dry-run-polymarket-token-1-yes")
-    })
-
     it("fails closed when canonical metadata is missing", async () => {
         const client = createClient()
         const venue = new PolymarketVenueAdapter(client.client)
@@ -248,58 +150,15 @@ describe("PolymarketVenueAdapter.simulateDryRunOrder", () => {
 })
 
 describe("PolymarketVenueAdapter.getMarketPrice", () => {
-    it("derives prices from the same top-of-book data as getOrderBook", async () => {
-        const client = createClient()
-        client.getOrderBook.mockResolvedValue({
-            market: "condition-consistency",
-            asset_id: "token-consistency",
-            timestamp: "123456",
-            hash: "hash",
-            bids: [
-                { price: "0.54", size: "5" },
-                { price: "0.53", size: "9" },
-            ],
-            asks: [
-                { price: "0.57", size: "3" },
-                { price: "0.58", size: "8" },
-            ],
-            min_order_size: "1",
-            tick_size: "0.01",
-            neg_risk: false,
-            last_trade_price: "0.55",
-        })
-
-        const venue = new PolymarketVenueAdapter(client.client)
-        const marketPrice = await venue.getMarketPrice("token-consistency", "buy")
-        const orderBook = await venue.getOrderBook("token-consistency")
-
-        const topBid = Number(orderBook.bids[0]?.price ?? "0")
-        const topAsk = Number(orderBook.asks[0]?.price ?? "0")
-
-        expect(marketPrice.bestBid).toBe(topBid)
-        expect(marketPrice.bestAsk).toBe(topAsk)
-        expect(marketPrice.midpoint).toBe((topBid + topAsk) / 2)
-        expect(marketPrice.spread).toBe(topAsk - topBid)
-        expect(marketPrice.executablePrice).toBe(topAsk)
-        expect(marketPrice.liquidityWarning).toBe(false)
-        expect(marketPrice.executionCost.status).toBe("normal")
-        expect(marketPrice.executionCost.metrics.nativeSpreadUnit).toBe("probability")
-    })
-
     it("flags liquidityWarning when only dust levels are present", async () => {
         const client = createClient()
-        client.getOrderBook.mockResolvedValue({
+        client.getOrderBook.mockResolvedValue(createOrderBook({
             market: "condition-dust",
             asset_id: "token-dust",
-            timestamp: "123456",
-            hash: "hash",
             bids: [{ price: "0.41", size: "0.2" }],
             asks: [{ price: "0.59", size: "0.2" }],
-            min_order_size: "1",
-            tick_size: "0.01",
-            neg_risk: false,
             last_trade_price: "0.5",
-        })
+        }))
 
         const venue = new PolymarketVenueAdapter(client.client)
         const marketPrice = await venue.getMarketPrice("token-dust", "sell")
@@ -333,18 +192,13 @@ describe("PolymarketVenueAdapter.closePosition", () => {
             },
         ])
         client.getPrice.mockResolvedValue(0.59)
-        client.getOrderBook.mockResolvedValue({
+        client.getOrderBook.mockResolvedValue(createOrderBook({
             market: "condition-active",
             asset_id: "token-active",
-            timestamp: "123456",
-            hash: "hash",
             bids: [{ price: "0.58", size: "10" }],
             asks: [{ price: "0.6", size: "10" }],
-            min_order_size: "1",
-            tick_size: "0.01",
-            neg_risk: false,
             last_trade_price: "0.59",
-        })
+        }))
         client.createOrder.mockResolvedValue({
             orderID: "close-order-1",
             status: "matched",

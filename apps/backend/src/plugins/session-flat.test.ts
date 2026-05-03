@@ -1,7 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { createLogger } from "@valiq-trading/core"
+import {
+    createLogger,
+    ExecutionPipeline,
+    type OrderPersistenceAdapter,
+    type OrderSnapshot,
+} from "@valiq-trading/core"
 import { OKXPlugin } from "./okx"
 import { MT5Plugin } from "./mt5.ts"
+import { executeAuditedSessionFlat } from "../session-flat"
 
 const logger = createLogger({ minLevel: "fatal" })
 
@@ -53,30 +59,32 @@ function createPolicy(app: "okx-swap" | "mt5") {
 
 describe("session-flat ownership scope", () => {
     afterEach(() => {
-        vi.useRealTimers()
+        vi.restoreAllMocks()
     })
 
     it("OKX closes and cancels only the active strategy-owned exposure", async () => {
-        vi.useFakeTimers()
-        vi.setSystemTime(new Date("2026-04-27T23:50:00.000Z"))
+        vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-04-27T23:50:00.000Z"))
 
-        const closeProviderPosition = vi.fn(async () => ({
-            orderId: "close-btc",
-            status: "filled",
-            filledQuantity: 1,
-            timestamp: Date.now(),
-        }))
-        const cancelOrder = vi.fn(async () => ({
-            orderId: "order-btc",
-            status: "cancelled",
-            filledQuantity: 0,
-            timestamp: Date.now(),
+        const sessionFlatExecute = vi.fn(async () => ({
+            cancelled: 1,
+            closed: 1,
+            cancelResults: [{
+                orderId: "order-btc",
+                status: "cancelled" as const,
+                filledQuantity: 0,
+                timestamp: Date.now(),
+            }],
+            closeResults: [{
+                orderId: "close-btc",
+                status: "filled" as const,
+                filledQuantity: 1,
+                timestamp: Date.now(),
+            }],
         }))
 
         const result = await new OKXPlugin().preRunHooks({
             venue: {
-                closeProviderPosition,
-                cancelOrder,
+                getMarketSnapshot: vi.fn(),
             } as never,
             policy: createPolicy("okx-swap"),
             strategyId: "btc-strategy",
@@ -113,35 +121,44 @@ describe("session-flat ownership scope", () => {
             },
             logger,
             createAlert: vi.fn(async () => {}),
+            sessionFlat: {
+                execute: sessionFlatExecute,
+            },
         })
 
         expect(result).toMatchObject({
             skip: true,
             providerStateChanged: true,
         })
-        expect(closeProviderPosition).toHaveBeenCalledTimes(1)
-        expect(closeProviderPosition).toHaveBeenCalledWith(expect.objectContaining({
-            instrument: "BTC-USDT-SWAP",
+        expect(sessionFlatExecute).toHaveBeenCalledTimes(1)
+        expect(sessionFlatExecute).toHaveBeenCalledWith(expect.objectContaining({
+            positions: [expect.objectContaining({
+                instrument: "BTC-USDT-SWAP",
+            })],
+            workingOrders: [expect.objectContaining({
+                orderId: "order-btc",
+            })],
         }))
-        expect(cancelOrder).toHaveBeenCalledTimes(1)
-        expect(cancelOrder).toHaveBeenCalledWith("order-btc")
     })
 
     it("MT5 closes by provider position and does not use account-wide bulk close", async () => {
-        vi.useFakeTimers()
-        vi.setSystemTime(new Date("2026-04-27T20:50:00.000Z"))
+        vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-04-27T20:50:00.000Z"))
 
-        const closeProviderPosition = vi.fn(async () => ({
-            orderId: "1600791764",
-            status: "filled",
-            filledQuantity: 0.01,
-            timestamp: Date.now(),
+        const sessionFlatExecute = vi.fn(async () => ({
+            cancelled: 0,
+            closed: 1,
+            cancelResults: [],
+            closeResults: [{
+                orderId: "1600791764",
+                status: "filled" as const,
+                filledQuantity: 0.01,
+                timestamp: Date.now(),
+            }],
         }))
         const closeAllPositions = vi.fn()
 
         const result = await new MT5Plugin().preRunHooks({
             venue: {
-                closeProviderPosition,
                 closeAllPositions,
                 cancelOrder: vi.fn(),
                 getAccountState: vi.fn(async () => ({
@@ -178,15 +195,142 @@ describe("session-flat ownership scope", () => {
             },
             logger,
             createAlert: vi.fn(async () => {}),
+            sessionFlat: {
+                execute: sessionFlatExecute,
+            },
         })
 
         expect(result).toMatchObject({
             skip: true,
             providerStateChanged: true,
         })
-        expect(closeProviderPosition).toHaveBeenCalledWith(expect.objectContaining({
-            providerPositionId: "1600791764",
+        expect(sessionFlatExecute).toHaveBeenCalledWith(expect.objectContaining({
+            positions: [expect.objectContaining({
+                providerPositionId: "1600791764",
+            })],
         }))
         expect(closeAllPositions).not.toHaveBeenCalled()
+    })
+
+    it("records audited close lifecycle state through the shared session-flat executor", async () => {
+        const snapshots = new Map<string, OrderSnapshot>()
+        const persistence: OrderPersistenceAdapter = {
+            async upsertOrder(snapshot) {
+                snapshots.set(snapshot.orderId, snapshot)
+            },
+            async logOrderTransition() {
+                return 1
+            },
+            async getOrder(orderId) {
+                return snapshots.get(orderId) ?? null
+            },
+            async listActiveOrders() {
+                return []
+            },
+        }
+        const venue = {
+            getPositions: vi.fn(async () => []),
+            getAccountState: vi.fn(),
+            submitOrder: vi.fn(),
+            cancelOrder: vi.fn(async (orderId: string) => ({
+                orderId,
+                status: "cancelled" as const,
+                filledQuantity: 0,
+                timestamp: Date.now(),
+            })),
+            modifyOrder: vi.fn(),
+            closePosition: vi.fn(),
+            closeProviderPosition: vi.fn(async () => ({
+                orderId: "order:BTC-USDT-SWAP:session-flat-close",
+                status: "filled" as const,
+                filledQuantity: 0.1,
+                fillPrice: 79_900,
+                timestamp: Date.now(),
+            })),
+            getOrderStatus: vi.fn(),
+        }
+        const pipeline = new ExecutionPipeline({
+            venue,
+            venueName: "okx",
+            policy: { dryRun: false },
+            logger,
+            orderPersistence: persistence,
+            runId: "run-session-flat",
+            strategyId: "strategy-session-flat",
+        })
+
+        const result = await executeAuditedSessionFlat({
+            pipeline,
+            logger,
+            strategyId: "strategy-session-flat",
+            app: "okx-swap",
+            positions: [{
+                instrument: "BTC-USDT-SWAP",
+                side: "long",
+                quantity: 0.1,
+                entryPrice: 80_000,
+                providerPositionId: "pos-1",
+            }],
+            workingOrders: [],
+            reason: "session-flat replay",
+        })
+
+        expect(result).toMatchObject({
+            cancelled: 0,
+            closed: 1,
+        })
+        expect(venue.closeProviderPosition).toHaveBeenCalledWith(
+            expect.objectContaining({ providerPositionId: "pos-1" }),
+            expect.objectContaining({
+                metadata: expect.objectContaining({
+                    action: "close",
+                    sessionFlat: true,
+                    providerPositionId: "pos-1",
+                }),
+            })
+        )
+        expect(snapshots.get("order:BTC-USDT-SWAP:session-flat-close")).toMatchObject({
+            status: "filled",
+            action: "close",
+            filledQuantity: 0.1,
+        })
+    })
+
+    it("fails closed when an audited session-flat close is rejected", async () => {
+        const pipeline = {
+            cancelOrder: vi.fn(async () => ({
+                orderId: "order-ok",
+                status: "cancelled" as const,
+                filledQuantity: 0,
+                timestamp: Date.now(),
+            })),
+            closeProviderPosition: vi.fn(async () => ({
+                result: {
+                    orderId: "close-rejected",
+                    status: "rejected" as const,
+                    filledQuantity: 0,
+                    timestamp: Date.now(),
+                },
+                validation: {
+                    allowed: true,
+                },
+            })),
+        }
+
+        await expect(executeAuditedSessionFlat({
+            pipeline,
+            logger,
+            strategyId: "strategy-session-flat",
+            app: "mt5",
+            positions: [{
+                instrument: "XAUUSD",
+                providerPositionId: "1600791764",
+                side: "long",
+                quantity: 0.01,
+                entryPrice: 3330,
+            }],
+            workingOrders: [],
+            reason: "session-flat replay",
+        })).rejects.toThrow("Audited session-flat failed")
     })
 })
