@@ -4,6 +4,7 @@ import { VENUE_APPS } from "@valiq-trading/core"
 import { requireUser } from "../authGuards"
 import { getLatestPositionsForStrategy } from "../instrumentClaims"
 import { isDryRunLedgerMetadata } from "../dryRunLedger"
+import { createDefaultKillSwitchState } from "../killSwitchState"
 
 function isNonNullable<T>(value: T): value is NonNullable<T> {
     return value !== null && value !== undefined
@@ -63,16 +64,7 @@ export const getDashboardOverview = query({
         }
 
         return {
-            systemState: systemState ?? {
-                globalKillSwitch: false,
-                appKillSwitches: {
-                    alpaca_options: false,
-                    polymarket: false,
-                    mt5: false,
-                    okx_swap: false,
-                },
-                updatedAt: 0,
-            },
+            systemState: systemState ?? createDefaultKillSwitchState(),
             appHealth,
             accountSnapshots: accountSnapshots.filter(isNonNullable),
             activeRuns: runs.filter((run) => run.status === "running"),

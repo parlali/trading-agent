@@ -1,4 +1,3 @@
-import type { ToolDefinition } from "@valiq-trading/agent"
 import {
     ExecutionCostTracker,
     type RiskValidator,
@@ -12,20 +11,16 @@ import {
     PolymarketVenueAdapter,
     resolvePolymarketCredentials,
 } from "@valiq-trading/polymarket"
-import {
-    createValiqBreakingNewsTool,
-    VALIQ_DATA_SECRET_KEYS,
-    getMissingValiqDataApiSecrets,
-    resolveValiqDataApiConfig,
-    ValiqDataClient,
-    ValiqDataAdapter,
-} from "@valiq-trading/valiq"
 import type {
     VenuePlugin,
     ExtraToolsConfig,
     PreRunHookConfig,
     PreRunHookResult,
 } from "../types"
+import {
+    appendValiqDataSecretKeys,
+    createValiqTools,
+} from "./shared"
 
 export class PolymarketPlugin implements VenuePlugin {
     readonly app = "polymarket"
@@ -33,10 +28,7 @@ export class PolymarketPlugin implements VenuePlugin {
     private readonly executionCostTracker = new ExecutionCostTracker()
 
     resolveSecretKeys(): string[] {
-        return [
-            ...POLYMARKET_RUNTIME_SECRET_KEYS,
-            ...VALIQ_DATA_SECRET_KEYS,
-        ]
+        return appendValiqDataSecretKeys(POLYMARKET_RUNTIME_SECRET_KEYS)
     }
 
     resolveAdditionalSecretKeys(_policy: Record<string, unknown>): string[] {
@@ -63,28 +55,11 @@ export class PolymarketPlugin implements VenuePlugin {
         return polymarketRiskValidators
     }
 
-    getExtraTools(config: ExtraToolsConfig): ToolDefinition[] {
-        const dataApi = resolveValiqDataApiConfig(config.secrets)
-
-        if (!dataApi) {
-            const missing = getMissingValiqDataApiSecrets(config.secrets)
-            config.runLogger.warn(
-                "Valiq tools NOT registered: missing secrets",
-                { missing }
-            )
-            return []
-        }
-
-        const dataClient = new ValiqDataClient({
-            apiUrl: dataApi.apiUrl,
-            apiKey: dataApi.apiKey,
-            logger: config.runLogger,
+    getExtraTools(config: ExtraToolsConfig) {
+        return createValiqTools(config, {
+            breakingNews: true,
+            missingDataLogMessage: "Valiq tools NOT registered: missing secrets",
         })
-        const data = new ValiqDataAdapter(dataClient)
-
-        return [
-            createValiqBreakingNewsTool(data),
-        ]
     }
 
     async preRunHooks(config: PreRunHookConfig): Promise<PreRunHookResult> {

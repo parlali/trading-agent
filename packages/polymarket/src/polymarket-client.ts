@@ -1,4 +1,4 @@
-import { createHmac, randomBytes } from "crypto"
+import { createHmac } from "crypto"
 import { privateKeyToAccount, type PrivateKeyAccount } from "viem/accounts"
 import {
     createExecutionError,
@@ -6,14 +6,52 @@ import {
     fetchWithTimeout,
     type ExecutionErrorDetail,
 } from "@valiq-trading/core"
-
-// ---------------------------------------------------------------------------
-// Contract addresses (Polygon mainnet)
-// ---------------------------------------------------------------------------
-
-const CTF_EXCHANGE = "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E" as const
-const NEG_RISK_CTF_EXCHANGE = "0xC5d563A36AE78145C45a50134d48A1215220f80a" as const
-const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000" as const
+import type {
+    CreateOrderParams,
+    PaginatedResponse,
+    PolymarketBalanceAllowance,
+    PolymarketCredentials,
+    PolymarketCurrentPosition,
+    PolymarketMarket,
+    PolymarketOpenOrder,
+    PolymarketOrderBook,
+    PolymarketSignatureType,
+    PolymarketTrade,
+    PostOrderResponse,
+} from "./polymarket-client-types"
+export type {
+    CreateOrderParams,
+    PolymarketBalanceAllowance,
+    PolymarketCredentials,
+    PolymarketCurrentPosition,
+    PolymarketMarket,
+    PolymarketOpenOrder,
+    PolymarketOrderBook,
+    PolymarketSignatureType,
+    PolymarketTrade,
+    PostOrderResponse,
+} from "./polymarket-client-types"
+import {
+    clampGammaEventLimit,
+    collectGammaMarkets,
+    mapGammaMarket,
+    mapRawMarket,
+    toSlugCandidate,
+    type GammaSearchResponse,
+    type RawGammaEvent,
+    type RawGammaMarket,
+    type RawMarket,
+} from "./polymarket-market-mappers"
+import {
+    AMOUNT_MULTIPLIER,
+    CTF_EXCHANGE,
+    NEG_RISK_CTF_EXCHANGE,
+    ORDER_EIP712_TYPES,
+    ZERO_ADDRESS,
+    calculateOrderAmounts,
+    generateSalt,
+    roundToTickSize,
+} from "./polymarket-order-signing"
 
 const DEFAULT_HOST = "https://clob.polymarket.com"
 const DEFAULT_GAMMA_HOST = "https://gamma-api.polymarket.com"
@@ -21,183 +59,9 @@ const DEFAULT_DATA_HOST = "https://data-api.polymarket.com"
 const DEFAULT_CHAIN_ID = 137
 const POLYMARKET_REQUEST_TIMEOUT_MS = 30_000
 
-// 6-decimal precision for USDC and conditional token amounts
-const AMOUNT_DECIMALS = 6
-const AMOUNT_MULTIPLIER = 10 ** AMOUNT_DECIMALS
-
-// ---------------------------------------------------------------------------
-// EIP-712 typed data for CTF Exchange orders
-// ---------------------------------------------------------------------------
-
-const ORDER_EIP712_TYPES = {
-    Order: [
-        { name: "salt", type: "uint256" },
-        { name: "maker", type: "address" },
-        { name: "signer", type: "address" },
-        { name: "taker", type: "address" },
-        { name: "tokenId", type: "uint256" },
-        { name: "makerAmount", type: "uint256" },
-        { name: "takerAmount", type: "uint256" },
-        { name: "expiration", type: "uint256" },
-        { name: "nonce", type: "uint256" },
-        { name: "feeRateBps", type: "uint256" },
-        { name: "side", type: "uint8" },
-        { name: "signatureType", type: "uint8" },
-    ],
-} as const
-
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
-
-export interface PolymarketCredentials {
-    /** Hex-encoded private key for the trading wallet (with or without 0x prefix) */
-    privateKey: string
-    /** L2 HMAC API key */
-    apiKey: string
-    /** L2 HMAC API secret (base64-encoded) */
-    apiSecret: string
-    /** L2 HMAC API passphrase */
-    apiPassphrase: string
-    /** CLOB API host. Defaults to https://clob.polymarket.com */
-    host?: string
-    /** Gamma API host. Defaults to https://gamma-api.polymarket.com */
-    gammaHost?: string
-    /** Data API host. Defaults to https://data-api.polymarket.com */
-    dataHost?: string
-    /** Chain ID. 137 for Polygon mainnet, 80002 for Amoy testnet */
-    chainId?: number
-    /** Polymarket profile or funder address for proxy wallet (type 1) */
-    funderAddress: string
-}
-
-export type PolymarketSignatureType = 1
-
-export interface PolymarketMarket {
-    conditionId: string
-    questionId: string
-    question: string
-    description: string
-    category: string
-    tokens: PolymarketToken[]
-    active: boolean
-    closed: boolean
-    negRisk: boolean
-    minimumOrderSize: number
-    minimumTickSize: number
-    volume?: number
-    liquidity?: number
-    endDateIso: string
-    marketSlug: string
-}
-
-export interface PolymarketToken {
-    tokenId: string
-    outcome: string
-}
-
-export interface PolymarketOrderBook {
-    market: string
-    assetId: string
-    bids: Array<{ price: string; size: string }>
-    asks: Array<{ price: string; size: string }>
-    hash: string
-    timestamp: string
-    min_order_size?: string
-    tick_size?: string
-    neg_risk?: boolean
-    last_trade_price?: string
-}
-
-export interface PostOrderResponse {
-    success: boolean
-    errorMsg: string
-    orderID: string
-    transactionsHashes: string[]
-    status: string
-}
-
-export interface PolymarketOpenOrder {
-    id: string
-    status: string
-    owner: string
-    market: string
-    asset_id: string
-    side: string
-    original_size: string
-    size_matched: string
-    price: string
-    outcome: string
-    order_type: string
-    created_at: string
-    expiration: string
-}
-
-export interface PolymarketTrade {
-    id: string
-    taker_order_id: string
-    market: string
-    asset_id: string
-    side: string
-    size: string
-    price: string
-    fee_rate_bps: string
-    status: string
-    match_time: string
-    outcome: string
-    trader_side: string
-}
-
-export interface PolymarketBalanceAllowance {
-    balance: string
-    allowances?: Record<string, string>
-}
-
-export interface PolymarketCurrentPosition {
-    proxyWallet: string
-    asset: string
-    conditionId: string
-    size: number
-    avgPrice: number
-    initialValue: number
-    currentValue: number
-    cashPnl: number
-    percentPnl: number
-    totalBought: number
-    realizedPnl: number
-    percentRealizedPnl: number
-    curPrice: number
-    redeemable: boolean
-    mergeable: boolean
-    title: string
-    slug: string
-    icon?: string
-    eventId?: string
-    eventSlug?: string
-    outcome: string
-    outcomeIndex?: number
-    oppositeOutcome?: string
-    oppositeAsset?: string
-    endDate: string
-    negativeRisk?: boolean
-}
-
-export interface CreateOrderParams {
-    tokenId: string
-    side: "buy" | "sell"
-    size: number
-    price: number
-    orderType: "GTC" | "GTD" | "FOK" | "FAK"
-    expiration?: number
-    negRisk?: boolean
-}
-
-interface PaginatedResponse<T> {
-    data: T[]
-    next_cursor: string
-    limit: number
-    count: number
-}
 
 export class PolymarketApiError extends Error {
     readonly status: number
@@ -849,171 +713,9 @@ export class PolymarketClient {
 // Raw API response types (internal)
 // ---------------------------------------------------------------------------
 
-interface RawMarket {
-    condition_id: string
-    question_id: string
-    question: string
-    description: string
-    category: string
-    tokens: Array<{ token_id: string; outcome: string }>
-    active: boolean
-    closed: boolean
-    neg_risk: boolean
-    minimum_order_size: number
-    minimum_tick_size: number
-    volume?: number | string
-    liquidity?: number | string
-    end_date_iso: string
-    market_slug: string
-}
-
-interface RawGammaEvent {
-    title?: string
-    description?: string
-    category?: string
-    tags?: Array<{
-        label?: string
-        slug?: string
-    }>
-    markets?: RawGammaMarket[]
-}
-
-interface RawGammaMarket {
-    conditionId?: string
-    questionID?: string
-    question?: string
-    description?: string
-    outcomes?: string
-    clobTokenIds?: string
-    active?: boolean
-    closed?: boolean
-    negRisk?: boolean
-    orderMinSize?: number
-    orderPriceMinTickSize?: number
-    volume?: number | string
-    liquidity?: number | string
-    liquidityNum?: number
-    volumeNum?: number
-    endDateIso?: string
-    endDate?: string
-    slug?: string
-}
-
-interface GammaSearchResponse {
-    events: RawGammaEvent[]
-}
-
-function mapRawMarket(raw: RawMarket): PolymarketMarket {
-    return {
-        conditionId: raw.condition_id,
-        questionId: raw.question_id,
-        question: raw.question,
-        description: raw.description,
-        category: raw.category,
-        tokens: raw.tokens.map((t) => ({ tokenId: t.token_id, outcome: t.outcome })),
-        active: raw.active,
-        closed: raw.closed,
-        negRisk: raw.neg_risk,
-        minimumOrderSize: raw.minimum_order_size,
-        minimumTickSize: raw.minimum_tick_size,
-        volume: typeof raw.volume === "number" ? raw.volume : raw.volume ? Number(raw.volume) : undefined,
-        liquidity: typeof raw.liquidity === "number" ? raw.liquidity : raw.liquidity ? Number(raw.liquidity) : undefined,
-        endDateIso: raw.end_date_iso,
-        marketSlug: raw.market_slug,
-    }
-}
-
-function collectGammaMarkets(
-    events: RawGammaEvent[],
-    fallbackCategory?: string
-): PolymarketMarket[] {
-    const markets = events.flatMap((event) =>
-        (event.markets ?? [])
-            .map((market) => mapGammaMarket(event, market, fallbackCategory))
-            .filter((market): market is PolymarketMarket => market !== null)
-    )
-
-    return markets
-        .filter((market) => market.active && !market.closed)
-        .sort((left, right) => (right.liquidity ?? 0) - (left.liquidity ?? 0))
-        .filter((market, index, all) =>
-            all.findIndex((candidate) => candidate.conditionId === market.conditionId) === index
-        )
-}
-
-function mapGammaMarket(
-    event: RawGammaEvent,
-    market: RawGammaMarket,
-    fallbackCategory?: string
-): PolymarketMarket | null {
-    const conditionId = asNonEmptyString(market.conditionId)
-    const question = asNonEmptyString(market.question)
-
-    if (!conditionId || !question) {
-        return null
-    }
-
-    const category = resolveGammaCategory(event, fallbackCategory)
-    const outcomes = parseJsonStringArray(market.outcomes)
-    const tokenIds = parseJsonStringArray(market.clobTokenIds)
-
-    return {
-        conditionId,
-        questionId: asNonEmptyString(market.questionID) ?? conditionId,
-        question,
-        description: asNonEmptyString(market.description) ?? asNonEmptyString(event.description) ?? question,
-        category,
-        tokens: outcomes.map((outcome, index) => ({
-            tokenId: tokenIds[index] ?? "",
-            outcome,
-        })).filter((token) => token.tokenId.length > 0),
-        active: market.active === true,
-        closed: market.closed === true,
-        negRisk: market.negRisk === true,
-        minimumOrderSize: typeof market.orderMinSize === "number" ? market.orderMinSize : 0,
-        minimumTickSize: typeof market.orderPriceMinTickSize === "number" ? market.orderPriceMinTickSize : 0.01,
-        volume: coerceNumber(market.volumeNum ?? market.volume),
-        liquidity: coerceNumber(market.liquidityNum ?? market.liquidity),
-        endDateIso: asNonEmptyString(market.endDateIso) ?? toIsoDate(market.endDate),
-        marketSlug: asNonEmptyString(market.slug) ?? conditionId,
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-function calculateOrderAmounts(
-    side: "buy" | "sell",
-    size: number,
-    price: number
-): { makerAmount: bigint; takerAmount: bigint } {
-    if (side === "buy") {
-        return {
-            makerAmount: toRawAmount(size * price),
-            takerAmount: toRawAmount(size),
-        }
-    }
-    return {
-        makerAmount: toRawAmount(size),
-        takerAmount: toRawAmount(size * price),
-    }
-}
-
-function toRawAmount(amount: number): bigint {
-    return BigInt(Math.floor(amount * AMOUNT_MULTIPLIER))
-}
-
-function roundToTickSize(price: number, tickSize: string): number {
-    const tick = Number(tickSize)
-    if (tick <= 0) return price
-    return Math.round(price / tick) * tick
-}
-
-function generateSalt(): bigint {
-    const bytes = randomBytes(32)
-    return BigInt("0x" + bytes.toString("hex"))
-}
 
 async function toPolymarketApiError(response: Response, path: string): Promise<PolymarketApiError> {
     let message = `${response.status} ${response.statusText}`
@@ -1068,82 +770,6 @@ function appendQueryParams(
 
     const queryString = searchParams.toString()
     return queryString ? `${url}?${queryString}` : url
-}
-
-function clampGammaEventLimit(limit: number): number {
-    return Math.max(1, Math.min(Math.ceil(limit), 50))
-}
-
-function parseJsonStringArray(value: string | undefined): string[] {
-    if (!value) {
-        return []
-    }
-
-    try {
-        const parsed = JSON.parse(value) as unknown
-        return Array.isArray(parsed)
-            ? parsed.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
-            : []
-    } catch {
-        return []
-    }
-}
-
-function resolveGammaCategory(
-    event: RawGammaEvent,
-    fallbackCategory?: string
-): string {
-    return (
-        asNonEmptyString(event.category) ??
-        event.tags?.find((tag) => asNonEmptyString(tag.slug) === fallbackCategory)?.label ??
-        event.tags?.find((tag) => asNonEmptyString(tag.label))?.label ??
-        fallbackCategory ??
-        "unknown"
-    )
-}
-
-function asNonEmptyString(value: unknown): string | undefined {
-    return typeof value === "string" && value.trim().length > 0
-        ? value.trim()
-        : undefined
-}
-
-function coerceNumber(value: number | string | undefined): number | undefined {
-    if (typeof value === "number") {
-        return Number.isFinite(value) ? value : undefined
-    }
-
-    if (typeof value === "string" && value.trim().length > 0) {
-        const parsed = Number(value)
-        return Number.isFinite(parsed) ? parsed : undefined
-    }
-
-    return undefined
-}
-
-function toIsoDate(value: string | undefined): string {
-    if (!value) {
-        return ""
-    }
-
-    const parsed = Date.parse(value)
-    if (!Number.isFinite(parsed)) {
-        return ""
-    }
-
-    return new Date(parsed).toISOString().slice(0, 10)
-}
-
-function toSlugCandidate(value: string): string | null {
-    const fromUrl = value.match(/polymarket\.com\/(?:event|market)\/([^/?#]+)/i)?.[1]
-    const raw = fromUrl ?? value
-    const normalized = raw
-        .trim()
-        .toLowerCase()
-        .replace(/[^a-z0-9]+/g, "-")
-        .replace(/^-+|-+$/g, "")
-
-    return normalized.length > 0 ? normalized : null
 }
 
 function normalizeBase64(value: string): string {

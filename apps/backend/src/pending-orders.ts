@@ -1,15 +1,10 @@
 import {
     isTerminalOrderStatus,
+    readFiniteNumber,
     type Logger,
     type OrderSnapshot,
     type PendingOrderContext,
 } from "@valiq-trading/core"
-
-function readFiniteNumber(value: unknown): number | undefined {
-    return typeof value === "number" && Number.isFinite(value)
-        ? value
-        : undefined
-}
 
 function buildPendingOrderContext(snapshot: OrderSnapshot): PendingOrderContext {
     const cancelAt = readFiniteNumber(snapshot.intent.metadata?.cancelAt)

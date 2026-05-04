@@ -1,13 +1,33 @@
-import type { PriceVerification } from "./price-verification"
-import type { OrderAction, OrderStatus } from "./orders"
+import type { App, VenueApp } from "./app-types"
+import type { PriceVerification } from "./price-verification-types"
+import type { OrderAction, OrderStatus } from "./order-types"
+import type { OrderIntent, OrderSide } from "./order-intent-types"
 
-export const VENUE_APPS = ["alpaca-options", "polymarket", "mt5", "okx-swap"] as const
-export const ACTIVE_VENUE_APPS = ["alpaca-options", "polymarket", "mt5", "okx-swap"] as const
-export type ActiveVenueApp = typeof ACTIVE_VENUE_APPS[number]
-export type VenueApp = typeof VENUE_APPS[number]
-
-export const APPS = [...VENUE_APPS, "backend"] as const
-export type App = typeof APPS[number]
+export {
+    ACTIVE_VENUE_APPS,
+    APPS,
+    DEFAULT_APP_KILL_SWITCHES,
+    VENUE_APPS,
+    VENUE_KILL_SWITCH_KEYS,
+    toVenueKillSwitchKey,
+} from "./app-types"
+export type {
+    ActiveVenueApp,
+    App,
+    AppKillSwitches,
+    VenueApp,
+    VenueKillSwitchKey,
+} from "./app-types"
+export {
+    ORDER_LEG_SIDES,
+    ORDER_SIDES,
+} from "./order-intent-types"
+export type {
+    OrderIntent,
+    OrderLeg,
+    OrderLegSide,
+    OrderSide,
+} from "./order-intent-types"
 
 export const SEVERITY_LEVELS = ["critical", "warning", "info"] as const
 export type Severity = typeof SEVERITY_LEVELS[number]
@@ -22,9 +42,6 @@ export const EVENT_TYPES = [
     "cancelled",
 ] as const
 export type EventType = typeof EVENT_TYPES[number]
-
-export const ORDER_SIDES = ["buy", "sell"] as const
-export type OrderSide = typeof ORDER_SIDES[number]
 
 export const EXECUTION_ERROR_SOURCES = [
     "risk_engine",
@@ -52,35 +69,6 @@ export const EXECUTION_SAFETY_FAULT_CATEGORIES = [
     "unknown",
 ] as const
 export type ExecutionSafetyFaultCategory = typeof EXECUTION_SAFETY_FAULT_CATEGORIES[number]
-
-export const ORDER_LEG_SIDES = [
-    "buy",
-    "sell",
-    "buy_to_open",
-    "sell_to_open",
-    "buy_to_close",
-    "sell_to_close",
-] as const
-export type OrderLegSide = typeof ORDER_LEG_SIDES[number]
-
-export interface OrderIntent {
-    instrument: string
-    side: OrderSide
-    quantity: number
-    orderType: "market" | "limit" | "stop" | "stop_limit"
-    limitPrice?: number
-    stopPrice?: number
-    timeInForce: "day" | "gtc" | "ioc" | "fok"
-    legs?: OrderLeg[]
-    metadata?: Record<string, unknown>
-}
-
-export interface OrderLeg {
-    instrument: string
-    side: OrderLegSide
-    quantity: number
-    limitPrice?: number
-}
 
 export interface ExecutionResult {
     orderId: string
@@ -259,24 +247,14 @@ export interface PortfolioFreshness {
     pendingOrderCount: number
 }
 
-export interface PortfolioPosition {
+export interface PortfolioPosition extends Position {
     app: VenueApp
     positionKey?: string
-    providerPositionId?: string
     strategyId?: string
     strategyName?: string
     ownershipStatus: ProviderOwnershipStatus
     expectedExternal?: boolean
-    instrument: string
-    side: "long" | "short"
-    quantity: number
-    entryPrice: number
-    currentPrice?: number
-    unrealizedPnl?: number
-    stopLoss?: number
-    takeProfit?: number
     syncedAt: number
-    metadata?: Record<string, unknown>
 }
 
 export interface PortfolioPendingOrder {

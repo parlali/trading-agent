@@ -22,7 +22,8 @@ export type { LLMClientConfig, ChatMessage, ToolCall, OpenRouterTool, LLMUsage, 
 export { ConversationManager } from "./conversation"
 export { buildSystemPrompt } from "./prompt-builder"
 export { executeAgentRun } from "./runtime"
-export type { AgentRuntimeConfig, AgentMessageLogger, AgentRunResult } from "./runtime"
+export type { AgentRuntimeConfig, AgentRunResult } from "./runtime"
+export type { AgentMessageLogger } from "@valiq-trading/core"
 export {
     createGetPositionsTool,
     createGetAccountTool,

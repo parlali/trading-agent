@@ -1,6 +1,8 @@
 import { query } from "../../_generated/server"
 import { v } from "convex/values"
 import { requireUser, requireServiceToken, requireUserOrServiceToken } from "../authGuards"
+import { createDefaultKillSwitchState } from "../killSwitchState"
+import { venueAppV } from "../validators"
 
 export const getSystemState = query({
     args: { serviceToken: v.optional(v.string()) },
@@ -12,16 +14,7 @@ export const getSystemState = query({
             .first()
 
         if (!state) {
-            return {
-                globalKillSwitch: false,
-                appKillSwitches: {
-                    alpaca_options: false,
-                    polymarket: false,
-                    mt5: false,
-                    okx_swap: false,
-                },
-                updatedAt: 0,
-            }
+            return createDefaultKillSwitchState()
         }
 
         return {
@@ -43,12 +36,7 @@ export const getAppHealth = query({
 export const getManualRunRequests = query({
     args: {
         serviceToken: v.string(),
-        app: v.union(
-            v.literal("alpaca-options"),
-            v.literal("polymarket"),
-            v.literal("mt5"),
-            v.literal("okx-swap")
-        ),
+        app: venueAppV,
     },
     handler: async (ctx, args) => {
         requireServiceToken(args.serviceToken)

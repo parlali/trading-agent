@@ -1,4 +1,4 @@
-import type { VenueApp } from "./types"
+import type { VenueApp } from "./app-types"
 
 export const EXECUTION_COST_UNITS = ["price", "probability", "pips", "points"] as const
 export type ExecutionCostUnit = typeof EXECUTION_COST_UNITS[number]

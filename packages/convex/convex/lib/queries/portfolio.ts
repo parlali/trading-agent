@@ -11,6 +11,7 @@ import type { Doc } from "../../_generated/dataModel"
 import { requireUser, requireUserOrServiceToken } from "../authGuards"
 import { venueAppV } from "../validators"
 import { isDryRunLedgerMetadata } from "../dryRunLedger"
+import { parseJson } from "../mutations/portfolioUtils"
 
 const PORTFOLIO_STALE_AFTER_MS = 10 * 60 * 1000
 
@@ -137,6 +138,8 @@ export const getPortfolioPositions = query({
                     const strategy = strategyMap.get(String(row.strategyId))
                     return {
                         app: row.app,
+                        positionKey: row.positionKey,
+                        providerPositionId: row.providerPositionId,
                         strategyId: String(row.strategyId),
                         strategyName: strategy?.name,
                         ownershipStatus: "owned" as const,
@@ -146,8 +149,8 @@ export const getPortfolioPositions = query({
                         entryPrice: row.entryPrice,
                         currentPrice: row.currentPrice,
                         unrealizedPnl: row.unrealizedPnl,
-                        stopLoss: undefined,
-                        takeProfit: undefined,
+                        stopLoss: row.stopLoss,
+                        takeProfit: row.takeProfit,
                         syncedAt: row.syncedAt,
                         metadata: {
                             ...(parseJson<Record<string, unknown>>(row.metadata) ?? {}),
@@ -410,18 +413,6 @@ function isStale(lastVerifiedAt: number | undefined): boolean {
     }
 
     return Date.now() - lastVerifiedAt > PORTFOLIO_STALE_AFTER_MS
-}
-
-function parseJson<T>(value: string | undefined): T | undefined {
-    if (!value) {
-        return undefined
-    }
-
-    try {
-        return JSON.parse(value) as T
-    } catch {
-        return undefined
-    }
 }
 
 function extractOrderId(event: Doc<"trade_events">): string | undefined {

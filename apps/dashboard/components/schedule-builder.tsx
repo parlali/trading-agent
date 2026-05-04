@@ -38,6 +38,27 @@ const DAY_CRON_VALUES = [1, 2, 3, 4, 5, 6, 0]
 const HOURS = Array.from({ length: 24 }, (_, i) => String(i).padStart(2, "0"))
 const MINUTES = Array.from({ length: 60 }, (_, i) => String(i).padStart(2, "0"))
 
+function HourSelect({
+    value,
+    onValueChange,
+}: {
+    value: string
+    onValueChange: (value: string) => void
+}) {
+    return (
+        <Select value={value} onValueChange={onValueChange}>
+            <SelectTrigger className="w-20">
+                <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+                {HOURS.map((hour) => (
+                    <SelectItem key={hour} value={hour}>{hour}:00</SelectItem>
+                ))}
+            </SelectContent>
+        </Select>
+    )
+}
+
 const DEFAULT_STATE: ScheduleState = {
     runMode: "fixed-time",
     intervalUnit: "minutes",
@@ -346,33 +367,15 @@ export function ScheduleBuilder({ value, onChange }: ScheduleBuilderProps) {
                     {state.hourWindowEnabled ? (
                         <div className="flex items-center gap-2">
                             <Label className="text-xs text-muted-foreground whitespace-nowrap">From</Label>
-                            <Select
+                            <HourSelect
                                 value={state.hourStart}
                                 onValueChange={(v) => update({ hourStart: v })}
-                            >
-                                <SelectTrigger className="w-20">
-                                    <SelectValue />
-                                </SelectTrigger>
-                                <SelectContent>
-                                    {HOURS.map((h) => (
-                                        <SelectItem key={h} value={h}>{h}:00</SelectItem>
-                                    ))}
-                                </SelectContent>
-                            </Select>
+                            />
                             <Label className="text-xs text-muted-foreground whitespace-nowrap">to</Label>
-                            <Select
+                            <HourSelect
                                 value={state.hourEnd}
                                 onValueChange={(v) => update({ hourEnd: v })}
-                            >
-                                <SelectTrigger className="w-20">
-                                    <SelectValue />
-                                </SelectTrigger>
-                                <SelectContent>
-                                    {HOURS.map((h) => (
-                                        <SelectItem key={h} value={h}>{h}:00</SelectItem>
-                                    ))}
-                                </SelectContent>
-                            </Select>
+                            />
                             <span className="text-xs text-muted-foreground">UTC</span>
                         </div>
                     ) : null}

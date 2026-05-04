@@ -6,9 +6,10 @@ import {
     appV,
     orderStatusV,
     orderActionV,
-    orderTransitionTypeV,
     severityV,
     eventTypeV,
+    heartbeatStatusV,
+    agentLogRoleV,
     claimSourceV,
     portfolioProviderStatusV,
     providerOwnershipStatusV,
@@ -16,7 +17,17 @@ import {
     executionSafetyFaultCategoryV,
     runSystemContextDigestV,
     strategyCooldownReasonV,
+    orderRowFieldsV,
+    orderTransitionRowFieldsV,
+    positionValueFieldsV,
+    accountSnapshotValueFieldsV,
 } from "./lib/validators"
+
+const heartbeatStateFields = {
+    app: appV,
+    status: heartbeatStatusV,
+    metadata: v.optional(v.any()),
+}
 
 export default defineSchema({
     ...authTables,
@@ -25,9 +36,9 @@ export default defineSchema({
         app: venueAppV,
         name: v.string(),
         enabled: v.boolean(),
-        schedule: v.string(), // cron expression
-        policy: v.any(), // typed per app, validated at runtime with zod
-        context: v.string(), // freeform LLM prompt context
+        schedule: v.string(),
+        policy: v.any(),
+        context: v.string(),
         createdAt: v.number(),
         updatedAt: v.number(),
     })
@@ -81,12 +92,7 @@ export default defineSchema({
         runId: v.id("strategy_runs"),
         strategyId: v.id("strategies"),
         sequence: v.number(),
-        role: v.union(
-            v.literal("system"),
-            v.literal("user"),
-            v.literal("assistant"),
-            v.literal("tool")
-        ),
+        role: agentLogRoleV,
         content: v.string(),
         toolName: v.optional(v.string()),
         toolInput: v.optional(v.string()),
@@ -101,7 +107,7 @@ export default defineSchema({
         strategyId: v.id("strategies"),
         app: v.optional(venueAppV),
         eventType: eventTypeV,
-        payload: v.string(), // JSON stringified event data
+        payload: v.string(),
         timestamp: v.number(),
     })
         .index("by_run", ["runId"])
@@ -109,35 +115,7 @@ export default defineSchema({
         .index("by_app_timestamp", ["app", "timestamp"]),
 
     orders: defineTable({
-        orderId: v.string(),
-        providerOrderId: v.string(),
-        providerOrderAliases: v.array(v.string()),
-        runId: v.id("strategy_runs"),
-        strategyId: v.id("strategies"),
-        app: v.optional(venueAppV),
-        venue: v.string(),
-        instrument: v.string(),
-        status: orderStatusV,
-        action: orderActionV,
-        quantity: v.number(),
-        filledQuantity: v.number(),
-        remainingQuantity: v.number(),
-        avgFillPrice: v.optional(v.number()),
-        submittedAt: v.number(),
-        updatedAt: v.number(),
-        intent: v.any(),
-        metadata: v.optional(v.any()),
-        lastTransitionSequence: v.number(),
-        polling: v.object({
-            pollIntervalMs: v.number(),
-            timeoutMs: v.number(),
-            startedAt: v.number(),
-            lastCheckedAt: v.number(),
-            nextCheckAt: v.optional(v.number()),
-            timedOutAt: v.optional(v.number()),
-            lastError: v.optional(v.string()),
-            resumeToken: v.optional(v.string()),
-        }),
+        ...orderRowFieldsV,
     })
         .index("by_order_id", ["orderId"])
         .index("by_provider_order_id", ["providerOrderId"])
@@ -146,16 +124,7 @@ export default defineSchema({
         .index("by_run", ["runId"]),
 
     order_transitions: defineTable({
-        orderId: v.string(),
-        runId: v.id("strategy_runs"),
-        strategyId: v.id("strategies"),
-        sequence: v.number(),
-        type: orderTransitionTypeV,
-        status: orderStatusV,
-        previousStatus: v.optional(orderStatusV),
-        reason: v.optional(v.string()),
-        details: v.optional(v.any()),
-        timestamp: v.number(),
+        ...orderTransitionRowFieldsV,
     })
         .index("by_order_sequence", ["orderId", "sequence"])
         .index("by_run", ["runId"]),
@@ -163,13 +132,10 @@ export default defineSchema({
     positions: defineTable({
         strategyId: v.id("strategies"),
         app: venueAppV,
-        instrument: v.string(),
-        side: v.union(v.literal("long"), v.literal("short")),
-        quantity: v.number(),
-        entryPrice: v.number(),
-        currentPrice: v.optional(v.number()),
-        unrealizedPnl: v.optional(v.number()),
-        metadata: v.optional(v.string()), // JSON stringified extra data (legs, etc.)
+        positionKey: v.optional(v.string()),
+        providerPositionId: v.optional(v.string()),
+        ...positionValueFieldsV,
+        metadata: v.optional(v.string()),
         syncedAt: v.number(),
     })
         .index("by_strategy", ["strategyId"])
@@ -225,36 +191,18 @@ export default defineSchema({
     }).index("by_key", ["key"]),
 
     app_heartbeats: defineTable({
-        app: appV,
-        status: v.union(
-            v.literal("healthy"),
-            v.literal("degraded"),
-            v.literal("unhealthy")
-        ),
+        ...heartbeatStateFields,
         lastHeartbeat: v.number(),
-        metadata: v.optional(v.any()),
     }).index("by_app", ["app"]),
 
     app_heartbeat_liveness: defineTable({
-        app: appV,
-        status: v.union(
-            v.literal("healthy"),
-            v.literal("degraded"),
-            v.literal("unhealthy")
-        ),
+        ...heartbeatStateFields,
         lastHeartbeat: v.number(),
-        metadata: v.optional(v.any()),
         updatedAt: v.number(),
     }).index("by_app", ["app"]),
 
     app_heartbeat_snapshots: defineTable({
-        app: appV,
-        status: v.union(
-            v.literal("healthy"),
-            v.literal("degraded"),
-            v.literal("unhealthy")
-        ),
-        metadata: v.optional(v.any()),
+        ...heartbeatStateFields,
         metadataHash: v.string(),
         lastSnapshotAt: v.number(),
         lastChangedAt: v.number(),
@@ -274,13 +222,7 @@ export default defineSchema({
     account_snapshots: defineTable({
         app: appV,
         venue: v.string(),
-        balance: v.number(),
-        equity: v.optional(v.number()),
-        buyingPower: v.number(),
-        marginUsed: v.number(),
-        marginAvailable: v.number(),
-        openPnl: v.number(),
-        dayPnl: v.number(),
+        ...accountSnapshotValueFieldsV,
         timestamp: v.number(),
     })
         .index("by_app", ["app"])
@@ -313,14 +255,7 @@ export default defineSchema({
         strategyId: v.optional(v.id("strategies")),
         ownershipStatus: providerOwnershipStatusV,
         expectedExternal: v.optional(v.boolean()),
-        instrument: v.string(),
-        side: v.union(v.literal("long"), v.literal("short")),
-        quantity: v.number(),
-        entryPrice: v.number(),
-        currentPrice: v.optional(v.number()),
-        unrealizedPnl: v.optional(v.number()),
-        stopLoss: v.optional(v.number()),
-        takeProfit: v.optional(v.number()),
+        ...positionValueFieldsV,
         metadata: v.optional(v.string()),
         syncedAt: v.number(),
     })

@@ -5,7 +5,7 @@ import {
     createToolDefinition,
     genericAdjustmentParamsSchema,
 } from "../tool-contracts"
-import { toExecutionToolResult } from "./execution-response"
+import { executeToolIntent } from "./execution-response"
 
 export function createProposeAdjustmentTool(pipeline: ExecutionPipeline): ToolDefinition {
     return createToolDefinition({
@@ -13,11 +13,6 @@ export function createProposeAdjustmentTool(pipeline: ExecutionPipeline): ToolDe
         venue: "alpaca-options",
         handler: async (params) => {
             const validated = params as z.infer<typeof genericAdjustmentParamsSchema>
-            const [positions, account] = await Promise.all([
-                pipeline.getPositions(),
-                pipeline.getAccountState(),
-            ])
-
             const intent: OrderIntent = {
                 instrument: validated.instrument,
                 side: validated.side,
@@ -32,14 +27,7 @@ export function createProposeAdjustmentTool(pipeline: ExecutionPipeline): ToolDe
                 },
             }
 
-            const { result, validation } = await pipeline.executeIntent(
-                intent,
-                account,
-                positions,
-                { action: "adjustment" }
-            )
-
-            return toExecutionToolResult(result, { validation })
+            return await executeToolIntent(pipeline, intent, { action: "adjustment" })
         },
     })
 }

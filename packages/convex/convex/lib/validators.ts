@@ -31,6 +31,8 @@ export const orderActionV = stringLiterals(ORDER_ACTIONS)
 export const orderTransitionTypeV = stringLiterals(ORDER_TRANSITION_TYPES)
 export const severityV = stringLiterals(SEVERITY_LEVELS)
 export const eventTypeV = stringLiterals(EVENT_TYPES)
+export const heartbeatStatusV = stringLiterals(["healthy", "degraded", "unhealthy"])
+export const agentLogRoleV = stringLiterals(["system", "user", "assistant", "tool"])
 
 export const claimSourceV = v.union(
     v.literal("position"),
@@ -41,6 +43,29 @@ export const portfolioProviderStatusV = stringLiterals(PORTFOLIO_PROVIDER_STATUS
 export const providerOwnershipStatusV = stringLiterals(PROVIDER_OWNERSHIP_STATUSES)
 export const strategySafetyStateV = stringLiterals(STRATEGY_SAFETY_STATES)
 export const executionSafetyFaultCategoryV = stringLiterals(EXECUTION_SAFETY_FAULT_CATEGORIES)
+
+export const positionSideV = v.union(v.literal("long"), v.literal("short"))
+
+export const positionValueFieldsV = {
+    instrument: v.string(),
+    side: positionSideV,
+    quantity: v.number(),
+    entryPrice: v.number(),
+    currentPrice: v.optional(v.number()),
+    unrealizedPnl: v.optional(v.number()),
+    stopLoss: v.optional(v.number()),
+    takeProfit: v.optional(v.number()),
+}
+
+export const accountSnapshotValueFieldsV = {
+    balance: v.number(),
+    equity: v.optional(v.number()),
+    buyingPower: v.number(),
+    marginUsed: v.number(),
+    marginAvailable: v.number(),
+    openPnl: v.number(),
+    dayPnl: v.number(),
+}
 
 export const strategyCooldownReasonV = v.union(
     v.literal("day_drawdown"),
@@ -82,3 +107,58 @@ export const runSystemContextDigestV = v.object({
         cancelAt: v.optional(v.number()),
     })),
 })
+
+export const orderPollingV = v.object({
+    pollIntervalMs: v.number(),
+    timeoutMs: v.number(),
+    startedAt: v.number(),
+    lastCheckedAt: v.number(),
+    nextCheckAt: v.optional(v.number()),
+    timedOutAt: v.optional(v.number()),
+    lastError: v.optional(v.string()),
+    resumeToken: v.optional(v.string()),
+})
+
+export const orderCoreFieldsV = {
+    orderId: v.string(),
+    providerOrderId: v.string(),
+    providerOrderAliases: v.array(v.string()),
+    runId: v.id("strategy_runs"),
+    strategyId: v.id("strategies"),
+    venue: v.string(),
+    instrument: v.string(),
+    status: orderStatusV,
+    action: orderActionV,
+    quantity: v.number(),
+    filledQuantity: v.number(),
+    remainingQuantity: v.number(),
+    avgFillPrice: v.optional(v.number()),
+    submittedAt: v.number(),
+    updatedAt: v.number(),
+    intent: v.any(),
+    metadata: v.optional(v.any()),
+    lastTransitionSequence: v.number(),
+    polling: orderPollingV,
+}
+
+export const orderRowFieldsV = {
+    ...orderCoreFieldsV,
+    app: v.optional(venueAppV),
+}
+
+export const orderTransitionCoreFieldsV = {
+    orderId: v.string(),
+    runId: v.id("strategy_runs"),
+    strategyId: v.id("strategies"),
+    type: orderTransitionTypeV,
+    status: orderStatusV,
+    previousStatus: v.optional(orderStatusV),
+    reason: v.optional(v.string()),
+    details: v.optional(v.any()),
+    timestamp: v.number(),
+}
+
+export const orderTransitionRowFieldsV = {
+    ...orderTransitionCoreFieldsV,
+    sequence: v.number(),
+}

@@ -6,18 +6,20 @@ import { DEFAULT_STALE_RUN_TIMEOUT_MS } from "@valiq-trading/core"
 import { requireServiceToken } from "../authGuards"
 import { getClaimInstrumentsForOrder, reconcileOrderInstrumentClaim } from "../instrumentClaims"
 import { incrementControlPlaneMetric } from "../controlPlaneMetrics"
-import { runSystemContextDigestV } from "../validators"
+import {
+    agentLogRoleV,
+    eventTypeV,
+    orderCoreFieldsV,
+    orderTransitionCoreFieldsV,
+    runSystemContextDigestV,
+    venueAppV,
+} from "../validators"
 
 export const createRun = mutation({
     args: {
         serviceToken: v.string(),
         strategyId: v.id("strategies"),
-        app: v.union(
-            v.literal("alpaca-options"),
-            v.literal("polymarket"),
-            v.literal("mt5"),
-            v.literal("okx-swap")
-        ),
+        app: venueAppV,
         trigger: v.optional(v.union(
             v.literal("cron"),
             v.literal("manual"),
@@ -237,12 +239,7 @@ export const logAgentMessage = mutation({
         runId: v.id("strategy_runs"),
         strategyId: v.id("strategies"),
         sequence: v.number(),
-        role: v.union(
-            v.literal("system"),
-            v.literal("user"),
-            v.literal("assistant"),
-            v.literal("tool")
-        ),
+        role: agentLogRoleV,
         content: v.string(),
         toolName: v.optional(v.string()),
         toolInput: v.optional(v.string()),
@@ -269,15 +266,7 @@ export const logTradeEvent = mutation({
         serviceToken: v.string(),
         runId: v.id("strategy_runs"),
         strategyId: v.id("strategies"),
-        eventType: v.union(
-            v.literal("intent"),
-            v.literal("validation"),
-            v.literal("submission"),
-            v.literal("fill_update"),
-            v.literal("filled"),
-            v.literal("rejected"),
-            v.literal("cancelled")
-        ),
+        eventType: eventTypeV,
         payload: v.string(),
     },
     handler: async (ctx, args) => {
@@ -297,48 +286,7 @@ export const logTradeEvent = mutation({
 export const upsertOrder = mutation({
     args: {
         serviceToken: v.string(),
-        orderId: v.string(),
-        providerOrderId: v.string(),
-        providerOrderAliases: v.array(v.string()),
-        runId: v.id("strategy_runs"),
-        strategyId: v.id("strategies"),
-        venue: v.string(),
-        instrument: v.string(),
-        status: v.union(
-            v.literal("pending"),
-            v.literal("partially_filled"),
-            v.literal("filled"),
-            v.literal("rejected"),
-            v.literal("cancelled"),
-            v.literal("expired"),
-            v.literal("timed_out")
-        ),
-        action: v.union(
-            v.literal("entry"),
-            v.literal("adjustment"),
-            v.literal("close"),
-            v.literal("modify"),
-            v.literal("cancel")
-        ),
-        quantity: v.number(),
-        filledQuantity: v.number(),
-        remainingQuantity: v.number(),
-        avgFillPrice: v.optional(v.number()),
-        submittedAt: v.number(),
-        updatedAt: v.number(),
-        intent: v.any(),
-        metadata: v.optional(v.any()),
-        lastTransitionSequence: v.number(),
-        polling: v.object({
-            pollIntervalMs: v.number(),
-            timeoutMs: v.number(),
-            startedAt: v.number(),
-            lastCheckedAt: v.number(),
-            nextCheckAt: v.optional(v.number()),
-            timedOutAt: v.optional(v.number()),
-            lastError: v.optional(v.string()),
-            resumeToken: v.optional(v.string()),
-        }),
+        ...orderCoreFieldsV,
     },
     handler: async (ctx, args) => {
         requireServiceToken(args.serviceToken)
@@ -349,40 +297,7 @@ export const upsertOrder = mutation({
 export const logOrderTransition = mutation({
     args: {
         serviceToken: v.string(),
-        orderId: v.string(),
-        runId: v.id("strategy_runs"),
-        strategyId: v.id("strategies"),
-        type: v.union(
-            v.literal("submission"),
-            v.literal("status_change"),
-            v.literal("modify_attempt"),
-            v.literal("cancel_attempt"),
-            v.literal("timeout_decision"),
-            v.literal("terminal")
-        ),
-        status: v.union(
-            v.literal("pending"),
-            v.literal("partially_filled"),
-            v.literal("filled"),
-            v.literal("rejected"),
-            v.literal("cancelled"),
-            v.literal("expired"),
-            v.literal("timed_out")
-        ),
-        previousStatus: v.optional(
-            v.union(
-                v.literal("pending"),
-                v.literal("partially_filled"),
-                v.literal("filled"),
-                v.literal("rejected"),
-                v.literal("cancelled"),
-                v.literal("expired"),
-                v.literal("timed_out")
-            )
-        ),
-        reason: v.optional(v.string()),
-        details: v.optional(v.any()),
-        timestamp: v.number(),
+        ...orderTransitionCoreFieldsV,
     },
     handler: async (ctx, args) => {
         requireServiceToken(args.serviceToken)

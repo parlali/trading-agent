@@ -19,9 +19,9 @@ export type {
 } from "./okx-client"
 export { OKXVenueAdapter } from "./venue-adapter"
 export type {
-    OKXInstrumentRules,
     OKXMarketPrice,
 } from "./venue-adapter"
+export type { OKXInstrumentRules } from "./venue-adapter-utils"
 export { okxRiskValidators } from "./risk-rules"
 export {
     OKX_RUNTIME_SECRET_KEYS,

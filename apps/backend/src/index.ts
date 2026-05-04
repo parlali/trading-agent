@@ -14,19 +14,6 @@ import { startManualRunPolling, stopManualRunPolling } from "./manual-runs"
 import { performStartupSync, startPeriodicSync, stopPeriodicSync } from "./sync"
 import { writeHeartbeatSnapshot } from "./health-write"
 
-declare const Bun: {
-    env: Record<string, string | undefined>
-    serve(config: {
-        port: number
-        fetch(request: Request): Response | Promise<Response>
-    }): unknown
-}
-
-declare const process: {
-    on(event: string, listener: () => void): void
-    exit(code?: number): void
-}
-
 async function main(): Promise<void> {
     await resolveAllSecrets()
     const recoveredRuns = await backend.recoverRunningRuns()

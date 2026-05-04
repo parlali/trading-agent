@@ -1,16 +1,6 @@
 import { action } from "./_generated/server"
 import { v } from "convex/values"
-import { requireServiceToken } from "./lib/authGuards"
-
-function readEnv(): Record<string, string | undefined> {
-    return (
-        globalThis as {
-            process?: {
-                env?: Record<string, string | undefined>
-            }
-        }
-    ).process?.env ?? {}
-}
+import { readConvexEnv, requireServiceToken } from "./lib/authGuards"
 
 export const resolveSecrets = action({
     args: {
@@ -21,7 +11,7 @@ export const resolveSecrets = action({
         requireServiceToken(args.serviceToken)
 
         const resolved: Record<string, string | null> = {}
-        const env = readEnv()
+        const env = readConvexEnv()
 
         for (const key of args.keys) {
             resolved[key] = env[key] ?? null

@@ -1,8 +1,6 @@
 import { z } from "zod"
 import {
     ACTIVE_ORDER_STATUSES,
-    createExecutionErrorDetail,
-    formatExecutionError,
     getRiskBudgetBase,
     type ExecutionErrorDetail,
     type ExecutionPipeline,
@@ -16,6 +14,7 @@ import {
     computeTakeProfitFromRR,
     computeImpliedRR,
 } from "@valiq-trading/mt5"
+import { createRejectedExecutionToolResult } from "./execution-response"
 
 const optionalNumberField = z.preprocess(
     (value) => value === null ? undefined : value,
@@ -267,21 +266,7 @@ function resolveEntryPrice(
 }
 
 function rejected(error: string): MT5OrderResult {
-    const errorDetail = createExecutionErrorDetail("pre_validation", error, {
-        retryable: false,
-    })
-
-    return {
-        orderId: "",
-        status: "rejected",
-        filledQuantity: 0,
-        error: formatExecutionError(errorDetail),
-        errorDetail,
-        riskValidation: {
-            allowed: false,
-            reason: errorDetail.message,
-        },
-    }
+    return createRejectedExecutionToolResult(error)
 }
 
 async function checkMT5ExposureGuards(

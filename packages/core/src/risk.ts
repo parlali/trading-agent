@@ -1,4 +1,4 @@
-import type { OrderAction } from "./orders"
+import { getCurrentTimeInTimezone, padTime } from "./runtime-time"
 import type {
     OrderIntent,
     AccountState,
@@ -6,13 +6,25 @@ import type {
     ValidationResult,
     StrategySafetyState,
 } from "./types"
+import type { RiskValidator } from "./risk-types"
+import {
+    isCloseOrCancelIntent,
+    isRiskReducingIntent,
+} from "./risk-intents"
 
-export type RiskValidator = (
-    intent: OrderIntent,
-    policy: Record<string, unknown>,
-    state: AccountState,
-    positions: Position[]
-) => ValidationResult
+export type { RiskValidator } from "./risk-types"
+export {
+    getIntentLifecycleAction,
+    isCloseOrCancelIntent,
+    isRiskReducingAction,
+    isRiskReducingIntent,
+} from "./risk-intents"
+
+export const ALLOWED_VALIDATION_RESULT = { allowed: true } as const
+
+export function rejectRisk(reason: string): { allowed: false; reason: string } {
+    return { allowed: false, reason }
+}
 
 export const duplicateOrderValidator: RiskValidator = (intent, _policy, _state, positions) => {
     const intentSide = intent.side === "buy" ? "long" : "short"
@@ -34,35 +46,40 @@ export const BASE_RISK_VALIDATORS: readonly RiskValidator[] = [
     duplicateOrderValidator,
 ]
 
-export function getIntentLifecycleAction(intent: OrderIntent): OrderAction | undefined {
-    const action = intent.metadata?.action
-    if (
-        action === "entry" ||
-        action === "adjustment" ||
-        action === "close" ||
-        action === "modify" ||
-        action === "cancel"
-    ) {
-        return action
+export function openIntentRiskValidator(validate: RiskValidator): RiskValidator {
+    return (intent, policy, state, positions) => {
+        if (isCloseOrCancelIntent(intent)) {
+            return ALLOWED_VALIDATION_RESULT
+        }
+
+        return validate(intent, policy, state, positions)
     }
-    return undefined
 }
 
-export function isRiskReducingAction(action: OrderAction | undefined): boolean {
-    return action === "close" || action === "cancel"
-}
+export function validateTradingHoursWindow(args: {
+    start: string
+    end: string
+    timezone: string
+}): ValidationResult {
+    const now = getCurrentTimeInTimezone(args.timezone)
+    const [startHour, startMinute] = args.start.split(":").map(Number) as [number, number]
+    const [endHour, endMinute] = args.end.split(":").map(Number) as [number, number]
 
-export function isRiskReducingIntent(intent: OrderIntent): boolean {
-    const action = getIntentLifecycleAction(intent)
-    if (isRiskReducingAction(action)) {
-        return true
+    const currentMinutes = now.hours * 60 + now.minutes
+    const startMinutes = startHour * 60 + startMinute
+    const endMinutes = endHour * 60 + endMinute
+
+    const withinWindow = startMinutes <= endMinutes
+        ? currentMinutes >= startMinutes && currentMinutes < endMinutes
+        : currentMinutes >= startMinutes || currentMinutes < endMinutes
+
+    if (!withinWindow) {
+        return rejectRisk(
+            `Outside trading hours. Current time: ${padTime(now.hours)}:${padTime(now.minutes)} ${args.timezone}. Allowed: ${args.start}-${args.end}`
+        )
     }
 
-    if (action === "modify" || action === "adjustment") {
-        return intent.metadata?.riskReducing === true
-    }
-
-    return false
+    return ALLOWED_VALIDATION_RESULT
 }
 
 export function createStrategySafetyValidator(args: {

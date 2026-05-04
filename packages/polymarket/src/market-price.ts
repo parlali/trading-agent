@@ -6,7 +6,7 @@ import {
 } from "@valiq-trading/core"
 import type { PolymarketClient } from "./polymarket-client"
 
-export interface PolymarketMarketPrice {
+interface PolymarketRawMarketPrice {
     tokenId: string
     midpoint: number
     bestBid: number
@@ -17,6 +17,9 @@ export interface PolymarketMarketPrice {
     liquidityWarning?: boolean
     minimumOrderSize?: number
     lastTradePrice?: number
+}
+
+export interface PolymarketMarketPrice extends PolymarketRawMarketPrice {
     executionCost: ExecutionCostAssessment
 }
 
@@ -43,19 +46,6 @@ export async function getPolymarketMarketPrice(args: {
         ...current,
         executionCost,
     }
-}
-
-interface PolymarketRawMarketPrice {
-    tokenId: string
-    midpoint: number
-    bestBid: number
-    bestAsk: number
-    spread: number
-    executablePrice?: number
-    executableSide?: "buy" | "sell"
-    liquidityWarning?: boolean
-    minimumOrderSize?: number
-    lastTradePrice?: number
 }
 
 async function fetchRawPolymarketMarketPrice(

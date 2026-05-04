@@ -9,6 +9,7 @@ import { VENUE_META, ACTIVE_VENUE_APPS, type ActiveVenueApp } from "@/lib/consta
 import { formatRelativeTime } from "@/lib/format"
 import { ShieldAlert } from "lucide-react"
 import { toast } from "sonner"
+import { toVenueKillSwitchKey } from "@valiq-trading/core"
 
 export default function KillSwitchesPage() {
     const systemState = useQuery(api.queries.getSystemState, {})
@@ -58,7 +59,7 @@ export default function KillSwitchesPage() {
                 <h3 className="text-sm font-semibold text-muted-foreground">Per-Venue Kill Switches</h3>
                 {ACTIVE_VENUE_APPS.map((app) => {
                     const meta = VENUE_META[app]
-                    const key = app.replace(/-/g, "_") as keyof typeof systemState.appKillSwitches
+                    const key = toVenueKillSwitchKey(app)
                     const isKilled = systemState.appKillSwitches[key] === true
 
                     return (

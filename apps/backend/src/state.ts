@@ -3,6 +3,7 @@ import {
     createKillSwitchChecker,
     createLogger,
     type App,
+    type BunEnvironmentRuntime,
 } from "@valiq-trading/core"
 import {
     createTradingBackendClient,
@@ -22,18 +23,7 @@ export const MANUAL_RUN_MAX_ATTEMPTS = 5
 export const MANUAL_RUN_CLAIM_LIMIT = 25
 export const PERIODIC_SYNC_INTERVAL_MS = 5 * 60 * 1000
 
-declare const Bun: {
-    env: Record<string, string | undefined>
-    serve(config: {
-        port: number
-        fetch(request: Request): Response | Promise<Response>
-    }): unknown
-}
-
-declare const process: {
-    on(event: string, listener: () => void): void
-    exit(code?: number): void
-}
+declare const Bun: BunEnvironmentRuntime
 
 export function requireEnv(name: string): string {
     const value = Bun.env[name]

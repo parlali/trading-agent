@@ -5,7 +5,7 @@ import {
     createToolDefinition,
     genericAdjustmentParamsSchema,
 } from "../tool-contracts"
-import { toExecutionToolResult } from "./execution-response"
+import { executeToolIntent } from "./execution-response"
 import { resolveEstimatedPrice, type PolymarketPriceProvider } from "./polymarket-order-helpers"
 import { normalizePolymarketTokenId } from "./polymarket-market-handles"
 
@@ -19,10 +19,7 @@ export function createPolymarketProposeAdjustmentTool(
         handler: async (params) => {
             const validated = params as z.infer<typeof genericAdjustmentParamsSchema>
             const instrument = normalizePolymarketTokenId(validated.instrument)
-            const [positions, account] = await Promise.all([
-                pipeline.getPositions(),
-                pipeline.getAccountState(),
-            ])
+            const positions = await pipeline.getPositions()
             const existingPosition = positions.find((position) => position.instrument === instrument)
 
             const estimatedPrice = await resolveEstimatedPrice(
@@ -49,14 +46,7 @@ export function createPolymarketProposeAdjustmentTool(
                 },
             }
 
-            const { result, validation } = await pipeline.executeIntent(
-                intent,
-                account,
-                positions,
-                { action: "adjustment" }
-            )
-
-            return toExecutionToolResult(result, { validation })
+            return await executeToolIntent(pipeline, intent, { action: "adjustment" }, { positions })
         },
     })
 }

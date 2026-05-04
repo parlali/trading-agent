@@ -1,4 +1,5 @@
 import type { OrderIntent, OrderLifecycleContext, Position } from "./types"
+import { readFiniteNumber } from "./value-readers"
 
 export function withLifecycleAction(intent: OrderIntent, lifecycleContext: OrderLifecycleContext): OrderIntent {
     if (!lifecycleContext.action || intent.metadata?.action) {
@@ -26,7 +27,5 @@ export function readPositionSide(value: unknown): Position["side"] | undefined {
 }
 
 export function readNumber(value: unknown): number | undefined {
-    return typeof value === "number" && Number.isFinite(value)
-        ? value
-        : undefined
+    return readFiniteNumber(value)
 }

@@ -1,8 +1,6 @@
 import { z } from "zod"
 import type { OKXVenueAdapter } from "@valiq-trading/okx"
 import {
-    createExecutionErrorDetail,
-    formatExecutionError,
     getRiskBudgetBase,
     type ExecutionErrorDetail,
     type ExecutionPipeline,
@@ -11,6 +9,7 @@ import {
     type PriceVerification,
 } from "@valiq-trading/core"
 import { computeImpliedRR, computeTakeProfitFromRR } from "@valiq-trading/mt5"
+import { createRejectedExecutionToolResult } from "./execution-response"
 
 export const okxOrderParamsSchema = z.object({
     instrument: z.string(),
@@ -259,21 +258,7 @@ export async function prepareOKXOrder(
 }
 
 function rejected(error: string): OKXOrderResult {
-    const errorDetail = createExecutionErrorDetail("pre_validation", error, {
-        retryable: false,
-    })
-
-    return {
-        orderId: "",
-        status: "rejected",
-        filledQuantity: 0,
-        error: formatExecutionError(errorDetail),
-        errorDetail,
-        riskValidation: {
-            allowed: false,
-            reason: errorDetail.message,
-        },
-    }
+    return createRejectedExecutionToolResult(error)
 }
 
 function resolveCancelAt(

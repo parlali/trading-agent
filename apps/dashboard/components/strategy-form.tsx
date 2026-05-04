@@ -19,12 +19,21 @@ import {
     SelectValue,
 } from "@/components/ui/select"
 import { ScheduleBuilder } from "@/components/schedule-builder"
+import {
+    NumberPolicyField,
+    SwitchPolicyField,
+    TextPolicyField,
+    TradingHoursPolicyFields,
+    getNestedValue,
+    parseStringList,
+    policyStringListValue,
+    setNestedValue,
+    type PolicyFields,
+} from "@/components/strategy-policy-fields"
 import { VENUE_META, type ActiveVenueApp } from "@/lib/constants"
 import { POLICY_DEFAULTS, STRATEGY_CONTEXT_DEFAULTS } from "@valiq-trading/core"
 import { toast } from "sonner"
 import { Loader2, Plus, X } from "lucide-react"
-
-type PolicyFields = Record<string, unknown>
 
 type StrategyFormData = {
     app: ActiveVenueApp
@@ -46,42 +55,6 @@ function getDefaultPolicy(app: ActiveVenueApp): PolicyFields {
 
 function getDefaultContext(app: ActiveVenueApp): string {
     return STRATEGY_CONTEXT_DEFAULTS[app] ?? ""
-}
-
-function getNestedValue(obj: PolicyFields, path: string): unknown {
-    const parts = path.split(".")
-    let current: unknown = obj
-    for (const part of parts) {
-        if (current === null || current === undefined || typeof current !== "object") return undefined
-        current = (current as Record<string, unknown>)[part]
-    }
-    return current
-}
-
-function setNestedValue(obj: PolicyFields, path: string, value: unknown): PolicyFields {
-    const parts = path.split(".")
-    const result = { ...obj }
-    const leafKey = parts.at(-1)
-
-    if (!leafKey) {
-        return result
-    }
-
-    if (parts.length === 1) {
-        result[leafKey] = value
-        return result
-    }
-
-    const parentPath = parts.slice(0, -1)
-
-    let parent: Record<string, unknown> = result
-    for (const key of parentPath) {
-        parent[key] = { ...((parent[key] as Record<string, unknown> | undefined) ?? {}) }
-        parent = parent[key] as Record<string, unknown>
-    }
-    parent[leafKey] = value
-
-    return result
 }
 
 export function StrategyForm({ mode, initialData }: StrategyFormProps) {
@@ -230,16 +203,14 @@ export function StrategyForm({ mode, initialData }: StrategyFormProps) {
                     <CardTitle className="text-base">Policy</CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-4">
-                    <div className="flex items-center justify-between">
-                        <div>
-                            <Label className="text-sm">Dry Run</Label>
-                            <p className="text-xs text-muted-foreground mt-0.5">Log orders without executing</p>
-                        </div>
-                        <Switch
-                            checked={policy.dryRun === true}
-                            onCheckedChange={(checked) => handlePolicyFieldChange("dryRun", checked)}
-                        />
-                    </div>
+                    <SwitchPolicyField
+                        label="Dry Run"
+                        fieldKey="dryRun"
+                        checked={policy.dryRun === true}
+                        onChange={handlePolicyFieldChange}
+                        description="Log orders without executing"
+                        className="flex items-center justify-between"
+                    />
 
                     <div className="space-y-1.5">
                         <Label className="text-sm">
@@ -268,85 +239,63 @@ export function StrategyForm({ mode, initialData }: StrategyFormProps) {
                         </div>
 
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                            <div className="space-y-1.5">
-                                <Label className="text-xs">Max Day Drawdown (%)</Label>
-                                <Input
-                                    type="number"
-                                    step="any"
-                                    placeholder="3"
-                                    value={getNestedValue(policy, "safety.maxDrawdownDay") !== undefined ? String(getNestedValue(policy, "safety.maxDrawdownDay")) : ""}
-                                    onChange={(e) => handlePolicyFieldChange(
-                                        "safety.maxDrawdownDay",
-                                        e.target.value === "" ? undefined : Number(e.target.value)
-                                    )}
-                                />
-                            </div>
-                            <div className="space-y-1.5">
-                                <Label className="text-xs">Max Week Drawdown (%)</Label>
-                                <Input
-                                    type="number"
-                                    step="any"
-                                    placeholder="10"
-                                    value={getNestedValue(policy, "safety.maxDrawdownWeek") !== undefined ? String(getNestedValue(policy, "safety.maxDrawdownWeek")) : ""}
-                                    onChange={(e) => handlePolicyFieldChange(
-                                        "safety.maxDrawdownWeek",
-                                        e.target.value === "" ? undefined : Number(e.target.value)
-                                    )}
-                                />
-                            </div>
-                            <div className="space-y-1.5">
-                                <Label className="text-xs">Cooldown After Day Breach (minutes)</Label>
-                                <Input
-                                    type="number"
-                                    step={1}
-                                    min={0}
-                                    placeholder="720"
-                                    value={getNestedValue(policy, "safety.cooldownMinutesAfterDayBreach") !== undefined ? String(getNestedValue(policy, "safety.cooldownMinutesAfterDayBreach")) : ""}
-                                    onChange={(e) => handlePolicyFieldChange(
-                                        "safety.cooldownMinutesAfterDayBreach",
-                                        e.target.value === "" ? undefined : Number(e.target.value)
-                                    )}
-                                />
-                            </div>
-                            <div className="space-y-1.5">
-                                <Label className="text-xs">Cooldown After Week Breach (minutes)</Label>
-                                <Input
-                                    type="number"
-                                    step={1}
-                                    min={0}
-                                    placeholder="1440"
-                                    value={getNestedValue(policy, "safety.cooldownMinutesAfterWeekBreach") !== undefined ? String(getNestedValue(policy, "safety.cooldownMinutesAfterWeekBreach")) : ""}
-                                    onChange={(e) => handlePolicyFieldChange(
-                                        "safety.cooldownMinutesAfterWeekBreach",
-                                        e.target.value === "" ? undefined : Number(e.target.value)
-                                    )}
-                                />
-                            </div>
+                            <NumberPolicyField
+                                label="Max Day Drawdown (%)"
+                                fieldKey="safety.maxDrawdownDay"
+                                value={getNestedValue(policy, "safety.maxDrawdownDay")}
+                                onChange={handlePolicyFieldChange}
+                                placeholder="3"
+                                labelClassName="text-xs"
+                            />
+                            <NumberPolicyField
+                                label="Max Week Drawdown (%)"
+                                fieldKey="safety.maxDrawdownWeek"
+                                value={getNestedValue(policy, "safety.maxDrawdownWeek")}
+                                onChange={handlePolicyFieldChange}
+                                placeholder="10"
+                                labelClassName="text-xs"
+                            />
+                            <NumberPolicyField
+                                label="Cooldown After Day Breach (minutes)"
+                                fieldKey="safety.cooldownMinutesAfterDayBreach"
+                                value={getNestedValue(policy, "safety.cooldownMinutesAfterDayBreach")}
+                                onChange={handlePolicyFieldChange}
+                                step={1}
+                                min={0}
+                                placeholder="720"
+                                labelClassName="text-xs"
+                            />
+                            <NumberPolicyField
+                                label="Cooldown After Week Breach (minutes)"
+                                fieldKey="safety.cooldownMinutesAfterWeekBreach"
+                                value={getNestedValue(policy, "safety.cooldownMinutesAfterWeekBreach")}
+                                onChange={handlePolicyFieldChange}
+                                step={1}
+                                min={0}
+                                placeholder="1440"
+                                labelClassName="text-xs"
+                            />
                         </div>
 
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                            <div className="space-y-1.5">
-                                <Label className="text-xs">Strategy Timezone</Label>
-                                <Input
-                                    placeholder="UTC"
-                                    value={getNestedValue(policy, "safety.strategyTimezone") as string ?? ""}
-                                    onChange={(e) => handlePolicyFieldChange("safety.strategyTimezone", e.target.value)}
-                                />
-                            </div>
-                            <div className="space-y-1.5">
-                                <Label className="text-xs">Pending Entry TTL (minutes)</Label>
-                                <Input
-                                    type="number"
-                                    step={1}
-                                    min={1}
-                                    placeholder="120"
-                                    value={getNestedValue(policy, "safety.pendingEntryTtlMinutes") !== undefined ? String(getNestedValue(policy, "safety.pendingEntryTtlMinutes")) : ""}
-                                    onChange={(e) => handlePolicyFieldChange(
-                                        "safety.pendingEntryTtlMinutes",
-                                        e.target.value === "" ? undefined : Number(e.target.value)
-                                    )}
-                                />
-                            </div>
+                            <TextPolicyField
+                                label="Strategy Timezone"
+                                fieldKey="safety.strategyTimezone"
+                                value={getNestedValue(policy, "safety.strategyTimezone")}
+                                onChange={handlePolicyFieldChange}
+                                placeholder="UTC"
+                                labelClassName="text-xs"
+                            />
+                            <NumberPolicyField
+                                label="Pending Entry TTL (minutes)"
+                                fieldKey="safety.pendingEntryTtlMinutes"
+                                value={getNestedValue(policy, "safety.pendingEntryTtlMinutes")}
+                                onChange={handlePolicyFieldChange}
+                                step={1}
+                                min={1}
+                                placeholder="120"
+                                labelClassName="text-xs"
+                            />
                         </div>
 
                         {(app === "mt5" || app === "okx-swap") ? (
@@ -364,28 +313,24 @@ export function StrategyForm({ mode, initialData }: StrategyFormProps) {
                                     />
                                 </div>
                                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                                    <div className="space-y-1.5">
-                                        <Label className="text-xs">Close Buffer (minutes)</Label>
-                                        <Input
-                                            type="number"
-                                            step={1}
-                                            min={1}
-                                            placeholder="15"
-                                            value={getNestedValue(policy, "safety.sessionFlat.closeBufferMinutes") !== undefined ? String(getNestedValue(policy, "safety.sessionFlat.closeBufferMinutes")) : ""}
-                                            onChange={(e) => handlePolicyFieldChange(
-                                                "safety.sessionFlat.closeBufferMinutes",
-                                                e.target.value === "" ? undefined : Number(e.target.value)
-                                            )}
-                                        />
-                                    </div>
-                                    <div className="space-y-1.5">
-                                        <Label className="text-xs">Session Flat Timezone</Label>
-                                        <Input
-                                            placeholder="UTC"
-                                            value={getNestedValue(policy, "safety.sessionFlat.timezone") as string ?? ""}
-                                            onChange={(e) => handlePolicyFieldChange("safety.sessionFlat.timezone", e.target.value)}
-                                        />
-                                    </div>
+                                    <NumberPolicyField
+                                        label="Close Buffer (minutes)"
+                                        fieldKey="safety.sessionFlat.closeBufferMinutes"
+                                        value={getNestedValue(policy, "safety.sessionFlat.closeBufferMinutes")}
+                                        onChange={handlePolicyFieldChange}
+                                        step={1}
+                                        min={1}
+                                        placeholder="15"
+                                        labelClassName="text-xs"
+                                    />
+                                    <TextPolicyField
+                                        label="Session Flat Timezone"
+                                        fieldKey="safety.sessionFlat.timezone"
+                                        value={getNestedValue(policy, "safety.sessionFlat.timezone")}
+                                        onChange={handlePolicyFieldChange}
+                                        placeholder="UTC"
+                                        labelClassName="text-xs"
+                                    />
                                 </div>
                             </div>
                         ) : null}
@@ -394,13 +339,10 @@ export function StrategyForm({ mode, initialData }: StrategyFormProps) {
                             <Label className="text-xs">Expected External Instruments</Label>
                             <Textarea
                                 placeholder={"GREENLAND-2026\nBTC-USDT-SWAP"}
-                                value={Array.isArray(getNestedValue(policy, "safety.expectedExternalInstruments")) ? (getNestedValue(policy, "safety.expectedExternalInstruments") as string[]).join("\n") : ""}
+                                value={policyStringListValue(getNestedValue(policy, "safety.expectedExternalInstruments"))}
                                 onChange={(e) => handlePolicyFieldChange(
                                     "safety.expectedExternalInstruments",
-                                    e.target.value
-                                        .split(/[\n,]+/)
-                                        .map((instrument) => instrument.trim())
-                                        .filter(Boolean)
+                                    parseStringList(e.target.value)
                                 )}
                                 rows={2}
                                 className="font-mono text-xs"
@@ -409,21 +351,14 @@ export function StrategyForm({ mode, initialData }: StrategyFormProps) {
                     </div>
 
                     {app === "alpaca-options" ? (
-                        <div className="space-y-1.5">
-                            <Label className="text-sm">
-                                Max Loss Per Play ($)<span className="text-signal-danger ml-0.5">*</span>
-                            </Label>
-                            <Input
-                                type="number"
-                                step="any"
-                                placeholder="500"
-                                value={policy.maxLossPerPlay !== undefined ? String(policy.maxLossPerPlay) : ""}
-                                onChange={(e) => handlePolicyFieldChange(
-                                    "maxLossPerPlay",
-                                    e.target.value === "" ? undefined : Number(e.target.value)
-                                )}
-                            />
-                        </div>
+                        <NumberPolicyField
+                            label="Max Loss Per Play ($)"
+                            fieldKey="maxLossPerPlay"
+                            value={policy.maxLossPerPlay}
+                            onChange={handlePolicyFieldChange}
+                            placeholder="500"
+                            required
+                        />
                     ) : null}
 
                     {app === "polymarket" ? (
@@ -467,97 +402,50 @@ export function StrategyForm({ mode, initialData }: StrategyFormProps) {
 
                     {app === "mt5" ? (
                         <>
-                            <div className="space-y-1.5">
-                                <Label className="text-sm">
-                                    Max Risk Per Trade (%)<span className="text-signal-danger ml-0.5">*</span>
-                                </Label>
-                                <Input
-                                    type="number"
-                                    step="any"
-                                    min={0}
-                                    max={100}
-                                    placeholder="2"
-                                    value={policy.maxRiskPercent !== undefined ? String(policy.maxRiskPercent) : ""}
-                                    onChange={(e) => handlePolicyFieldChange(
-                                        "maxRiskPercent",
-                                        e.target.value === "" ? undefined : Number(e.target.value)
-                                    )}
-                                />
-                                <p className="text-xs text-muted-foreground">
-                                    Percentage of account balance risked per trade on stop loss
-                                </p>
-                            </div>
+                            <NumberPolicyField
+                                label="Max Risk Per Trade (%)"
+                                fieldKey="maxRiskPercent"
+                                value={policy.maxRiskPercent}
+                                onChange={handlePolicyFieldChange}
+                                min={0}
+                                max={100}
+                                placeholder="2"
+                                required
+                                description="Percentage of account balance risked per trade on stop loss"
+                            />
 
-                            <div className="space-y-1.5">
-                                <Label className="text-sm">
-                                    Trading Hours<span className="text-signal-danger ml-0.5">*</span>
-                                </Label>
-                                <div className="flex items-center gap-2 flex-wrap">
-                                    <Input
-                                        placeholder="08:00"
-                                        value={getNestedValue(policy, "tradingHours.start") as string ?? ""}
-                                        onChange={(e) => handlePolicyFieldChange("tradingHours.start", e.target.value)}
-                                        className="w-20 sm:w-24 font-mono"
-                                    />
-                                    <span className="text-muted-foreground">to</span>
-                                    <Input
-                                        placeholder="16:00"
-                                        value={getNestedValue(policy, "tradingHours.end") as string ?? ""}
-                                        onChange={(e) => handlePolicyFieldChange("tradingHours.end", e.target.value)}
-                                        className="w-20 sm:w-24 font-mono"
-                                    />
-                                    <Input
-                                        placeholder="UTC"
-                                        value={getNestedValue(policy, "tradingHours.timezone") as string ?? ""}
-                                        onChange={(e) => handlePolicyFieldChange("tradingHours.timezone", e.target.value)}
-                                        className="w-24 sm:w-28"
-                                    />
-                                </div>
-                            </div>
+                            <TradingHoursPolicyFields
+                                policy={policy}
+                                onChange={handlePolicyFieldChange}
+                                startPlaceholder="08:00"
+                                endPlaceholder="16:00"
+                            />
 
-                            <div className="space-y-1.5">
-                                <Label className="text-sm">Min Risk/Reward Ratio</Label>
-                                <Input
-                                    type="number"
-                                    step="any"
-                                    min={0}
-                                    placeholder="0.5"
-                                    value={policy.minRiskReward !== undefined ? String(policy.minRiskReward) : ""}
-                                    onChange={(e) => handlePolicyFieldChange(
-                                        "minRiskReward",
-                                        e.target.value === "" ? undefined : Number(e.target.value)
-                                    )}
-                                />
-                                <p className="text-xs text-muted-foreground">
-                                    Minimum reward-to-risk ratio required to enter a trade
-                                </p>
-                            </div>
+                            <NumberPolicyField
+                                label="Min Risk/Reward Ratio"
+                                fieldKey="minRiskReward"
+                                value={policy.minRiskReward}
+                                onChange={handlePolicyFieldChange}
+                                min={0}
+                                placeholder="0.5"
+                                description="Minimum reward-to-risk ratio required to enter a trade"
+                            />
 
-                            <div className="flex items-start justify-between gap-4 rounded-lg border p-3">
-                                <div className="space-y-1">
-                                    <Label className="text-sm">Allow Multiple Pending Entries Per Instrument</Label>
-                                    <p className="text-xs text-muted-foreground">
-                                        When off, MT5 will reject a new entry if this strategy already has a live pending entry order for the same instrument
-                                    </p>
-                                </div>
-                                <Switch
-                                    checked={Boolean(policy.allowMultiplePendingEntryOrdersPerInstrument)}
-                                    onCheckedChange={(checked) => handlePolicyFieldChange("allowMultiplePendingEntryOrdersPerInstrument", checked)}
-                                />
-                            </div>
+                            <SwitchPolicyField
+                                label="Allow Multiple Pending Entries Per Instrument"
+                                fieldKey="allowMultiplePendingEntryOrdersPerInstrument"
+                                checked={Boolean(policy.allowMultiplePendingEntryOrdersPerInstrument)}
+                                onChange={handlePolicyFieldChange}
+                                description="When off, MT5 will reject a new entry if this strategy already has a live pending entry order for the same instrument"
+                            />
 
-                            <div className="flex items-start justify-between gap-4 rounded-lg border p-3">
-                                <div className="space-y-1">
-                                    <Label className="text-sm">Allow Overlapping Exposure</Label>
-                                    <p className="text-xs text-muted-foreground">
-                                        When off, MT5 enforces one live position or entry order at a time for this strategy and blocks add-on entries
-                                    </p>
-                                </div>
-                                <Switch
-                                    checked={Boolean(policy.allowOverlappingExposure)}
-                                    onCheckedChange={(checked) => handlePolicyFieldChange("allowOverlappingExposure", checked)}
-                                />
-                            </div>
+                            <SwitchPolicyField
+                                label="Allow Overlapping Exposure"
+                                fieldKey="allowOverlappingExposure"
+                                checked={Boolean(policy.allowOverlappingExposure)}
+                                onChange={handlePolicyFieldChange}
+                                description="When off, MT5 enforces one live position or entry order at a time for this strategy and blocks add-on entries"
+                            />
 
                             <div className="space-y-1.5">
                                 <Label className="text-sm">Market Regions by Instrument</Label>
@@ -665,13 +553,10 @@ export function StrategyForm({ mode, initialData }: StrategyFormProps) {
                                 </Label>
                                 <Textarea
                                     placeholder={"BTC-USDT-SWAP\nETH-USDT-SWAP"}
-                                    value={Array.isArray(policy.allowedInstruments) ? policy.allowedInstruments.join("\n") : ""}
+                                    value={policyStringListValue(policy.allowedInstruments)}
                                     onChange={(e) => handlePolicyFieldChange(
                                         "allowedInstruments",
-                                        e.target.value
-                                            .split(/[\n,]+/)
-                                            .map((instrument) => instrument.trim().toUpperCase())
-                                            .filter(Boolean)
+                                        parseStringList(e.target.value, (instrument) => instrument.toUpperCase())
                                     )}
                                     rows={3}
                                     className="font-mono text-sm"
@@ -681,102 +566,55 @@ export function StrategyForm({ mode, initialData }: StrategyFormProps) {
                                 </p>
                             </div>
 
-                            <div className="space-y-1.5">
-                                <Label className="text-sm">
-                                    Max Leverage<span className="text-signal-danger ml-0.5">*</span>
-                                </Label>
-                                <Input
-                                    type="number"
-                                    step={1}
-                                    min={1}
-                                    max={5}
-                                    placeholder="3"
-                                    value={policy.maxLeverage !== undefined ? String(policy.maxLeverage) : ""}
-                                    onChange={(e) => handlePolicyFieldChange(
-                                        "maxLeverage",
-                                        e.target.value === "" ? undefined : Number(e.target.value)
-                                    )}
-                                />
-                            </div>
+                            <NumberPolicyField
+                                label="Max Leverage"
+                                fieldKey="maxLeverage"
+                                value={policy.maxLeverage}
+                                onChange={handlePolicyFieldChange}
+                                step={1}
+                                min={1}
+                                max={5}
+                                placeholder="3"
+                                required
+                            />
 
-                            <div className="space-y-1.5">
-                                <Label className="text-sm">
-                                    Max Risk Per Trade (%)<span className="text-signal-danger ml-0.5">*</span>
-                                </Label>
-                                <Input
-                                    type="number"
-                                    step="any"
-                                    min={0}
-                                    max={100}
-                                    placeholder="1"
-                                    value={policy.maxRiskPercent !== undefined ? String(policy.maxRiskPercent) : ""}
-                                    onChange={(e) => handlePolicyFieldChange(
-                                        "maxRiskPercent",
-                                        e.target.value === "" ? undefined : Number(e.target.value)
-                                    )}
-                                />
-                            </div>
+                            <NumberPolicyField
+                                label="Max Risk Per Trade (%)"
+                                fieldKey="maxRiskPercent"
+                                value={policy.maxRiskPercent}
+                                onChange={handlePolicyFieldChange}
+                                min={0}
+                                max={100}
+                                placeholder="1"
+                                required
+                            />
 
-                            <div className="space-y-1.5">
-                                <Label className="text-sm">
-                                    Trading Hours<span className="text-signal-danger ml-0.5">*</span>
-                                </Label>
-                                <div className="flex items-center gap-2 flex-wrap">
-                                    <Input
-                                        placeholder="00:00"
-                                        value={getNestedValue(policy, "tradingHours.start") as string ?? ""}
-                                        onChange={(e) => handlePolicyFieldChange("tradingHours.start", e.target.value)}
-                                        className="w-20 sm:w-24 font-mono"
-                                    />
-                                    <span className="text-muted-foreground">to</span>
-                                    <Input
-                                        placeholder="23:59"
-                                        value={getNestedValue(policy, "tradingHours.end") as string ?? ""}
-                                        onChange={(e) => handlePolicyFieldChange("tradingHours.end", e.target.value)}
-                                        className="w-20 sm:w-24 font-mono"
-                                    />
-                                    <Input
-                                        placeholder="UTC"
-                                        value={getNestedValue(policy, "tradingHours.timezone") as string ?? ""}
-                                        onChange={(e) => handlePolicyFieldChange("tradingHours.timezone", e.target.value)}
-                                        className="w-24 sm:w-28"
-                                    />
-                                </div>
-                            </div>
+                            <TradingHoursPolicyFields
+                                policy={policy}
+                                onChange={handlePolicyFieldChange}
+                                startPlaceholder="00:00"
+                                endPlaceholder="23:59"
+                            />
 
-                            <div className="space-y-1.5">
-                                <Label className="text-sm">
-                                    Funding Rate Threshold<span className="text-signal-danger ml-0.5">*</span>
-                                </Label>
-                                <Input
-                                    type="number"
-                                    step="any"
-                                    min={0}
-                                    placeholder="0.003"
-                                    value={policy.fundingRateThreshold !== undefined ? String(policy.fundingRateThreshold) : ""}
-                                    onChange={(e) => handlePolicyFieldChange(
-                                        "fundingRateThreshold",
-                                        e.target.value === "" ? undefined : Number(e.target.value)
-                                    )}
-                                    className="font-mono"
-                                />
-                                <p className="text-xs text-muted-foreground">
-                                    Absolute funding-rate threshold. For example, 0.003 means 0.30%.
-                                </p>
-                            </div>
+                            <NumberPolicyField
+                                label="Funding Rate Threshold"
+                                fieldKey="fundingRateThreshold"
+                                value={policy.fundingRateThreshold}
+                                onChange={handlePolicyFieldChange}
+                                min={0}
+                                placeholder="0.003"
+                                inputClassName="font-mono"
+                                required
+                                description="Absolute funding-rate threshold. For example, 0.003 means 0.30%."
+                            />
 
-                            <div className="flex items-start justify-between gap-4 rounded-lg border p-3">
-                                <div className="space-y-1">
-                                    <Label className="text-sm">Require Take Profit</Label>
-                                    <p className="text-xs text-muted-foreground">
-                                        When enabled, new OKX entries must include an explicit take-profit level.
-                                    </p>
-                                </div>
-                                <Switch
-                                    checked={Boolean(policy.requireTakeProfit)}
-                                    onCheckedChange={(checked) => handlePolicyFieldChange("requireTakeProfit", checked)}
-                                />
-                            </div>
+                            <SwitchPolicyField
+                                label="Require Take Profit"
+                                fieldKey="requireTakeProfit"
+                                checked={Boolean(policy.requireTakeProfit)}
+                                onChange={handlePolicyFieldChange}
+                                description="When enabled, new OKX entries must include an explicit take-profit level."
+                            />
                         </>
                     ) : null}
 

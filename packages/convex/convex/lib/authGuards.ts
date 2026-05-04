@@ -1,6 +1,6 @@
 const BACKEND_SERVICE_TOKEN_ENV_VAR = "BACKEND_SERVICE_TOKEN"
 
-function readEnv(): Record<string, string | undefined> {
+export function readConvexEnv(): Record<string, string | undefined> {
     return (
         globalThis as {
             process?: {
@@ -11,7 +11,7 @@ function readEnv(): Record<string, string | undefined> {
 }
 
 function readBackendServiceToken(): string {
-    const env = readEnv()[BACKEND_SERVICE_TOKEN_ENV_VAR]?.trim()
+    const env = readConvexEnv()[BACKEND_SERVICE_TOKEN_ENV_VAR]?.trim()
 
     if (!env) {
         throw new Error(

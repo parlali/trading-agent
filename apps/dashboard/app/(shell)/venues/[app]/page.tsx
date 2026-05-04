@@ -14,6 +14,7 @@ import { EmptyState } from "@/components/empty-state"
 import { formatCurrency, formatRelativeTime } from "@/lib/format"
 import { VENUE_META, type VenueApp } from "@/lib/constants"
 import { Layers, Play } from "lucide-react"
+import { toVenueKillSwitchKey } from "@valiq-trading/core"
 
 export default function VenuePage({
     params,
@@ -38,7 +39,7 @@ export default function VenuePage({
     const venueStrategies = overview.strategies.filter((s) => s.app === app)
     const venuePositions = overview.openPositions.filter((p) => p.app === app)
     const venueRuns = overview.recentRuns.filter((r) => r.app === app)
-    const killSwitchKey = app.replace(/-/g, "_") as keyof typeof overview.systemState.appKillSwitches
+    const killSwitchKey = toVenueKillSwitchKey(app as VenueApp)
     const isKilled = overview.systemState.appKillSwitches[killSwitchKey] === true
 
     return (

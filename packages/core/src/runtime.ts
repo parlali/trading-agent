@@ -1,17 +1,16 @@
+import { toVenueKillSwitchKey, type VenueApp } from "./app-types"
 import type { VenueAdapter } from "./execution"
+import type { BunServeRuntime, ProcessSignalRuntime } from "./runtime-globals"
 import type { AccountState } from "./types"
+export {
+    getCurrentTimeInTimezone,
+    isWithinSessionFlatWindow,
+    padTime,
+} from "./runtime-time"
 
-declare const Bun: {
-    serve(config: {
-        port: number
-        fetch(request: Request): Response | Promise<Response>
-    }): unknown
-}
+declare const Bun: BunServeRuntime
 
-declare const process: {
-    on(event: string, listener: () => void): void
-    exit(code?: number): void
-}
+declare const process: ProcessSignalRuntime
 
 export function createKillSwitchGuardedVenue<T extends VenueAdapter>(
     venue: T,
@@ -102,9 +101,7 @@ export function wireShutdown(config: {
                 reason: "shutdown",
                 shutdownAt: Date.now(),
             })
-        } catch {
-            // Best effort
-        }
+        } catch {}
 
         await config.scheduler.shutdown()
         process.exit(0)
@@ -117,7 +114,7 @@ export function wireShutdown(config: {
 const KILL_SWITCH_CACHE_TTL = 5000
 
 export function createKillSwitchChecker(config: {
-    appName: string
+    appName: VenueApp
     backend: { getSystemState(): Promise<{ globalKillSwitch: boolean; appKillSwitches: Record<string, boolean> }> }
     logger: { warn(msg: string, meta?: Record<string, unknown>): void; error(msg: string, meta?: Record<string, unknown>): void }
 }): (context: string) => Promise<boolean> {
@@ -139,7 +136,7 @@ export function createKillSwitchChecker(config: {
                 return true
             }
 
-            if (state.appKillSwitches[config.appName.replace(/-/g, "_")]) {
+            if (state.appKillSwitches[toVenueKillSwitchKey(config.appName)]) {
                 config.logger.warn("App kill switch is active", { context, app: config.appName })
                 cachedResult = true
                 cachedAt = Date.now()
@@ -192,57 +189,5 @@ export function createAccountSnapshotPersister(config: {
             const message = error instanceof Error ? error.message : String(error)
             config.logger.error("Failed to persist account snapshot", { error: message })
         }
-    }
-}
-
-export function getCurrentTimeInTimezone(timezone: string): { hours: number; minutes: number } {
-    const currentInstant = new Date(Date.now())
-
-    try {
-        const formatter = new Intl.DateTimeFormat("en-US", {
-            timeZone: timezone,
-            hour: "numeric",
-            minute: "numeric",
-            hour12: false,
-        })
-        const parts = formatter.formatToParts(currentInstant)
-        const hourPart = parts.find((p) => p.type === "hour")
-        const minutePart = parts.find((p) => p.type === "minute")
-
-        return {
-            hours: Number(hourPart?.value ?? 0),
-            minutes: Number(minutePart?.value ?? 0),
-        }
-    } catch {
-        return {
-            hours: currentInstant.getUTCHours(),
-            minutes: currentInstant.getUTCMinutes(),
-        }
-    }
-}
-
-export function padTime(n: number): string {
-    return String(n).padStart(2, "0")
-}
-
-export function isWithinSessionFlatWindow(args: {
-    end: string
-    timezone: string
-    closeBufferMinutes: number
-}): {
-    shouldFlatten: boolean
-    currentTime: string
-} {
-    const now = getCurrentTimeInTimezone(args.timezone)
-    const [endHour, endMinute] = args.end.split(":").map(Number) as [number, number]
-
-    const currentMinutes = now.hours * 60 + now.minutes
-    const endMinutes = endHour * 60 + endMinute
-    const flattenMinutes = endMinutes - args.closeBufferMinutes
-    const shouldFlatten = currentMinutes >= flattenMinutes && currentMinutes < endMinutes
-
-    return {
-        shouldFlatten,
-        currentTime: `${padTime(now.hours)}:${padTime(now.minutes)}`,
     }
 }

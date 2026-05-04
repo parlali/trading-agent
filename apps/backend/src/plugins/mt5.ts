@@ -1,18 +1,5 @@
-import type { ToolDefinition } from "@valiq-trading/agent"
-import {
-    createOAuthTokenProvider,
-    createValiqDataTool,
-    createValiqResearchTool,
-    getMissingValiqDataApiSecrets,
-    resolveValiqDataApiConfig,
-    ValiqClient,
-    ValiqDataAdapter,
-    ValiqDataClient,
-    ValiqResearchAdapter,
-} from "@valiq-trading/valiq"
 import {
     ExecutionCostTracker,
-    isWithinSessionFlatWindow,
     mt5PolicySchema,
     type RiskValidator,
     type VenueAdapter,
@@ -33,6 +20,11 @@ import type {
     PreRunHookConfig,
     PreRunHookResult,
 } from "../types"
+import {
+    appendValiqSecretKeys,
+    createValiqTools,
+    executeSessionFlatIfNeeded,
+} from "./shared"
 
 export class MT5Plugin implements VenuePlugin {
     readonly app = "mt5"
@@ -41,16 +33,7 @@ export class MT5Plugin implements VenuePlugin {
     private readonly executionCostTracker = new ExecutionCostTracker()
 
     resolveSecretKeys(): string[] {
-        return [
-            ...MT5_RUNTIME_SECRET_KEYS,
-            "VALIQ_API_URL",
-            "VALIQ_AUTH_URL",
-            "VALIQ_OAUTH_CLIENT_ID",
-            "VALIQ_OAUTH_CLIENT_SECRET",
-            "VALIQ_OAUTH_USER_UUID",
-            "VALIQ_DATA_API_URL",
-            "VALIQ_DATA_API",
-        ]
+        return appendValiqSecretKeys(MT5_RUNTIME_SECRET_KEYS)
     }
 
     resolveAdditionalSecretKeys(_policy: Record<string, unknown>): string[] {
@@ -89,63 +72,18 @@ export class MT5Plugin implements VenuePlugin {
         return mt5RiskValidators
     }
 
-    getExtraTools(config: ExtraToolsConfig): ToolDefinition[] {
-        const tools: ToolDefinition[] = []
-
-        const valiqUrl = config.secrets.VALIQ_API_URL
-        const authUrl = config.secrets.VALIQ_AUTH_URL
-        const clientId = config.secrets.VALIQ_OAUTH_CLIENT_ID
-        const clientSecret = config.secrets.VALIQ_OAUTH_CLIENT_SECRET
-        const userUuid = config.secrets.VALIQ_OAUTH_USER_UUID
-
-        if (valiqUrl && authUrl && clientId && clientSecret && userUuid) {
-            const tokenProvider = createOAuthTokenProvider({
-                authUrl,
-                clientId,
-                clientSecret,
-                userUuid,
-                logger: config.runLogger,
-            })
-
-            const valiqClient = new ValiqClient({
-                apiUrl: valiqUrl,
-                tokenProvider,
-                logger: config.runLogger,
-            })
-            const research = new ValiqResearchAdapter(valiqClient, config.runLogger)
-            tools.push(createValiqResearchTool(research))
-        }
-
-        const dataApi = resolveValiqDataApiConfig(config.secrets)
-
-        if (dataApi) {
-            const dataClient = new ValiqDataClient({
-                apiUrl: dataApi.apiUrl,
-                apiKey: dataApi.apiKey,
-                logger: config.runLogger,
-            })
-            const data = new ValiqDataAdapter(dataClient)
-            tools.push(createValiqDataTool(data))
-        } else {
-            const missing = getMissingValiqDataApiSecrets(config.secrets)
-            if (missing.length > 0) {
-                config.runLogger.warn(
-                    "Valiq data tools NOT registered: missing secrets",
-                    { missing }
-                )
-            }
-        }
-
-        return tools
+    getExtraTools(config: ExtraToolsConfig) {
+        return createValiqTools(config, {
+            research: true,
+            data: true,
+        })
     }
 
     async preRunHooks(config: PreRunHookConfig): Promise<PreRunHookResult> {
         const mt5Venue = config.venue as MT5VenueAdapter
         const parsedPolicy = mt5PolicySchema.parse(config.policy)
 
-        const eodFlattened = await this.checkEndOfDayFlatten(
-            mt5Venue, parsedPolicy, config.strategyId, config
-        )
+        const eodFlattened = await this.checkEndOfDayFlatten(parsedPolicy, config.strategyId, config)
         if (eodFlattened) {
             return { skip: true, reason: "End-of-day flatten executed", providerStateChanged: true }
         }
@@ -189,64 +127,19 @@ export class MT5Plugin implements VenuePlugin {
     }
 
     private async checkEndOfDayFlatten(
-        _venue: MT5VenueAdapter,
         policy: ReturnType<typeof mt5PolicySchema.parse>,
         strategyId: string,
         config: Pick<PreRunHookConfig, "logger" | "createAlert" | "ownedPositions" | "ownedWorkingOrders" | "sessionFlat">
     ): Promise<boolean> {
-        const sessionFlatPolicy = policy.safety.sessionFlat
-        if (!sessionFlatPolicy.enabled) {
-            return false
-        }
-
-        const timezone = sessionFlatPolicy.timezone || policy.tradingHours.timezone
-        const flattenWindow = isWithinSessionFlatWindow({
-            end: policy.tradingHours.end,
-            timezone,
-            closeBufferMinutes: sessionFlatPolicy.closeBufferMinutes,
-        })
-
-        if (!flattenWindow.shouldFlatten) {
-            return false
-        }
-
-        const positions = config.ownedPositions
-        const workingOrders = config.ownedWorkingOrders
-        if (positions.length === 0 && workingOrders.length === 0) {
-            return false
-        }
-
-        config.logger.warn("End-of-day flatten triggered", {
-            strategyId,
-            currentTime: flattenWindow.currentTime,
-            endTime: policy.tradingHours.end,
-            closeBufferMinutes: sessionFlatPolicy.closeBufferMinutes,
-            openPositions: positions.length,
-            workingOrders: workingOrders.length,
-        })
-
-        await config.createAlert({
-            strategyId,
+        return await executeSessionFlatIfNeeded({
             app: this.app,
-            severity: "warning",
-            message: `Session-flat policy triggered: closing ${positions.length} position(s) and cancelling ${workingOrders.length} working order(s) before ${policy.tradingHours.end} ${timezone}`,
+            strategyId,
+            policy,
+            config,
+            unavailableMessage: "Audited session-flat executor is unavailable for MT5",
+            triggeredLogMessage: "End-of-day flatten triggered",
+            completedLogMessage: "End-of-day flatten completed",
         })
-
-        if (!config.sessionFlat) {
-            throw new Error("Audited session-flat executor is unavailable for MT5")
-        }
-
-        const result = await config.sessionFlat.execute({
-            positions,
-            workingOrders,
-            reason: `Session-flat before ${policy.tradingHours.end} ${timezone}`,
-        })
-        config.logger.info("End-of-day flatten completed", {
-            closed: result.closed,
-            cancelled: result.cancelled,
-        })
-
-        return true
     }
 
     private async buildRuntimeContextLines(

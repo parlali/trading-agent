@@ -6,23 +6,15 @@ import {
     createToolDefinition,
     okxAdjustmentParamsSchema,
 } from "../tool-contracts"
+import { createRejectedExecutionToolResult } from "./execution-response"
+import type { ExecutionSafetyToolCallbacks } from "./execution-safety"
 
 export function createOKXProposeAdjustmentTool(
     pipeline: ExecutionPipeline,
     venue: OKXVenueAdapter,
-    options?: {
+    options?: ExecutionSafetyToolCallbacks & {
         dryRun?: boolean
         requireTakeProfit?: boolean
-        onExecutionSafetyFault?: (args: {
-            instrument: string
-            category: "position_not_found_yet" | "provider_rejected" | "already_exists_conflict" | "invalid_params" | "unknown"
-            message: string
-            providerPayload?: string
-        }) => Promise<void>
-        onExecutionSafetyRecovered?: (args: {
-            instrument: string
-            resolutionNote: string
-        }) => Promise<void>
     }
 ): ToolDefinition {
     return createToolDefinition({
@@ -32,32 +24,18 @@ export function createOKXProposeAdjustmentTool(
             const validated = params as z.infer<typeof okxAdjustmentParamsSchema>
 
             if (validated.stopLoss === undefined && validated.takeProfit === undefined) {
-                const errorDetail = createExecutionErrorDetail("pre_validation", "Provide stopLoss, takeProfit, or both", {
-                    retryable: false,
-                })
-                return {
-                    status: "rejected",
-                    error: formatExecutionError(errorDetail),
-                    errorDetail,
-                }
+                return createRejectedExecutionToolResult("Provide stopLoss, takeProfit, or both")
             }
 
             const positions = await pipeline.getPositions()
             const position = positions.find((entry) => entry.instrument.toUpperCase() === validated.instrument.toUpperCase())
             if (!position) {
-                const errorDetail = createExecutionErrorDetail(
-                    "pre_validation",
+                return createRejectedExecutionToolResult(
                     `No open position found for ${validated.instrument.toUpperCase()}`,
                     {
                         code: "POSITION_NOT_FOUND",
-                        retryable: false,
                     }
                 )
-                return {
-                    status: "rejected",
-                    error: formatExecutionError(errorDetail),
-                    errorDetail,
-                }
             }
 
             if (options?.dryRun) {

@@ -1,4 +1,63 @@
 import { z } from "zod/v4"
+import { readFiniteNumber, readTrimmedString } from "./value-readers"
+
+type SessionFlatDefaults = {
+    enabled: boolean
+    closeBufferMinutes: number
+    timezone: string
+}
+
+type StrategySafetyDefaults = {
+    maxDrawdownDay: number | undefined
+    maxDrawdownWeek: number | undefined
+    cooldownMinutesAfterDayBreach: number
+    cooldownMinutesAfterWeekBreach: number
+    strategyTimezone: string
+    sessionFlat: SessionFlatDefaults
+    account: { allocationPercent: number } | undefined
+    expectedExternalInstruments: string[]
+    pendingEntryTtlMinutes: number | undefined
+}
+
+type StrategySafetyDefaultOverrides = Partial<Omit<
+    StrategySafetyDefaults,
+    "sessionFlat" | "expectedExternalInstruments"
+>> & {
+    sessionFlat?: Partial<SessionFlatDefaults>
+    expectedExternalInstruments?: string[]
+}
+
+const DEFAULT_SESSION_FLAT_POLICY: SessionFlatDefaults = {
+    enabled: false,
+    closeBufferMinutes: 15,
+    timezone: "UTC",
+}
+
+function createStrategySafetyDefaults(overrides: StrategySafetyDefaultOverrides = {}): StrategySafetyDefaults {
+    return {
+        maxDrawdownDay: undefined,
+        maxDrawdownWeek: undefined,
+        cooldownMinutesAfterDayBreach: 12 * 60,
+        cooldownMinutesAfterWeekBreach: 24 * 60,
+        strategyTimezone: "UTC",
+        account: undefined,
+        pendingEntryTtlMinutes: undefined,
+        ...overrides,
+        sessionFlat: {
+            ...DEFAULT_SESSION_FLAT_POLICY,
+            ...overrides.sessionFlat,
+        },
+        expectedExternalInstruments: overrides.expectedExternalInstruments ?? [],
+    }
+}
+
+function createBasePolicyDefaults(overrides?: StrategySafetyDefaultOverrides) {
+    return {
+        dryRun: true,
+        model: "",
+        safety: createStrategySafetyDefaults(overrides),
+    }
+}
 
 export const baseStrategyPolicySchema = z.object({
     dryRun: z.boolean().default(false),
@@ -18,30 +77,14 @@ export const baseStrategyPolicySchema = z.object({
             closeBufferMinutes: z.number().int().min(1).max(240).default(15),
             timezone: z.string().default("UTC"),
         }).default({
-            enabled: false,
-            closeBufferMinutes: 15,
-            timezone: "UTC",
+            ...DEFAULT_SESSION_FLAT_POLICY,
         }),
         account: z.object({
             allocationPercent: z.number().positive().max(100),
         }).optional(),
         expectedExternalInstruments: z.array(z.string().trim().min(1)).default([]),
         pendingEntryTtlMinutes: z.number().int().positive().max(7 * 24 * 60).optional(),
-    }).default({
-        maxDrawdownDay: undefined,
-        maxDrawdownWeek: undefined,
-        cooldownMinutesAfterDayBreach: 12 * 60,
-        cooldownMinutesAfterWeekBreach: 24 * 60,
-        strategyTimezone: "UTC",
-        sessionFlat: {
-            enabled: false,
-            closeBufferMinutes: 15,
-            timezone: "UTC",
-        },
-        account: undefined,
-        expectedExternalInstruments: [],
-        pendingEntryTtlMinutes: undefined,
-    }),
+    }).default(createStrategySafetyDefaults()),
 }).passthrough()
 
 export type BaseStrategyPolicy = z.infer<typeof baseStrategyPolicySchema>
@@ -62,12 +105,6 @@ export interface RuntimeStrategySafetyPolicy {
     strategyTimezone: string
 }
 
-function readFiniteNumber(value: unknown): number | undefined {
-    return typeof value === "number" && Number.isFinite(value)
-        ? value
-        : undefined
-}
-
 function readPositivePercentage(value: unknown): number | undefined {
     const numeric = readFiniteNumber(value)
     if (numeric === undefined || numeric <= 0 || numeric > 100) {
@@ -75,12 +112,6 @@ function readPositivePercentage(value: unknown): number | undefined {
     }
 
     return numeric
-}
-
-function readString(value: unknown): string | undefined {
-    return typeof value === "string" && value.trim().length > 0
-        ? value.trim()
-        : undefined
 }
 
 function roundCurrencyAmount(value: number): number {
@@ -111,7 +142,7 @@ export function readConfiguredStrategySafetyPolicy(policy: Record<string, unknow
         maxDrawdownWeek: readPositivePercentage(safety.maxDrawdownWeek),
         cooldownMinutesAfterDayBreach: readFiniteNumber(safety.cooldownMinutesAfterDayBreach) ?? 12 * 60,
         cooldownMinutesAfterWeekBreach: readFiniteNumber(safety.cooldownMinutesAfterWeekBreach) ?? 24 * 60,
-        strategyTimezone: readString(safety.strategyTimezone) ?? "UTC",
+        strategyTimezone: readTrimmedString(safety.strategyTimezone) ?? "UTC",
     }
 }
 
@@ -221,23 +252,7 @@ export function validateStrategyConfig(raw: unknown): StrategyConfig {
 }
 
 export const ALPACA_OPTIONS_POLICY_DEFAULTS: AlpacaOptionsPolicy = {
-    dryRun: true,
-    model: "",
-    safety: {
-        maxDrawdownDay: undefined,
-        maxDrawdownWeek: undefined,
-        cooldownMinutesAfterDayBreach: 12 * 60,
-        cooldownMinutesAfterWeekBreach: 24 * 60,
-        strategyTimezone: "UTC",
-        sessionFlat: {
-            enabled: false,
-            closeBufferMinutes: 15,
-            timezone: "UTC",
-        },
-        account: undefined,
-        expectedExternalInstruments: [],
-        pendingEntryTtlMinutes: undefined,
-    },
+    ...createBasePolicyDefaults(),
     maxLossPerPlay: 500,
 }
 
@@ -279,23 +294,7 @@ JUDGMENT:
 Preserve capital first. This strategy should look like selective weekly position management with callback-driven self-supervision, not constant options churn.`
 
 export const POLYMARKET_POLICY_DEFAULTS: PolymarketPolicy = {
-    dryRun: true,
-    model: "",
-    safety: {
-        maxDrawdownDay: undefined,
-        maxDrawdownWeek: undefined,
-        cooldownMinutesAfterDayBreach: 12 * 60,
-        cooldownMinutesAfterWeekBreach: 24 * 60,
-        strategyTimezone: "UTC",
-        sessionFlat: {
-            enabled: false,
-            closeBufferMinutes: 15,
-            timezone: "UTC",
-        },
-        account: undefined,
-        expectedExternalInstruments: [],
-        pendingEntryTtlMinutes: undefined,
-    },
+    ...createBasePolicyDefaults(),
     maxBet: { mode: "fixed", value: 100 },
     minLiquidity: 0,
     minResolutionBufferHours: 48,
@@ -303,23 +302,14 @@ export const POLYMARKET_POLICY_DEFAULTS: PolymarketPolicy = {
 }
 
 export const MT5_POLICY_DEFAULTS: MT5Policy = {
-    dryRun: true,
-    model: "",
-    safety: {
+    ...createBasePolicyDefaults({
         maxDrawdownDay: 3,
         maxDrawdownWeek: 10,
-        cooldownMinutesAfterDayBreach: 12 * 60,
-        cooldownMinutesAfterWeekBreach: 24 * 60,
-        strategyTimezone: "UTC",
         sessionFlat: {
             enabled: true,
-            closeBufferMinutes: 15,
-            timezone: "UTC",
         },
-        account: undefined,
-        expectedExternalInstruments: [],
         pendingEntryTtlMinutes: 120,
-    },
+    }),
     maxRiskPercent: 2,
     minRiskReward: 0.5,
     tradingHours: { start: "08:00", end: "16:00", timezone: "UTC" },
@@ -328,23 +318,14 @@ export const MT5_POLICY_DEFAULTS: MT5Policy = {
 }
 
 export const OKX_POLICY_DEFAULTS: OKXPolicy = {
-    dryRun: true,
-    model: "",
-    safety: {
+    ...createBasePolicyDefaults({
         maxDrawdownDay: 3,
         maxDrawdownWeek: 10,
-        cooldownMinutesAfterDayBreach: 12 * 60,
-        cooldownMinutesAfterWeekBreach: 24 * 60,
-        strategyTimezone: "UTC",
         sessionFlat: {
             enabled: true,
-            closeBufferMinutes: 15,
-            timezone: "UTC",
         },
-        account: undefined,
-        expectedExternalInstruments: [],
         pendingEntryTtlMinutes: 120,
-    },
+    }),
     allowedInstruments: ["BTC-USDT-SWAP", "ETH-USDT-SWAP"],
     maxLeverage: 3,
     maxRiskPercent: 1,

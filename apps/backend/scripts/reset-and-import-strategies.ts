@@ -1,6 +1,5 @@
 import {
     createClient,
-    createDeleteTotals,
     finalizeFullResetCleanup,
     getStrategyModel,
     loadStrategiesFromDocument,
@@ -9,7 +8,7 @@ import {
     addDeleteCounts,
     assertFullResetAuditClean,
 } from "./lib/strategy-cli"
-import { resetStrategySafely } from "./lib/safe-strategy-reset"
+import { resetExistingStrategies } from "./lib/strategy-reset"
 
 runScript(async () => {
     const strategies = await loadStrategiesFromDocument()
@@ -17,23 +16,10 @@ runScript(async () => {
 
     const existing = await client.getAllStrategies()
 
-    const totals = createDeleteTotals()
-
-    if (existing.length > 0) {
-        console.log(`Safely resetting ${existing.length} existing strategies...`)
-
-        for (const strategy of existing) {
-            console.log(`  Resetting ${strategy.name}...`)
-            const result = await resetStrategySafely(client, strategy._id)
-            totals.strategies++
-            console.log(`    cancelled orders: ${result.cancelledOrders}`)
-            console.log(`    closed positions: ${result.closedPositions}`)
-            addDeleteCounts(totals, result.deleted)
-        }
-
-    } else {
-        console.log("No existing strategies found. Running full reset cleanup and audit before import...")
-    }
+    const totals = await resetExistingStrategies(client, existing, {
+        empty: "No existing strategies found. Running full reset cleanup and audit before import...",
+        reset: (count) => `Safely resetting ${count} existing strategies...`,
+    })
 
     const cleanup = await finalizeFullResetCleanup(client, {
         log: (message) => console.log(`  ${message}`),

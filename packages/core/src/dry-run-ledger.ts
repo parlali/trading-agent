@@ -1,4 +1,5 @@
 import type { AccountState, ExecutionResult, Position } from "./types"
+import { readFiniteNumber } from "./value-readers"
 
 export const DRY_RUN_ACCOUNT_LEDGER_INSTRUMENT = "__DRY_RUN_ACCOUNT_LEDGER__"
 
@@ -15,8 +16,8 @@ export function resolveDryRunAccountState(args: {
     const ledger = args.positions.find((position) => isDryRunAccountLedgerPosition(position))
 
     if (ledger) {
-        dryRunCashAdjustment = readNumber(ledger.metadata?.cashAdjustment) ?? 0
-        dryRunRealizedPnl = readNumber(ledger.metadata?.realizedPnl) ?? 0
+        dryRunCashAdjustment = readFiniteNumber(ledger.metadata?.cashAdjustment) ?? 0
+        dryRunRealizedPnl = readFiniteNumber(ledger.metadata?.realizedPnl) ?? 0
     }
 
     for (const position of args.positions) {
@@ -179,10 +180,4 @@ export function resolveDryRunRealizedPnl(
     }
 
     return 0
-}
-
-function readNumber(value: unknown): number | undefined {
-    return typeof value === "number" && Number.isFinite(value)
-        ? value
-        : undefined
 }

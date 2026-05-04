@@ -1,4 +1,5 @@
 import type { StrategyRiskCooldownState, StrategySafetyState } from "./types"
+import { readFiniteNumber, readTrimmedString } from "./value-readers"
 
 export interface RiskGovernanceOrderRecord {
     action: string
@@ -71,18 +72,6 @@ export interface ComputedRiskGovernanceState {
     windows: RiskWindowStarts
 }
 
-function readNumber(value: unknown): number | undefined {
-    return typeof value === "number" && Number.isFinite(value)
-        ? value
-        : undefined
-}
-
-function readString(value: unknown): string | undefined {
-    return typeof value === "string" && value.trim().length > 0
-        ? value.trim()
-        : undefined
-}
-
 function readBoolean(value: unknown): boolean | undefined {
     return typeof value === "boolean"
         ? value
@@ -90,7 +79,7 @@ function readBoolean(value: unknown): boolean | undefined {
 }
 
 function resolveSafeTimezone(value: string): string {
-    const timezone = readString(value) ?? "UTC"
+    const timezone = readTrimmedString(value) ?? "UTC"
     try {
         new Intl.DateTimeFormat("en-US", { timeZone: timezone }).format(new Date(0))
         return timezone
@@ -174,14 +163,14 @@ export function resolveCloseOrderRealizedPnl(order: RiskGovernanceOrderRecord): 
     }
 
     const metadata = resolveOrderMetadata(order)
-    const entryPrice = readNumber(metadata?.entryPrice)
+    const entryPrice = readFiniteNumber(metadata?.entryPrice)
     const closePrice = order.avgFillPrice
 
     if (entryPrice === undefined || closePrice === undefined || order.filledQuantity <= 0) {
         return undefined
     }
 
-    const side = readString(metadata?.positionSide) === "short"
+    const side = readTrimmedString(metadata?.positionSide) === "short"
         ? "short"
         : "long"
 
@@ -337,34 +326,30 @@ export function computeRiskGovernanceState(args: {
         ? dayRealizedPnl <= -Math.abs(args.policy.maxDrawdownDay)
         : false
 
-    if (!cooldownActive && (weekBreached || dayBreached)) {
-        const reason: StrategyRiskCooldownState["reason"] = weekBreached ? "week_drawdown" : "day_drawdown"
-        const cooldownMinutes = weekBreached
-            ? args.policy.cooldownMinutesAfterWeekBreach
-            : args.policy.cooldownMinutesAfterDayBreach
-        const expiresAt = args.now + cooldownMinutes * 60_000
-
+    const enterCooldown = (
+        reason: StrategyRiskCooldownState["reason"],
+        cooldownMinutes: number
+    ): void => {
         cooldownActive = true
         cooldownReason = reason
         cooldownStartedAt = args.now
-        cooldownExpiresAt = expiresAt
+        cooldownExpiresAt = args.now + cooldownMinutes * 60_000
         lastBreachReason = reason
         cooldownEntered = true
         cooldownEnteredReason = reason
     }
 
-    if (!cooldownActive && forcedExitClusterInstruments.length > 0) {
-        const reason: StrategyRiskCooldownState["reason"] = "forced_exit_cluster"
-        const cooldownMinutes = args.policy.cooldownMinutesAfterDayBreach
-        const expiresAt = args.now + cooldownMinutes * 60_000
+    if (!cooldownActive && (weekBreached || dayBreached)) {
+        enterCooldown(
+            weekBreached ? "week_drawdown" : "day_drawdown",
+            weekBreached
+                ? args.policy.cooldownMinutesAfterWeekBreach
+                : args.policy.cooldownMinutesAfterDayBreach
+        )
+    }
 
-        cooldownActive = true
-        cooldownReason = reason
-        cooldownStartedAt = args.now
-        cooldownExpiresAt = expiresAt
-        lastBreachReason = reason
-        cooldownEntered = true
-        cooldownEnteredReason = reason
+    if (!cooldownActive && forcedExitClusterInstruments.length > 0) {
+        enterCooldown("forced_exit_cluster", args.policy.cooldownMinutesAfterDayBreach)
     }
 
     const unresolvedExecutionFaultCount = unresolvedFaults.length

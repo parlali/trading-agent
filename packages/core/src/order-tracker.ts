@@ -20,7 +20,7 @@ import {
     type TrackedOrderHandle,
     type WaitForOrderUpdateOptions,
 } from "./orders"
-import type { VenueAdapter, TradeEventLogger, OrderLifecycleConfig, OrderStatusCallback } from "./execution"
+import type { VenueAdapter, TradeEventLogger, OrderLifecycleConfig, OrderStatusCallback } from "./execution-contracts"
 import type { Logger } from "./logger"
 import { hasIntentChanges } from "./intent"
 

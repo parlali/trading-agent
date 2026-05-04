@@ -1,6 +1,8 @@
 import {
     getRiskBudgetBase,
     polymarketPolicySchema,
+    readFiniteNumber,
+    readTrimmedString,
     type AccountState,
     type OrderIntent,
     type Position,
@@ -21,11 +23,11 @@ function canonicalIdentityValidator(
     intent: OrderIntent
 ): { allowed: boolean; reason?: string } {
     const metadata = intent.metadata ?? {}
-    const tokenId = readString(metadata.tokenId)
-    const conditionId = readString(metadata.conditionId)
-    const marketSlug = readString(metadata.marketSlug)
-    const question = readString(metadata.question)
-    const outcome = readString(metadata.outcome)
+    const tokenId = readTrimmedString(metadata.tokenId)
+    const conditionId = readTrimmedString(metadata.conditionId)
+    const marketSlug = readTrimmedString(metadata.marketSlug)
+    const question = readTrimmedString(metadata.question)
+    const outcome = readTrimmedString(metadata.outcome)
 
     if (!tokenId || tokenId !== intent.instrument || !conditionId || !marketSlug || !question || !outcome) {
         return {
@@ -119,7 +121,7 @@ function liquidityValidator(
         return { allowed: true }
     }
 
-    const liquidity = readNumber(intent.metadata?.liquidity)
+    const liquidity = readFiniteNumber(intent.metadata?.liquidity)
     if (liquidity === undefined) {
         return {
             allowed: false,
@@ -150,7 +152,7 @@ function resolutionBufferValidator(
         return { allowed: true }
     }
 
-    const endDateIso = readString(intent.metadata?.endDateIso)
+    const endDateIso = readTrimmedString(intent.metadata?.endDateIso)
     if (!endDateIso) {
         return {
             allowed: false,
@@ -190,7 +192,7 @@ function categoryAllowlistValidator(
         return { allowed: true }
     }
 
-    const category = readString(intent.metadata?.category)?.toLowerCase()
+    const category = readTrimmedString(intent.metadata?.category)?.toLowerCase()
     const allowed = new Set(policy.allowedCategories.map((entry) => entry.toLowerCase()))
     if (!category || !allowed.has(category)) {
         return {
@@ -234,18 +236,9 @@ function totalExposureValidator(
     return { allowed: true }
 }
 
-function readString(value: unknown): string | undefined {
-    return typeof value === "string" && value.trim().length > 0
-        ? value.trim()
-        : undefined
-}
-
-function readNumber(value: unknown): number | undefined {
-    return typeof value === "number" && Number.isFinite(value)
-        ? value
-        : undefined
-}
-
 function resolveIntentPrice(intent: OrderIntent): number {
-    return intent.limitPrice ?? readNumber(intent.metadata?.estimatedPrice) ?? readNumber(intent.metadata?.currentPrice) ?? 0
+    return intent.limitPrice ??
+        readFiniteNumber(intent.metadata?.estimatedPrice) ??
+        readFiniteNumber(intent.metadata?.currentPrice) ??
+        0
 }

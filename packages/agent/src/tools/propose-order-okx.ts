@@ -6,23 +6,13 @@ import {
     prepareOKXOrder,
     type OKXOrderParams,
 } from "./okx-order-helpers"
+import type { ExecutionSafetyToolCallbacks } from "./execution-safety"
 
 export function createOKXProposeOrderTool(
     pipeline: ExecutionPipeline,
     venue: OKXVenueAdapter,
     policy: OKXPolicy,
-    options?: {
-        onExecutionSafetyFault?: (args: {
-            instrument: string
-            category: "position_not_found_yet" | "provider_rejected" | "already_exists_conflict" | "invalid_params" | "unknown"
-            message: string
-            providerPayload?: string
-        }) => Promise<void>
-        onExecutionSafetyRecovered?: (args: {
-            instrument: string
-            resolutionNote: string
-        }) => Promise<void>
-    }
+    options?: ExecutionSafetyToolCallbacks
 ): ToolDefinition {
     return createToolDefinition({
         name: "propose_order",

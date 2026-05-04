@@ -3,6 +3,8 @@ import {
     createExecutionErrorDetail,
     ExecutionCostTracker,
     formatExecutionError,
+    readFiniteNumber,
+    readTrimmedString,
     type AccountState,
     type DryRunOrderSimulator,
     type ExecutionCostAssessment,
@@ -16,12 +18,20 @@ import {
 } from "@valiq-trading/core"
 import type {
     PolymarketClient,
-    PolymarketCurrentPosition,
     PolymarketMarket,
-    PolymarketOpenOrder,
     PolymarketOrderBook,
 } from "./polymarket-client"
 import { getPolymarketMarketPrice, type PolymarketMarketPrice } from "./market-price"
+import {
+    buildCanonicalMetadataFromCurrentPosition,
+    dedupeAndRankMarkets,
+    mapCurrentPosition,
+    mapOpenOrderStatus,
+    mapOpenOrderToExecutionResult,
+    mapOrderType,
+    mapPostOrderStatus,
+    matchesMarketQuery,
+} from "./venue-adapter-mappers"
 
 export interface PolymarketMarketSearchResult {
     conditionId: string
@@ -502,11 +512,11 @@ export class PolymarketVenueAdapter implements VenueAdapter, PriceVerifier, DryR
         expiration?: number
     } {
         const metadata = intent.metadata ?? {}
-        const tokenId = readNonEmptyString(metadata.tokenId) ?? intent.instrument
-        const conditionId = readNonEmptyString(metadata.conditionId)
-        const marketSlug = readNonEmptyString(metadata.marketSlug)
-        const question = readNonEmptyString(metadata.question)
-        const outcome = readNonEmptyString(metadata.outcome)
+        const tokenId = readTrimmedString(metadata.tokenId) ?? intent.instrument
+        const conditionId = readTrimmedString(metadata.conditionId)
+        const marketSlug = readTrimmedString(metadata.marketSlug)
+        const question = readTrimmedString(metadata.question)
+        const outcome = readTrimmedString(metadata.outcome)
 
         if (!tokenId || tokenId !== intent.instrument || !conditionId || !marketSlug || !question || !outcome) {
             throw new Error("Polymarket orders require canonical tokenId, conditionId, marketSlug, question, and outcome metadata from market discovery")
@@ -518,12 +528,12 @@ export class PolymarketVenueAdapter implements VenueAdapter, PriceVerifier, DryR
             marketSlug,
             question,
             outcome,
-            category: readNonEmptyString(metadata.category),
-            endDateIso: readNonEmptyString(metadata.endDateIso),
-            liquidity: readNumber(metadata.liquidity),
-            volume: readNumber(metadata.volume),
+            category: readTrimmedString(metadata.category),
+            endDateIso: readTrimmedString(metadata.endDateIso),
+            liquidity: readFiniteNumber(metadata.liquidity),
+            volume: readFiniteNumber(metadata.volume),
             negRisk: typeof metadata.negRisk === "boolean" ? metadata.negRisk : undefined,
-            expiration: readNumber(metadata.expiration),
+            expiration: readFiniteNumber(metadata.expiration),
         }
     }
 
@@ -659,158 +669,3 @@ export class PolymarketVenueAdapter implements VenueAdapter, PriceVerifier, DryR
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-function mapOrderType(intent: OrderIntent): "GTC" | "GTD" | "FOK" | "FAK" {
-    if (intent.orderType === "market") {
-        return "FOK"
-    }
-
-    // Map timeInForce to Polymarket order types
-    switch (intent.timeInForce) {
-        case "gtc":
-            return "GTC"
-        case "ioc":
-            return "FAK"
-        case "fok":
-            return "FOK"
-        case "day":
-            // Polymarket doesn't have a "day" equivalent, use GTC
-            return "GTC"
-        default:
-            return "GTC"
-    }
-}
-
-function mapPostOrderStatus(status: string): ExecutionResult["status"] {
-    switch (status) {
-        case "matched":
-            return "filled"
-        case "live":
-            return "pending"
-        default:
-            return "pending"
-    }
-}
-
-function mapOpenOrderStatus(order: PolymarketOpenOrder): ExecutionResult["status"] {
-    const sizeMatched = Number(order.size_matched)
-
-    switch (order.status) {
-        case "matched":
-            return "filled"
-        case "live":
-            return sizeMatched > 0 ? "partially_filled" : "pending"
-        case "cancelled":
-            return "cancelled"
-        case "expired":
-            return "expired"
-        default:
-            return "pending"
-    }
-}
-
-function mapOpenOrderToExecutionResult(order: PolymarketOpenOrder): ExecutionResult {
-    const sizeMatched = Number(order.size_matched)
-    const price = Number(order.price)
-
-    return {
-        orderId: order.id,
-        status: mapOpenOrderStatus(order),
-        filledQuantity: sizeMatched,
-        fillPrice: sizeMatched > 0 ? price : undefined,
-        timestamp: Date.now(),
-    }
-}
-
-function matchesMarketQuery(
-    market: PolymarketMarket,
-    query: string
-): boolean {
-    const haystack = [
-        market.question,
-        market.description,
-        market.category,
-        market.marketSlug,
-        ...market.tokens.map((token) => token.outcome),
-    ]
-        .join(" ")
-        .toLowerCase()
-
-    return haystack.includes(query)
-}
-
-function dedupeAndRankMarkets(markets: PolymarketMarket[]): PolymarketMarket[] {
-    const byConditionId = new Map<string, PolymarketMarket>()
-
-    for (const market of markets) {
-        const existing = byConditionId.get(market.conditionId)
-        if (!existing || (market.liquidity ?? 0) > (existing.liquidity ?? 0)) {
-            byConditionId.set(market.conditionId, market)
-        }
-    }
-
-    return Array.from(byConditionId.values())
-        .sort((left, right) => (right.liquidity ?? 0) - (left.liquidity ?? 0))
-}
-
-function readNonEmptyString(value: unknown): string | undefined {
-    return typeof value === "string" && value.trim().length > 0
-        ? value.trim()
-        : undefined
-}
-
-function readNumber(value: unknown): number | undefined {
-    return typeof value === "number" && Number.isFinite(value)
-        ? value
-        : undefined
-}
-
-function buildCanonicalMetadataFromCurrentPosition(position: Position): Record<string, unknown> {
-    const metadata = position.metadata ?? {}
-
-    return {
-        ...metadata,
-        tokenId: readNonEmptyString(metadata.tokenId) ?? position.instrument,
-        conditionId: readNonEmptyString(metadata.conditionId) ?? readNonEmptyString(metadata.market),
-        marketSlug: readNonEmptyString(metadata.marketSlug) ?? readNonEmptyString(metadata.slug),
-        question: readNonEmptyString(metadata.question),
-        outcome: readNonEmptyString(metadata.outcome),
-        category: readNonEmptyString(metadata.category),
-        endDateIso: readNonEmptyString(metadata.endDateIso) ?? readNonEmptyString(metadata.endDate),
-        liquidity: readNumber(metadata.liquidity),
-        volume: readNumber(metadata.volume),
-        negRisk: typeof metadata.negRisk === "boolean" ? metadata.negRisk : undefined,
-        side: "sell",
-        quantity: position.quantity,
-        entryPrice: position.entryPrice,
-        currentPrice: position.currentPrice,
-    }
-}
-
-function mapCurrentPosition(position: PolymarketCurrentPosition): Position {
-    return {
-        instrument: position.asset,
-        side: "long",
-        quantity: position.size,
-        entryPrice: position.avgPrice,
-        currentPrice: position.curPrice > 0 ? position.curPrice : undefined,
-        unrealizedPnl: position.cashPnl,
-        metadata: {
-            venue: "polymarket",
-            conditionId: position.conditionId,
-            tokenId: position.asset,
-            market: position.conditionId,
-            marketSlug: position.slug,
-            question: position.title,
-            outcome: position.outcome,
-            slug: position.slug,
-            side: "buy",
-            entryPrice: position.avgPrice,
-            currentPrice: position.curPrice,
-            redeemable: position.redeemable,
-            mergeable: position.mergeable,
-            endDate: position.endDate,
-            endDateIso: position.endDate,
-        },
-    }
-}

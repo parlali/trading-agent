@@ -5,7 +5,7 @@ import {
     createToolDefinition,
     polymarketOrderParamsSchema,
 } from "../tool-contracts"
-import { toExecutionToolResult } from "./execution-response"
+import { executeToolIntent } from "./execution-response"
 import { resolveEstimatedPrice, type PolymarketPriceProvider } from "./polymarket-order-helpers"
 import { PolymarketMarketHandleRegistry } from "./polymarket-market-handles"
 
@@ -19,10 +19,6 @@ export function createPolymarketProposeOrderTool(
         venue: "polymarket",
         handler: async (params) => {
             const validated = params as z.infer<typeof polymarketOrderParamsSchema>
-            const [positions, account] = await Promise.all([
-                pipeline.getPositions(),
-                pipeline.getAccountState(),
-            ])
             const token = handles.resolveToken(validated)
             const identity = {
                 tokenId: token.tokenId,
@@ -73,14 +69,7 @@ export function createPolymarketProposeOrderTool(
                 },
             }
 
-            const { result, validation, handle } = await pipeline.executeIntent(intent, account, positions, {
-                action: "entry",
-            })
-
-            return toExecutionToolResult(result, {
-                trackedOrder: handle?.snapshot,
-                validation,
-            })
+            return await executeToolIntent(pipeline, intent, { action: "entry" }, { includeTrackedOrder: true })
         },
     })
 }

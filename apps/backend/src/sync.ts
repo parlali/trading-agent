@@ -1,6 +1,7 @@
 import {
     DEFAULT_STALE_RUN_TIMEOUT_MS,
     type Scheduler,
+    type VenueApp,
 } from "@valiq-trading/core"
 import {
     PERIODIC_SYNC_INTERVAL_MS,
@@ -26,6 +27,91 @@ import {
     upsertSyncStrategyEntry,
 } from "./scheduler"
 
+type ProviderSyncSource = "startup_sync" | "periodic_sync"
+
+async function syncProviderPortfolioForApp(
+    app: VenueApp,
+    source: ProviderSyncSource,
+    options: {
+        skipInvalidWarning?: boolean
+        successLogMessage?: string
+        failureLogMessage: string
+        includeAppInFailureHeartbeat?: boolean
+        alertFailure?: boolean
+    }
+): Promise<void> {
+    if (!healthState.venues[app]?.validated) {
+        if (options.skipInvalidWarning) {
+            logger.warn(`Skipping startup sync for ${app}: environment not validated`)
+        }
+        return
+    }
+
+    try {
+        const plugin = plugins[app]
+        if (!plugin) return
+        const syncConfig = getProviderSyncConfig(app)
+        const venue = plugin.createVenueAdapter(syncConfig.policy, syncConfig.secrets)
+        const result = await reconcileProviderPortfolio({
+            app,
+            venueName: plugin.venueName,
+            source,
+            venue,
+        })
+
+        await writeHeartbeatSnapshot({
+            app,
+            status: result.driftDetected ? "degraded" : "healthy",
+            metadata: {
+                source,
+                positionCount: result.positions.length,
+                pendingOrderCount: result.workingOrders.length,
+                balance: result.accountState.balance,
+                equity: result.accountState.equity,
+                driftDetected: result.driftDetected,
+                driftSummary: result.driftSummary,
+            },
+        })
+
+        if (options.successLogMessage) {
+            logger.info(options.successLogMessage, {
+                app,
+                positionCount: result.positions.length,
+                pendingOrderCount: result.workingOrders.length,
+                balance: result.accountState.balance,
+                equity: result.accountState.equity,
+                driftDetected: result.driftDetected,
+            })
+        }
+    } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        logger.error(options.failureLogMessage, {
+            app,
+            error: message,
+        })
+
+        await recordProviderSyncFailure(app, message)
+
+        await writeHeartbeatSnapshot({
+            app,
+            status: "degraded",
+            metadata: {
+                ...(options.includeAppInFailureHeartbeat ? { app } : {}),
+                error: message,
+                source,
+            },
+        })
+
+        if (options.alertFailure) {
+            await backend.createAlert({
+                app,
+                severity: "warning",
+                message: `Periodic provider sync failed for ${app}: ${message}`,
+            })
+        }
+    }
+}
+
 export async function performStartupSync(): Promise<void> {
     logger.info("Performing startup sync for validated venues")
 
@@ -36,64 +122,12 @@ export async function performStartupSync(): Promise<void> {
     )
 
     for (const app of requiredApps) {
-        if (!healthState.venues[app]?.validated) {
-            logger.warn(`Skipping startup sync for ${app}: environment not validated`)
-            continue
-        }
-
-        try {
-            const plugin = plugins[app]
-            if (!plugin) continue
-            const syncConfig = getProviderSyncConfig(app)
-            const venue = plugin.createVenueAdapter(syncConfig.policy, syncConfig.secrets)
-            const result = await reconcileProviderPortfolio({
-                app,
-                venueName: plugin.venueName,
-                source: "startup_sync",
-                venue,
-            })
-
-            await writeHeartbeatSnapshot({
-                app,
-                status: result.driftDetected ? "degraded" : "healthy",
-                metadata: {
-                    source: "startup_sync",
-                    positionCount: result.positions.length,
-                    pendingOrderCount: result.workingOrders.length,
-                    balance: result.accountState.balance,
-                    equity: result.accountState.equity,
-                    driftDetected: result.driftDetected,
-                    driftSummary: result.driftSummary,
-                },
-            })
-
-            logger.info("Startup provider sync completed", {
-                app,
-                positionCount: result.positions.length,
-                pendingOrderCount: result.workingOrders.length,
-                balance: result.accountState.balance,
-                equity: result.accountState.equity,
-                driftDetected: result.driftDetected,
-            })
-        } catch (error) {
-            const message = error instanceof Error ? error.message : String(error)
-            logger.error("Startup provider sync failed", {
-                app,
-                error: message,
-            })
-
-            await recordProviderSyncFailure(app, message)
-
-            await writeHeartbeatSnapshot({
-                app,
-                status: "degraded",
-                metadata: {
-                    app,
-                    error: message,
-                    source: "startup_sync",
-                },
-            })
-        }
+        await syncProviderPortfolioForApp(app, "startup_sync", {
+            skipInvalidWarning: true,
+            successLogMessage: "Startup provider sync completed",
+            failureLogMessage: "Startup provider sync failed",
+            includeAppInFailureHeartbeat: true,
+        })
     }
 }
 
@@ -217,58 +251,9 @@ export async function performPeriodicSync(): Promise<void> {
     )
 
     for (const app of requiredApps) {
-        if (!healthState.venues[app]?.validated) {
-            continue
-        }
-
-        try {
-            const plugin = plugins[app]
-            if (!plugin) continue
-            const syncConfig = getProviderSyncConfig(app)
-            const venue = plugin.createVenueAdapter(syncConfig.policy, syncConfig.secrets)
-            const result = await reconcileProviderPortfolio({
-                app,
-                venueName: plugin.venueName,
-                source: "periodic_sync",
-                venue,
-            })
-
-            await writeHeartbeatSnapshot({
-                app,
-                status: result.driftDetected ? "degraded" : "healthy",
-                metadata: {
-                    source: "periodic_sync",
-                    positionCount: result.positions.length,
-                    pendingOrderCount: result.workingOrders.length,
-                    balance: result.accountState.balance,
-                    equity: result.accountState.equity,
-                    driftDetected: result.driftDetected,
-                    driftSummary: result.driftSummary,
-                },
-            })
-        } catch (error) {
-            const message = error instanceof Error ? error.message : String(error)
-            logger.error("Periodic provider sync failed", {
-                app,
-                error: message,
-            })
-
-            await recordProviderSyncFailure(app, message)
-
-            await writeHeartbeatSnapshot({
-                app,
-                status: "degraded",
-                metadata: {
-                    error: message,
-                    source: "periodic_sync",
-                },
-            })
-
-            await backend.createAlert({
-                app,
-                severity: "warning",
-                message: `Periodic provider sync failed for ${app}: ${message}`,
-            })
-        }
+        await syncProviderPortfolioForApp(app, "periodic_sync", {
+            failureLogMessage: "Periodic provider sync failed",
+            alertFailure: true,
+        })
     }
 }

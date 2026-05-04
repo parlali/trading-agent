@@ -9,7 +9,7 @@ import {
     createToolDefinition,
     genericOrderParamsSchema,
 } from "../tool-contracts"
-import { toExecutionToolResult } from "./execution-response"
+import { executeToolIntent } from "./execution-response"
 
 interface CreateProposeOrderToolOptions {
     mode?: "default" | "alpaca-options"
@@ -27,11 +27,6 @@ export function createProposeOrderTool(
         venue: isAlpacaOptions ? "alpaca-options" : "polymarket",
         handler: async (params) => {
             const validated = params as z.infer<typeof orderParamsSchema>
-            const [positions, account] = await Promise.all([
-                pipeline.getPositions(),
-                pipeline.getAccountState(),
-            ])
-
             const intent: OrderIntent = {
                 instrument: validated.instrument,
                 side: validated.side,
@@ -44,14 +39,7 @@ export function createProposeOrderTool(
                 metadata: validated.metadata,
             }
 
-            const { result, validation, handle } = await pipeline.executeIntent(intent, account, positions, {
-                action: "entry",
-            })
-
-            return toExecutionToolResult(result, {
-                trackedOrder: handle?.snapshot,
-                validation,
-            })
+            return await executeToolIntent(pipeline, intent, { action: "entry" }, { includeTrackedOrder: true })
         },
     })
 }

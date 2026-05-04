@@ -1,20 +1,16 @@
 import { query } from "../../_generated/server"
 import { v } from "convex/values"
-import { requireUser, requireServiceToken, requireUserOrServiceToken } from "../authGuards"
+import { requireServiceToken, requireUserOrServiceToken } from "../authGuards"
 import {
     getOwnedInstrumentsByApp,
     getOwnedInstrumentsForStrategy,
 } from "../instrumentClaims"
+import { venueAppV } from "../validators"
 
 export const getStrategyConfigs = query({
     args: {
         serviceToken: v.string(),
-        app: v.union(
-            v.literal("alpaca-options"),
-            v.literal("polymarket"),
-            v.literal("mt5"),
-            v.literal("okx-swap")
-        ),
+        app: venueAppV,
     },
     handler: async (ctx, args) => {
         requireServiceToken(args.serviceToken)
@@ -40,11 +36,7 @@ export const getAllStrategies = query({
         serviceToken: v.optional(v.string()),
     },
     handler: async (ctx, args) => {
-        if (args.serviceToken) {
-            requireServiceToken(args.serviceToken)
-        } else {
-            await requireUser(ctx)
-        }
+        await requireUserOrServiceToken(ctx, args.serviceToken)
         return await ctx.db.query("strategies").collect()
     },
 })
@@ -154,12 +146,7 @@ export const getStrategyOwnershipScope = query({
 export const getAllOwnedInstrumentsByApp = query({
     args: {
         serviceToken: v.string(),
-        app: v.union(
-            v.literal("alpaca-options"),
-            v.literal("polymarket"),
-            v.literal("mt5"),
-            v.literal("okx-swap")
-        ),
+        app: venueAppV,
     },
     handler: async (ctx, args) => {
         requireServiceToken(args.serviceToken)
