@@ -8,6 +8,7 @@
         "packages/*"
     ],
     "scripts": {
+        "deploy": "bun private/deploy.ts",
         "dev": "turbo dev --filter=@valiq-trading/backend --filter=dashboard",
         "dev:backend": "bun --watch apps/backend/src/index.ts",
         "dev:dashboard": "cd apps/dashboard && bun run dev",
@@ -23,7 +24,6 @@
         "positions:unowned": "cd apps/backend && bun run positions:unowned",
         "build": "turbo build",
         "lint": "turbo lint",
-        "deploy:convex": "cd packages/convex && bun run deploy",
         "clean": "bun run clean:modules && bun run clean:dist",
         "clean:modules": "rm -rf node_modules && rm -rf apps/*/node_modules && rm -rf packages/*/node_modules",
         "clean:dist": "rm -rf apps/*/dist && rm -rf packages/*/dist"

@@ -8,6 +8,9 @@ dist/
 # Convex
 .convex/
 
+# Vercel
+.vercel/
+
 # Environment
 .env
 .env.*
