@@ -8,7 +8,6 @@
         "packages/*"
     ],
     "scripts": {
-        "deploy": "bun private/deploy.ts",
         "dev": "turbo dev --filter=@valiq-trading/backend --filter=dashboard",
         "dev:backend": "bun --watch apps/backend/src/index.ts",
         "dev:dashboard": "cd apps/dashboard && bun run dev",

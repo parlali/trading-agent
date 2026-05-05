@@ -74,6 +74,8 @@ Any machine that runs `apps/mt5-worker` must keep the broker server database at 
 
 If the file is missing, the worker fails closed with a clear error instead of starting against a stale or implicit fallback path.
 
+On Windows deployments, set `WORKER_EXPECTED_REPO_SUFFIX` if you want the worker to fail closed unless it is running from an expected repo path.
+
 ### Polymarket Funder Address
 
 `POLYMARKET_FUNDER_ADDRESS` is required and must be set explicitly. The runtime does not derive it from the private key and does not fall back to any other wallet address.
