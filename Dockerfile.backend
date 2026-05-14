@@ -20,7 +20,7 @@ COPY --from=pruner /app/turbo.json ./turbo.json
 
 RUN bun install
 COPY --from=pruner /app/out/full/ .
-RUN bun run build
+RUN bunx turbo build --concurrency=1
 
 # =========================================================================== #
 # =========================================================================== #
