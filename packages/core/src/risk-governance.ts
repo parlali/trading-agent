@@ -163,6 +163,11 @@ export function resolveCloseOrderRealizedPnl(order: RiskGovernanceOrderRecord): 
     }
 
     const metadata = resolveOrderMetadata(order)
+    const providerRealizedPnl = resolveProviderReportedRealizedPnl(metadata)
+    if (providerRealizedPnl !== undefined) {
+        return providerRealizedPnl
+    }
+
     const entryPrice = readFiniteNumber(metadata?.entryPrice)
     const closePrice = order.avgFillPrice
 
@@ -179,6 +184,23 @@ export function resolveCloseOrderRealizedPnl(order: RiskGovernanceOrderRecord): 
     }
 
     return (closePrice - entryPrice) * order.filledQuantity
+}
+
+function resolveProviderReportedRealizedPnl(
+    metadata: Record<string, unknown> | undefined
+): number | undefined {
+    const fillPnl = readFiniteNumber(metadata?.fillPnl)
+    if (fillPnl === undefined) {
+        return undefined
+    }
+
+    const fee = readFiniteNumber(metadata?.fee) ?? 0
+    const feeCurrency = readTrimmedString(metadata?.feeCcy)?.toUpperCase()
+    if (feeCurrency && !["USD", "USDT", "USDC"].includes(feeCurrency)) {
+        return fillPnl
+    }
+
+    return fillPnl + fee
 }
 
 export function computeRecentTradeDigest(args: {

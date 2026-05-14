@@ -83,6 +83,7 @@ function createVenueMock() {
         }),
         normalizePrice: vi.fn(async (_instrument: string, price: number) => price),
         updateProtectionOrders: vi.fn(),
+        getWorkingOrders: vi.fn().mockResolvedValue([]),
         getPositions: vi.fn().mockResolvedValue([
             {
                 instrument: "BTC-USDT-SWAP",
@@ -96,6 +97,125 @@ function createVenueMock() {
         ]),
     }
 }
+
+describe("prepareOKXOrder exposure guards", () => {
+    it("sizes entries from stop risk plus estimated round-trip fees", async () => {
+        const pipeline = createPipelineMock()
+        const venue = createVenueMock()
+
+        await prepareOKXOrder(
+            {
+                instrument: "BTC-USDT-SWAP",
+                side: "buy",
+                leverage: 2,
+                orderType: "limit",
+                limitPrice: 100,
+                timeInForce: "gtc",
+                stopLoss: 95,
+                takeProfit: 110,
+                reason: "test",
+            },
+            pipeline as never,
+            venue as never,
+            policy,
+            "entry"
+        )
+
+        expect(venue.normalizeQuantity).toHaveBeenCalledWith("BTC-USDT-SWAP", 100 / 5.5)
+        expect(pipeline.executeIntent).toHaveBeenCalledWith(
+            expect.objectContaining({
+                metadata: expect.objectContaining({
+                    estimatedRoundTripFees: 0.5,
+                    riskAmount: 5.5,
+                    riskPercent: 0.055,
+                }),
+            }),
+            expect.anything(),
+            expect.anything(),
+            { action: "entry" }
+        )
+    })
+
+    it("blocks new entries when the same strategy already has a live position", async () => {
+        const pipeline = createPipelineMock()
+        pipeline.getPositions.mockResolvedValue([
+            {
+                instrument: "BTC-USDT-SWAP",
+                side: "long",
+                quantity: 1,
+                entryPrice: 100,
+                currentPrice: 100,
+            },
+        ])
+        const venue = createVenueMock()
+
+        const result = await prepareOKXOrder(
+            {
+                instrument: "BTC-USDT-SWAP",
+                side: "buy",
+                leverage: 2,
+                orderType: "limit",
+                limitPrice: 100,
+                timeInForce: "gtc",
+                stopLoss: 95,
+                takeProfit: 110,
+                reason: "test",
+            },
+            pipeline as never,
+            venue as never,
+            policy,
+            "entry"
+        )
+
+        expect(result.riskValidation.allowed).toBe(false)
+        expect(result.error).toContain("already has a live long position")
+        expect(pipeline.executeIntent).not.toHaveBeenCalled()
+    })
+
+    it("blocks new entries when a non-protection working order is live", async () => {
+        const pipeline = createPipelineMock()
+        const venue = createVenueMock()
+        venue.getWorkingOrders.mockResolvedValue([
+            {
+                orderId: "order:BTC-USDT-SWAP:entry-1",
+                instrument: "BTC-USDT-SWAP",
+                status: "pending",
+                quantity: 1,
+                filledQuantity: 0,
+                remainingQuantity: 1,
+                submittedAt: Date.now(),
+                updatedAt: Date.now(),
+                side: "sell",
+                limitPrice: 101,
+                metadata: {
+                    orderType: "limit",
+                },
+            },
+        ])
+
+        const result = await prepareOKXOrder(
+            {
+                instrument: "BTC-USDT-SWAP",
+                side: "buy",
+                leverage: 2,
+                orderType: "limit",
+                limitPrice: 100,
+                timeInForce: "gtc",
+                stopLoss: 95,
+                takeProfit: 110,
+                reason: "test",
+            },
+            pipeline as never,
+            venue as never,
+            policy,
+            "entry"
+        )
+
+        expect(result.riskValidation.allowed).toBe(false)
+        expect(result.error).toContain("live non-protection working order")
+        expect(pipeline.executeIntent).not.toHaveBeenCalled()
+    })
+})
 
 describe("prepareOKXOrder protection fail-closed", () => {
     it("accepts provider-verified attached protection without replacing it", async () => {

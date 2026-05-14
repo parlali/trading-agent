@@ -114,6 +114,41 @@ describe("risk governance replay", () => {
         expect(first.cooldown.reason).toBe("day_drawdown")
     })
 
+    it("uses provider-reported fill PnL and settlement-currency fees for close orders", () => {
+        const now = Date.parse("2026-05-14T12:00:00.000Z")
+        const result = computeRiskGovernanceState({
+            now,
+            orders: [
+                {
+                    action: "close",
+                    status: "filled",
+                    instrument: "ETH-USDT-SWAP",
+                    updatedAt: Date.parse("2026-05-14T09:36:17.000Z"),
+                    filledQuantity: 7.306,
+                    avgFillPrice: 2255.84,
+                    intent: {
+                        metadata: {
+                            entryPrice: 2263.5,
+                            positionSide: "short",
+                            fillPnl: 55.97,
+                            fee: -41.5,
+                            feeCcy: "USDT",
+                        },
+                    },
+                },
+            ],
+            faults: [],
+            policy: {
+                cooldownMinutesAfterDayBreach: 120,
+                cooldownMinutesAfterWeekBreach: 240,
+                strategyTimezone: "UTC",
+            },
+        })
+
+        expect(result.dayRealizedPnl).toBeCloseTo(14.47)
+        expect(result.weekRealizedPnl).toBeCloseTo(14.47)
+    })
+
     it("expires cooldown deterministically when expiry is passed", () => {
         const now = Date.parse("2026-04-17T18:00:00.000Z")
         const result = computeRiskGovernanceState({

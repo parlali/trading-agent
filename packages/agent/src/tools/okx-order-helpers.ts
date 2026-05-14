@@ -6,10 +6,14 @@ import {
     type ExecutionPipeline,
     type OKXPolicy,
     type OrderIntent,
+    type Position,
     type PriceVerification,
+    type WorkingOrder,
 } from "@valiq-trading/core"
 import { computeImpliedRR, computeTakeProfitFromRR } from "@valiq-trading/mt5"
 import { createRejectedExecutionToolResult } from "./execution-response"
+
+const OKX_ESTIMATED_ONE_WAY_FEE_RATE = 0.0025
 
 export const okxOrderParamsSchema = z.object({
     instrument: z.string(),
@@ -149,11 +153,19 @@ export async function prepareOKXOrder(
         impliedRR = rrResult
     }
 
-    const [account, positions, fundingRate] = await Promise.all([
+    const [account, positions, workingOrders, fundingRate] = await Promise.all([
         pipeline.getAccountState(),
         pipeline.getPositions(),
+        venue.getWorkingOrders(),
         venue.getCurrentFundingRate(instrument).catch(() => undefined),
     ])
+
+    if (action === "entry") {
+        const liveExposureBlock = resolveLiveEntryExposureBlock(instrument, positions, workingOrders)
+        if (liveExposureBlock) {
+            return rejected(liveExposureBlock)
+        }
+    }
 
     const riskBudgetBase = getRiskBudgetBase(account)
     if (riskBudgetBase <= 0) {
@@ -166,7 +178,8 @@ export async function prepareOKXOrder(
     }
 
     const riskBudget = riskBudgetBase * (policy.maxRiskPercent / 100)
-    let rawQuantity = riskBudget / stopDistance
+    const estimatedRoundTripFeePerUnit = entryPrice * OKX_ESTIMATED_ONE_WAY_FEE_RATE * 2
+    let rawQuantity = riskBudget / (stopDistance + estimatedRoundTripFeePerUnit)
 
     if (entryPrice > 0 && account.marginAvailable > 0) {
         const maxNotional = account.marginAvailable * leverage
@@ -184,7 +197,8 @@ export async function prepareOKXOrder(
         ? await venue.normalizePrice(instrument, params.limitPrice)
         : undefined
 
-    const actualRiskAmount = sizing.baseQuantity * Math.abs(entryPrice - normalizedStopLoss)
+    const estimatedRoundTripFees = sizing.baseQuantity * entryPrice * OKX_ESTIMATED_ONE_WAY_FEE_RATE * 2
+    const actualRiskAmount = sizing.baseQuantity * Math.abs(entryPrice - normalizedStopLoss) + estimatedRoundTripFees
     const actualRiskPercent = (actualRiskAmount / riskBudgetBase) * 100
 
     const intent: OrderIntent = {
@@ -201,6 +215,7 @@ export async function prepareOKXOrder(
             takeProfit: normalizedTakeProfit,
             riskAmount: actualRiskAmount,
             riskPercent: actualRiskPercent,
+            estimatedRoundTripFees,
             impliedRR,
             reason: params.reason,
             estimatedPrice: entryPrice,
@@ -259,6 +274,35 @@ export async function prepareOKXOrder(
 
 function rejected(error: string): OKXOrderResult {
     return createRejectedExecutionToolResult(error)
+}
+
+function resolveLiveEntryExposureBlock(
+    instrument: string,
+    positions: readonly Position[],
+    workingOrders: readonly WorkingOrder[]
+): string | undefined {
+    const livePosition = positions.find((position) =>
+        position.instrument.toUpperCase() === instrument &&
+        Math.abs(position.quantity) > 0
+    )
+    if (livePosition) {
+        return `OKX entry blocked: ${instrument} already has a live ${livePosition.side} position. Use propose_adjustment or propose_close before adding exposure.`
+    }
+
+    const liveEntryOrders = workingOrders.filter((order) =>
+        order.instrument.toUpperCase() === instrument &&
+        !isOKXProtectionWorkingOrder(order)
+    )
+    if (liveEntryOrders.length === 0) {
+        return undefined
+    }
+
+    const orderIds = liveEntryOrders.map((order) => order.orderId).join(", ")
+    return `OKX entry blocked: ${instrument} already has live non-protection working order(s): ${orderIds}. Cancel or resolve them before adding exposure.`
+}
+
+function isOKXProtectionWorkingOrder(order: WorkingOrder): boolean {
+    return order.metadata?.kind === "protection"
 }
 
 function resolveCancelAt(
