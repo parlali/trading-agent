@@ -10,6 +10,7 @@ import {
     assertStrategyDeletionSafe,
     cascadeDeleteRun,
     cascadeDeleteStrategy,
+    deleteFinalStrategyAppRows,
     createEmptyStrategyDeleteCounts,
     deleteRunBatch,
     deleteStrategyTableBatch,
@@ -180,6 +181,7 @@ export const deleteStrategyBatch = mutation({
             return partialResult()
         }
 
+        await deleteFinalStrategyAppRows(ctx, strategy.app, deleted)
         await ctx.db.delete(args.strategyId)
         await recordDeletedDocs(sumDeletedCounts(deleted) + 1)
 

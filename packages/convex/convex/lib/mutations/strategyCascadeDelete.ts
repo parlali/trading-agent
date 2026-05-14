@@ -271,17 +271,6 @@ export async function deleteStrategyTableBatch(
         return true
     }
 
-    const providerSyncState = await ctx.db
-        .query("provider_sync_state")
-        .withIndex("by_app", (q) => q.eq("app", app))
-        .first()
-
-    if (providerSyncState) {
-        await ctx.db.delete(providerSyncState._id)
-        deleted.providerSyncStates++
-        return true
-    }
-
     const snapshots = await ctx.db
         .query("account_snapshots")
         .withIndex("by_app", (q) => q.eq("app", app))
@@ -295,6 +284,33 @@ export async function deleteStrategyTableBatch(
         return true
     }
 
+    return false
+}
+
+export async function deleteFinalStrategyAppRows(
+    ctx: { db: DatabaseWriter },
+    app: Doc<"strategies">["app"],
+    deleted: MutableCascadeDeleteCounts
+): Promise<void> {
+    const appStrategies = await ctx.db
+        .query("strategies")
+        .withIndex("by_app", (q) => q.eq("app", app))
+        .take(2)
+
+    if (appStrategies.length !== 1) {
+        return
+    }
+
+    const providerSyncState = await ctx.db
+        .query("provider_sync_state")
+        .withIndex("by_app", (q) => q.eq("app", app))
+        .first()
+
+    if (providerSyncState) {
+        await ctx.db.delete(providerSyncState._id)
+        deleted.providerSyncStates++
+    }
+
     const heartbeat = await ctx.db
         .query("app_heartbeats")
         .withIndex("by_app", (q) => q.eq("app", app))
@@ -303,10 +319,7 @@ export async function deleteStrategyTableBatch(
     if (heartbeat) {
         await ctx.db.delete(heartbeat._id)
         deleted.appHeartbeats++
-        return true
     }
-
-    return false
 }
 
 export async function cascadeDeleteRun(

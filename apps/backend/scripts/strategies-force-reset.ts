@@ -138,9 +138,7 @@ runScript(async () => {
             }
 
             if (!deferredStrategyIds.has(String(strategy._id))) {
-                await reconcileAndVerifyReset(client, strategy, undefined, {
-                    requireHealthyState: false,
-                })
+                await reconcileAndVerifyReset(client, strategy)
             }
         }
 

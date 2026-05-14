@@ -1,8 +1,15 @@
 import { describe, expect, it } from "vitest"
-import { assertStrategyDeletionSafe } from "./mutations/strategyCascadeDelete"
+import { createEmptyCascadeDeleteCounts } from "./cascadeDelete"
+import {
+    assertStrategyDeletionSafe,
+    deleteFinalStrategyAppRows,
+    deleteStrategyTableBatch,
+} from "./mutations/strategyCascadeDelete"
 import { buildStrategyPositionSnapshotHashPayload } from "./mutations/portfolioSnapshots"
 
 type RowsByTable = Record<string, unknown[] | undefined>
+type MutableRow = { _id: string, [key: string]: unknown }
+type MutableRowsByTable = Record<string, MutableRow[] | undefined>
 
 function createDeletionSafetyCtx(rows: RowsByTable) {
     return {
@@ -21,6 +28,43 @@ function createDeletionSafetyCtx(rows: RowsByTable) {
                             },
                         }
                     },
+                }
+            },
+        },
+    }
+}
+
+function createCascadeDeleteCtx(rows: MutableRowsByTable) {
+    return {
+        db: {
+            query(table: string) {
+                const tableRows = rows[table] ?? []
+
+                return {
+                    withIndex() {
+                        return {
+                            async first() {
+                                return tableRows[0] ?? null
+                            },
+                            async collect() {
+                                return tableRows
+                            },
+                            async take(limit: number) {
+                                return tableRows.slice(0, limit)
+                            },
+                        }
+                    },
+                }
+            },
+            async delete(id: string) {
+                for (const table of Object.keys(rows)) {
+                    const tableRows = rows[table] ?? []
+                    const index = tableRows.findIndex((row) => row._id === id)
+
+                    if (index >= 0) {
+                        tableRows.splice(index, 1)
+                        return
+                    }
                 }
             },
         },
@@ -65,6 +109,82 @@ describe("portfolio safety guards", () => {
         }) as never, createLiveStrategy() as never))
             .resolves
             .toBeUndefined()
+    })
+
+    it("keeps provider verification rows until the final strategy delete batch", async () => {
+        const rows: MutableRowsByTable = {
+            strategies: [{
+                _id: "strategy-live",
+                app: "mt5",
+            }],
+            account_snapshots: [{
+                _id: "snapshot-1",
+                app: "mt5",
+            }],
+            provider_sync_state: [{
+                _id: "sync-1",
+                app: "mt5",
+            }],
+            app_heartbeats: [{
+                _id: "heartbeat-1",
+                app: "mt5",
+            }],
+        }
+        const deleted = createEmptyCascadeDeleteCounts()
+        const ctx = createCascadeDeleteCtx(rows)
+
+        await expect(deleteStrategyTableBatch(ctx as never, "strategy-live" as never, "mt5" as never, deleted, 50))
+            .resolves
+            .toBe(true)
+
+        expect(deleted.accountSnapshots).toBe(1)
+        expect(deleted.providerSyncStates).toBe(0)
+        expect(deleted.appHeartbeats).toBe(0)
+        expect(rows.provider_sync_state).toHaveLength(1)
+        expect(rows.app_heartbeats).toHaveLength(1)
+
+        await expect(deleteStrategyTableBatch(ctx as never, "strategy-live" as never, "mt5" as never, deleted, 50))
+            .resolves
+            .toBe(false)
+
+        await deleteFinalStrategyAppRows(ctx as never, "mt5" as never, deleted)
+
+        expect(deleted.providerSyncStates).toBe(1)
+        expect(deleted.appHeartbeats).toBe(1)
+        expect(rows.provider_sync_state).toHaveLength(0)
+        expect(rows.app_heartbeats).toHaveLength(0)
+    })
+
+    it("keeps provider verification rows while sibling strategies remain", async () => {
+        const rows: MutableRowsByTable = {
+            strategies: [
+                {
+                    _id: "strategy-live",
+                    app: "okx-swap",
+                },
+                {
+                    _id: "strategy-sibling",
+                    app: "okx-swap",
+                },
+            ],
+            provider_sync_state: [{
+                _id: "sync-1",
+                app: "okx-swap",
+            }],
+            app_heartbeats: [{
+                _id: "heartbeat-1",
+                app: "okx-swap",
+            }],
+        }
+        const deleted = createEmptyCascadeDeleteCounts()
+        const ctx = createCascadeDeleteCtx(rows)
+
+        await deleteFinalStrategyAppRows(ctx as never, "okx-swap" as never, deleted)
+
+        expect(deleted.providerSyncStates).toBe(0)
+        expect(deleted.appHeartbeats).toBe(0)
+        expect(rows.provider_sync_state).toHaveLength(1)
+        expect(rows.app_heartbeats).toHaveLength(1)
     })
 
     it("keeps provider identity and protection levels in strategy position snapshot hashes", () => {
