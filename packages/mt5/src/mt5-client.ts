@@ -10,6 +10,7 @@ import {
     createExecutionErrorDetail,
     fetchWithTimeout,
     formatExecutionError,
+    getExecutionErrorDetail,
     retryWithBackoff,
     type ExecutionResult,
     type OrderIntent,
@@ -167,9 +168,15 @@ export class MT5Client {
         }>("/connect", credentials, this.connectTimeout)
 
         if (!response.success) {
-            throw new Error(
-                `MT5 connection failed (${response.errorType ?? "unknown"}): ${response.error ?? "unknown error"}`
-            )
+            throw createExecutionError("venue", `MT5 connection failed: ${response.error ?? "unknown error"}`, {
+                code: response.errorType ?? "unknown",
+                retryable: response.retryable ?? true,
+                details: {
+                    workerUrl: this.workerUrl,
+                    login: credentials.login,
+                    server: credentials.server,
+                },
+            })
         }
 
         this.connected = true
@@ -187,6 +194,10 @@ export class MT5Client {
 
     async getHealth(): Promise<{ status: string; connected: boolean; login: number | null }> {
         return await this.get("/health")
+    }
+
+    connectionKey(credentials: MT5WorkerCredentials): string {
+        return `${this.workerUrl}:${credentials.login}:${credentials.server}`
     }
 
     async getAccount(): Promise<MT5AccountInfo> {
@@ -420,4 +431,16 @@ function parseWorkerError(text: string): MT5WorkerErrorDetail | undefined {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
     return value !== null && typeof value === "object" && !Array.isArray(value)
+}
+
+export function isRecoverableMT5ConnectionError(error: unknown): boolean {
+    const detail = getExecutionErrorDetail(error)
+    if (!detail?.retryable) {
+        return false
+    }
+
+    return detail.code === "not_connected"
+        || detail.code === "session_lost"
+        || detail.code === "connect_in_progress"
+        || detail.code === "operation_in_progress"
 }

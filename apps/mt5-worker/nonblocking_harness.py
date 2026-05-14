@@ -7,6 +7,7 @@ from worker_test_stubs import install_dependency_stubs
 
 install_dependency_stubs()
 import main
+from mt5_errors import MT5ConnectionError
 
 
 class RestartRequested(Exception):
@@ -21,6 +22,31 @@ class FakeConnectedClient:
 
     def __init__(self) -> None:
         self._connected = True
+
+    def disconnect(self) -> None:
+        self._connected = False
+
+
+class FakeRecoverableClient:
+    login = 2
+
+    def __init__(self) -> None:
+        self._connected = False
+        self.connect_calls = 0
+        self.account_calls = 0
+
+    def connect(self) -> None:
+        self.connect_calls += 1
+        self._connected = True
+
+    def get_account_info(self) -> dict[str, object]:
+        self.account_calls += 1
+        if self.account_calls == 1:
+            raise MT5ConnectionError("MT5 session is not connected", error_type="not_connected")
+        return {
+            "login": self.login,
+            "equity": 1000,
+        }
 
     def disconnect(self) -> None:
         self._connected = False
@@ -64,6 +90,15 @@ async def run_harness() -> None:
     finally:
         operation_lock.release()
         main.runtime.client = None
+
+    recoverable_client = FakeRecoverableClient()
+    main.runtime.reset_state()
+    main.runtime.client = recoverable_client
+    recovered = await main.runtime.run_http_operation("account", recoverable_client.get_account_info)
+
+    assert recovered["equity"] == 1000
+    assert recoverable_client.connect_calls == 1
+    assert recoverable_client.account_calls == 3
 
     async def wedged_call() -> None:
         try:

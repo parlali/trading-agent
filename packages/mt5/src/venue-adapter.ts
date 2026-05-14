@@ -14,6 +14,7 @@ import {
     type WorkingOrder,
 } from "@valiq-trading/core"
 import {
+    isRecoverableMT5ConnectionError,
     MT5Client,
     type MT5SymbolInfo,
     type MT5WorkerCredentials,
@@ -37,6 +38,7 @@ import {
 } from "./venue-mappers"
 
 export class MT5VenueAdapter implements VenueAdapter, PriceVerifier {
+    private static readonly connectionPromises = new Map<string, Promise<void>>()
     private lastConnectedAt = 0
     private readonly CONNECTION_TTL = 60_000
 
@@ -50,6 +52,27 @@ export class MT5VenueAdapter implements VenueAdapter, PriceVerifier {
         if (Date.now() - this.lastConnectedAt < this.CONNECTION_TTL) {
             return
         }
+
+        const key = this.client.connectionKey(this.credentials)
+        const existingPromise = MT5VenueAdapter.connectionPromises.get(key)
+        if (existingPromise) {
+            await existingPromise
+            this.lastConnectedAt = Date.now()
+            return
+        }
+
+        const connectionPromise = this.establishConnection()
+        MT5VenueAdapter.connectionPromises.set(key, connectionPromise)
+        try {
+            await connectionPromise
+        } finally {
+            if (MT5VenueAdapter.connectionPromises.get(key) === connectionPromise) {
+                MT5VenueAdapter.connectionPromises.delete(key)
+            }
+        }
+    }
+
+    private async establishConnection(): Promise<void> {
         const health = await this.client.getHealth()
         if (!health.connected || health.login !== this.credentials.login) {
             await this.client.connect(this.credentials)
@@ -58,39 +81,43 @@ export class MT5VenueAdapter implements VenueAdapter, PriceVerifier {
     }
 
     async getPositions(): Promise<Position[]> {
-        await this.ensureConnected()
-        const observedAt = Date.now()
-        const raw = await this.client.getPositions()
-        return raw.map((position) => mapMT5Position(position, observedAt))
+        return await this.withRecoverableRead(async () => {
+            const observedAt = Date.now()
+            const raw = await this.client.getPositions()
+            return raw.map((position) => mapMT5Position(position, observedAt))
+        })
     }
 
     async getAccountState(): Promise<AccountState> {
-        await this.ensureConnected()
-        const info = await this.client.getAccount()
+        return await this.withRecoverableRead(async () => {
+            const info = await this.client.getAccount()
 
-        return {
-            balance: info.balance,
-            equity: info.equity,
-            buyingPower: info.freeMargin,
-            marginUsed: info.margin,
-            marginAvailable: info.freeMargin,
-            openPnl: info.profit,
-            dayPnl: 0,
-        }
+            return {
+                balance: info.balance,
+                equity: info.equity,
+                buyingPower: info.freeMargin,
+                marginUsed: info.margin,
+                marginAvailable: info.freeMargin,
+                openPnl: info.profit,
+                dayPnl: 0,
+            }
+        })
     }
 
     async getWorkingOrders(): Promise<WorkingOrder[]> {
-        await this.ensureConnected()
-        const observedAt = Date.now()
-        const orders = await this.client.getOpenOrders()
-        return orders.map((order) => mapMT5WorkingOrder(order, observedAt))
+        return await this.withRecoverableRead(async () => {
+            const observedAt = Date.now()
+            const orders = await this.client.getOpenOrders()
+            return orders.map((order) => mapMT5WorkingOrder(order, observedAt))
+        })
     }
 
     async getRecentPositionClosures(): Promise<ProviderPositionClosure[]> {
-        await this.ensureConnected()
-        const observedAt = Date.now()
-        const closures = await this.client.getPositionClosures()
-        return closures.map((closure) => mapMT5PositionClosure(closure, observedAt))
+        return await this.withRecoverableRead(async () => {
+            const observedAt = Date.now()
+            const closures = await this.client.getPositionClosures()
+            return closures.map((closure) => mapMT5PositionClosure(closure, observedAt))
+        })
     }
 
     async submitOrder(intent: OrderIntent): Promise<ExecutionResult> {
@@ -222,41 +249,42 @@ export class MT5VenueAdapter implements VenueAdapter, PriceVerifier {
     }
 
     async getOrderStatus(orderId: string): Promise<ExecutionResult> {
-        await this.ensureConnected()
+        return await this.withRecoverableRead(async () =>
+            await this.withTicket(orderId, async (ticket) => {
+                const status = await this.client.getOrderStatus(ticket)
+                if (!status) {
+                    throw createExecutionError("venue", `MT5 order ${orderId} not found in order book or history`, {
+                        code: "ORDER_NOT_FOUND",
+                        retryable: false,
+                        details: {
+                            orderId,
+                        },
+                    })
+                }
 
-        return await this.withTicket(orderId, async (ticket) => {
-            const status = await this.client.getOrderStatus(ticket)
-            if (!status) {
-                throw createExecutionError("venue", `MT5 order ${orderId} not found in order book or history`, {
-                    code: "ORDER_NOT_FOUND",
-                    retryable: false,
-                    details: {
-                        orderId,
-                    },
-                })
-            }
+                const mappedStatus = mapMT5OrderState(status.state)
+                const filledQuantity = resolveMT5FilledQuantity(status, mappedStatus)
+                const hasFilledQuantity = filledQuantity > 0
+                const normalizedStatus = (mappedStatus === "filled" || mappedStatus === "partially_filled") && !hasFilledQuantity
+                    ? "pending"
+                    : mappedStatus
 
-            const mappedStatus = mapMT5OrderState(status.state)
-            const filledQuantity = resolveMT5FilledQuantity(status, mappedStatus)
-            const hasFilledQuantity = filledQuantity > 0
-            const normalizedStatus = (mappedStatus === "filled" || mappedStatus === "partially_filled") && !hasFilledQuantity
-                ? "pending"
-                : mappedStatus
-
-            return {
-                orderId,
-                status: normalizedStatus,
-                filledQuantity: hasFilledQuantity ? filledQuantity : 0,
-                fillPrice: hasFilledQuantity && status.price > 0 ? status.price : undefined,
-                timestamp: Date.now(),
-            }
-        })
+                return {
+                    orderId,
+                    status: normalizedStatus,
+                    filledQuantity: hasFilledQuantity ? filledQuantity : 0,
+                    fillPrice: hasFilledQuantity && status.price > 0 ? status.price : undefined,
+                    timestamp: Date.now(),
+                }
+            })
+        )
     }
 
     async getSymbolInfo(symbol: string): Promise<MT5SymbolInfo | null> {
-        await this.ensureConnected()
-        const results = await this.client.getSymbolInfo([symbol])
-        return results.length > 0 ? (results[0] ?? null) : null
+        return await this.withRecoverableRead(async () => {
+            const results = await this.client.getSymbolInfo([symbol])
+            return results.length > 0 ? (results[0] ?? null) : null
+        })
     }
 
     async verify(intent: OrderIntent): Promise<PriceVerification> {
@@ -312,14 +340,15 @@ export class MT5VenueAdapter implements VenueAdapter, PriceVerifier {
             return []
         }
 
-        await this.ensureConnected()
-        const results = await this.client.getSymbolInfo(symbols)
-        return await Promise.all(
-            results.map(async (symbolInfo) => toMT5MarketSnapshot(
-                symbolInfo,
-                await this.assessSymbolExecutionCost(symbolInfo)
-            ))
-        )
+        return await this.withRecoverableRead(async () => {
+            const results = await this.client.getSymbolInfo(symbols)
+            return await Promise.all(
+                results.map(async (symbolInfo) => toMT5MarketSnapshot(
+                    symbolInfo,
+                    await this.assessSymbolExecutionCost(symbolInfo)
+                ))
+            )
+        })
     }
 
     async closeAllPositions(): Promise<{ closed: number; results: ExecutionResult[] }> {
@@ -358,6 +387,21 @@ export class MT5VenueAdapter implements VenueAdapter, PriceVerifier {
 
     private buildExecutionCostSnapshot(symbolInfo: MT5SymbolInfo): ExecutionCostSnapshot {
         return buildMT5ExecutionCostSnapshot(symbolInfo)
+    }
+
+    private async withRecoverableRead<T>(read: () => Promise<T>): Promise<T> {
+        await this.ensureConnected()
+        try {
+            return await read()
+        } catch (error) {
+            if (!isRecoverableMT5ConnectionError(error)) {
+                throw error
+            }
+
+            this.lastConnectedAt = 0
+            await this.ensureConnected()
+            return await read()
+        }
     }
 
     private async withTicket(

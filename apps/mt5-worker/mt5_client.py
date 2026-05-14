@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import subprocess
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, NoReturn
@@ -83,6 +84,66 @@ class MT5Client:
 
         return path
 
+    def _shutdown_sdk_connection(self) -> None:
+        try:
+            mt5.shutdown()
+        except Exception as exc:
+            log.warning("mt5_sdk_shutdown_failed", login=self.login, error=str(exc))
+
+    def _stop_portable_terminal_processes(self, terminal_exe: str) -> None:
+        if os.name != "nt":
+            return
+
+        script = "\n".join([
+            "$target = [System.IO.Path]::GetFullPath($args[0]).ToLowerInvariant()",
+            "Get-CimInstance Win32_Process -Filter \"Name = 'terminal64.exe'\" |",
+            "Where-Object { $_.ExecutablePath -and ([System.IO.Path]::GetFullPath($_.ExecutablePath).ToLowerInvariant() -eq $target) } |",
+            "ForEach-Object { Stop-Process -Id $_.ProcessId -Force; Write-Output $_.ProcessId }",
+        ])
+
+        try:
+            result = subprocess.run(
+                [
+                    "powershell",
+                    "-NoProfile",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-Command",
+                    script,
+                    terminal_exe,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+        except Exception as exc:
+            log.warning(
+                "mt5_stale_terminal_cleanup_failed",
+                login=self.login,
+                terminal=terminal_exe,
+                error=str(exc),
+            )
+            return
+
+        killed_pids = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+        if killed_pids:
+            log.warning(
+                "mt5_stale_terminal_processes_killed",
+                login=self.login,
+                terminal=terminal_exe,
+                processIds=killed_pids,
+            )
+
+        if result.returncode != 0:
+            log.warning(
+                "mt5_stale_terminal_cleanup_returned_error",
+                login=self.login,
+                terminal=terminal_exe,
+                returnCode=result.returncode,
+                stderr=result.stderr.strip(),
+            )
+
     def connect(self) -> bool:
         """Initialize MT5 SDK and log in to the account."""
         if mt5 is None:
@@ -94,6 +155,8 @@ class MT5Client:
 
         portable_dir = self._ensure_portable_dir()
         terminal_exe = os.path.join(portable_dir, "terminal64.exe")
+        self._shutdown_sdk_connection()
+        self._stop_portable_terminal_processes(terminal_exe)
 
         log.info(
             "mt5_connecting",
@@ -177,7 +240,6 @@ class MT5Client:
                 message=detail["message"],
             )
             self._connected = False
-            mt5.shutdown()
             raise MT5ConnectionError(
                 f"MT5 terminal health check failed: {detail['message']} ({detail['code']})",
                 error_type="session_lost",

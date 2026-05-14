@@ -23,6 +23,22 @@ from worker_contracts import (
 log = structlog.get_logger()
 
 
+RECOVERABLE_READ_OPERATIONS = {
+    "account",
+    "positions",
+    "orders",
+    "position_closures",
+    "symbol_info",
+    "order_status",
+}
+
+RECOVERABLE_CONNECTION_ERRORS = {
+    "not_connected",
+    "session_lost",
+    "query_failed",
+}
+
+
 class MT5WorkerRuntime:
     def __init__(self, settings: Any):
         self.settings = settings
@@ -232,7 +248,7 @@ class MT5WorkerRuntime:
                 "terminal_blocked",
                 False,
             )
-        if self.client is None or not self.client._connected:
+        if self.client is None:
             raise_worker_http_error(
                 "MT5 not connected. Call POST /connect first.",
                 "not_connected",
@@ -304,7 +320,7 @@ class MT5WorkerRuntime:
                     "lastFinishedAt": time.time(),
                 })
                 return result
-            except TimeoutError as exc:
+            except (TimeoutError, asyncio.TimeoutError) as exc:
                 self.terminal_blocked = True
                 self.state.update({
                     "status": "degraded",
@@ -343,9 +359,58 @@ class MT5WorkerRuntime:
         try:
             return await self.run_operation(operation, func, timeout_seconds)
         except MT5ConnectionError as exc:
+            if self.should_recover_connection(operation, exc):
+                try:
+                    if await self.recover_client_connection(operation, exc):
+                        return await self.run_operation(operation, func, timeout_seconds)
+                except MT5ConnectionError as recovery_exc:
+                    raise_mt5_connection_http_error(recovery_exc)
+                except BlockingOperationTimeout as recovery_timeout:
+                    raise_blocking_operation_http_error(recovery_timeout)
+
             raise_mt5_connection_http_error(exc)
         except BlockingOperationTimeout as exc:
             raise_blocking_operation_http_error(exc)
+
+    def should_recover_connection(self, operation: str, exc: MT5ConnectionError) -> bool:
+        if operation not in RECOVERABLE_READ_OPERATIONS:
+            return False
+        if exc.error_type not in RECOVERABLE_CONNECTION_ERRORS:
+            return False
+        return exc.retryable
+
+    async def recover_client_connection(self, operation: str, exc: MT5ConnectionError) -> bool:
+        client = self.client
+        if client is None:
+            return False
+
+        connect_lock = self._connect_lock_instance()
+        async with connect_lock:
+            if self.client is not client:
+                return self.client is not None and self.client._connected
+            if client._connected:
+                return True
+
+            log.warning(
+                "mt5_reconnect_after_session_loss",
+                operation=operation,
+                login=client.login,
+                errorType=exc.error_type,
+                error=str(exc),
+            )
+
+            def reconnect_blocking() -> dict[str, Any]:
+                client.connect()
+                return client.get_account_info()
+
+            await self.run_operation(
+                "reconnect",
+                reconnect_blocking,
+                self.settings.mt5_connect_timeout_seconds,
+            )
+            self.state["status"] = "connected"
+            log.info("mt5_reconnected", operation=operation, login=client.login)
+            return True
 
     async def connect(self, login: int, password: str, server: str) -> dict[str, Any]:
         connect_lock = self._connect_lock_instance()
