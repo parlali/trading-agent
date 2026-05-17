@@ -72,6 +72,33 @@ export interface ComputedRiskGovernanceState {
     windows: RiskWindowStarts
 }
 
+interface RealizedPnlByWindow {
+    dayRealizedPnl: number
+    weekRealizedPnl: number
+}
+
+interface DrawdownBreachState {
+    dayBreached: boolean
+    weekBreached: boolean
+}
+
+interface FaultExposureState {
+    blockedInstruments: string[]
+    unresolvedExecutionFaultCount: number
+    hasStrategyWideBlock: boolean
+}
+
+interface ComputedCooldownState {
+    active: boolean
+    reason?: StrategyRiskCooldownState["reason"]
+    startedAt?: number
+    expiresAt?: number
+    expired: boolean
+    entered: boolean
+    enteredReason?: StrategyRiskCooldownState["reason"]
+    lastBreachReason?: StrategyRiskCooldownState["reason"]
+}
+
 function readBoolean(value: unknown): boolean | undefined {
     return typeof value === "boolean"
         ? value
@@ -134,6 +161,197 @@ function resolveDrawdownProgress(realizedPnl: number, limit: number | undefined)
     return Math.abs(realizedPnl) / limit
 }
 
+function isFilledOrder(order: RiskGovernanceOrderRecord): boolean {
+    return order.status === "filled" || order.status === "partially_filled"
+}
+
+function isFilledCloseOrder(order: RiskGovernanceOrderRecord): boolean {
+    return order.action === "close" && isFilledOrder(order)
+}
+
+function isRejectedOrTerminalOrder(order: RiskGovernanceOrderRecord): boolean {
+    return order.status === "rejected" ||
+        order.status === "cancelled" ||
+        order.status === "expired" ||
+        order.status === "timed_out"
+}
+
+function isForcedExitOrder(order: RiskGovernanceOrderRecord): boolean {
+    return readBoolean(resolveOrderMetadata(order)?.forcedExit) === true
+}
+
+function resolveRealizedPnlByWindow(
+    orders: RiskGovernanceOrderRecord[],
+    windows: RiskWindowStarts
+): RealizedPnlByWindow {
+    let dayRealizedPnl = 0
+    let weekRealizedPnl = 0
+
+    for (const order of orders) {
+        if (!isFilledOrder(order)) {
+            continue
+        }
+
+        const realized = resolveOrderRealizedPnl(order)
+        if (realized === undefined) {
+            continue
+        }
+
+        if (order.updatedAt >= windows.weekStartAt) {
+            weekRealizedPnl += realized
+        }
+
+        if (order.updatedAt >= windows.dayStartAt) {
+            dayRealizedPnl += realized
+        }
+    }
+
+    return {
+        dayRealizedPnl,
+        weekRealizedPnl,
+    }
+}
+
+function resolveForcedExitClusterInstruments(
+    orders: RiskGovernanceOrderRecord[],
+    dayStartAt: number
+): string[] {
+    const forcedExitCountByInstrument = new Map<string, number>()
+
+    for (const order of orders) {
+        if (!isFilledCloseOrder(order) || order.updatedAt < dayStartAt || !isForcedExitOrder(order)) {
+            continue
+        }
+
+        const current = forcedExitCountByInstrument.get(order.instrument) ?? 0
+        forcedExitCountByInstrument.set(order.instrument, current + 1)
+    }
+
+    return Array.from(forcedExitCountByInstrument.entries())
+        .filter(([, count]) => count >= 2)
+        .map(([instrument]) => instrument)
+        .sort((left, right) => left.localeCompare(right))
+}
+
+function resolveFaultExposureState(
+    faults: RiskGovernanceFaultRecord[],
+    forcedExitClusterInstruments: string[]
+): FaultExposureState {
+    const unresolvedFaults = faults.filter((fault) => fault.resolvedAt === undefined)
+    const blockedByFaults = unresolvedFaults
+        .filter((fault) => fault.blocked === true)
+        .map((fault) => fault.instrument)
+
+    return {
+        blockedInstruments: Array.from(new Set([
+            ...blockedByFaults,
+            ...forcedExitClusterInstruments,
+        ])).sort((left, right) => left.localeCompare(right)),
+        unresolvedExecutionFaultCount: unresolvedFaults.length,
+        hasStrategyWideBlock: unresolvedFaults.some((fault) => fault.blocked === true && fault.instrument === "*"),
+    }
+}
+
+function resolveDrawdownBreaches(
+    realizedPnl: RealizedPnlByWindow,
+    policy: RiskGovernancePolicy
+): DrawdownBreachState {
+    return {
+        weekBreached: policy.maxDrawdownWeek !== undefined
+            ? realizedPnl.weekRealizedPnl <= -Math.abs(policy.maxDrawdownWeek)
+            : false,
+        dayBreached: policy.maxDrawdownDay !== undefined
+            ? realizedPnl.dayRealizedPnl <= -Math.abs(policy.maxDrawdownDay)
+            : false,
+    }
+}
+
+function resolveCooldownState(args: {
+    now: number
+    policy: RiskGovernancePolicy
+    existing?: ExistingRiskGovernanceState
+    breaches: DrawdownBreachState
+    forcedExitClusterInstruments: string[]
+}): ComputedCooldownState {
+    let active = args.existing?.cooldownActive ?? false
+    let reason = normalizeCooldownReason(args.existing?.cooldownReason)
+    let startedAt = args.existing?.cooldownStartedAt
+    let expiresAt = args.existing?.cooldownExpiresAt
+    let lastBreachReason = normalizeCooldownReason(args.existing?.lastBreachReason)
+    let expired = false
+    let entered = false
+    let enteredReason: StrategyRiskCooldownState["reason"] | undefined
+
+    const expireCooldown = (): void => {
+        active = false
+        reason = undefined
+        startedAt = undefined
+        expiresAt = undefined
+        expired = true
+    }
+
+    const enterCooldown = (
+        nextReason: StrategyRiskCooldownState["reason"],
+        cooldownMinutes: number
+    ): void => {
+        active = true
+        reason = nextReason
+        startedAt = args.now
+        expiresAt = args.now + cooldownMinutes * 60_000
+        lastBreachReason = nextReason
+        entered = true
+        enteredReason = nextReason
+    }
+
+    if (active && expiresAt !== undefined && args.now >= expiresAt) {
+        expireCooldown()
+    }
+
+    if (!active && (args.breaches.weekBreached || args.breaches.dayBreached)) {
+        enterCooldown(
+            args.breaches.weekBreached ? "week_drawdown" : "day_drawdown",
+            args.breaches.weekBreached
+                ? args.policy.cooldownMinutesAfterWeekBreach
+                : args.policy.cooldownMinutesAfterDayBreach
+        )
+    }
+
+    if (!active && args.forcedExitClusterInstruments.length > 0) {
+        enterCooldown("forced_exit_cluster", args.policy.cooldownMinutesAfterDayBreach)
+    }
+
+    return {
+        active,
+        reason,
+        startedAt,
+        expiresAt,
+        expired,
+        entered,
+        enteredReason,
+        lastBreachReason,
+    }
+}
+
+function resolveSafetyState(args: {
+    hasStrategyWideBlock: boolean
+    cooldownActive: boolean
+    unresolvedExecutionFaultCount: number
+}): StrategySafetyState {
+    if (args.hasStrategyWideBlock) {
+        return "blocked"
+    }
+
+    if (args.cooldownActive) {
+        return "cooldown"
+    }
+
+    if (args.unresolvedExecutionFaultCount > 0) {
+        return "execution_degraded"
+    }
+
+    return "healthy"
+}
+
 export function resolveRiskWindowStarts(timestamp: number, timezone: string): RiskWindowStarts {
     const zonedNow = resolveLocalNow(timestamp, timezone)
     const zonedDayStart = new Date(zonedNow)
@@ -163,7 +381,7 @@ export function resolveCloseOrderRealizedPnl(order: RiskGovernanceOrderRecord): 
     }
 
     const metadata = resolveOrderMetadata(order)
-    const providerRealizedPnl = resolveProviderReportedRealizedPnl(metadata)
+    const providerRealizedPnl = resolveProviderReportedRealizedPnl(metadata, false)
     if (providerRealizedPnl !== undefined) {
         return providerRealizedPnl
     }
@@ -186,21 +404,50 @@ export function resolveCloseOrderRealizedPnl(order: RiskGovernanceOrderRecord): 
     return (closePrice - entryPrice) * order.filledQuantity
 }
 
-function resolveProviderReportedRealizedPnl(
-    metadata: Record<string, unknown> | undefined
-): number | undefined {
-    const fillPnl = readFiniteNumber(metadata?.fillPnl)
-    if (fillPnl === undefined) {
+export function resolveOrderRealizedPnl(order: RiskGovernanceOrderRecord): number | undefined {
+    if (order.status !== "filled" && order.status !== "partially_filled") {
         return undefined
     }
 
-    const fee = readFiniteNumber(metadata?.fee) ?? 0
-    const feeCurrency = readTrimmedString(metadata?.feeCcy)?.toUpperCase()
-    if (feeCurrency && !["USD", "USDT", "USDC"].includes(feeCurrency)) {
-        return fillPnl
+    if (order.action === "close") {
+        return resolveCloseOrderRealizedPnl(order)
     }
 
-    return fillPnl + fee
+    return resolveProviderReportedRealizedPnl(resolveOrderMetadata(order), true)
+}
+
+function resolveProviderReportedRealizedPnl(
+    metadata: Record<string, unknown> | undefined,
+    allowFeeOnly: boolean
+): number | undefined {
+    const fillPnl = readFiniteNumber(metadata?.fillPnl)
+    const fee = resolveSettlementCurrencyFee(metadata)
+
+    if (fillPnl !== undefined) {
+        return fillPnl + (fee ?? 0)
+    }
+
+    if (!allowFeeOnly) {
+        return undefined
+    }
+
+    return fee
+}
+
+function resolveSettlementCurrencyFee(
+    metadata: Record<string, unknown> | undefined
+): number | undefined {
+    const fee = readFiniteNumber(metadata?.fee)
+    if (fee === undefined) {
+        return undefined
+    }
+
+    const feeCurrency = readTrimmedString(metadata?.feeCcy)?.toUpperCase()
+    if (feeCurrency && !["USD", "USDT", "USDC"].includes(feeCurrency)) {
+        return undefined
+    }
+
+    return fee
 }
 
 export function computeRecentTradeDigest(args: {
@@ -214,22 +461,11 @@ export function computeRecentTradeDigest(args: {
 
     const dayEntries = dayOrders.filter((order) => order.action === "entry").length
     const dayCloses = dayOrders.filter((order) => order.action === "close").length
-    const dayForcedExits = dayOrders.filter((order) => {
-        if (order.action !== "close") {
-            return false
-        }
-        const metadata = resolveOrderMetadata(order)
-        return metadata?.forcedExit === true
-    }).length
-    const dayRejectedOrTerminal = dayOrders.filter((order) =>
-        order.status === "rejected" ||
-        order.status === "cancelled" ||
-        order.status === "expired" ||
-        order.status === "timed_out"
-    ).length
+    const dayForcedExits = dayOrders.filter((order) => order.action === "close" && isForcedExitOrder(order)).length
+    const dayRejectedOrTerminal = dayOrders.filter(isRejectedOrTerminalOrder).length
 
     const weekRealizedPnl = weekOrders.reduce((sum, order) => {
-        const realized = resolveCloseOrderRealizedPnl(order)
+        const realized = resolveOrderRealizedPnl(order)
         return realized !== undefined ? sum + realized : sum
     }, 0)
 
@@ -279,132 +515,44 @@ export function computeRiskGovernanceState(args: {
     existing?: ExistingRiskGovernanceState
 }): ComputedRiskGovernanceState {
     const windows = resolveRiskWindowStarts(args.now, args.policy.strategyTimezone)
-    const closeOrders = args.orders.filter((order) =>
-        order.action === "close" && (order.status === "filled" || order.status === "partially_filled")
-    )
-
-    let dayRealizedPnl = 0
-    let weekRealizedPnl = 0
-    const forcedExitCountByInstrument = new Map<string, number>()
-
-    for (const order of closeOrders) {
-        const realized = resolveCloseOrderRealizedPnl(order)
-        if (realized === undefined) {
-            continue
-        }
-
-        if (order.updatedAt >= windows.weekStartAt) {
-            weekRealizedPnl += realized
-        }
-
-        if (order.updatedAt >= windows.dayStartAt) {
-            dayRealizedPnl += realized
-        }
-
-        const metadata = resolveOrderMetadata(order)
-        const forcedExit = readBoolean(metadata?.forcedExit) === true
-        if (forcedExit && order.updatedAt >= windows.dayStartAt) {
-            const current = forcedExitCountByInstrument.get(order.instrument) ?? 0
-            forcedExitCountByInstrument.set(order.instrument, current + 1)
-        }
-    }
-
-    const forcedExitClusterInstruments = Array.from(forcedExitCountByInstrument.entries())
-        .filter(([, count]) => count >= 2)
-        .map(([instrument]) => instrument)
-        .sort((left, right) => left.localeCompare(right))
-
-    const unresolvedFaults = args.faults.filter((fault) => fault.resolvedAt === undefined)
-    const blockedByFaults = unresolvedFaults
-        .filter((fault) => fault.blocked === true)
-        .map((fault) => fault.instrument)
-
-    const blockedInstruments = Array.from(new Set([
-        ...blockedByFaults,
-        ...forcedExitClusterInstruments,
-    ])).sort((left, right) => left.localeCompare(right))
-
-    let cooldownActive = args.existing?.cooldownActive ?? false
-    let cooldownReason = normalizeCooldownReason(args.existing?.cooldownReason)
-    let cooldownStartedAt = args.existing?.cooldownStartedAt
-    let cooldownExpiresAt = args.existing?.cooldownExpiresAt
-    let lastBreachReason = normalizeCooldownReason(args.existing?.lastBreachReason)
-    let cooldownExpired = false
-    let cooldownEntered = false
-    let cooldownEnteredReason: StrategyRiskCooldownState["reason"] | undefined
-
-    if (cooldownActive && cooldownExpiresAt !== undefined && args.now >= cooldownExpiresAt) {
-        cooldownActive = false
-        cooldownReason = undefined
-        cooldownStartedAt = undefined
-        cooldownExpiresAt = undefined
-        cooldownExpired = true
-    }
-
-    const weekBreached = args.policy.maxDrawdownWeek !== undefined
-        ? weekRealizedPnl <= -Math.abs(args.policy.maxDrawdownWeek)
-        : false
-    const dayBreached = args.policy.maxDrawdownDay !== undefined
-        ? dayRealizedPnl <= -Math.abs(args.policy.maxDrawdownDay)
-        : false
-
-    const enterCooldown = (
-        reason: StrategyRiskCooldownState["reason"],
-        cooldownMinutes: number
-    ): void => {
-        cooldownActive = true
-        cooldownReason = reason
-        cooldownStartedAt = args.now
-        cooldownExpiresAt = args.now + cooldownMinutes * 60_000
-        lastBreachReason = reason
-        cooldownEntered = true
-        cooldownEnteredReason = reason
-    }
-
-    if (!cooldownActive && (weekBreached || dayBreached)) {
-        enterCooldown(
-            weekBreached ? "week_drawdown" : "day_drawdown",
-            weekBreached
-                ? args.policy.cooldownMinutesAfterWeekBreach
-                : args.policy.cooldownMinutesAfterDayBreach
-        )
-    }
-
-    if (!cooldownActive && forcedExitClusterInstruments.length > 0) {
-        enterCooldown("forced_exit_cluster", args.policy.cooldownMinutesAfterDayBreach)
-    }
-
-    const unresolvedExecutionFaultCount = unresolvedFaults.length
-    const hasStrategyWideBlock = unresolvedFaults.some((fault) => fault.blocked === true && fault.instrument === "*")
-    const safetyState: StrategySafetyState = hasStrategyWideBlock
-        ? "blocked"
-        : cooldownActive
-            ? "cooldown"
-            : unresolvedExecutionFaultCount > 0
-                ? "execution_degraded"
-                : "healthy"
+    const realizedPnl = resolveRealizedPnlByWindow(args.orders, windows)
+    const breaches = resolveDrawdownBreaches(realizedPnl, args.policy)
+    const forcedExitClusterInstruments = resolveForcedExitClusterInstruments(args.orders, windows.dayStartAt)
+    const faultExposure = resolveFaultExposureState(args.faults, forcedExitClusterInstruments)
+    const cooldown = resolveCooldownState({
+        now: args.now,
+        policy: args.policy,
+        existing: args.existing,
+        breaches,
+        forcedExitClusterInstruments,
+    })
+    const safetyState = resolveSafetyState({
+        hasStrategyWideBlock: faultExposure.hasStrategyWideBlock,
+        cooldownActive: cooldown.active,
+        unresolvedExecutionFaultCount: faultExposure.unresolvedExecutionFaultCount,
+    })
 
     return {
         safetyState,
-        dayRealizedPnl,
-        weekRealizedPnl,
-        dayDrawdownProgress: resolveDrawdownProgress(dayRealizedPnl, args.policy.maxDrawdownDay),
-        weekDrawdownProgress: resolveDrawdownProgress(weekRealizedPnl, args.policy.maxDrawdownWeek),
-        dayBreached,
-        weekBreached,
+        dayRealizedPnl: realizedPnl.dayRealizedPnl,
+        weekRealizedPnl: realizedPnl.weekRealizedPnl,
+        dayDrawdownProgress: resolveDrawdownProgress(realizedPnl.dayRealizedPnl, args.policy.maxDrawdownDay),
+        weekDrawdownProgress: resolveDrawdownProgress(realizedPnl.weekRealizedPnl, args.policy.maxDrawdownWeek),
+        dayBreached: breaches.dayBreached,
+        weekBreached: breaches.weekBreached,
         cooldown: {
-            active: cooldownActive,
-            reason: cooldownReason,
-            startedAt: cooldownStartedAt,
-            expiresAt: cooldownExpiresAt,
-            expired: cooldownExpired,
-            entered: cooldownEntered,
-            enteredReason: cooldownEnteredReason,
+            active: cooldown.active,
+            reason: cooldown.reason,
+            startedAt: cooldown.startedAt,
+            expiresAt: cooldown.expiresAt,
+            expired: cooldown.expired,
+            entered: cooldown.entered,
+            enteredReason: cooldown.enteredReason,
         },
-        blockedInstruments,
+        blockedInstruments: faultExposure.blockedInstruments,
         forcedExitClusterInstruments,
-        unresolvedExecutionFaultCount,
-        lastBreachReason,
+        unresolvedExecutionFaultCount: faultExposure.unresolvedExecutionFaultCount,
+        lastBreachReason: cooldown.lastBreachReason,
         windows,
     }
 }

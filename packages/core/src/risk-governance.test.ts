@@ -149,6 +149,59 @@ describe("risk governance replay", () => {
         expect(result.weekRealizedPnl).toBeCloseTo(14.47)
     })
 
+    it("includes provider-reported entry fees in realized governance PnL", () => {
+        const now = Date.parse("2026-05-17T17:00:00.000Z")
+        const result = computeRiskGovernanceState({
+            now,
+            orders: [
+                {
+                    action: "entry",
+                    status: "filled",
+                    instrument: "BTC-USDT-SWAP",
+                    updatedAt: Date.parse("2026-05-17T16:25:58.553Z"),
+                    filledQuantity: 0.5,
+                    avgFillPrice: 78000.125,
+                    intent: {
+                        metadata: {
+                            action: "entry",
+                            fee: -12.345678,
+                            feeCcy: "USDT",
+                            fillPnl: 0,
+                            providerAccountingSource: "okx_order",
+                        },
+                    },
+                },
+                {
+                    action: "close",
+                    status: "filled",
+                    instrument: "BTC-USDT-SWAP",
+                    updatedAt: Date.parse("2026-05-17T10:40:35.237Z"),
+                    filledQuantity: 0.45,
+                    avgFillPrice: 78120.5,
+                    intent: {
+                        metadata: {
+                            entryPrice: 78050.25,
+                            positionSide: "long",
+                            fillPnl: 31.6125,
+                            fee: -9.876543,
+                            feeCcy: "USDT",
+                            providerAccountingSource: "okx_fills_history",
+                        },
+                    },
+                },
+            ],
+            faults: [],
+            policy: {
+                cooldownMinutesAfterDayBreach: 120,
+                cooldownMinutesAfterWeekBreach: 240,
+                strategyTimezone: "UTC",
+            },
+        })
+
+        expect(result.dayRealizedPnl).toBeCloseTo(9.390279)
+        expect(result.weekRealizedPnl).toBeCloseTo(9.390279)
+    })
+
     it("expires cooldown deterministically when expiry is passed", () => {
         const now = Date.parse("2026-04-17T18:00:00.000Z")
         const result = computeRiskGovernanceState({

@@ -321,27 +321,15 @@ export async function reconcileAndVerifyReset(
     let lastRemainingOrders: ProviderPendingOrderRow[] = []
 
     for (let attempt = 0; attempt < RESET_VERIFICATION_ATTEMPTS; attempt++) {
-        const { venue, venueName } = await createVenue(strategy, client)
-        const [accountState, positions, workingOrders] = await Promise.all([
-            venue.getAccountState(),
-            venue.getPositions(),
-            venue.getWorkingOrders ? venue.getWorkingOrders() : Promise.resolve([]),
-        ])
-
-        await client.reconcileProviderPortfolio(
-            strategy.app,
-            venueName,
-            "periodic_sync",
-            accountState,
-            positions,
-            workingOrders
-        )
-
-        ;[lastFreshness, lastRemainingPositions, lastRemainingOrders] = await Promise.all([
+        await refreshProviderPortfolioState(client, strategy)
+        const verificationState = await Promise.all([
             getFreshness(client, strategy.app),
             client.getPortfolioPositions(strategy.app, strategyId),
             client.getPortfolioPendingOrders(strategy.app, strategyId),
         ])
+        lastFreshness = verificationState[0]
+        lastRemainingPositions = verificationState[1]
+        lastRemainingOrders = verificationState[2]
 
         const healthy =
             lastFreshness &&
@@ -378,6 +366,27 @@ export async function reconcileAndVerifyReset(
 
     throw new Error(
         `Reset verification failed for ${strategy.name}: ${lastRemainingPositions.length} provider position(s) and ${lastRemainingOrders.length} working order(s) still remain. ${formatRemainingExposure(lastRemainingPositions, lastRemainingOrders)}`
+    )
+}
+
+export async function refreshProviderPortfolioState(
+    client: TradingBackendClient,
+    strategy: StoredStrategy
+): Promise<void> {
+    const { venue, venueName } = await createVenue(strategy, client)
+    const [accountState, positions, workingOrders] = await Promise.all([
+        venue.getAccountState(),
+        venue.getPositions(),
+        venue.getWorkingOrders ? venue.getWorkingOrders() : Promise.resolve([]),
+    ])
+
+    await client.reconcileProviderPortfolio(
+        strategy.app,
+        venueName,
+        "periodic_sync",
+        accountState,
+        positions,
+        workingOrders
     )
 }
 

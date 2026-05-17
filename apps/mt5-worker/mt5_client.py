@@ -95,11 +95,14 @@ class MT5Client:
             return
 
         script = "\n".join([
-            "$target = [System.IO.Path]::GetFullPath($args[0]).ToLowerInvariant()",
+            "$target = [System.IO.Path]::GetFullPath($env:MT5_TERMINAL_EXE).ToLowerInvariant()",
             "Get-CimInstance Win32_Process -Filter \"Name = 'terminal64.exe'\" |",
             "Where-Object { $_.ExecutablePath -and ([System.IO.Path]::GetFullPath($_.ExecutablePath).ToLowerInvariant() -eq $target) } |",
             "ForEach-Object { Stop-Process -Id $_.ProcessId -Force; Write-Output $_.ProcessId }",
         ])
+
+        env = os.environ.copy()
+        env["MT5_TERMINAL_EXE"] = terminal_exe
 
         try:
             result = subprocess.run(
@@ -110,8 +113,8 @@ class MT5Client:
                     "Bypass",
                     "-Command",
                     script,
-                    terminal_exe,
                 ],
+                env=env,
                 capture_output=True,
                 text=True,
                 timeout=10,

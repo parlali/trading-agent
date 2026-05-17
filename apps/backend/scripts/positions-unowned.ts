@@ -10,8 +10,8 @@ import {
     runScript,
 } from "./lib/strategy-cli"
 import {
-    createVenue,
     flattenVenueExposure,
+    refreshProviderPortfolioState,
 } from "./lib/safe-strategy-reset"
 
 type OperatorAction = "list" | "close" | "adopt"
@@ -24,7 +24,7 @@ runScript(async () => {
     const representativeStrategy = await getRepresentativeStrategy(client, app)
 
     if (representativeStrategy) {
-        await refreshProviderState(client, representativeStrategy)
+        await refreshProviderPortfolioState(client, representativeStrategy)
     }
 
     switch (action) {
@@ -139,27 +139,6 @@ async function adoptUnownedExposure(
     )
 
     await listUnownedExposure(client, app)
-}
-
-async function refreshProviderState(
-    client: TradingBackendClient,
-    strategy: StoredStrategy
-): Promise<void> {
-    const { venue, venueName } = await createVenue(strategy, client)
-    const [accountState, positions, workingOrders] = await Promise.all([
-        venue.getAccountState(),
-        venue.getPositions(),
-        venue.getWorkingOrders ? venue.getWorkingOrders() : Promise.resolve([]),
-    ])
-
-    await client.reconcileProviderPortfolio(
-        strategy.app,
-        venueName,
-        "periodic_sync",
-        accountState,
-        positions,
-        workingOrders
-    )
 }
 
 async function getRepresentativeStrategy(

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest"
 import type { OKXAccountBalance } from "./okx-client"
 import { OKXVenueAdapter } from "./venue-adapter"
+import { mapOKXExecutionResult } from "./venue-adapter-execution-results"
 
 function createBalance(overrides: Partial<OKXAccountBalance> = {}): OKXAccountBalance {
     return {
@@ -32,6 +33,19 @@ function createSwapInstrument(instId: string, ctVal: string, ctValCcy: string) {
         lotSz: "0.01",
         minSz: "0.01",
         tickSz: "0.01",
+    }
+}
+
+function createInstrumentRules(instId: string, contractValue: number, contractValueCurrency: string) {
+    return {
+        instId,
+        instType: "SWAP",
+        state: "live",
+        tickSize: 0.01,
+        lotSize: 0.01,
+        minContracts: 0.01,
+        contractValue,
+        contractValueCurrency,
     }
 }
 
@@ -112,6 +126,67 @@ describe("OKXVenueAdapter account snapshot semantics", () => {
         expect(account.openPnl).toBe(25.5)
         expect(account.marginUsed).toBe(300)
         expect(account.dayPnl).toBe(0)
+    })
+
+    it("persists provider-reported entry fees from OKX order truth", async () => {
+        const result = await mapOKXExecutionResult({
+            instId: "BTC-USDT-SWAP",
+            order: {
+                instId: "BTC-USDT-SWAP",
+                ordId: "9000000000000000001",
+                state: "filled",
+                ordType: "market",
+                side: "buy",
+                sz: "50",
+                accFillSz: "50",
+                px: "",
+                avgPx: "78000.125",
+                reduceOnly: "false",
+                fee: "-12.345678",
+                feeCcy: "USDT",
+                pnl: "0",
+                tradeId: "7000000001",
+                uTime: "1779027958553",
+            },
+            getInstrumentRules: async () => createInstrumentRules("BTC-USDT-SWAP", 0.01, "BTC"),
+            contractsToBaseQuantity: (_rules, contracts) => contracts * 0.01,
+        })
+
+        expect(result.intentUpdates?.metadata).toMatchObject({
+            fee: -12.345678,
+            feeCcy: "USDT",
+            fillPnl: 0,
+            providerAccountingSource: "okx_order",
+            providerOrderId: "9000000000000000001",
+            tradeId: "7000000001",
+        })
+    })
+
+    it("does not persist reduce-only close fees on direct OKX close rows to avoid provider-close double counting", async () => {
+        const result = await mapOKXExecutionResult({
+            instId: "ETH-USDT-SWAP",
+            order: {
+                instId: "ETH-USDT-SWAP",
+                ordId: "9000000000000000002",
+                state: "filled",
+                ordType: "market",
+                side: "sell",
+                sz: "110",
+                accFillSz: "110",
+                px: "",
+                avgPx: "2180.5",
+                reduceOnly: "true",
+                fee: "-6.54321",
+                feeCcy: "USDT",
+                pnl: "-8.76543",
+                tradeId: "7000000002",
+                uTime: "1779038448537",
+            },
+            getInstrumentRules: async () => createInstrumentRules("ETH-USDT-SWAP", 0.1, "ETH"),
+            contractsToBaseQuantity: (_rules, contracts) => contracts * 0.1,
+        })
+
+        expect(result.intentUpdates).toBeUndefined()
     })
 
     it("imports recent provider fill history as position closure truth", async () => {

@@ -106,6 +106,10 @@ export interface OKXOrder {
     tdMode?: string
     cTime?: string
     uTime?: string
+    fee?: string
+    feeCcy?: string
+    pnl?: string
+    tradeId?: string
     slTriggerPx?: string
     tpTriggerPx?: string
 }

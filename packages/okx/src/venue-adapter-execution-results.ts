@@ -26,6 +26,7 @@ export async function mapOKXExecutionResult(args: {
             ? Number(args.order.px)
             : undefined
     const status = mapOKXOrderStatus(args.order.state)
+    const accountingMetadata = buildOKXOrderAccountingMetadata(args.order, status)
     const errorDetail = status === "rejected"
         ? createExecutionErrorDetail("venue", args.order.state, {
             code: args.order.state,
@@ -45,5 +46,36 @@ export async function mapOKXExecutionResult(args: {
         timestamp: parseUnixMs(args.order.uTime) ?? parseUnixMs(args.order.cTime) ?? Date.now(),
         error: errorDetail ? formatExecutionError(errorDetail) : undefined,
         errorDetail,
+        intentUpdates: accountingMetadata
+            ? { metadata: accountingMetadata }
+            : undefined,
+    }
+}
+
+function buildOKXOrderAccountingMetadata(
+    order: OKXOrder,
+    status: ExecutionResult["status"]
+): Record<string, unknown> | undefined {
+    if (status !== "filled" && status !== "partially_filled") {
+        return undefined
+    }
+
+    if (order.reduceOnly === "true") {
+        return undefined
+    }
+
+    const fee = isFiniteNumberString(order.fee) ? Number(order.fee) : undefined
+    const fillPnl = isFiniteNumberString(order.pnl) ? Number(order.pnl) : undefined
+    if (fee === undefined && fillPnl === undefined) {
+        return undefined
+    }
+
+    return {
+        fee,
+        feeCcy: order.feeCcy,
+        fillPnl,
+        providerAccountingSource: "okx_order",
+        providerOrderId: order.ordId,
+        tradeId: order.tradeId,
     }
 }
