@@ -53,7 +53,8 @@ export class MT5Plugin implements VenuePlugin {
             workerUrl: runtimeConfig.workerUrl,
             accessKey: runtimeConfig.accessKey,
         })
-        await client.connect(runtimeConfig.credentials)
+        const venue = new MT5VenueAdapter(client, runtimeConfig.credentials, this.executionCostTracker)
+        await venue.ensureConnected()
     }
 
     createVenueAdapter(

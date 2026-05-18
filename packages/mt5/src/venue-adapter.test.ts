@@ -99,6 +99,44 @@ describe("MT5VenueAdapter", () => {
         expect(accountCalls).toBe(2)
     })
 
+    it("waits through transient worker connect contention before MT5 reads", async () => {
+        vi.useFakeTimers()
+
+        try {
+            const client = createClient()
+            let healthConnected = false
+            let connectCalls = 0
+
+            client.getHealth = async () => ({
+                status: "ok",
+                connected: healthConnected,
+                login: healthConnected ? credentials.login : null,
+            })
+            client.connect = async () => {
+                connectCalls++
+                if (connectCalls === 1) {
+                    throw createExecutionError("venue", "MT5 connection failed: MT5 connect already in progress", {
+                        code: "connect_in_progress",
+                        retryable: true,
+                    })
+                }
+                healthConnected = true
+                return createAccountInfo()
+            }
+            client.getAccount = async () => createAccountInfo()
+
+            const adapter = new MT5VenueAdapter(client, credentials)
+            const read = adapter.getAccountState()
+            await vi.advanceTimersByTimeAsync(1_000)
+            const state = await read
+
+            expect(state.equity).toBe(1000)
+            expect(connectCalls).toBe(2)
+        } finally {
+            vi.useRealTimers()
+        }
+    })
+
     it("keeps successful limit submissions pending until provider status confirms a fill", async () => {
         const client = createClient()
         client.submitOrder = async (): Promise<MT5OrderResult> => createOrderResult({

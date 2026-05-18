@@ -1,6 +1,7 @@
 import {
     createExecutionError,
     ExecutionCostTracker,
+    getExecutionErrorDetail,
     type AccountState,
     type ExecutionCostAssessment,
     type ExecutionCostSnapshot,
@@ -41,6 +42,8 @@ export class MT5VenueAdapter implements VenueAdapter, PriceVerifier {
     private static readonly connectionPromises = new Map<string, Promise<void>>()
     private lastConnectedAt = 0
     private readonly CONNECTION_TTL = 60_000
+    private readonly CONNECT_RETRY_ATTEMPTS = 6
+    private readonly CONNECT_RETRY_DELAY_MS = 1_000
 
     constructor(
         private readonly client: MT5Client,
@@ -73,11 +76,24 @@ export class MT5VenueAdapter implements VenueAdapter, PriceVerifier {
     }
 
     private async establishConnection(): Promise<void> {
-        const health = await this.client.getHealth()
-        if (!health.connected || health.login !== this.credentials.login) {
-            await this.client.connect(this.credentials)
+        for (let attempt = 1; attempt <= this.CONNECT_RETRY_ATTEMPTS; attempt++) {
+            const health = await this.client.getHealth()
+            if (health.connected && health.login === this.credentials.login) {
+                this.lastConnectedAt = Date.now()
+                return
+            }
+
+            try {
+                await this.client.connect(this.credentials)
+                this.lastConnectedAt = Date.now()
+                return
+            } catch (error) {
+                if (!isMT5ConnectContention(error) || attempt === this.CONNECT_RETRY_ATTEMPTS) {
+                    throw error
+                }
+                await sleep(this.CONNECT_RETRY_DELAY_MS)
+            }
         }
-        this.lastConnectedAt = Date.now()
     }
 
     async getPositions(): Promise<Position[]> {
@@ -415,4 +431,13 @@ export class MT5VenueAdapter implements VenueAdapter, PriceVerifier {
 
         return await handler(ticket)
     }
+}
+
+export function isMT5ConnectContention(error: unknown): boolean {
+    const detail = getExecutionErrorDetail(error)
+    return detail?.retryable === true && detail.code === "connect_in_progress"
+}
+
+async function sleep(delayMs: number): Promise<void> {
+    await new Promise((resolve) => setTimeout(resolve, delayMs))
 }
