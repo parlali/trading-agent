@@ -2,6 +2,11 @@ import type { ExecutionResult, Severity } from "./types"
 import type { OrderIntent } from "./order-intent-types"
 import { createExecutionErrorDetail, formatExecutionError } from "./utils"
 import {
+    getExecutionIdentityCandidates as collectExecutionIdentityCandidates,
+    mergeIdentityAliases,
+    type ExecutionCommitOutcome,
+} from "./execution-identity"
+import {
     ACTIVE_ORDER_STATUSES,
     TERMINAL_ORDER_STATUSES,
     type OrderAction,
@@ -43,8 +48,15 @@ export interface OrderPollingMetadata {
 
 export interface OrderSnapshot {
     orderId: string
+    canonicalOrderId: string
     providerOrderId: string
+    providerClientOrderId?: string
     providerOrderAliases: string[]
+    submitAttemptId?: string
+    submitAttemptSequence?: number
+    commitOutcome: ExecutionCommitOutcome
+    signedOrderFingerprint?: string
+    signedOrderMetadata?: Record<string, unknown>
     strategyId: string
     runId: string
     instrument: string
@@ -145,11 +157,21 @@ export const createOrderSnapshot = (
 ): OrderSnapshot => {
     const timestamp = params.now ?? params.result.timestamp ?? Date.now()
     const filledQuantity = params.result.filledQuantity ?? 0
+    const canonicalOrderId = params.result.canonicalOrderId ?? params.result.orderId
+    const providerOrderId = params.result.providerOrderId ??
+        (params.result.orderId && params.result.orderId !== canonicalOrderId ? params.result.orderId : "")
 
     return {
-        orderId: params.result.orderId,
-        providerOrderId: params.result.orderId,
-        providerOrderAliases: [],
+        orderId: canonicalOrderId,
+        canonicalOrderId,
+        providerOrderId,
+        providerClientOrderId: params.result.providerClientOrderId,
+        providerOrderAliases: mergeIdentityAliases(params.result.providerOrderAliases ?? []),
+        submitAttemptId: params.result.submitAttemptId,
+        submitAttemptSequence: params.result.submitAttemptSequence,
+        commitOutcome: params.result.commitOutcome ?? (params.result.status === "rejected" ? "rejected" : "accepted"),
+        signedOrderFingerprint: params.result.signedOrderFingerprint,
+        signedOrderMetadata: params.result.signedOrderMetadata,
         strategyId: params.strategyId,
         runId: params.runId,
         instrument: params.intent.instrument,
@@ -184,9 +206,13 @@ export const updateOrderSnapshotFromExecution = (
     const nextIntent = mergeOrderIntent(snapshot.intent, result.intentUpdates)
     const nextQuantity = nextIntent.quantity
     const filledQuantity = result.filledQuantity ?? snapshot.filledQuantity
-    const nextProviderOrderId = result.orderId || snapshot.providerOrderId || snapshot.orderId
+    const nextProviderOrderId = result.providerOrderId ??
+        (result.orderId && result.orderId !== snapshot.orderId ? result.orderId : undefined) ??
+        snapshot.providerOrderId
+    const nextProviderClientOrderId = result.providerClientOrderId ?? snapshot.providerClientOrderId
     const providerOrderAliases = dedupeOrderIdentifiers([
         ...snapshot.providerOrderAliases,
+        ...(result.providerOrderAliases ?? []),
         snapshot.providerOrderId !== snapshot.orderId ? snapshot.providerOrderId : undefined,
     ]).filter((orderId) => orderId !== nextProviderOrderId)
 
@@ -195,7 +221,13 @@ export const updateOrderSnapshotFromExecution = (
         quantity: nextQuantity,
         status: result.status,
         providerOrderId: nextProviderOrderId,
+        providerClientOrderId: nextProviderClientOrderId,
         providerOrderAliases,
+        submitAttemptId: result.submitAttemptId ?? snapshot.submitAttemptId,
+        submitAttemptSequence: result.submitAttemptSequence ?? snapshot.submitAttemptSequence,
+        commitOutcome: result.commitOutcome ?? snapshot.commitOutcome,
+        signedOrderFingerprint: result.signedOrderFingerprint ?? snapshot.signedOrderFingerprint,
+        signedOrderMetadata: result.signedOrderMetadata ?? snapshot.signedOrderMetadata,
         filledQuantity,
         remainingQuantity: Math.max(nextQuantity - filledQuantity, 0),
         avgFillPrice: result.fillPrice ?? snapshot.avgFillPrice,
@@ -274,17 +306,27 @@ export const pauseOrderPollingForHandoff = (
 }
 
 export const getOrderIdentityCandidates = (
-    snapshot: Pick<OrderSnapshot, "orderId"> & Partial<Pick<OrderSnapshot, "providerOrderId" | "providerOrderAliases">>
+    snapshot: Pick<OrderSnapshot, "orderId"> & Partial<Pick<
+        OrderSnapshot,
+        "canonicalOrderId" |
+        "providerOrderId" |
+        "providerClientOrderId" |
+        "providerOrderAliases" |
+        "signedOrderFingerprint"
+    >>
 ): string[] => {
-    return dedupeOrderIdentifiers([
-        snapshot.orderId,
-        snapshot.providerOrderId,
-        ...(snapshot.providerOrderAliases ?? []),
-    ])
+    return collectExecutionIdentityCandidates(snapshot)
 }
 
 export const matchesOrderIdentifier = (
-    snapshot: Pick<OrderSnapshot, "orderId"> & Partial<Pick<OrderSnapshot, "providerOrderId" | "providerOrderAliases">>,
+    snapshot: Pick<OrderSnapshot, "orderId"> & Partial<Pick<
+        OrderSnapshot,
+        "canonicalOrderId" |
+        "providerOrderId" |
+        "providerClientOrderId" |
+        "providerOrderAliases" |
+        "signedOrderFingerprint"
+    >>,
     orderId: string
 ): boolean => {
     return getOrderIdentityCandidates(snapshot).includes(orderId)

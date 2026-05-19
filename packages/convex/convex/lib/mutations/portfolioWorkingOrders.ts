@@ -12,10 +12,7 @@ import type {
     StrategyDoc,
 } from "./portfolioTypes"
 import {
-    almostEqual,
-    readFiniteNumber,
     readMetadataRecord,
-    readOrderIntentRecord,
 } from "./portfolioUtils"
 import { resolveLatestRunIdForStrategy } from "./portfolioOrderRuns"
 
@@ -57,9 +54,15 @@ export async function importCanonicalProviderProtectionOrder(
         return undefined
     }
 
+    const providerClientOrderId = readProviderClientOrderId(args.order)
+    const canonicalOrderId = resolveCanonicalProviderProtectionOrderId(args.order)
+    if (!canonicalOrderId) {
+        return undefined
+    }
+
     const existingOrder = await ctx.db
         .query("orders")
-        .withIndex("by_order_id", (q) => q.eq("orderId", args.order.orderId))
+        .withIndex("by_order_id", (q) => q.eq("orderId", canonicalOrderId))
         .first()
     if (existingOrder) {
         return {
@@ -80,9 +83,16 @@ export async function importCanonicalProviderProtectionOrder(
 
     const intent = buildProviderProtectionIntent(args.order, metadata)
     await upsertOrderRow(ctx, {
-        orderId: args.order.orderId,
+        orderId: canonicalOrderId,
+        canonicalOrderId,
         providerOrderId: args.order.orderId,
+        providerClientOrderId,
         providerOrderAliases: [],
+        submitAttemptId: undefined,
+        submitAttemptSequence: undefined,
+        commitOutcome: "accepted",
+        signedOrderFingerprint: readSignedOrderFingerprint(args.order),
+        signedOrderMetadata: undefined,
         runId,
         strategyId: args.ownership.strategyId,
         venue: args.venue,
@@ -112,7 +122,7 @@ export async function importCanonicalProviderProtectionOrder(
     })
 
     await appendOrderTransition(ctx, {
-        orderId: args.order.orderId,
+        orderId: canonicalOrderId,
         runId,
         strategyId: args.ownership.strategyId,
         type: "submission",
@@ -133,7 +143,8 @@ export async function importCanonicalProviderProtectionOrder(
         payload: JSON.stringify({
             providerImportedWorkingOrder: true,
             result: {
-                orderId: args.order.orderId,
+                orderId: canonicalOrderId,
+                providerOrderId: args.order.orderId,
                 status: args.order.status,
                 filledQuantity: args.order.filledQuantity,
                 fillPrice: args.order.avgFillPrice,
@@ -191,6 +202,15 @@ export function resolveProviderProtectionOrderType(order: {
     return order.stopPrice !== undefined ? "stop" : "limit"
 }
 
+export function resolveCanonicalProviderProtectionOrderId(
+    order: Pick<ProviderWorkingOrderInput, "providerClientOrderId" | "metadata">
+): string | undefined {
+    const providerClientOrderId = readProviderClientOrderId(order)
+    return isCanonicalOrderId(providerClientOrderId)
+        ? providerClientOrderId
+        : undefined
+}
+
 export function resolveLiveWorkingOrderMatch(args: {
     app: Doc<"strategies">["app"]
     liveOrder: ProviderWorkingOrderInput
@@ -203,21 +223,21 @@ export function resolveLiveWorkingOrderMatch(args: {
         return directMatch
     }
 
-    if (args.app !== "mt5") {
+    const metadataMatchId = readProviderClientOrderId(args.liveOrder) ?? readSignedOrderFingerprint(args.liveOrder)
+    if (!metadataMatchId) {
         return undefined
     }
 
-    const candidates = args.activeOrders.filter((order) =>
-        !args.matchedActiveOrderIds.has(order.orderId) &&
-        matchesMT5WorkingOrderContinuity(order, args.liveOrder)
-    )
-
-    return candidates.length === 1 ? candidates[0] : undefined
+    const metadataMatch = args.activeOrdersById.get(metadataMatchId)
+    return metadataMatch && !args.matchedActiveOrderIds.has(metadataMatch.orderId)
+        ? metadataMatch
+        : undefined
 }
 
 export function hasUnresolvedLiveWorkingOrderGap(
     order: OrderDoc,
     unresolvedWorkingOrders: Array<{
+        orderId: string
         instrument: string
         quantity: number
         remainingQuantity: number
@@ -227,89 +247,31 @@ export function hasUnresolvedLiveWorkingOrderGap(
         metadata?: string
     }>
 ): boolean {
-    return unresolvedWorkingOrders.some((liveOrder) => matchesMT5WorkingOrderContinuity(order, liveOrder))
-}
-
-export function matchesMT5WorkingOrderContinuity(
-    order: Pick<
-        OrderDoc,
-        "orderId" |
-        "providerOrderId" |
-        "providerOrderAliases" |
-        "venue" |
-        "instrument" |
-        "status" |
-        "action" |
-        "quantity" |
-        "filledQuantity" |
-        "remainingQuantity" |
-        "intent"
-    >,
-    liveOrder: {
-        instrument: string
-        quantity: number
-        remainingQuantity: number
-        side?: "buy" | "sell"
-        limitPrice?: number
-        stopPrice?: number
-        metadata?: string
-    }
-): boolean {
-    if (order.venue !== "mt5") {
-        return false
-    }
-
-    if (order.action !== "entry" && order.action !== "adjustment") {
-        return false
-    }
-
-    if (order.instrument !== liveOrder.instrument) {
-        return false
-    }
-
-    const intent = readOrderIntentRecord(order.intent)
-    const intentMetadata = readOrderIntentRecord(intent?.metadata)
-    const intentSide = intent?.side === "buy" || intent?.side === "sell"
-        ? intent.side
-        : undefined
-    const intentLimitPrice = readFiniteNumber(intent?.limitPrice)
-    const intentStopLoss = readFiniteNumber(intentMetadata?.stopLoss)
-    const intentTakeProfit = readFiniteNumber(intentMetadata?.takeProfit)
-    const liveMetadata = readMetadataRecord(liveOrder.metadata)
-    const liveTakeProfit = readFiniteNumber(liveMetadata?.takeProfit)
-
-    if (liveOrder.side && intentSide !== liveOrder.side) {
-        return false
-    }
-
-    if (!almostEqual(order.quantity, liveOrder.quantity)) {
-        return false
-    }
-
-    if (!almostEqual(order.remainingQuantity, liveOrder.remainingQuantity)) {
-        return false
-    }
-
-    if (liveOrder.limitPrice !== undefined && intentLimitPrice !== undefined && !almostEqual(intentLimitPrice, liveOrder.limitPrice)) {
-        return false
-    }
-
-    if (liveOrder.stopPrice !== undefined && intentStopLoss !== undefined && !almostEqual(intentStopLoss, liveOrder.stopPrice)) {
-        return false
-    }
-
-    if (liveTakeProfit !== undefined && intentTakeProfit !== undefined && !almostEqual(intentTakeProfit, liveTakeProfit)) {
-        return false
-    }
-
-    return true
+    const identifiers = new Set(getOrderIdentityCandidates(order))
+    return unresolvedWorkingOrders.some((liveOrder) => {
+        const liveIdentifiers = [
+            liveOrder.orderId,
+            readProviderClientOrderId(liveOrder),
+            readSignedOrderFingerprint(liveOrder),
+        ].filter((value): value is string => Boolean(value))
+        return liveIdentifiers.some((identifier) => identifiers.has(identifier))
+    })
 }
 
 export async function applyProviderWorkingOrderUpdate(
     ctx: PortfolioMutationCtx,
     args: {
         order: OrderDoc
-        liveOrder: Pick<ProviderWorkingOrderInput, "orderId" | "status" | "filledQuantity" | "remainingQuantity" | "avgFillPrice" | "updatedAt">
+        liveOrder: Pick<
+            ProviderWorkingOrderInput,
+            "orderId" |
+            "status" |
+            "filledQuantity" |
+            "remainingQuantity" |
+            "avgFillPrice" |
+            "updatedAt" |
+            "metadata"
+        >
         updatedAt: number
     }
 ): Promise<void> {
@@ -330,8 +292,15 @@ export async function applyProviderWorkingOrderUpdate(
 
     await upsertOrderRow(ctx, {
         orderId: order.orderId,
+        canonicalOrderId: order.canonicalOrderId ?? order.orderId,
         providerOrderId: liveOrder.orderId,
+        providerClientOrderId: readProviderClientOrderId(liveOrder) ?? order.providerClientOrderId,
         providerOrderAliases: nextProviderOrderAliases,
+        submitAttemptId: order.submitAttemptId,
+        submitAttemptSequence: order.submitAttemptSequence,
+        commitOutcome: order.commitOutcome === "commit_unknown" ? "recovered" : order.commitOutcome,
+        signedOrderFingerprint: readSignedOrderFingerprint(liveOrder) ?? order.signedOrderFingerprint,
+        signedOrderMetadata: order.signedOrderMetadata,
         runId: order.runId,
         strategyId: order.strategyId,
         venue: order.venue,
@@ -404,8 +373,15 @@ export async function applyClosedOrderInference(
 
     await upsertOrderRow(ctx, {
         orderId: order.orderId,
+        canonicalOrderId: order.canonicalOrderId ?? order.orderId,
         providerOrderId: order.providerOrderId ?? order.orderId,
+        providerClientOrderId: order.providerClientOrderId,
         providerOrderAliases: order.providerOrderAliases ?? [],
+        submitAttemptId: order.submitAttemptId,
+        submitAttemptSequence: order.submitAttemptSequence,
+        commitOutcome: order.commitOutcome === "commit_unknown" ? "recovered" : order.commitOutcome,
+        signedOrderFingerprint: order.signedOrderFingerprint,
+        signedOrderMetadata: order.signedOrderMetadata,
         runId: order.runId,
         strategyId: order.strategyId,
         venue: order.venue,
@@ -467,6 +443,38 @@ export function mergeProviderOrderAliases(
     aliases.delete(nextProviderOrderId)
 
     return Array.from(aliases).sort((left, right) => left.localeCompare(right))
+}
+
+export function readProviderClientOrderId(
+    order: Pick<ProviderWorkingOrderInput, "providerClientOrderId" | "metadata"> | Pick<ProviderWorkingOrderInput, "metadata">
+): string | undefined {
+    if ("providerClientOrderId" in order && order.providerClientOrderId) {
+        return order.providerClientOrderId
+    }
+
+    const metadata = readMetadataRecord(order.metadata)
+    const providerClientOrderId = metadata?.providerClientOrderId ?? metadata?.clientOrderId ?? metadata?.client_order_id ?? metadata?.clOrdId
+    return typeof providerClientOrderId === "string" && providerClientOrderId.trim()
+        ? providerClientOrderId.trim()
+        : undefined
+}
+
+export function readSignedOrderFingerprint(
+    order: Pick<ProviderWorkingOrderInput, "signedOrderFingerprint" | "metadata"> | Pick<ProviderWorkingOrderInput, "metadata">
+): string | undefined {
+    if ("signedOrderFingerprint" in order && order.signedOrderFingerprint) {
+        return order.signedOrderFingerprint
+    }
+
+    const metadata = readMetadataRecord(order.metadata)
+    const fingerprint = metadata?.signedOrderFingerprint
+    return typeof fingerprint === "string" && fingerprint.trim()
+        ? fingerprint.trim()
+        : undefined
+}
+
+function isCanonicalOrderId(value: string | undefined): value is string {
+    return typeof value === "string" && /^v[a-z0-9]{5}[a-z2-7]{10}$/.test(value)
 }
 
 export async function listActiveOrdersForApp(

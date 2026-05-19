@@ -2,12 +2,14 @@ import { z } from "zod"
 import type { OKXVenueAdapter } from "@valiq-trading/okx"
 import {
     getRiskBudgetBase,
+    type ExecutionSafetyFaultCategory,
     type ExecutionErrorDetail,
     type ExecutionPipeline,
     type OKXPolicy,
     type OrderIntent,
     type Position,
     type PriceVerification,
+    type SubmitOrderContext,
     type WorkingOrder,
 } from "@valiq-trading/core"
 import { computeImpliedRR, computeTakeProfitFromRR } from "@valiq-trading/mt5"
@@ -58,7 +60,7 @@ export interface OKXOrderResult {
     protectionOrders?: {
         cancelledOrderIds: string[]
         createdOrderIds: string[]
-        category?: "position_not_found_yet" | "provider_rejected" | "already_exists_conflict" | "invalid_params" | "unknown"
+        category?: OKXProtectionFailureCategory
         flattened?: boolean
         error?: string
     }
@@ -79,12 +81,25 @@ export interface OKXOrderResult {
     }
 }
 
-interface OKXExecutionSafetyCallbacks {
+export type OKXProtectionFailureCategory = Extract<
+    ExecutionSafetyFaultCategory,
+    "position_not_found_yet" | "provider_rejected" | "already_exists_conflict" | "invalid_params" | "unknown"
+>
+
+export interface OKXExecutionSafetyCallbacks {
     recordFault?: (args: {
         instrument: string
-        category: "position_not_found_yet" | "provider_rejected" | "already_exists_conflict" | "invalid_params" | "unknown"
+        category: OKXProtectionFailureCategory
         message: string
         providerPayload?: string
+        canonicalOrderId?: string
+        providerOrderId?: string
+        providerClientOrderId?: string
+        providerOrderAliases?: string[]
+        submitAttemptId?: string
+        submitAttemptSequence?: number
+        venue?: string
+        recoveryProbeEvidence?: Record<string, unknown>
     }) => Promise<void>
     resolveFaults?: (args: {
         instrument: string
@@ -238,6 +253,8 @@ export async function prepareOKXOrder(
             instrument,
             stopLoss: normalizedStopLoss,
             takeProfit: normalizedTakeProfit,
+            side: params.side,
+            quantity: sizing.baseQuantity,
             dryRun: policy.dryRun,
             status: result.status,
             requireTakeProfit: policy.requireTakeProfit,
@@ -322,9 +339,9 @@ function resolveCancelAt(
     return Date.now() + ttlMinutes * 60_000
 }
 
-function classifyProtectionAttachmentFailure(
+export function classifyOKXProtectionFailure(
     errorMessage: string
-): "position_not_found_yet" | "provider_rejected" | "already_exists_conflict" | "invalid_params" | "unknown" {
+): OKXProtectionFailureCategory {
     const normalized = errorMessage.toLowerCase()
 
     if (normalized.includes("position_not_found") || normalized.includes("no open okx swap position found")) {
@@ -399,6 +416,8 @@ async function ensureProtectionOrders(config: {
     instrument: string
     stopLoss: number
     takeProfit: number
+    side: "buy" | "sell"
+    quantity: number
     dryRun?: boolean
     status: string
     requireTakeProfit: boolean
@@ -406,7 +425,7 @@ async function ensureProtectionOrders(config: {
 }): Promise<{
     cancelledOrderIds: string[]
     createdOrderIds: string[]
-    category?: "position_not_found_yet" | "provider_rejected" | "already_exists_conflict" | "invalid_params" | "unknown"
+    category?: OKXProtectionFailureCategory
     flattened?: boolean
     error?: string
 }> {
@@ -435,14 +454,48 @@ async function ensureProtectionOrders(config: {
     }
 
     let lastError: string | undefined
-    let lastCategory: "position_not_found_yet" | "provider_rejected" | "already_exists_conflict" | "invalid_params" | "unknown" | undefined
+    let lastCategory: OKXProtectionFailureCategory | undefined
 
     for (let attempt = 0; attempt < 3; attempt++) {
-        const verification = await verifyProtectionFromProviderTruth({
-            venue: config.venue,
-            instrument: config.instrument,
-            requireTakeProfit: config.requireTakeProfit,
-        })
+        let verification: Awaited<ReturnType<typeof verifyProtectionFromProviderTruth>>
+        try {
+            verification = await verifyProtectionFromProviderTruth({
+                venue: config.venue,
+                instrument: config.instrument,
+                requireTakeProfit: config.requireTakeProfit,
+            })
+        } catch (error) {
+            const message = `Protection verification failed: provider truth read failed for ${config.instrument}: ${error instanceof Error ? error.message : String(error)}`
+            const protectionContext = await createOKXProtectionOperationContext(config)
+            const fault = await flattenOKXPositionAfterProtectionFailure({
+                pipeline: config.pipeline,
+                instrument: config.instrument,
+                protectionError: message,
+                category: classifyOKXProtectionFailure(message),
+                flattenReason: "Protection verification failed after entry fill; flattening to fail closed",
+                callbacks: config.callbacks,
+                providerPayload: {
+                    phase: "verifyAttachedProtection",
+                    intendedStopLoss: config.stopLoss,
+                    intendedTakeProfit: config.takeProfit,
+                    verificationError: error instanceof Error ? error.message : String(error),
+                },
+                canonicalOrderId: protectionContext.identity.canonicalOrderId,
+                providerClientOrderId: protectionContext.identity.providerClientOrderId,
+                providerOrderAliases: protectionContext.identity.providerOrderAliases,
+                submitAttemptId: protectionContext.identity.submitAttemptId,
+                submitAttemptSequence: protectionContext.identity.submitAttemptSequence,
+                venue: "okx-swap",
+            })
+
+            return {
+                cancelledOrderIds: [],
+                createdOrderIds: [],
+                category: fault.category,
+                flattened: fault.flattened,
+                error: fault.error,
+            }
+        }
         if (verification.ok) {
             await config.callbacks?.resolveFaults?.({
                 instrument: config.instrument,
@@ -456,12 +509,14 @@ async function ensureProtectionOrders(config: {
         }
 
         lastError = verification.reason
-        lastCategory = classifyProtectionAttachmentFailure(verification.reason ?? "unknown")
+        lastCategory = classifyOKXProtectionFailure(verification.reason ?? "unknown")
 
         if (attempt < 2) {
             await delay((attempt + 1) * 500)
         }
     }
+
+    const protectionContext = await createOKXProtectionOperationContext(config)
 
     for (let attempt = 0; attempt < 3; attempt++) {
         try {
@@ -469,6 +524,7 @@ async function ensureProtectionOrders(config: {
                 instrument: config.instrument,
                 stopLoss: config.stopLoss,
                 takeProfit: config.takeProfit,
+                identity: protectionContext.identity,
             })
             const verification = await verifyProtectionFromProviderTruth({
                 venue: config.venue,
@@ -477,7 +533,7 @@ async function ensureProtectionOrders(config: {
             })
             if (!verification.ok) {
                 lastError = verification.reason
-                lastCategory = classifyProtectionAttachmentFailure(verification.reason ?? "unknown")
+                lastCategory = classifyOKXProtectionFailure(verification.reason ?? "unknown")
                 if (attempt < 2) {
                     await delay((attempt + 1) * 500)
                     continue
@@ -495,7 +551,7 @@ async function ensureProtectionOrders(config: {
             }
         } catch (error) {
             lastError = error instanceof Error ? error.message : String(error)
-            lastCategory = classifyProtectionAttachmentFailure(lastError)
+            lastCategory = classifyOKXProtectionFailure(lastError)
             const shouldRetry = lastCategory === "position_not_found_yet"
 
             if (!shouldRetry || attempt === 2) {
@@ -506,13 +562,94 @@ async function ensureProtectionOrders(config: {
         }
     }
 
-    const faultCategory = lastCategory ?? classifyProtectionAttachmentFailure(lastError ?? "unknown")
-    const faultMessage = lastError ?? "Failed to update protection orders"
+    const fault = await flattenOKXPositionAfterProtectionFailure({
+        pipeline: config.pipeline,
+        instrument: config.instrument,
+        protectionError: lastError ?? "Failed to update protection orders",
+        category: lastCategory,
+        flattenReason: "Protection attachment failed; flattening to fail closed",
+        callbacks: config.callbacks,
+        providerPayload: {
+            phase: "updateProtectionOrders",
+            intendedStopLoss: config.stopLoss,
+            intendedTakeProfit: config.takeProfit,
+            updateError: lastError,
+        },
+        canonicalOrderId: protectionContext.identity.canonicalOrderId,
+        providerClientOrderId: protectionContext.identity.providerClientOrderId,
+        providerOrderAliases: protectionContext.identity.providerOrderAliases,
+        submitAttemptId: protectionContext.identity.submitAttemptId,
+        submitAttemptSequence: protectionContext.identity.submitAttemptSequence,
+        venue: "okx-swap",
+    })
+
+    return {
+        cancelledOrderIds: [],
+        createdOrderIds: [],
+        category: fault.category,
+        flattened: fault.flattened,
+        error: fault.error,
+    }
+}
+
+async function createOKXProtectionOperationContext(config: {
+    pipeline: Pick<ExecutionPipeline, "createExecutionOperationContext">
+    instrument: string
+    side: "buy" | "sell"
+    quantity: number
+    stopLoss: number
+    takeProfit: number
+}): Promise<SubmitOrderContext> {
+    const protectionIntent: OrderIntent = {
+        instrument: config.instrument,
+        side: config.side === "buy" ? "sell" : "buy",
+        quantity: config.quantity,
+        orderType: "stop_limit",
+        stopPrice: config.stopLoss,
+        limitPrice: config.takeProfit,
+        timeInForce: "gtc",
+        metadata: {
+            action: "modify",
+            protectionUpdate: true,
+            stopLoss: config.stopLoss,
+            takeProfit: config.takeProfit,
+        },
+    }
+
+    return await config.pipeline.createExecutionOperationContext(
+        protectionIntent,
+        "modify"
+    )
+}
+
+export async function flattenOKXPositionAfterProtectionFailure(config: {
+    pipeline: Pick<ExecutionPipeline, "closePosition">
+    instrument: string
+    protectionError: string
+    category?: OKXProtectionFailureCategory
+    flattenReason: string
+    callbacks?: OKXExecutionSafetyCallbacks
+    providerPayload?: Record<string, unknown>
+    canonicalOrderId?: string
+    providerOrderId?: string
+    providerClientOrderId?: string
+    providerOrderAliases?: string[]
+    submitAttemptId?: string
+    submitAttemptSequence?: number
+    venue?: string
+    recoveryProbeEvidence?: Record<string, unknown>
+}): Promise<{
+    category: OKXProtectionFailureCategory
+    flattened: boolean
+    error: string
+}> {
+    const faultCategory = config.category ?? classifyOKXProtectionFailure(config.protectionError)
+    const faultMessage = config.protectionError
 
     try {
         const flattenResult = await config.pipeline.closePosition(
             config.instrument,
-            "Protection attachment failed; flattening to fail closed",
+            config.flattenReason,
             {
                 metadata: {
                     forcedExit: true,
@@ -521,8 +658,8 @@ async function ensureProtectionOrders(config: {
                 },
             }
         )
-        if (flattenResult.result.status !== "filled" && flattenResult.result.status !== "partially_filled") {
-            throw new Error(flattenResult.result.error ?? `Unexpected flatten status: ${flattenResult.result.status}`)
+        if (flattenResult.result.status !== "filled") {
+            throw new Error(flattenResult.result.error ?? `Flatten did not prove flat position: ${flattenResult.result.status}`)
         }
     } catch (flattenError) {
         const flattenMessage = flattenError instanceof Error ? flattenError.message : String(flattenError)
@@ -532,14 +669,21 @@ async function ensureProtectionOrders(config: {
             category: faultCategory,
             message: combinedMessage,
             providerPayload: JSON.stringify({
+                ...config.providerPayload,
                 protectionError: faultMessage,
                 flattenError: flattenMessage,
             }),
+            canonicalOrderId: config.canonicalOrderId,
+            providerOrderId: config.providerOrderId,
+            providerClientOrderId: config.providerClientOrderId,
+            providerOrderAliases: config.providerOrderAliases,
+            submitAttemptId: config.submitAttemptId,
+            submitAttemptSequence: config.submitAttemptSequence,
+            venue: config.venue,
+            recoveryProbeEvidence: config.recoveryProbeEvidence,
         })
 
         return {
-            cancelledOrderIds: [],
-            createdOrderIds: [],
             category: faultCategory,
             flattened: false,
             error: combinedMessage,
@@ -551,13 +695,20 @@ async function ensureProtectionOrders(config: {
         category: faultCategory,
         message: faultMessage,
         providerPayload: JSON.stringify({
+            ...config.providerPayload,
             protectionError: faultMessage,
         }),
+        canonicalOrderId: config.canonicalOrderId,
+        providerOrderId: config.providerOrderId,
+        providerClientOrderId: config.providerClientOrderId,
+        providerOrderAliases: config.providerOrderAliases,
+        submitAttemptId: config.submitAttemptId,
+        submitAttemptSequence: config.submitAttemptSequence,
+        venue: config.venue,
+        recoveryProbeEvidence: config.recoveryProbeEvidence,
     })
 
     return {
-        cancelledOrderIds: [],
-        createdOrderIds: [],
         category: faultCategory,
         flattened: true,
         error: `${faultMessage}. Position was flattened to fail closed.`,

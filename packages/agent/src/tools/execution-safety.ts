@@ -6,6 +6,14 @@ export interface ExecutionSafetyToolCallbacks {
         category: ExecutionSafetyFaultCategory
         message: string
         providerPayload?: string
+        canonicalOrderId?: string
+        providerOrderId?: string
+        providerClientOrderId?: string
+        providerOrderAliases?: string[]
+        submitAttemptId?: string
+        submitAttemptSequence?: number
+        venue?: string
+        recoveryProbeEvidence?: Record<string, unknown>
     }) => Promise<void>
     onExecutionSafetyRecovered?: (args: {
         instrument: string

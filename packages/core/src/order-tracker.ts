@@ -20,7 +20,7 @@ import {
     type TrackedOrderHandle,
     type WaitForOrderUpdateOptions,
 } from "./orders"
-import type { VenueAdapter, TradeEventLogger, OrderLifecycleConfig, OrderStatusCallback } from "./execution-contracts"
+import type { VenueAdapter, TradeEventLogger, OrderLifecycleConfig, OrderOperationContext, OrderStatusCallback } from "./execution-contracts"
 import type { Logger } from "./logger"
 import { hasIntentChanges } from "./intent"
 
@@ -73,10 +73,6 @@ export class OrderLifecycleManager {
         action: OrderAction,
         metadata?: Record<string, unknown>
     ): Promise<TrackedOrderHandle | undefined> {
-        if (!result.orderId) {
-            return undefined
-        }
-
         const snapshot = createOrderSnapshot({
             strategyId: this.strategyId,
             runId: this.runId,
@@ -89,7 +85,7 @@ export class OrderLifecycleManager {
             metadata,
         })
         const handle: TrackedOrderHandle = {
-            orderId: snapshot.providerOrderId,
+            orderId: snapshot.orderId,
             action,
             snapshot,
         }
@@ -114,10 +110,12 @@ export class OrderLifecycleManager {
                 action,
                 instrument: snapshot.instrument,
                 providerOrderId: snapshot.providerOrderId,
+                providerClientOrderId: snapshot.providerClientOrderId,
+                commitOutcome: snapshot.commitOutcome,
             },
         })
 
-        if (!isTerminalOrderStatus(snapshot.status)) {
+        if (shouldPollSnapshot(snapshot)) {
             this.schedulePoll(snapshot.orderId)
         }
 
@@ -174,7 +172,7 @@ export class OrderLifecycleManager {
 
             const tracked: TrackedOrderState = {
                 handle: {
-                    orderId: resumedSnapshot.providerOrderId,
+                    orderId: resumedSnapshot.orderId,
                     action: resumedSnapshot.action,
                     snapshot: resumedSnapshot,
                 },
@@ -263,7 +261,7 @@ export class OrderLifecycleManager {
         this.trackedOrders.delete(tracked.handle.snapshot.orderId)
         this.logger.info("Stopped tracking order", {
             orderId: tracked.handle.snapshot.orderId,
-            providerOrderId: tracked.handle.orderId,
+            providerOrderId: tracked.handle.snapshot.providerOrderId,
         })
     }
 
@@ -300,7 +298,7 @@ export class OrderLifecycleManager {
             if (elapsed > tracked.handle.snapshot.polling.timeoutMs) {
                 const timeoutReason = "Order wait budget expired for this run; carrying active venue order forward to the next run"
                 const previousSnapshot = tracked.handle.snapshot
-                const latestVenueResult = await this.fetchOrderStatusOnTimeout(tracked.handle.orderId)
+                const latestVenueResult = await this.fetchOrderStatusOnTimeout(tracked.handle.snapshot.providerOrderId)
 
                 if (latestVenueResult && isTerminalOrderStatus(latestVenueResult.status)) {
                     await this.applyExecutionResult(tracked, latestVenueResult, "terminal", timeoutReason)
@@ -314,7 +312,7 @@ export class OrderLifecycleManager {
 
                 tracked.handle = {
                     ...tracked.handle,
-                    orderId: handoffSnapshot.providerOrderId,
+                    orderId: handoffSnapshot.orderId,
                     snapshot: handoffSnapshot,
                 }
                 await this.persistSnapshot(handoffSnapshot)
@@ -344,7 +342,12 @@ export class OrderLifecycleManager {
                 return
             }
 
-            const result = await this.venue.getOrderStatus(orderId)
+            const providerOrderId = tracked.handle.snapshot.providerOrderId
+            if (!providerOrderId) {
+                return
+            }
+
+            const result = await this.venue.getOrderStatus(providerOrderId)
             await this.applyExecutionResult(tracked, result, "status_change")
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error)
@@ -360,7 +363,7 @@ export class OrderLifecycleManager {
 
             tracked.handle = {
                 ...tracked.handle,
-                orderId: snapshot.providerOrderId,
+                orderId: snapshot.orderId,
                 snapshot,
             }
             await this.persistSnapshot(snapshot)
@@ -387,7 +390,7 @@ export class OrderLifecycleManager {
         this.onSnapshotUpdate?.(previousSnapshot, updatedSnapshot)
         tracked.handle = {
             ...tracked.handle,
-            orderId: updatedSnapshot.providerOrderId,
+            orderId: updatedSnapshot.orderId,
             snapshot: updatedSnapshot,
         }
 
@@ -437,7 +440,7 @@ export class OrderLifecycleManager {
 
         if (isTerminalOrderStatus(updatedSnapshot.status)) {
             this.stopTracking(updatedSnapshot.orderId)
-        } else {
+        } else if (shouldPollSnapshot(updatedSnapshot)) {
             this.schedulePoll(updatedSnapshot.orderId)
         }
 
@@ -455,13 +458,20 @@ export class OrderLifecycleManager {
             }
 
             await this.recordModifyAttempt(tracked.handle.snapshot.orderId, decision.changes, decision.reason)
-            const result = await this.venue.modifyOrder(tracked.handle.orderId, decision.changes)
+            const result = await this.venue.modifyOrder(
+                tracked.handle.snapshot.providerOrderId,
+                decision.changes,
+                createOrderOperationContext(tracked.handle.snapshot)
+            )
             await this.applyExecutionResult(tracked, result, "modify_attempt", decision.reason)
             return
         }
 
         await this.recordCancelAttempt(tracked.handle.snapshot.orderId, decision.reason)
-        const result = await this.venue.cancelOrder(tracked.handle.orderId)
+        const result = await this.venue.cancelOrder(
+            tracked.handle.snapshot.providerOrderId,
+            createOrderOperationContext(tracked.handle.snapshot)
+        )
         await this.applyExecutionResult(tracked, result, "cancel_attempt", decision.reason)
     }
 
@@ -510,7 +520,7 @@ export class OrderLifecycleManager {
 
         const tracked: TrackedOrderState = {
             handle: {
-                orderId: snapshot.providerOrderId,
+                orderId: snapshot.orderId,
                 action: snapshot.action,
                 snapshot,
             },
@@ -551,6 +561,16 @@ export class OrderLifecycleManager {
     }
 }
 
+function createOrderOperationContext(snapshot: OrderSnapshot): OrderOperationContext {
+    return {
+        canonicalOrderId: snapshot.orderId,
+        providerOrderId: snapshot.providerOrderId,
+        providerClientOrderId: snapshot.providerClientOrderId,
+        providerOrderAliases: snapshot.providerOrderAliases,
+        signedOrderFingerprint: snapshot.signedOrderFingerprint,
+    }
+}
+
 function buildTransitionDetails(
     previousSnapshot: OrderSnapshot,
     updatedSnapshot: OrderSnapshot,
@@ -563,10 +583,26 @@ function buildTransitionDetails(
         details.providerOrderId = updatedSnapshot.providerOrderId
     }
 
+    if (previousSnapshot.providerClientOrderId !== updatedSnapshot.providerClientOrderId) {
+        details.previousProviderClientOrderId = previousSnapshot.providerClientOrderId
+        details.providerClientOrderId = updatedSnapshot.providerClientOrderId
+    }
+
+    if (previousSnapshot.commitOutcome !== updatedSnapshot.commitOutcome) {
+        details.previousCommitOutcome = previousSnapshot.commitOutcome
+        details.commitOutcome = updatedSnapshot.commitOutcome
+    }
+
     if (result.error) {
         details.error = result.error
         details.errorDetail = result.errorDetail
     }
 
     return Object.keys(details).length > 0 ? details : undefined
+}
+
+function shouldPollSnapshot(snapshot: OrderSnapshot): boolean {
+    return !isTerminalOrderStatus(snapshot.status) &&
+        snapshot.commitOutcome !== "commit_unknown" &&
+        snapshot.providerOrderId.trim().length > 0
 }

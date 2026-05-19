@@ -70,6 +70,19 @@ function createPipelineMock() {
                 timestamp: Date.now(),
             },
         }),
+        createExecutionOperationContext: vi.fn().mockResolvedValue({
+            identity: {
+                canonicalOrderId: "vokm01protect01",
+                providerClientOrderId: "vokm01protect01",
+                providerOrderAliases: [],
+                submitAttemptId: "attempt-protect",
+                submitAttemptSequence: 1,
+                commitOutcome: "accepted",
+                venue: "okx-swap",
+                role: "modify",
+                sequence: 1,
+            },
+        }),
     }
 }
 
@@ -331,6 +344,107 @@ describe("prepareOKXOrder protection fail-closed", () => {
         }))
     })
 
+    it("passes canonical identity to standalone entry protection repair", async () => {
+        const pipeline = createPipelineMock()
+        const venue = createVenueMock()
+        const unprotectedPosition = {
+            instrument: "BTC-USDT-SWAP",
+            side: "long",
+            quantity: 1,
+            entryPrice: 100,
+            currentPrice: 100,
+            stopLoss: undefined,
+            takeProfit: undefined,
+        }
+        const protectedPosition = {
+            ...unprotectedPosition,
+            stopLoss: 95,
+            takeProfit: 110,
+        }
+        venue.getPositions
+            .mockResolvedValueOnce([unprotectedPosition])
+            .mockResolvedValueOnce([unprotectedPosition])
+            .mockResolvedValueOnce([unprotectedPosition])
+            .mockResolvedValue([protectedPosition])
+        venue.updateProtectionOrders.mockResolvedValue({
+            cancelledOrderIds: [],
+            createdOrderIds: ["algo:BTC-USDT-SWAP:repair-1"],
+        })
+
+        const result = await prepareOKXOrder(
+            {
+                instrument: "BTC-USDT-SWAP",
+                side: "buy",
+                leverage: 2,
+                orderType: "market",
+                timeInForce: "gtc",
+                stopLoss: 95,
+                takeProfit: 110,
+                reason: "test",
+            },
+            pipeline as never,
+            venue as never,
+            policy,
+            "entry"
+        )
+
+        expect(venue.updateProtectionOrders).toHaveBeenCalledWith(expect.objectContaining({
+            identity: expect.objectContaining({
+                providerClientOrderId: "vokm01protect01",
+            }),
+        }))
+        expect(result.protectionOrders).toEqual({
+            cancelledOrderIds: [],
+            createdOrderIds: ["algo:BTC-USDT-SWAP:repair-1"],
+        })
+        expect(pipeline.closePosition).not.toHaveBeenCalled()
+    })
+
+    it("flattens when initial protection provider-truth verification cannot be read", async () => {
+        const pipeline = createPipelineMock()
+        const venue = createVenueMock()
+        venue.getPositions.mockRejectedValue(new Error("provider truth read failed"))
+        const recordFault = vi.fn(async () => {})
+
+        const result = await prepareOKXOrder(
+            {
+                instrument: "BTC-USDT-SWAP",
+                side: "buy",
+                leverage: 2,
+                orderType: "market",
+                timeInForce: "gtc",
+                stopLoss: 95,
+                takeProfit: 110,
+                reason: "test",
+            },
+            pipeline as never,
+            venue as never,
+            policy,
+            "entry",
+            {
+                recordFault,
+            }
+        )
+
+        expect(venue.updateProtectionOrders).not.toHaveBeenCalled()
+        expect(result.protectionOrders?.flattened).toBe(true)
+        expect(result.protectionOrders?.error).toContain("provider truth read failed")
+        expect(pipeline.closePosition).toHaveBeenCalledWith(
+            "BTC-USDT-SWAP",
+            "Protection verification failed after entry fill; flattening to fail closed",
+            expect.objectContaining({
+                metadata: expect.objectContaining({
+                    forcedExit: true,
+                }),
+            })
+        )
+        expect(recordFault).toHaveBeenCalledWith(expect.objectContaining({
+            canonicalOrderId: "vokm01protect01",
+            providerClientOrderId: "vokm01protect01",
+            submitAttemptId: "attempt-protect",
+        }))
+    })
+
     it("records a critical fault when flatten also fails", async () => {
         const pipeline = createPipelineMock()
         pipeline.closePosition.mockRejectedValue(new Error("close position rejected"))
@@ -366,6 +480,55 @@ describe("prepareOKXOrder protection fail-closed", () => {
         expect(recordFault).toHaveBeenCalledWith(expect.objectContaining({
             category: "invalid_params",
             message: expect.stringContaining("flatten_failed"),
+        }))
+    })
+
+    it("records residual exposure when fail-closed flatten only partially fills", async () => {
+        const pipeline = createPipelineMock()
+        pipeline.closePosition.mockResolvedValue({
+            validation: {
+                allowed: true,
+            },
+            result: {
+                orderId: "close-1",
+                status: "partially_filled",
+                filledQuantity: 0.4,
+                fillPrice: 99,
+                timestamp: Date.now(),
+            },
+        })
+
+        const venue = createVenueMock()
+        venue.updateProtectionOrders.mockRejectedValue(new Error("/api/v5/trade/order-algo rejected sCode=51008"))
+
+        const recordFault = vi.fn(async () => {})
+
+        const result = await prepareOKXOrder(
+            {
+                instrument: "BTC-USDT-SWAP",
+                side: "buy",
+                leverage: 2,
+                orderType: "market",
+                timeInForce: "gtc",
+                stopLoss: 95,
+                takeProfit: 110,
+                reason: "test",
+            },
+            pipeline as never,
+            venue as never,
+            policy,
+            "entry",
+            {
+                recordFault,
+            }
+        )
+
+        expect(result.protectionOrders?.category).toBe("provider_rejected")
+        expect(result.protectionOrders?.flattened).toBe(false)
+        expect(result.protectionOrders?.error).toContain("flatten_failed=Flatten did not prove flat position: partially_filled")
+        expect(recordFault).toHaveBeenCalledWith(expect.objectContaining({
+            category: "provider_rejected",
+            message: expect.stringContaining("partially_filled"),
         }))
     })
 })

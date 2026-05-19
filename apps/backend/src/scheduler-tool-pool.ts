@@ -243,7 +243,20 @@ export function buildToolPool(config: BuildToolPoolConfig): ToolPool {
                     venue,
                     okxPolicySchema.parse(policy),
                     {
-                        onExecutionSafetyFault: async ({ instrument, category, message, providerPayload }) => {
+                        onExecutionSafetyFault: async ({
+                            instrument,
+                            category,
+                            message,
+                            providerPayload,
+                            canonicalOrderId,
+                            providerOrderId,
+                            providerClientOrderId,
+                            providerOrderAliases,
+                            submitAttemptId,
+                            submitAttemptSequence,
+                            venue,
+                            recoveryProbeEvidence,
+                        }) => {
                             await backend.recordExecutionSafetyFault({
                                 strategyId: strategyId as Id<"strategies">,
                                 app: "okx-swap",
@@ -251,6 +264,14 @@ export function buildToolPool(config: BuildToolPoolConfig): ToolPool {
                                 category,
                                 message,
                                 providerPayload,
+                                canonicalOrderId,
+                                providerOrderId,
+                                providerClientOrderId,
+                                providerOrderAliases,
+                                submitAttemptId,
+                                submitAttemptSequence,
+                                venue,
+                                recoveryProbeEvidence,
                                 blocked: true,
                             })
                             runLogger.error("Recorded execution safety fault", {
@@ -323,7 +344,20 @@ export function buildToolPool(config: BuildToolPoolConfig): ToolPool {
                 return createOKXProposeAdjustmentTool(pipeline, venue, {
                     dryRun: parsedPolicy.dryRun,
                     requireTakeProfit: parsedPolicy.requireTakeProfit,
-                    onExecutionSafetyFault: async ({ instrument, category, message, providerPayload }) => {
+                    onExecutionSafetyFault: async ({
+                        instrument,
+                        category,
+                        message,
+                        providerPayload,
+                        canonicalOrderId,
+                        providerOrderId,
+                        providerClientOrderId,
+                        providerOrderAliases,
+                        submitAttemptId,
+                        submitAttemptSequence,
+                        venue,
+                        recoveryProbeEvidence,
+                    }) => {
                         await backend.recordExecutionSafetyFault({
                             strategyId: strategyId as Id<"strategies">,
                             app: "okx-swap",
@@ -331,6 +365,14 @@ export function buildToolPool(config: BuildToolPoolConfig): ToolPool {
                             category,
                             message,
                             providerPayload,
+                            canonicalOrderId,
+                            providerOrderId,
+                            providerClientOrderId,
+                            providerOrderAliases,
+                            submitAttemptId,
+                            submitAttemptSequence,
+                            venue,
+                            recoveryProbeEvidence,
                             blocked: true,
                         })
                     },

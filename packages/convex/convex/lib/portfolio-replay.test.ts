@@ -1,0 +1,684 @@
+import { describe, expect, it } from "vitest"
+import { resolveAlpacaCloseGroupsFromPositions } from "@valiq-trading/alpaca-options"
+import { getClaimInstrumentsForOrder } from "./instrumentClaims"
+import { reconcileProviderPortfolio } from "./mutations/portfolio"
+import { resolveExecutionSafetyFaultsFromProviderTruth } from "./mutations/portfolioRows"
+import { getPortfolioPositions } from "./queries/portfolio"
+
+type Row = {
+    _id: string
+    [key: string]: unknown
+}
+
+type RegisteredFunctionForTest = {
+    _handler: (ctx: never, args: never) => Promise<unknown>
+}
+
+class FakeDb {
+    rows: Record<string, Row[]> = {}
+    private nextId = 1
+
+    constructor(seed: Record<string, Array<Record<string, unknown>>>) {
+        for (const [table, rows] of Object.entries(seed)) {
+            this.rows[table] = rows.map((row) => ({
+                _id: String(row._id ?? `${table}-${this.nextId++}`),
+                ...row,
+            }))
+        }
+    }
+
+    query(table: string) {
+        return new FakeQuery(this.rows[table] ?? [])
+    }
+
+    async insert(table: string, row: Record<string, unknown>) {
+        const inserted = {
+            _id: `${table}-${this.nextId++}`,
+            _creationTime: Date.now(),
+            ...row,
+        }
+        const rows = this.rows[table] ?? []
+        rows.push(inserted)
+        this.rows[table] = rows
+        return inserted._id
+    }
+
+    async patch(id: string, patch: Record<string, unknown>) {
+        for (const rows of Object.values(this.rows)) {
+            const row = rows.find((entry) => entry._id === id)
+            if (row) {
+                Object.assign(row, patch)
+                return
+            }
+        }
+    }
+
+    async delete(id: string) {
+        for (const rows of Object.values(this.rows)) {
+            const index = rows.findIndex((entry) => entry._id === id)
+            if (index >= 0) {
+                rows.splice(index, 1)
+                return
+            }
+        }
+    }
+
+    async get(id: string) {
+        for (const rows of Object.values(this.rows)) {
+            const row = rows.find((entry) => entry._id === id)
+            if (row) {
+                return row
+            }
+        }
+
+        return null
+    }
+}
+
+class FakeQuery {
+    private filters: Array<{ field: string; value: unknown }> = []
+    private orderDirection: "asc" | "desc" = "asc"
+
+    constructor(
+        private readonly rows: Row[]
+    ) {}
+
+    withIndex(_name: string, filter?: (q: { eq: (field: string, value: unknown) => unknown }) => unknown) {
+        const queryFilter: { eq: (field: string, value: unknown) => unknown } = {
+            eq: (field, value) => {
+                this.filters.push({ field, value })
+                return queryFilter
+            },
+        }
+        filter?.(queryFilter)
+        return this
+    }
+
+    order(direction: "asc" | "desc") {
+        this.orderDirection = direction
+        return this
+    }
+
+    async collect() {
+        return this.applyFilters()
+    }
+
+    async first() {
+        return this.applyFilters()[0] ?? null
+    }
+
+    async take(limit: number) {
+        return this.applyFilters().slice(0, limit)
+    }
+
+    private applyFilters() {
+        const filtered = this.rows.filter((row) =>
+            this.filters.every((filter) => row[filter.field] === filter.value)
+        )
+
+        if (this.orderDirection === "desc") {
+            return [...filtered].reverse()
+        }
+
+        return filtered
+    }
+}
+
+describe("Convex Alpaca SPY replay", () => {
+    it("keeps Gemini call vertical and GPT put vertical separate through provider reconciliation", async () => {
+        process.env.BACKEND_SERVICE_TOKEN = "test-token"
+        const gemini = "strategy-gemini"
+        const gpt = "strategy-gpt"
+        const callVertical = "VS:BEAR_CALL_CREDIT:SPY:2026-05-01:SPY260501C00720000|SPY260501C00721000"
+        const putVertical = "VS:BULL_PUT_CREDIT:SPY:2026-05-01:SPY260501P00694000|SPY260501P00695000"
+        const db = new FakeDb({
+            strategies: [
+                {
+                    _id: gemini,
+                    app: "alpaca-options",
+                    name: "Gemini SPY calls",
+                    policy: { dryRun: false },
+                },
+                {
+                    _id: gpt,
+                    app: "alpaca-options",
+                    name: "GPT SPY puts",
+                    policy: { dryRun: false },
+                },
+            ],
+            instrument_claims: [
+                ...buildClaims(gemini, callVertical, [
+                    { instrument: "SPY260501C00720000", side: "sell_to_open" },
+                    { instrument: "SPY260501C00721000", side: "buy_to_open" },
+                ]),
+                ...buildClaims(gpt, putVertical, [
+                    { instrument: "SPY260501P00694000", side: "buy_to_open" },
+                    { instrument: "SPY260501P00695000", side: "sell_to_open" },
+                ]),
+            ],
+            orders: [],
+            provider_positions: [],
+            provider_working_orders: [],
+            provider_sync_state: [],
+            position_syncs: [],
+            positions: [],
+            execution_safety_faults: [],
+            account_snapshots: [],
+            control_plane_metrics: [],
+            alerts: [],
+        })
+        const ctx = { db } as never
+
+        await callRegistered(reconcileProviderPortfolio, ctx, {
+            serviceToken: "test-token",
+            app: "alpaca-options",
+            venue: "alpaca",
+            source: "periodic_sync",
+            accountState: {
+                balance: 100000,
+                equity: 100000,
+                buyingPower: 100000,
+                marginUsed: 0,
+                marginAvailable: 100000,
+                openPnl: 0,
+                dayPnl: 0,
+            },
+            positions: [
+                createProviderLeg("SPY260501C00720000", "short", 0.3),
+                createProviderLeg("SPY260501C00721000", "long", 0.12),
+                createProviderLeg("SPY260501P00694000", "long", 0.19),
+                createProviderLeg("SPY260501P00695000", "short", 0.44),
+            ],
+            workingOrders: [],
+        })
+
+        const providerPositions = db.rows.provider_positions ?? []
+        expect(providerPositions).toHaveLength(4)
+        expect(providerPositions.find((row) => row.instrument === "SPY260501C00720000")?.strategyId).toBe(gemini)
+        expect(providerPositions.find((row) => row.instrument === "SPY260501C00721000")?.strategyId).toBe(gemini)
+        expect(providerPositions.find((row) => row.instrument === "SPY260501P00694000")?.strategyId).toBe(gpt)
+        expect(providerPositions.find((row) => row.instrument === "SPY260501P00695000")?.strategyId).toBe(gpt)
+        expect(providerPositions.some((row) => String(row.instrument).startsWith("IC:"))).toBe(false)
+        expect(providerPositions.some((row) => row.ownershipStatus !== "owned")).toBe(false)
+        expect(readMetadata(providerPositions.find((row) => row.instrument === "SPY260501C00720000")?.metadata)).toMatchObject({
+            alpacaClaimInstrument: callVertical,
+        })
+        expect(readMetadata(providerPositions.find((row) => row.instrument === "SPY260501P00695000")?.metadata)).toMatchObject({
+            alpacaClaimInstrument: putVertical,
+        })
+
+        const rows = await callRegistered(getPortfolioPositions, ctx, {
+            serviceToken: "test-token",
+            app: "alpaca-options",
+        }) as Array<{ strategyName?: string; instrument: string; side: "long" | "short"; quantity: number; entryPrice: number; metadata?: Record<string, unknown> }>
+        expect(rows).toHaveLength(4)
+        expect(rows.map((row: { strategyName?: string }) => row.strategyName).sort()).toEqual([
+            "GPT SPY puts",
+            "GPT SPY puts",
+            "Gemini SPY calls",
+            "Gemini SPY calls",
+        ])
+        expect(rows.find((row) => row.instrument === "SPY260501C00720000")?.metadata).toMatchObject({
+            alpacaClaimInstrument: callVertical,
+        })
+        expect(rows.find((row) => row.instrument === "SPY260501P00695000")?.metadata).toMatchObject({
+            alpacaClaimInstrument: putVertical,
+        })
+
+        const grouped = resolveAlpacaCloseGroupsFromPositions(rows)
+        expect(grouped.map((position) => position.instrument).sort()).toEqual([
+            callVertical,
+            putVertical,
+        ])
+    })
+
+    it("does not create executable Alpaca close metadata from unclaimed raw-leg geometry", async () => {
+        process.env.BACKEND_SERVICE_TOKEN = "test-token"
+        const strategyId = "strategy-unclaimed"
+        const db = new FakeDb({
+            strategies: [{
+                _id: strategyId,
+                app: "alpaca-options",
+                name: "Unclaimed SPY legs",
+                policy: { dryRun: false },
+            }],
+            instrument_claims: [],
+            orders: [],
+            provider_positions: [],
+            provider_working_orders: [],
+            provider_sync_state: [],
+            position_syncs: [],
+            positions: [],
+            execution_safety_faults: [],
+            account_snapshots: [],
+            control_plane_metrics: [],
+            alerts: [],
+        })
+        const ctx = { db } as never
+
+        await callRegistered(reconcileProviderPortfolio, ctx, {
+            serviceToken: "test-token",
+            app: "alpaca-options",
+            venue: "alpaca",
+            source: "periodic_sync",
+            accountState: {
+                balance: 100000,
+                equity: 100000,
+                buyingPower: 100000,
+                marginUsed: 0,
+                marginAvailable: 100000,
+                openPnl: 0,
+                dayPnl: 0,
+            },
+            positions: [
+                createProviderLeg("SPY260501P00694000", "long", 0.19),
+                createProviderLeg("SPY260501P00695000", "short", 0.44),
+            ],
+            workingOrders: [],
+        })
+
+        const rows = await callRegistered(getPortfolioPositions, ctx, {
+            serviceToken: "test-token",
+            app: "alpaca-options",
+        }) as Array<{ instrument: string; metadata?: Record<string, unknown> }>
+        expect(rows).toHaveLength(2)
+        expect(rows.some((row) => row.metadata?.alpacaClaimInstrument)).toBe(false)
+
+        const grouped = resolveAlpacaCloseGroupsFromPositions(rows as Array<{
+            instrument: string
+            side: "long" | "short"
+            quantity: number
+            entryPrice: number
+            metadata?: Record<string, unknown>
+        }>)
+        expect(grouped.map((position) => position.instrument).sort()).toEqual([
+            "SPY260501P00694000",
+            "SPY260501P00695000",
+        ])
+    })
+
+    it("emits a blocked duplicate_exposure fault for provider-proven overlap", async () => {
+        process.env.BACKEND_SERVICE_TOKEN = "test-token"
+        const strategyId = "strategy-overlap"
+        const db = new FakeDb({
+            strategies: [{
+                _id: strategyId,
+                app: "mt5",
+                name: "Overlap strategy",
+                policy: {
+                    dryRun: false,
+                    allowOverlappingExposure: false,
+                    allowMultiplePendingEntryOrdersPerInstrument: false,
+                },
+            }],
+            instrument_claims: [{
+                _id: "claim-xauusd",
+                strategyId,
+                app: "mt5",
+                instrument: "XAUUSD",
+                source: "position",
+                sourceId: "XAUUSD",
+                updatedAt: Date.now(),
+            }],
+            orders: [],
+            provider_positions: [],
+            provider_working_orders: [],
+            provider_sync_state: [],
+            position_syncs: [],
+            positions: [],
+            execution_safety_faults: [],
+            account_snapshots: [],
+            control_plane_metrics: [],
+            alerts: [],
+        })
+        const ctx = { db } as never
+
+        await callRegistered(reconcileProviderPortfolio, ctx, {
+            serviceToken: "test-token",
+            app: "mt5",
+            venue: "mt5",
+            source: "periodic_sync",
+            accountState: {
+                balance: 100000,
+                equity: 100000,
+                buyingPower: 100000,
+                marginUsed: 0,
+                marginAvailable: 100000,
+                openPnl: 0,
+                dayPnl: 0,
+            },
+            positions: [{
+                instrument: "XAUUSD",
+                side: "short",
+                quantity: 0.01,
+                entryPrice: 3200,
+            }],
+            workingOrders: [{
+                orderId: "1607001000",
+                instrument: "XAUUSD",
+                status: "pending",
+                action: "entry",
+                side: "sell",
+                quantity: 0.01,
+                filledQuantity: 0,
+                remainingQuantity: 0.01,
+                submittedAt: Date.now(),
+                updatedAt: Date.now(),
+            }],
+        })
+
+        expect(db.rows.execution_safety_faults).toEqual([
+            expect.objectContaining({
+                strategyId,
+                app: "mt5",
+                instrument: "XAUUSD",
+                category: "duplicate_exposure",
+                blocked: true,
+            }),
+        ])
+        expect(db.rows.alerts?.some((alert) =>
+            String(alert.message).includes("duplicate_exposure")
+        )).toBe(true)
+    })
+
+    it("does not clear duplicate-exposure faults from recovered order docs while owned exposure remains", async () => {
+        const strategyId = "strategy-overlap"
+        const db = new FakeDb({
+            strategies: [{
+                _id: strategyId,
+                app: "mt5",
+                name: "Overlap strategy",
+                policy: {
+                    dryRun: false,
+                },
+            }],
+            orders: [{
+                _id: "order-recovered",
+                strategyId,
+                app: "mt5",
+                orderId: "vmtc01abcde23456",
+                providerClientOrderId: "vmtc01abcde23456",
+                instrument: "XAUUSD",
+                status: "pending",
+                commitOutcome: "recovered",
+            }],
+            execution_safety_faults: [{
+                _id: "fault-overlap",
+                strategyId,
+                app: "mt5",
+                instrument: "XAUUSD",
+                category: "duplicate_exposure",
+                canonicalOrderId: "vmtc01abcde23456",
+                providerClientOrderId: "vmtc01abcde23456",
+                providerOrderAliases: [],
+                message: "Provider reconciliation proved duplicate exposure: overlap on XAUUSD",
+                blocked: true,
+                occurredAt: Date.now(),
+                resolvedAt: undefined,
+                resolutionNote: undefined,
+            }],
+            alerts: [],
+        })
+        const ctx = { db } as never
+
+        await resolveExecutionSafetyFaultsFromProviderTruth(ctx, {
+            app: "mt5",
+            positions: [{
+                instrument: "XAUUSD",
+                ownershipStatus: "owned",
+            }],
+            workingOrders: [],
+            updatedAt: Date.now(),
+        } as never)
+
+        expect(db.rows.execution_safety_faults).toEqual([
+            expect.objectContaining({
+                _id: "fault-overlap",
+                blocked: true,
+                resolvedAt: undefined,
+                resolutionNote: undefined,
+            }),
+        ])
+        expect(db.rows.alerts).toEqual([])
+    })
+
+    it("does not clear duplicate-exposure faults from one matching live order while residual exposure remains", async () => {
+        const strategyId = "strategy-overlap"
+        const db = new FakeDb({
+            strategies: [{
+                _id: strategyId,
+                app: "mt5",
+                name: "Overlap strategy",
+                policy: {
+                    dryRun: false,
+                },
+            }],
+            orders: [],
+            execution_safety_faults: [{
+                _id: "fault-overlap",
+                strategyId,
+                app: "mt5",
+                instrument: "XAUUSD",
+                category: "duplicate_exposure",
+                canonicalOrderId: "vmtc01abcde23456",
+                providerClientOrderId: "vmtc01abcde23456",
+                providerOrderAliases: [],
+                message: "Provider reconciliation proved duplicate exposure: overlap on XAUUSD",
+                blocked: true,
+                occurredAt: Date.now(),
+                resolvedAt: undefined,
+                resolutionNote: undefined,
+            }],
+            alerts: [],
+        })
+        const ctx = { db } as never
+
+        await resolveExecutionSafetyFaultsFromProviderTruth(ctx, {
+            app: "mt5",
+            positions: [{
+                instrument: "XAUUSD",
+                ownershipStatus: "owned",
+            }],
+            workingOrders: [{
+                orderId: "1607003000",
+                providerOrderId: "1607003000",
+                providerClientOrderId: "vmtc01abcde23456",
+                providerOrderAliases: [],
+                signedOrderFingerprint: undefined,
+                instrument: "XAUUSD",
+                ownershipStatus: "owned",
+            }],
+            updatedAt: Date.now(),
+        } as never)
+
+        expect(db.rows.execution_safety_faults).toEqual([
+            expect.objectContaining({
+                _id: "fault-overlap",
+                blocked: true,
+                resolvedAt: undefined,
+                resolutionNote: undefined,
+            }),
+        ])
+        expect(db.rows.alerts).toEqual([])
+    })
+
+    it("clears duplicate-exposure faults when exactly one matching live order remains without residual exposure", async () => {
+        const strategyId = "strategy-overlap"
+        const db = new FakeDb({
+            strategies: [{
+                _id: strategyId,
+                app: "mt5",
+                name: "Overlap strategy",
+                policy: {
+                    dryRun: false,
+                },
+            }],
+            execution_safety_faults: [{
+                _id: "fault-overlap",
+                strategyId,
+                app: "mt5",
+                instrument: "XAUUSD",
+                category: "duplicate_exposure",
+                canonicalOrderId: "vmtc01abcde23456",
+                providerClientOrderId: "vmtc01abcde23456",
+                providerOrderAliases: [],
+                message: "Provider reconciliation proved duplicate exposure: overlap on XAUUSD",
+                blocked: true,
+                occurredAt: Date.now(),
+                resolvedAt: undefined,
+                resolutionNote: undefined,
+            }],
+            alerts: [],
+        })
+        const ctx = { db } as never
+        const updatedAt = Date.now()
+
+        await resolveExecutionSafetyFaultsFromProviderTruth(ctx, {
+            app: "mt5",
+            positions: [],
+            workingOrders: [{
+                orderId: "1607003000",
+                providerOrderId: "1607003000",
+                providerClientOrderId: "vmtc01abcde23456",
+                providerOrderAliases: [],
+                signedOrderFingerprint: undefined,
+                instrument: "XAUUSD",
+                ownershipStatus: "owned",
+            }],
+            updatedAt,
+        } as never)
+
+        expect(db.rows.execution_safety_faults).toEqual([
+            expect.objectContaining({
+                _id: "fault-overlap",
+                blocked: false,
+                resolvedAt: updatedAt,
+                resolutionNote: "Provider reconciliation proved live canonical working order 1607003000",
+            }),
+        ])
+        expect(db.rows.alerts).toEqual([
+            expect.objectContaining({
+                strategyId,
+                severity: "info",
+            }),
+        ])
+    })
+
+    it("does not clear Alpaca structure safety faults while claimed raw legs remain live", async () => {
+        process.env.BACKEND_SERVICE_TOKEN = "test-token"
+        const strategyId = "strategy-alpaca-fault"
+        const vertical = "VS:BULL_PUT_CREDIT:SPY:2026-05-01:SPY260501P00694000|SPY260501P00695000"
+        const db = new FakeDb({
+            strategies: [{
+                _id: strategyId,
+                app: "alpaca-options",
+                name: "Alpaca fault strategy",
+                policy: { dryRun: false },
+            }],
+            instrument_claims: buildClaims(strategyId, vertical, [
+                { instrument: "SPY260501P00694000", side: "buy_to_open" },
+                { instrument: "SPY260501P00695000", side: "sell_to_open" },
+            ]),
+            orders: [],
+            provider_positions: [],
+            provider_working_orders: [],
+            provider_sync_state: [],
+            position_syncs: [],
+            positions: [],
+            execution_safety_faults: [{
+                _id: "fault-vertical",
+                strategyId,
+                app: "alpaca-options",
+                instrument: vertical,
+                category: "duplicate_exposure",
+                message: "Provider reconciliation proved duplicate exposure: overlap on SPY vertical",
+                blocked: true,
+                occurredAt: Date.now(),
+                resolvedAt: undefined,
+                resolutionNote: undefined,
+            }],
+            account_snapshots: [],
+            control_plane_metrics: [],
+            alerts: [],
+        })
+        const ctx = { db } as never
+
+        await callRegistered(reconcileProviderPortfolio, ctx, {
+            serviceToken: "test-token",
+            app: "alpaca-options",
+            venue: "alpaca",
+            source: "periodic_sync",
+            accountState: {
+                balance: 100000,
+                equity: 100000,
+                buyingPower: 100000,
+                marginUsed: 0,
+                marginAvailable: 100000,
+                openPnl: 0,
+                dayPnl: 0,
+            },
+            positions: [
+                createProviderLeg("SPY260501P00694000", "long", 0.19),
+                createProviderLeg("SPY260501P00695000", "short", 0.44),
+            ],
+            workingOrders: [],
+        })
+
+        expect(db.rows.execution_safety_faults).toEqual([
+            expect.objectContaining({
+                _id: "fault-vertical",
+                blocked: true,
+                resolvedAt: undefined,
+                resolutionNote: undefined,
+            }),
+        ])
+    })
+})
+
+function buildClaims(
+    strategyId: string,
+    instrument: string,
+    legs: Array<{ instrument: string; side: string }>
+): Row[] {
+    return getClaimInstrumentsForOrder(instrument, { legs }).map((claimInstrument) => ({
+        _id: `${strategyId}:${claimInstrument}`,
+        strategyId,
+        app: "alpaca-options",
+        instrument: claimInstrument,
+        source: "position",
+        sourceId: claimInstrument,
+        updatedAt: Date.now(),
+    }))
+}
+
+function createProviderLeg(
+    instrument: string,
+    side: "long" | "short",
+    entryPrice: number
+) {
+    return {
+        instrument,
+        side,
+        quantity: 1,
+        entryPrice,
+        currentPrice: entryPrice,
+    }
+}
+
+function readMetadata(metadata: unknown): Record<string, unknown> | undefined {
+    if (typeof metadata === "string") {
+        return JSON.parse(metadata) as Record<string, unknown>
+    }
+
+    return metadata && typeof metadata === "object" && !Array.isArray(metadata)
+        ? metadata as Record<string, unknown>
+        : undefined
+}
+
+async function callRegistered(
+    registered: unknown,
+    ctx: never,
+    args: Record<string, unknown>
+): Promise<unknown> {
+    return await (registered as RegisteredFunctionForTest)._handler(ctx, args as never)
+}

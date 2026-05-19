@@ -17,7 +17,8 @@
         "strategies:reset": "bun scripts/strategies-reset.ts",
         "strategies:force-reset": "bun scripts/strategies-force-reset.ts",
         "strategies:reset-import": "bun scripts/reset-and-import-strategies.ts",
-        "positions:unowned": "bun scripts/positions-unowned.ts"
+        "positions:unowned": "bun scripts/positions-unowned.ts",
+        "provider:identity-preflight": "bun scripts/provider-identity-preflight.ts"
     },
     "dependencies": {
         "@valiq-trading/core": "workspace:*",

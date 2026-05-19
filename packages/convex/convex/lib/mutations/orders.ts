@@ -2,7 +2,7 @@ import { mutation } from "../../_generated/server"
 import type { DatabaseWriter } from "../../_generated/server"
 import type { Doc, Id } from "../../_generated/dataModel"
 import { v } from "convex/values"
-import { DEFAULT_STALE_RUN_TIMEOUT_MS } from "@valiq-trading/core"
+import { DEFAULT_STALE_RUN_TIMEOUT_MS, type ExecutionCommitOutcome } from "@valiq-trading/core"
 import { requireServiceToken } from "../authGuards"
 import { getClaimInstrumentsForOrder, reconcileOrderInstrumentClaim } from "../instrumentClaims"
 import { incrementControlPlaneMetric } from "../controlPlaneMetrics"
@@ -14,6 +14,7 @@ import {
     runSystemContextDigestV,
     venueAppV,
 } from "../validators"
+import { findOrderRowByIdentity } from "../orderIdentityLookup"
 
 export const createRun = mutation({
     args: {
@@ -307,8 +308,15 @@ export const logOrderTransition = mutation({
 
 type UpsertOrderArgs = {
     orderId: string
+    canonicalOrderId: string
     providerOrderId: string
+    providerClientOrderId?: string
     providerOrderAliases: string[]
+    submitAttemptId?: string
+    submitAttemptSequence?: number
+    commitOutcome: ExecutionCommitOutcome
+    signedOrderFingerprint?: string
+    signedOrderMetadata?: unknown
     runId: Id<"strategy_runs">
     strategyId: Id<"strategies">
     venue: string
@@ -348,11 +356,18 @@ export async function upsertOrderRow(
         throw new Error(`Strategy not found: ${args.strategyId}`)
     }
 
-    const existing = await findOrderRow(ctx.db, args.orderId)
+    const existing = await findOrderRowByIdentity(ctx.db, args.orderId)
     const payload = {
         orderId: args.orderId,
+        canonicalOrderId: args.canonicalOrderId,
         providerOrderId: args.providerOrderId,
+        providerClientOrderId: args.providerClientOrderId,
         providerOrderAliases: mergeOrderAliases(existing, args),
+        submitAttemptId: args.submitAttemptId,
+        submitAttemptSequence: args.submitAttemptSequence,
+        commitOutcome: args.commitOutcome,
+        signedOrderFingerprint: args.signedOrderFingerprint,
+        signedOrderMetadata: args.signedOrderMetadata,
         runId: args.runId,
         strategyId: args.strategyId,
         app: strategy.app,
@@ -405,7 +420,7 @@ export async function appendOrderTransition(
     ctx: { db: DatabaseWriter },
     args: OrderTransitionInsertArgs
 ): Promise<number> {
-    const order = await findOrderRow(ctx.db, args.orderId)
+    const order = await findOrderRowByIdentity(ctx.db, args.orderId)
     if (!order) {
         throw new Error(`Cannot append transition for unknown order ${args.orderId}`)
     }
@@ -429,28 +444,9 @@ export async function appendOrderTransition(
     return sequence
 }
 
-async function findOrderRow(
-    db: DatabaseWriter,
-    orderId: string
-): Promise<Doc<"orders"> | null> {
-    const byCanonicalId = await db
-        .query("orders")
-        .withIndex("by_order_id", (q) => q.eq("orderId", orderId))
-        .first()
-
-    if (byCanonicalId) {
-        return byCanonicalId
-    }
-
-    return await db
-        .query("orders")
-        .withIndex("by_provider_order_id", (q) => q.eq("providerOrderId", orderId))
-        .first()
-}
-
 function mergeOrderAliases(
     existing: Doc<"orders"> | null,
-    args: Pick<UpsertOrderArgs, "orderId" | "providerOrderId" | "providerOrderAliases">
+    args: Pick<UpsertOrderArgs, "orderId" | "providerOrderId" | "providerClientOrderId" | "providerOrderAliases">
 ): string[] {
     const aliases = new Set<string>([
         ...(existing?.providerOrderAliases ?? []),
@@ -468,6 +464,9 @@ function mergeOrderAliases(
 
     aliases.delete(args.orderId)
     aliases.delete(args.providerOrderId)
+    if (args.providerClientOrderId) {
+        aliases.delete(args.providerClientOrderId)
+    }
 
     return Array.from(aliases).sort((left, right) => left.localeCompare(right))
 }

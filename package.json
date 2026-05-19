@@ -21,6 +21,7 @@
         "strategies:force-reset": "cd apps/backend && bun run strategies:force-reset",
         "strategies:reset-import": "cd apps/backend && bun run strategies:reset-import",
         "positions:unowned": "cd apps/backend && bun run positions:unowned",
+        "provider:identity-preflight": "cd apps/backend && bun run provider:identity-preflight",
         "build": "turbo build",
         "lint": "turbo lint",
         "clean": "bun run clean:modules && bun run clean:dist",

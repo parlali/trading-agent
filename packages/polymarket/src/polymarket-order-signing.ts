@@ -1,4 +1,5 @@
-import { randomBytes } from "crypto"
+import { createHash } from "crypto"
+import { stableStringify } from "@valiq-trading/core"
 
 export const CTF_EXCHANGE = "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E" as const
 export const NEG_RISK_CTF_EXCHANGE = "0xC5d563A36AE78145C45a50134d48A1215220f80a" as const
@@ -46,9 +47,22 @@ export function roundToTickSize(price: number, tickSize: string): number {
     return Math.round(price / tick) * tick
 }
 
-export function generateSalt(): bigint {
-    const bytes = randomBytes(32)
-    return BigInt("0x" + bytes.toString("hex"))
+export function derivePolymarketSalt(
+    canonicalOrderId: string,
+    payload: unknown
+): bigint {
+    const hash = createHash("sha256")
+        .update(canonicalOrderId)
+        .update("|")
+        .update(stableStringify(payload))
+        .digest("hex")
+    return BigInt("0x" + hash)
+}
+
+export function fingerprintPolymarketSignedOrder(order: unknown): string {
+    return createHash("sha256")
+        .update(stableStringify(order))
+        .digest("hex")
 }
 
 function toRawAmount(amount: number): bigint {

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest"
 import type { AlpacaPositionResponse } from "./alpaca-client.ts"
+import { buildAlpacaStructureInstrumentFromLegs } from "./risk-rules.ts"
 import { AlpacaOptionsVenueAdapter } from "./venue-adapter.ts"
 
 function createClientMock() {
@@ -245,36 +246,26 @@ describe("AlpacaOptionsVenueAdapter", () => {
         expect(orders[0]?.status).toBe("pending")
     })
 
-    it("values grouped iron condors using net credit/debit economics", async () => {
+    it("does not synthesize account-wide iron condors from raw provider legs", async () => {
         const client = createClientMock()
         client.getPositions.mockResolvedValueOnce(createIronCondorPositionsWithPrices())
 
         const adapter = new AlpacaOptionsVenueAdapter(client as never)
         const positions = await adapter.getPositions()
 
-        expect(positions).toHaveLength(1)
-        expect(positions[0]?.entryPrice).toBe(2.1)
-        expect(positions[0]?.currentPrice).toBe(1.5)
+        expect(positions).toHaveLength(4)
+        expect(positions.some((position) => position.instrument.startsWith("IC:"))).toBe(false)
     })
 
-    it("groups one-sided vertical spreads with canonical structure metadata and pricing", async () => {
+    it("keeps one-sided vertical provider legs raw until an owned claim asks for a close", async () => {
         const client = createClientMock()
         client.getPositions.mockResolvedValueOnce(createBullPutVerticalPositions())
 
         const adapter = new AlpacaOptionsVenueAdapter(client as never)
         const positions = await adapter.getPositions()
 
-        expect(positions).toHaveLength(1)
-        expect(positions[0]?.instrument.startsWith("VS:BULL_PUT_CREDIT:SPY:2026-04-24:")).toBe(true)
-        expect(positions[0]?.entryPrice).toBe(0.9)
-        expect(positions[0]?.currentPrice).toBe(0.6)
-        expect(positions[0]?.unrealizedPnl).toBe(0.3)
-        expect(positions[0]?.metadata).toMatchObject({
-            structureType: "credit_vertical",
-            verticalSpreadType: "bull_put_credit",
-            underlying: "SPY",
-            expiration: "2026-04-24",
-        })
+        expect(positions).toHaveLength(2)
+        expect(positions.some((position) => position.instrument.startsWith("VS:"))).toBe(false)
     })
 
     it("keeps invalid non-credit spread geometry as residual legs instead of grouping it", async () => {
@@ -291,12 +282,21 @@ describe("AlpacaOptionsVenueAdapter", () => {
 
     it("submits close orders as 4-leg structures", async () => {
         const client = createClientMock()
+        client.getPositions.mockResolvedValueOnce(createIronCondorPositionsWithPrices())
         const adapter = new AlpacaOptionsVenueAdapter(client as never)
-        const positions = await adapter.getPositions()
-        const target = positions[0]
+        const target = buildAlpacaStructureInstrumentFromLegs({
+            structureType: "iron_condor",
+            underlying: "SPY",
+            expiration: "2026-04-24",
+            legs: [
+                { instrument: "SPY260424C00705000" },
+                { instrument: "SPY260424C00706000" },
+                { instrument: "SPY260424P00650000" },
+                { instrument: "SPY260424P00649000" },
+            ],
+        })
 
-        expect(target).toBeDefined()
-        await adapter.closePosition(target?.instrument ?? "")
+        await adapter.closePosition(target)
 
         expect(client.createOrder).toHaveBeenCalledTimes(1)
         const payload = client.createOrder.mock.calls[0]?.[0]
@@ -312,13 +312,19 @@ describe("AlpacaOptionsVenueAdapter", () => {
     it("submits close orders as 2-leg structures for one-sided vertical spreads", async () => {
         const client = createClientMock()
         client.getPositions.mockResolvedValueOnce(createBullPutVerticalPositions())
-        client.getPositions.mockResolvedValueOnce(createBullPutVerticalPositions())
         const adapter = new AlpacaOptionsVenueAdapter(client as never)
-        const positions = await adapter.getPositions()
-        const target = positions[0]
+        const target = buildAlpacaStructureInstrumentFromLegs({
+            structureType: "credit_vertical",
+            verticalSpreadType: "bull_put_credit",
+            underlying: "SPY",
+            expiration: "2026-04-24",
+            legs: [
+                { instrument: "SPY260424P00650000" },
+                { instrument: "SPY260424P00649000" },
+            ],
+        })
 
-        expect(target).toBeDefined()
-        await adapter.closePosition(target?.instrument ?? "")
+        await adapter.closePosition(target)
 
         expect(client.createOrder).toHaveBeenCalledTimes(1)
         const payload = client.createOrder.mock.calls[0]?.[0]
@@ -335,12 +341,145 @@ describe("AlpacaOptionsVenueAdapter", () => {
         })
     })
 
+    it("closes raw provider legs through exact claimed vertical evidence", async () => {
+        const client = createClientMock()
+        client.getPositions.mockResolvedValueOnce(createBullPutVerticalPositions())
+        const adapter = new AlpacaOptionsVenueAdapter(client as never)
+        const claimInstrument = buildAlpacaStructureInstrumentFromLegs({
+            structureType: "credit_vertical",
+            verticalSpreadType: "bull_put_credit",
+            underlying: "SPY",
+            expiration: "2026-04-24",
+            legs: [
+                { instrument: "SPY260424P00650000" },
+                { instrument: "SPY260424P00649000" },
+            ],
+        })
+
+        await adapter.closeProviderPosition({
+            instrument: "SPY260424P00650000",
+            providerPositionId: "SPY260424P00650000:short",
+            side: "short",
+            quantity: 1,
+            entryPrice: 2.1,
+            currentPrice: 1.5,
+            metadata: {
+                alpacaClaimInstrument: claimInstrument,
+            },
+        })
+
+        const payload = client.createOrder.mock.calls[0]?.[0]
+        expect(payload?.instrument).toBe(claimInstrument)
+        expect(payload?.legs).toHaveLength(2)
+        expect(payload?.orderType).toBe("limit")
+    })
+
+    it("fails closed when exact claimed vertical legs have reversed provider sides", async () => {
+        const client = createClientMock()
+        client.getPositions.mockResolvedValueOnce([
+            createPosition("SPY260424P00650000", "long", "1", "2.10", "1.50", "0.60"),
+            createPosition("SPY260424P00649000", "short", "1", "1.20", "0.90", "-0.30"),
+        ])
+        const adapter = new AlpacaOptionsVenueAdapter(client as never)
+        const claimInstrument = buildAlpacaStructureInstrumentFromLegs({
+            structureType: "credit_vertical",
+            verticalSpreadType: "bull_put_credit",
+            underlying: "SPY",
+            expiration: "2026-04-24",
+            legs: [
+                { instrument: "SPY260424P00650000" },
+                { instrument: "SPY260424P00649000" },
+            ],
+        })
+
+        await expect(adapter.closeProviderPosition({
+            instrument: "SPY260424P00650000",
+            providerPositionId: "SPY260424P00650000:short",
+            side: "short",
+            quantity: 1,
+            entryPrice: 2.1,
+            currentPrice: 1.5,
+            metadata: {
+                alpacaClaimInstrument: claimInstrument,
+            },
+        })).rejects.toMatchObject({
+            executionError: {
+                code: "POSITION_NOT_FOUND",
+            },
+        })
+        expect(client.createOrder).not.toHaveBeenCalled()
+    })
+
+    it("fails closed when exact claimed vertical legs have mismatched quantities", async () => {
+        const client = createClientMock()
+        client.getPositions.mockResolvedValueOnce([
+            createPosition("SPY260424P00650000", "short", "2", "2.10", "1.50", "0.60"),
+            createPosition("SPY260424P00649000", "long", "1", "1.20", "0.90", "-0.30"),
+        ])
+        const adapter = new AlpacaOptionsVenueAdapter(client as never)
+        const claimInstrument = buildAlpacaStructureInstrumentFromLegs({
+            structureType: "credit_vertical",
+            verticalSpreadType: "bull_put_credit",
+            underlying: "SPY",
+            expiration: "2026-04-24",
+            legs: [
+                { instrument: "SPY260424P00650000" },
+                { instrument: "SPY260424P00649000" },
+            ],
+        })
+
+        await expect(adapter.closeProviderPosition({
+            instrument: "SPY260424P00650000",
+            providerPositionId: "SPY260424P00650000:short",
+            side: "short",
+            quantity: 1,
+            entryPrice: 2.1,
+            currentPrice: 1.5,
+            metadata: {
+                alpacaClaimInstrument: claimInstrument,
+            },
+        })).rejects.toMatchObject({
+            executionError: {
+                code: "POSITION_NOT_FOUND",
+            },
+        })
+        expect(client.createOrder).not.toHaveBeenCalled()
+    })
+
+    it("fails closed instead of sending raw no-leg provider closes to Alpaca", async () => {
+        const client = createClientMock()
+        const adapter = new AlpacaOptionsVenueAdapter(client as never)
+
+        await expect(adapter.closeProviderPosition({
+            instrument: "SPY260424P00650000",
+            side: "short",
+            quantity: 1,
+            entryPrice: 2.1,
+        })).rejects.toMatchObject({
+            executionError: {
+                code: "ALPACA_CLOSE_CLAIM_REQUIRED",
+            },
+        })
+        expect(client.createOrder).not.toHaveBeenCalled()
+    })
+
     it("fails closed instead of pricing structure close orders from entry prices", async () => {
         const client = createClientMock()
         client.getPositions.mockResolvedValueOnce(createIronCondorPositionsWithoutCurrentPrices())
         const adapter = new AlpacaOptionsVenueAdapter(client as never)
+        const target = buildAlpacaStructureInstrumentFromLegs({
+            structureType: "iron_condor",
+            underlying: "SPY",
+            expiration: "2026-04-24",
+            legs: [
+                { instrument: "SPY260424C00705000" },
+                { instrument: "SPY260424C00706000" },
+                { instrument: "SPY260424P00650000" },
+                { instrument: "SPY260424P00649000" },
+            ],
+        })
 
-        await expect(adapter.buildCloseIntent("SPY")).rejects.toMatchObject({
+        await expect(adapter.buildCloseIntent(target)).rejects.toMatchObject({
             executionError: {
                 code: "POSITION_PRICE_UNAVAILABLE",
                 retryable: false,

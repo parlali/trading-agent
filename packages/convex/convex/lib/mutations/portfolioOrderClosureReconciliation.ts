@@ -65,8 +65,15 @@ export async function reconcileProviderPositionClosures(
 
         await upsertOrderRow(ctx, {
             orderId: syntheticOrderId,
+            canonicalOrderId: syntheticOrderId,
             providerOrderId: resolveProviderCloseOrderProviderId(closure) ?? syntheticOrderId,
+            providerClientOrderId: undefined,
             providerOrderAliases: [],
+            submitAttemptId: undefined,
+            submitAttemptSequence: undefined,
+            commitOutcome: "accepted",
+            signedOrderFingerprint: undefined,
+            signedOrderMetadata: undefined,
             runId: existingOrder?.runId ?? runId,
             strategyId: position.strategyId,
             venue: args.app,

@@ -141,6 +141,62 @@ export function getProviderInstrumentClaimAliases(app: VenueApp, instrument: str
     return uniqueInstruments([instrument, ...getAlpacaStructureAliases(instrument)])
 }
 
+export function resolveAlpacaClaimedStructureForProviderLeg(args: {
+    instrument: string
+    strategyId: string
+    claims: Array<{ strategyId: unknown; instrument: string }>
+}): {
+    instrument: string
+    structureType: "iron_condor" | "credit_vertical"
+    verticalSpreadType?: "bull_put_credit" | "bear_call_credit"
+    underlying: string
+    expiration: string
+    legs: string[]
+} | undefined {
+    const normalizedInstrument = args.instrument.trim().toUpperCase()
+    const candidates = args.claims
+        .filter((claim) => String(claim.strategyId) === args.strategyId)
+        .map((claim) => ({
+            claim,
+            parsed: parseAlpacaStructureInstrument(claim.instrument.trim().toUpperCase()),
+        }))
+        .filter((entry): entry is {
+            claim: { strategyId: unknown; instrument: string }
+            parsed: {
+                prefix: "IC" | "VS"
+                underlying: string
+                expiration: string
+                legs: string[]
+            }
+        } => Boolean(entry.parsed?.legs.includes(normalizedInstrument)))
+        .sort(compareAlpacaStructureClaims)
+
+    const selected = candidates[0]
+    if (!selected) {
+        return undefined
+    }
+
+    const sameRank = candidates.filter((candidate) =>
+        getAlpacaClaimRank(candidate.parsed) === getAlpacaClaimRank(selected.parsed)
+    )
+    if (sameRank.length > 1) {
+        return undefined
+    }
+
+    return {
+        instrument: selected.claim.instrument.trim().toUpperCase(),
+        structureType: selected.parsed.prefix === "IC" ? "iron_condor" : "credit_vertical",
+        verticalSpreadType: selected.parsed.prefix === "VS"
+            ? selected.claim.instrument.includes("BULL_PUT_CREDIT")
+                ? "bull_put_credit"
+                : "bear_call_credit"
+            : undefined,
+        underlying: selected.parsed.underlying,
+        expiration: selected.parsed.expiration,
+        legs: selected.parsed.legs,
+    }
+}
+
 function getAlpacaStructureAliases(instrument: string): string[] {
     const normalized = instrument.trim().toUpperCase()
 
@@ -153,6 +209,41 @@ function getAlpacaStructureAliases(instrument: string): string[] {
     }
 
     return []
+}
+
+function compareAlpacaStructureClaims(
+    left: {
+        parsed: {
+            prefix: "IC" | "VS"
+            legs: string[]
+        }
+        claim: { instrument: string }
+    },
+    right: {
+        parsed: {
+            prefix: "IC" | "VS"
+            legs: string[]
+        }
+        claim: { instrument: string }
+    }
+): number {
+    const rankDifference = getAlpacaClaimRank(right.parsed) - getAlpacaClaimRank(left.parsed)
+    if (rankDifference !== 0) {
+        return rankDifference
+    }
+
+    return left.claim.instrument.localeCompare(right.claim.instrument)
+}
+
+function getAlpacaClaimRank(parsed: {
+    prefix: "IC" | "VS"
+    legs: string[]
+}): number {
+    if (parsed.prefix === "IC") {
+        return 2
+    }
+
+    return parsed.legs.length === 2 ? 1 : 0
 }
 
 function getAlpacaIronCondorAliases(instrument: string): string[] {

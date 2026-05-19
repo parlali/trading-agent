@@ -287,9 +287,17 @@ describe("session-flat ownership scope", () => {
                     sessionFlat: true,
                     providerPositionId: "pos-1",
                 }),
+            }),
+            expect.objectContaining({
+                identity: expect.objectContaining({
+                    canonicalOrderId: expect.stringMatching(/^vokc01/),
+                    providerClientOrderId: expect.stringMatching(/^vokc01/),
+                }),
             })
         )
-        expect(snapshots.get("order:BTC-USDT-SWAP:session-flat-close")).toMatchObject({
+        const [snapshot] = Array.from(snapshots.values())
+        expect(snapshot).toMatchObject({
+            providerOrderId: "order:BTC-USDT-SWAP:session-flat-close",
             status: "filled",
             action: "close",
             filledQuantity: 0.1,
@@ -309,6 +317,39 @@ describe("session-flat ownership scope", () => {
                     orderId: "close-rejected",
                     status: "rejected" as const,
                     filledQuantity: 0,
+                    timestamp: Date.now(),
+                },
+                validation: {
+                    allowed: true,
+                },
+            })),
+        }
+
+        await expect(executeAuditedSessionFlat({
+            pipeline,
+            logger,
+            strategyId: "strategy-session-flat",
+            app: "mt5",
+            positions: [{
+                instrument: "XAUUSD",
+                providerPositionId: "1600791764",
+                side: "long",
+                quantity: 0.01,
+                entryPrice: 3330,
+            }],
+            workingOrders: [],
+            reason: "session-flat replay",
+        })).rejects.toThrow("Audited session-flat failed")
+    })
+
+    it("fails closed when an audited session-flat close only partially fills", async () => {
+        const pipeline = {
+            cancelOrder: vi.fn(),
+            closeProviderPosition: vi.fn(async () => ({
+                result: {
+                    orderId: "close-partial",
+                    status: "partially_filled" as const,
+                    filledQuantity: 0.005,
                     timestamp: Date.now(),
                 },
                 validation: {

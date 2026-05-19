@@ -165,6 +165,14 @@ export class OKXClient {
         return requireFirst(data, "OKX order")
     }
 
+    async getOrderByClientOrderId(instId: string, clOrdId: string): Promise<OKXOrder> {
+        const data = await this.privateRequest<OKXOrder>("GET", "/api/v5/trade/order", {
+            instId,
+            clOrdId,
+        })
+        return requireFirst(data, "OKX order")
+    }
+
     async getOrdersPending(
         instType: "SWAP" = "SWAP",
         instId?: string
@@ -196,6 +204,7 @@ export class OKXClient {
     async placeOrder(params: OKXPlaceOrderParams): Promise<OKXOrderAck> {
         const request = {
             instId: params.instId,
+            clOrdId: params.clOrdId,
             tdMode: params.tdMode,
             side: params.side,
             ordType: params.ordType,
@@ -205,7 +214,7 @@ export class OKXClient {
             reduceOnly: params.reduceOnly === true ? "true" : undefined,
             attachAlgoOrds: params.attachAlgoOrds,
         }
-        const data = await this.privateRequest<OKXOrderAck>("POST", "/api/v5/trade/order", undefined, request)
+        const data = await this.privateMutationRequest<OKXOrderAck>("POST", "/api/v5/trade/order", undefined, request)
 
         const ack = requireFirst(data, "OKX place order acknowledgement")
         assertAckSuccess(ack.sCode, ack.sMsg, "OKX order placement", {
@@ -222,7 +231,7 @@ export class OKXClient {
             instId,
             ordId,
         }
-        const data = await this.privateRequest<OKXOrderAck>("POST", "/api/v5/trade/cancel-order", undefined, request)
+        const data = await this.privateMutationRequest<OKXOrderAck>("POST", "/api/v5/trade/cancel-order", undefined, request)
 
         const ack = requireFirst(data, "OKX cancel order acknowledgement")
         assertAckSuccess(ack.sCode, ack.sMsg, "OKX order cancellation", {
@@ -238,10 +247,11 @@ export class OKXClient {
         const request = {
             instId: params.instId,
             ordId: params.ordId,
+            clOrdId: params.clOrdId,
             newSz: params.newSz,
             newPx: params.newPx,
         }
-        const data = await this.privateRequest<OKXOrderAck>("POST", "/api/v5/trade/amend-order", undefined, request)
+        const data = await this.privateMutationRequest<OKXOrderAck>("POST", "/api/v5/trade/amend-order", undefined, request)
 
         const ack = requireFirst(data, "OKX amend order acknowledgement")
         assertAckSuccess(ack.sCode, ack.sMsg, "OKX order amend", {
@@ -300,7 +310,7 @@ export class OKXClient {
             mgnMode: params.mgnMode,
             posSide: params.posSide,
         }
-        const data = await this.privateRequest<{ lever: string; sCode?: string; sMsg?: string }>(
+        const data = await this.privateMutationRequest<{ lever: string; sCode?: string; sMsg?: string }>(
             "POST",
             "/api/v5/account/set-leverage",
             undefined,
@@ -321,6 +331,7 @@ export class OKXClient {
     async placeAlgoOrder(params: OKXPlaceAlgoOrderParams): Promise<OKXAlgoOrderAck> {
         const request = {
             instId: params.instId,
+            algoClOrdId: params.algoClOrdId,
             tdMode: params.tdMode,
             side: params.side,
             posSide: params.posSide,
@@ -331,7 +342,7 @@ export class OKXClient {
             tpTriggerPx: params.tpTriggerPx,
             tpOrdPx: params.tpOrdPx,
         }
-        const data = await this.privateRequest<OKXAlgoOrderAck>("POST", "/api/v5/trade/order-algo", undefined, request)
+        const data = await this.privateMutationRequest<OKXAlgoOrderAck>("POST", "/api/v5/trade/order-algo", undefined, request)
 
         const ack = requireFirst(data, "OKX algo order acknowledgement")
         assertAckSuccess(ack.sCode, ack.sMsg, "OKX algo order placement", {
@@ -346,7 +357,7 @@ export class OKXClient {
     async cancelAlgoOrders(
         orders: OKXCancelAlgoOrderParams[]
     ): Promise<OKXAlgoOrderAck[]> {
-        const data = await this.privateRequest<OKXAlgoOrderAck>(
+        const data = await this.privateMutationRequest<OKXAlgoOrderAck>(
             "POST",
             "/api/v5/trade/cancel-algos",
             undefined,
@@ -412,6 +423,21 @@ export class OKXClient {
         body?: Record<string, unknown> | Record<string, unknown>[]
     ): Promise<T[]> {
         return await this.requestWithRetry<T>({
+            method,
+            path,
+            params,
+            body,
+            authenticated: true,
+        })
+    }
+
+    private async privateMutationRequest<T>(
+        method: "POST",
+        path: string,
+        params?: Record<string, string | number | boolean | undefined>,
+        body?: Record<string, unknown> | Record<string, unknown>[]
+    ): Promise<T[]> {
+        return await this.requestOnce<T>({
             method,
             path,
             params,

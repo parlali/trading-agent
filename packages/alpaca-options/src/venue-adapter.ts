@@ -2,6 +2,7 @@ import {
     ACTIVE_ORDER_STATUSES,
     createExecutionError,
     ExecutionCostTracker,
+    getExecutionErrorDetail,
     type AccountState,
     type ExecutionCostAssessment,
     type ExecutionCostSnapshot,
@@ -10,6 +11,8 @@ import {
     type PriceVerification,
     type PriceVerifier,
     type Position,
+    type SubmitOrderContext,
+    type SubmitRecoveryResult,
     type VenueAdapter,
     type WorkingOrder,
 } from "@valiq-trading/core"
@@ -22,7 +25,6 @@ import {
     type AlpacaOptionChainParams,
     type AlpacaOptionSnapshotsResponse,
     type AlpacaClockResponse,
-    type AlpacaPositionResponse,
 } from "./alpaca-client"
 import {
     parseOptionContractSymbol,
@@ -30,18 +32,17 @@ import {
 import {
     buildGroupCloseIntent,
     computeAlpacaStructurePrices,
-    groupOptionStructures,
     isAlpacaOptionPosition,
-    mapGroupedPosition,
     mapSinglePosition,
     mapWorkingOrder,
     resolveGroupForClose,
     roundPrice,
     toNumber,
-    toResidualPosition,
 } from "./venue-adapter-mappers"
 
 export class AlpacaOptionsVenueAdapter implements VenueAdapter, PriceVerifier {
+    readonly identityCapability = "native_client_id" as const
+
     constructor(
         private readonly client: AlpacaClient,
         private readonly executionCostTracker: ExecutionCostTracker = new ExecutionCostTracker()
@@ -170,15 +171,7 @@ export class AlpacaOptionsVenueAdapter implements VenueAdapter, PriceVerifier {
     async getPositions(): Promise<Position[]> {
         const rawPositions = await this.client.getPositions()
         const optionPositions = rawPositions.filter(isAlpacaOptionPosition)
-
-        const grouped = groupOptionStructures(optionPositions)
-
-        const individual = optionPositions
-            .map((position) => toResidualPosition(position, grouped.consumedQuantities))
-            .filter((position): position is AlpacaPositionResponse => Boolean(position))
-            .map((position) => mapSinglePosition(position))
-
-        return [...grouped.groups.map(mapGroupedPosition), ...individual]
+        return optionPositions.map((position) => mapSinglePosition(position))
     }
 
     async getAccountState(): Promise<AccountState> {
@@ -210,8 +203,64 @@ export class AlpacaOptionsVenueAdapter implements VenueAdapter, PriceVerifier {
         return await this.client.getClock()
     }
 
-    async submitOrder(intent: OrderIntent): Promise<ExecutionResult> {
-        return await this.client.createOrder(intent)
+    async submitOrder(intent: OrderIntent, context?: SubmitOrderContext): Promise<ExecutionResult> {
+        if (!context?.identity.providerClientOrderId) {
+            throw createExecutionError("pre_validation", "Alpaca live submission requires canonical execution identity", {
+                code: "MISSING_CANONICAL_ORDER_ID",
+                retryable: false,
+                details: {
+                    instrument: intent.instrument,
+                },
+            })
+        }
+
+        return await this.client.createOrder(intent, context)
+    }
+
+    classifySubmitError(error: unknown): "commit_unknown" | "rejected" | undefined {
+        const detail = getExecutionErrorDetail(error)
+        return detail?.retryable ? "commit_unknown" : "rejected"
+    }
+
+    async recoverSubmittedOrder(
+        intent: OrderIntent,
+        context: SubmitOrderContext
+    ): Promise<SubmitRecoveryResult> {
+        try {
+            const byClientOrderId = await this.client.getOrderByClientOrderId(context.identity.providerClientOrderId)
+            return {
+                outcome: "accepted",
+                result: byClientOrderId,
+            }
+        } catch {
+            const recent = await this.client.getOpenOrders()
+            const matches = recent.filter((order) => order.client_order_id === context.identity.providerClientOrderId)
+            if (matches.length === 1) {
+                return {
+                    outcome: "accepted",
+                    result: {
+                        orderId: matches[0]!.id,
+                        providerOrderId: matches[0]!.id,
+                        providerClientOrderId: matches[0]!.client_order_id,
+                        status: "pending",
+                        filledQuantity: Number(matches[0]!.filled_qty ?? 0),
+                        timestamp: Date.now(),
+                    },
+                }
+            }
+
+            return {
+                outcome: matches.length === 0 ? "not_found" : "ambiguous",
+                message: matches.length === 0
+                    ? "Alpaca recovery found no order with the canonical client_order_id"
+                    : "Alpaca recovery found multiple orders with the canonical client_order_id",
+                details: {
+                    providerClientOrderId: context.identity.providerClientOrderId,
+                    instrument: intent.instrument,
+                    matchIds: matches.map((order) => order.id),
+                },
+            }
+        }
     }
 
     async cancelOrder(orderId: string): Promise<ExecutionResult> {
@@ -239,9 +288,17 @@ export class AlpacaOptionsVenueAdapter implements VenueAdapter, PriceVerifier {
         })
     }
 
-    async closePosition(instrument: string, preparedIntent?: OrderIntent): Promise<ExecutionResult> {
+    async closePosition(instrument: string, preparedIntent?: OrderIntent, context?: SubmitOrderContext): Promise<ExecutionResult> {
         const closeIntent = preparedIntent ?? await this.buildCloseIntent(instrument)
-        return await this.client.createOrder(closeIntent)
+        return await this.client.createOrder(closeIntent, context)
+    }
+
+    async closeProviderPosition(position: Position, preparedIntent?: OrderIntent, context?: SubmitOrderContext): Promise<ExecutionResult> {
+        const closeIntent = preparedIntent?.legs && preparedIntent.legs.length > 0
+            ? preparedIntent
+            : await this.buildCloseIntent(resolveProviderCloseInstrument(position))
+
+        return await this.client.createOrder(closeIntent, context)
     }
 
     async getOrderStatus(orderId: string): Promise<ExecutionResult> {
@@ -425,4 +482,36 @@ export class AlpacaOptionsVenueAdapter implements VenueAdapter, PriceVerifier {
             details,
         }
     }
+}
+
+function resolveProviderCloseInstrument(position: Position): string {
+    const claimInstrument = readMetadataString(position.metadata, "alpacaClaimInstrument") ??
+        readMetadataString(position.metadata, "claimInstrument")
+
+    if (claimInstrument) {
+        return claimInstrument
+    }
+
+    if (position.instrument.startsWith("IC:") || position.instrument.startsWith("VS:")) {
+        return position.instrument
+    }
+
+    throw createExecutionError("pre_validation", `Alpaca provider-position close requires exact claimed structure evidence for ${position.instrument}`, {
+        code: "ALPACA_CLOSE_CLAIM_REQUIRED",
+        retryable: false,
+        details: {
+            instrument: position.instrument,
+            providerPositionId: position.providerPositionId,
+        },
+    })
+}
+
+function readMetadataString(
+    metadata: Record<string, unknown> | undefined,
+    key: string
+): string | undefined {
+    const value = metadata?.[key]
+    return typeof value === "string" && value.trim()
+        ? value.trim()
+        : undefined
 }

@@ -25,6 +25,11 @@ export interface ProviderPositionInput {
 
 export interface ProviderWorkingOrderInput {
     orderId: string
+    canonicalOrderId?: string
+    providerOrderId?: string
+    providerClientOrderId?: string
+    providerOrderAliases?: string[]
+    signedOrderFingerprint?: string
     instrument: string
     status: Doc<"orders">["status"]
     quantity: number

@@ -116,6 +116,7 @@ export interface OKXOrder {
 
 export interface OKXAlgoOrder {
     algoId: string
+    algoClOrdId?: string
     instId: string
     ordType: string
     side: "buy" | "sell"
@@ -136,6 +137,7 @@ export interface OKXOrderAck {
 
 export interface OKXAlgoOrderAck {
     algoId: string
+    algoClOrdId?: string
     sCode: string
     sMsg: string
 }
@@ -172,6 +174,7 @@ export interface OKXFundingRate {
 
 export interface OKXPlaceOrderParams {
     instId: string
+    clOrdId?: string
     tdMode: OKXMarginMode
     side: "buy" | "sell"
     ordType: Exclude<OKXOrderType, "conditional">
@@ -185,6 +188,7 @@ export interface OKXPlaceOrderParams {
 export interface OKXAmendOrderParams {
     instId: string
     ordId: string
+    clOrdId?: string
     newSz?: string
     newPx?: string
 }
@@ -198,6 +202,7 @@ export interface OKXSetLeverageParams {
 
 export interface OKXPlaceAlgoOrderParams {
     instId: string
+    algoClOrdId?: string
     tdMode: OKXMarginMode
     side: "buy" | "sell"
     posSide?: OKXApiPosSide
@@ -212,6 +217,7 @@ export interface OKXPlaceAlgoOrderParams {
 export type OKXAlgoOrderType = "conditional" | "oco"
 
 export interface OKXAttachedAlgoOrderParams {
+    attachAlgoClOrdId?: string
     slTriggerPx?: string
     slOrdPx?: string
     tpTriggerPx?: string

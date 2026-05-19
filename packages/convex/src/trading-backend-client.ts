@@ -309,6 +309,11 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
                     positions: positions.map(toProviderPositionInput),
                     workingOrders: workingOrders.map((order) => ({
                         orderId: order.orderId,
+                        canonicalOrderId: order.canonicalOrderId,
+                        providerOrderId: order.providerOrderId,
+                        providerClientOrderId: order.providerClientOrderId,
+                        providerOrderAliases: order.providerOrderAliases,
+                        signedOrderFingerprint: order.signedOrderFingerprint,
                         instrument: order.instrument,
                         status: order.status,
                         quantity: order.quantity,
@@ -362,6 +367,16 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
                     category: args.category,
                     message: args.message,
                     providerPayload: args.providerPayload,
+                    canonicalOrderId: args.canonicalOrderId,
+                    providerOrderId: args.providerOrderId,
+                    providerClientOrderId: args.providerClientOrderId,
+                    providerOrderAliases: args.providerOrderAliases,
+                    submitAttemptId: args.submitAttemptId,
+                    submitAttemptSequence: args.submitAttemptSequence,
+                    runId: args.runId,
+                    venue: args.venue,
+                    signedOrderFingerprint: args.signedOrderFingerprint,
+                    recoveryProbeEvidence: args.recoveryProbeEvidence,
                     blocked: args.blocked,
                 } as never) as string
             )

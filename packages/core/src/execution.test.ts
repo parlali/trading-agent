@@ -5,11 +5,13 @@ import {
     resolveDryRunAccountState,
     type ExecutionPipelineConfig,
     type PriceVerifier,
+    type SubmitOrderContext,
     type TradeEventLogger,
     type VenueAdapter,
 } from "./execution.ts"
 import { assessExecutionCost, resolveExecutionCostMetrics } from "./execution-cost.ts"
 import { createLogger } from "./logger.ts"
+import { createExecutionError } from "./utils.ts"
 import type { AccountState, ExecutionResult, OrderIntent, Position, ValidationResult } from "./types.ts"
 
 const account: AccountState = {
@@ -108,7 +110,502 @@ function createBlockedExecutionCost() {
     )
 }
 
+describe("ExecutionPipeline commit-unknown safety", () => {
+    it("blocks same-run same-instrument entry retries after submit uncertainty", async () => {
+        const faultRecorder = vi.fn(async () => {})
+        const venue = {
+            ...createVenue(),
+            submitOrder: vi.fn(async () => {
+                throw createExecutionError("venue", "IPC recv failed", {
+                    code: "IPC_RECV_FAILED",
+                    retryable: true,
+                })
+            }),
+            recoverSubmittedOrder: vi.fn(async () => ({
+                outcome: "not_found" as const,
+                message: "No provider order found yet",
+                details: {
+                    probe: "open_orders",
+                },
+            })),
+        }
+        const pipeline = createPipeline({
+            venue,
+            venueName: "mt5",
+            executionSafetyFaultRecorder: faultRecorder,
+        })
+        const intent: OrderIntent = {
+            instrument: "XAUUSD",
+            side: "buy",
+            quantity: 1,
+            orderType: "market",
+            timeInForce: "gtc",
+        }
+
+        const first = await pipeline.executeIntent(intent, account, [])
+        const second = await pipeline.executeIntent(intent, account, [])
+
+        expect(first.result.commitOutcome).toBe("commit_unknown")
+        expect(faultRecorder).toHaveBeenCalledWith(expect.objectContaining({
+            instrument: "XAUUSD",
+            category: "commit_unknown",
+            canonicalOrderId: expect.stringMatching(/^vmte01[a-z2-7]{10}$/),
+            providerClientOrderId: expect.stringMatching(/^vmte01[a-z2-7]{10}$/),
+            submitAttemptSequence: 1,
+            commitOutcome: "commit_unknown",
+        }))
+        expect(second.validation.allowed).toBe(false)
+        expect(second.validation.reason).toContain("unresolved commit-unknown")
+        expect(venue.submitOrder).toHaveBeenCalledTimes(1)
+    })
+
+    it("captures recovery probe failures as commit-unknown instead of escaping", async () => {
+        const faultRecorder = vi.fn(async () => {})
+        const venue = {
+            ...createVenue(),
+            submitOrder: vi.fn(async () => {
+                throw createExecutionError("venue", "submit timed out after send", {
+                    code: "SUBMIT_TIMEOUT",
+                    retryable: true,
+                })
+            }),
+            recoverSubmittedOrder: vi.fn(async () => {
+                throw createExecutionError("network", "open-order read failed", {
+                    code: "RECOVERY_READ_FAILED",
+                    retryable: true,
+                })
+            }),
+        }
+        const pipeline = createPipeline({
+            venue,
+            venueName: "alpaca-options",
+            executionSafetyFaultRecorder: faultRecorder,
+        })
+
+        const result = await pipeline.executeIntent({
+            instrument: "SPY260424C00650000",
+            side: "buy",
+            quantity: 1,
+            orderType: "limit",
+            limitPrice: 1.25,
+            timeInForce: "day",
+        }, account, [])
+
+        expect(result.result.commitOutcome).toBe("commit_unknown")
+        expect(result.result.errorDetail?.message).toContain("Provider recovery probe failed closed")
+        expect(faultRecorder).toHaveBeenCalledOnce()
+    })
+
+    it("persists ambiguous recovery matches as provider aliases on the commit-unknown fault", async () => {
+        const faultRecorder = vi.fn(async () => {})
+        const venue = {
+            ...createVenue(),
+            submitOrder: vi.fn(async () => {
+                throw createExecutionError("venue", "IPC recv failed", {
+                    code: "IPC_RECV_FAILED",
+                    retryable: true,
+                })
+            }),
+            recoverSubmittedOrder: vi.fn(async () => ({
+                outcome: "ambiguous" as const,
+                message: "multiple MT5 tickets share the canonical comment",
+                matches: [
+                    {
+                        orderId: "1607001000",
+                        providerOrderId: "1607001000",
+                        providerClientOrderId: "vmte01duplicate1",
+                        status: "pending" as const,
+                        filledQuantity: 0,
+                        timestamp: Date.now(),
+                    },
+                    {
+                        orderId: "1607001001",
+                        providerOrderId: "1607001001",
+                        providerClientOrderId: "vmte01duplicate1",
+                        status: "pending" as const,
+                        filledQuantity: 0,
+                        timestamp: Date.now(),
+                    },
+                ],
+                details: {
+                    tickets: [1607001000, 1607001001],
+                },
+            })),
+        }
+        const pipeline = createPipeline({
+            venue,
+            venueName: "mt5",
+            executionSafetyFaultRecorder: faultRecorder,
+        })
+
+        const result = await pipeline.executeIntent({
+            instrument: "XAUUSD",
+            side: "buy",
+            quantity: 1,
+            orderType: "limit",
+            limitPrice: 4715.5,
+            timeInForce: "gtc",
+        }, account, [])
+
+        expect(result.result.commitOutcome).toBe("commit_unknown")
+        expect(result.result.providerOrderAliases).toEqual([
+            "1607001000",
+            "1607001001",
+        ])
+        expect(faultRecorder).toHaveBeenCalledWith(expect.objectContaining({
+            category: "duplicate_exposure",
+            providerOrderAliases: [
+                "1607001000",
+                "1607001001",
+            ],
+            recoveryProbeEvidence: expect.objectContaining({
+                outcome: "ambiguous",
+                details: {
+                    tickets: [1607001000, 1607001001],
+                },
+            }),
+        }))
+    })
+
+    it("passes canonical close identity through provider-position reset closes", async () => {
+        const closeProviderPosition = vi.fn(async (_position: Position, _intent: OrderIntent | undefined, context?: SubmitOrderContext) => ({
+            orderId: "provider-close-order",
+            providerOrderId: "provider-close-order",
+            providerClientOrderId: context?.identity.providerClientOrderId,
+            status: "pending" as const,
+            filledQuantity: 0,
+            timestamp: Date.now(),
+        }))
+        const orderPersistence = {
+            upsertOrder: vi.fn(async () => {}),
+            logOrderTransition: vi.fn(async () => 1),
+            getOrder: vi.fn(async () => null),
+            listActiveOrders: vi.fn(async () => []),
+        }
+        const pipeline = createPipeline({
+            venue: {
+                ...createVenue(),
+                closeProviderPosition,
+            },
+            venueName: "okx-swap",
+            orderPersistence,
+        })
+
+        const result = await pipeline.closeProviderPosition({
+            instrument: "BTC-USDT-SWAP",
+            providerPositionId: "pos-1",
+            side: "short",
+            quantity: 0.5,
+            entryPrice: 95000,
+            currentPrice: 94000,
+        }, "reset flatten")
+
+        const context = closeProviderPosition.mock.calls[0]?.[2]
+        expect(context?.identity.canonicalOrderId).toMatch(/^vokc01[a-z2-7]{10}$/)
+        expect(context?.identity.providerClientOrderId).toBe(context?.identity.canonicalOrderId)
+        expect(result.result.providerClientOrderId).toBe(context?.identity.canonicalOrderId)
+        expect(orderPersistence.upsertOrder).toHaveBeenCalledWith(expect.objectContaining({
+            orderId: context?.identity.canonicalOrderId,
+            action: "close",
+            providerClientOrderId: context?.identity.canonicalOrderId,
+        }))
+    })
+
+    it("cancels untracked provider working orders with a persisted canonical cancel identity", async () => {
+        const cancelOrder = vi.fn(async (orderId: string, context) => ({
+            orderId,
+            providerOrderId: orderId,
+            providerClientOrderId: context?.providerClientOrderId,
+            status: "cancelled" as const,
+            filledQuantity: 0,
+            timestamp: Date.now(),
+        }))
+        const orderPersistence = {
+            upsertOrder: vi.fn(async () => {}),
+            logOrderTransition: vi.fn(async () => 1),
+            getOrder: vi.fn(async () => null),
+            listActiveOrders: vi.fn(async () => []),
+        }
+        const pipeline = createPipeline({
+            venue: {
+                ...createVenue(),
+                cancelOrder,
+            },
+            venueName: "mt5",
+            orderPersistence,
+        })
+
+        const result = await pipeline.cancelOrder("1654528966", "reset flatten")
+        const context = cancelOrder.mock.calls[0]?.[1]
+
+        expect(cancelOrder).toHaveBeenCalledWith("1654528966", expect.objectContaining({
+            canonicalOrderId: expect.stringMatching(/^vmtx01[a-z2-7]{10}$/),
+            providerOrderId: "1654528966",
+        }))
+        expect(result).toMatchObject({
+            canonicalOrderId: context?.canonicalOrderId,
+            providerOrderId: "1654528966",
+            status: "cancelled",
+        })
+        expect(orderPersistence.upsertOrder).toHaveBeenCalledWith(expect.objectContaining({
+            orderId: context?.canonicalOrderId,
+            action: "cancel",
+            providerOrderId: "1654528966",
+            status: "pending",
+        }))
+        expect(orderPersistence.upsertOrder).toHaveBeenCalledWith(expect.objectContaining({
+            orderId: context?.canonicalOrderId,
+            action: "cancel",
+            providerOrderId: "1654528966",
+            status: "cancelled",
+        }))
+    })
+
+    it("rejects reused submit attempt sequences for the same logical order", async () => {
+        const submitOrder = vi.fn(createVenue().submitOrder)
+        const pipeline = createPipeline({
+            venue: {
+                ...createVenue(),
+                submitOrder,
+            },
+            venueName: "mt5",
+        })
+        const intent: OrderIntent = {
+            instrument: "XAUUSD",
+            side: "buy",
+            quantity: 1,
+            orderType: "market",
+            timeInForce: "gtc",
+            metadata: {
+                logicalOrderSequence: 7,
+                submitAttemptSequence: 1,
+            },
+        }
+
+        await pipeline.executeIntent(intent, account, [])
+        await expect(pipeline.executeIntent(intent, account, [])).rejects.toMatchObject({
+            executionError: {
+                code: "SUBMIT_ATTEMPT_SEQUENCE_REUSED",
+            },
+        })
+        expect(submitOrder).toHaveBeenCalledTimes(1)
+    })
+
+    it("allows a caller-supplied higher submit attempt sequence for the same terminal logical order", async () => {
+        const submitOrder = vi.fn(createVenue().submitOrder)
+        const pipeline = createPipeline({
+            venue: {
+                ...createVenue(),
+                submitOrder,
+            },
+            venueName: "mt5",
+        })
+        const baseIntent: OrderIntent = {
+            instrument: "XAUUSD",
+            side: "buy",
+            quantity: 1,
+            orderType: "market",
+            timeInForce: "gtc",
+            metadata: {
+                logicalOrderSequence: 7,
+                submitAttemptSequence: 1,
+            },
+        }
+
+        const first = await pipeline.executeIntent(baseIntent, account, [])
+        const second = await pipeline.executeIntent({
+            ...baseIntent,
+            metadata: {
+                ...baseIntent.metadata,
+                submitAttemptSequence: 2,
+            },
+        }, account, [])
+
+        expect(first.result.canonicalOrderId).toBe(second.result.canonicalOrderId)
+        expect(first.result.submitAttemptId).not.toBe(second.result.submitAttemptId)
+        expect(second.result.submitAttemptSequence).toBe(2)
+        expect(submitOrder).toHaveBeenCalledTimes(2)
+    })
+
+    it("rejects a higher submit attempt sequence while the previous canonical order is pending", async () => {
+        const submitOrder = vi.fn(async (intent: OrderIntent, context?: SubmitOrderContext) => ({
+            orderId: context?.identity.canonicalOrderId ?? "pending-order",
+            canonicalOrderId: context?.identity.canonicalOrderId,
+            providerClientOrderId: context?.identity.providerClientOrderId,
+            submitAttemptId: context?.identity.submitAttemptId,
+            submitAttemptSequence: context?.identity.submitAttemptSequence,
+            commitOutcome: "accepted" as const,
+            status: "pending" as const,
+            filledQuantity: 0,
+            timestamp: Date.now(),
+        }))
+        const pipeline = createPipeline({
+            venue: {
+                ...createVenue(),
+                submitOrder,
+            },
+            venueName: "mt5",
+        })
+        const baseIntent: OrderIntent = {
+            instrument: "XAUUSD",
+            side: "buy",
+            quantity: 1,
+            orderType: "market",
+            timeInForce: "gtc",
+            metadata: {
+                logicalOrderSequence: 7,
+                submitAttemptSequence: 1,
+            },
+        }
+
+        await pipeline.executeIntent(baseIntent, account, [])
+        await expect(pipeline.executeIntent({
+            ...baseIntent,
+            metadata: {
+                ...baseIntent.metadata,
+                submitAttemptSequence: 2,
+            },
+        }, account, [])).rejects.toMatchObject({
+            executionError: {
+                code: "SUBMIT_ATTEMPT_PREVIOUS_NOT_TERMINAL",
+            },
+        })
+        expect(submitOrder).toHaveBeenCalledTimes(1)
+    })
+
+    it("rejects a higher submit attempt sequence when prior terminal truth is missing", async () => {
+        const submitOrder = vi.fn(createVenue().submitOrder)
+        const pipeline = createPipeline({
+            venue: {
+                ...createVenue(),
+                submitOrder,
+            },
+            venueName: "mt5",
+        })
+
+        await expect(pipeline.executeIntent({
+            instrument: "XAUUSD",
+            side: "buy",
+            quantity: 1,
+            orderType: "market",
+            timeInForce: "gtc",
+            metadata: {
+                logicalOrderSequence: 7,
+                submitAttemptSequence: 2,
+            },
+        }, account, [])).rejects.toMatchObject({
+            executionError: {
+                code: "SUBMIT_ATTEMPT_PRIOR_ORDER_NOT_FOUND",
+            },
+        })
+        expect(submitOrder).not.toHaveBeenCalled()
+    })
+
+    it("blocks a higher submit attempt sequence after unresolved duplicate exposure", async () => {
+        const faultRecorder = vi.fn(async () => {})
+        const venue = {
+            ...createVenue(),
+            submitOrder: vi.fn(async () => {
+                throw createExecutionError("venue", "IPC recv failed", {
+                    code: "IPC_RECV_FAILED",
+                    retryable: true,
+                })
+            }),
+            recoverSubmittedOrder: vi.fn(async () => ({
+                outcome: "ambiguous" as const,
+                message: "multiple MT5 tickets share the canonical comment",
+                matches: [
+                    {
+                        orderId: "1607001000",
+                        providerOrderId: "1607001000",
+                        status: "pending" as const,
+                        filledQuantity: 0,
+                        timestamp: Date.now(),
+                    },
+                    {
+                        orderId: "1607001001",
+                        providerOrderId: "1607001001",
+                        status: "pending" as const,
+                        filledQuantity: 0,
+                        timestamp: Date.now(),
+                    },
+                ],
+            })),
+        }
+        const pipeline = createPipeline({
+            venue,
+            venueName: "mt5",
+            executionSafetyFaultRecorder: faultRecorder,
+        })
+        const baseIntent: OrderIntent = {
+            instrument: "XAUUSD",
+            side: "buy",
+            quantity: 1,
+            orderType: "market",
+            timeInForce: "gtc",
+            metadata: {
+                logicalOrderSequence: 7,
+                submitAttemptSequence: 1,
+            },
+        }
+
+        const first = await pipeline.executeIntent(baseIntent, account, [])
+        const second = await pipeline.executeIntent({
+            ...baseIntent,
+            metadata: {
+                ...baseIntent.metadata,
+                submitAttemptSequence: 2,
+            },
+        }, account, [])
+
+        expect(first.result.commitOutcome).toBe("commit_unknown")
+        expect(faultRecorder).toHaveBeenCalledWith(expect.objectContaining({
+            category: "duplicate_exposure",
+        }))
+        expect(second.validation.allowed).toBe(false)
+        expect(second.validation.reason).toContain("unresolved commit-unknown")
+        expect(venue.submitOrder).toHaveBeenCalledTimes(1)
+    })
+})
+
 describe("ExecutionPipeline dry-run accounting", () => {
+    it("does not call provider identity preparation for dry-run submissions", async () => {
+        const prepareOrderIdentity = vi.fn(async () => {
+            throw createExecutionError("pre_validation", "live signing unavailable", {
+                code: "LIVE_SIGNING_UNAVAILABLE",
+                retryable: false,
+            })
+        })
+        const venue: VenueAdapter = {
+            ...createVenue(),
+            prepareOrderIdentity,
+        }
+        const pipeline = createPipeline({
+            venue,
+            policy: {
+                dryRun: true,
+                virtualCash: 1000,
+            },
+            runId: "run-dry-identity",
+        })
+
+        const { result } = await pipeline.executeIntent(
+            {
+                instrument: "token-yes",
+                side: "buy",
+                quantity: 5,
+                orderType: "limit",
+                limitPrice: 0.4,
+                timeInForce: "gtc",
+            },
+            account,
+            []
+        )
+
+        expect(result.status).toBe("filled")
+        expect(prepareOrderIdentity).not.toHaveBeenCalled()
+    })
+
     it("keeps deterministic cash and realized PnL after closing a virtual position", async () => {
         const tradeLogger = createTradeLogger()
         const pipeline = createPipeline({

@@ -5,6 +5,10 @@ import type {
     Position,
     WorkingOrder,
 } from "@valiq-trading/core"
+import {
+    isAlpacaRawOptionLegPosition,
+    resolveAlpacaCloseGroupsFromPositions,
+} from "@valiq-trading/alpaca-options"
 
 export interface AuditedSessionFlatPipeline {
     cancelOrder(orderId: string, reason?: string): Promise<ExecutionResult>
@@ -37,7 +41,18 @@ export async function executeAuditedSessionFlat(args: {
         cancelResults.push(result)
     }
 
-    for (const position of args.positions) {
+    for (const position of resolveAlpacaCloseGroupsFromPositions(args.positions)) {
+        if (args.app === "alpaca-options" && isAlpacaRawOptionLegPosition(position)) {
+            closeResults.push({
+                orderId: position.providerPositionId ?? position.instrument,
+                status: "rejected",
+                filledQuantity: 0,
+                timestamp: Date.now(),
+                error: "Alpaca raw option leg close requires complete claimed structure evidence",
+            })
+            continue
+        }
+
         const { result } = await args.pipeline.closeProviderPosition(position, args.reason, {
             metadata: {
                 sessionFlat: true,
@@ -51,15 +66,11 @@ export async function executeAuditedSessionFlat(args: {
     const cancelled = cancelResults.filter((result) =>
         result.status === "cancelled" || result.status === "filled"
     ).length
-    const closed = closeResults.filter((result) =>
-        result.status === "filled" || result.status === "partially_filled"
-    ).length
+    const closed = closeResults.filter((result) => result.status === "filled").length
     const failedCancels = cancelResults.filter((result) =>
         result.status !== "cancelled" && result.status !== "filled"
     )
-    const failedCloses = closeResults.filter((result) =>
-        result.status !== "filled" && result.status !== "partially_filled"
-    )
+    const failedCloses = closeResults.filter((result) => result.status !== "filled")
 
     args.logger.info("Audited session-flat execution completed", {
         strategyId: args.strategyId,

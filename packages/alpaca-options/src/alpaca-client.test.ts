@@ -132,6 +132,12 @@ describe("buildCreateOrderPayload", () => {
             ],
         })
     })
+
+    it("attaches canonical client order identity", () => {
+        const payload = buildCreateOrderPayload(createEntryIntent(), "vale01abcdef2345")
+
+        expect(payload.client_order_id).toBe("vale01abcdef2345")
+    })
 })
 
 describe("AlpacaClient multileg signed limit prices", () => {
@@ -171,5 +177,15 @@ describe("AlpacaClient multileg signed limit prices", () => {
             limit_price: -1.1,
         })
         expect(result.intentUpdates?.limitPrice).toBe(1.1)
+    })
+
+    it("does not retry live order creation after a transport failure", async () => {
+        fetchMock.mockRejectedValue(new Error("socket timeout after provider commit"))
+
+        await expect(createClient().createOrder(createEntryIntent())).rejects.toThrow(
+            "socket timeout after provider commit"
+        )
+
+        expect(fetchMock).toHaveBeenCalledTimes(1)
     })
 })

@@ -1,4 +1,5 @@
 import type { Doc, Id } from "../../_generated/dataModel"
+import { getProviderInstrumentClaimAliases } from "../instrumentClaims"
 import type { StrategyDoc } from "./portfolioTypes"
 
 export function detectExposureGovernanceViolations(args: {
@@ -41,8 +42,9 @@ export function detectExposureGovernanceViolations(args: {
     ])
 
     for (const strategyId of strategyIds) {
+        const strategy = args.strategies.find((entry) => String(entry._id) === strategyId)
         const policy = strategyPolicies.get(strategyId)
-        if (!policy) {
+        if (!strategy || !policy) {
             continue
         }
 
@@ -52,31 +54,32 @@ export function detectExposureGovernanceViolations(args: {
         if (!policy.allowOverlappingExposure) {
             for (const position of strategyPositions) {
                 const sameInstrumentOrders = strategyWorkingOrders.filter((order) =>
-                    order.instrument === position.instrument &&
+                    instrumentsOverlap(strategy.app, order.instrument, position.instrument) &&
                     workingOrderIncreasesExposure(order, position.side)
                 )
 
-                if (sameInstrumentOrders.length > 0) {
-                    violations.add(`${strategyId}:overlap:${position.instrument}`)
+                for (const order of sameInstrumentOrders) {
+                    violations.add(`${strategyId}:overlap:${resolveGovernanceInstrument(order.instrument, position.instrument)}`)
                 }
             }
         }
 
         if (!policy.allowMultiplePendingEntryOrdersPerInstrument) {
-            const grouped = new Map<string, number>()
-            for (const order of strategyWorkingOrders) {
-                if (!workingOrderCanOpenRisk(order)) {
+            const openingOrders = strategyWorkingOrders.filter(workingOrderCanOpenRisk)
+            for (let leftIndex = 0; leftIndex < openingOrders.length; leftIndex++) {
+                const left = openingOrders[leftIndex]
+                if (!left) {
                     continue
                 }
 
-                const direction = order.side ?? "unknown"
-                const key = `${order.instrument}:${direction}`
-                grouped.set(key, (grouped.get(key) ?? 0) + 1)
-            }
-
-            for (const [key, count] of grouped) {
-                if (count > 1) {
-                    violations.add(`${strategyId}:multiple-working-orders:${key}`)
+                for (const right of openingOrders.slice(leftIndex + 1)) {
+                    if (
+                        left.side === right.side &&
+                        instrumentsOverlap(strategy.app, left.instrument, right.instrument)
+                    ) {
+                        const direction = left.side ?? "unknown"
+                        violations.add(`${strategyId}:multiple-working-orders:${resolveGovernanceInstrument(left.instrument, right.instrument)}:${direction}`)
+                    }
                 }
             }
         }
@@ -124,4 +127,25 @@ function workingOrderIncreasesExposure(
     return positionSide === "long"
         ? order.side === "buy"
         : order.side === "sell"
+}
+
+function instrumentsOverlap(
+    app: Doc<"strategies">["app"],
+    left: string,
+    right: string
+): boolean {
+    const leftAliases = new Set(getProviderInstrumentClaimAliases(app, left))
+    return getProviderInstrumentClaimAliases(app, right).some((alias) => leftAliases.has(alias))
+}
+
+function resolveGovernanceInstrument(left: string, right: string): string {
+    if (left.includes(":")) {
+        return left
+    }
+
+    if (right.includes(":")) {
+        return right
+    }
+
+    return left
 }

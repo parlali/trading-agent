@@ -2,6 +2,11 @@ import type { App, VenueApp } from "./app-types"
 import type { PriceVerification } from "./price-verification-types"
 import type { OrderAction, OrderStatus } from "./order-types"
 import type { OrderIntent, OrderSide } from "./order-intent-types"
+import type {
+    ExecutionCommitOutcome,
+    ExecutionIdentityFields,
+    ProviderIdentityCapability,
+} from "./execution-identity"
 
 export {
     ACTIVE_VENUE_APPS,
@@ -22,12 +27,28 @@ export {
     ORDER_LEG_SIDES,
     ORDER_SIDES,
 } from "./order-intent-types"
+export {
+    EXECUTION_COMMIT_OUTCOMES,
+    EXECUTION_IDENTITY_VENUES,
+    EXECUTION_ORDER_ROLES,
+    PROVIDER_IDENTITY_CAPABILITIES,
+} from "./execution-identity"
 export type {
     OrderIntent,
     OrderLeg,
     OrderLegSide,
     OrderSide,
 } from "./order-intent-types"
+export type {
+    ExecutionCommitOutcome,
+    ExecutionIdentityContext,
+    ExecutionIdentityFields,
+    ExecutionIdentityInput,
+    ExecutionIdentityVenue,
+    ExecutionOrderRole,
+    PreparedExecutionIdentity,
+    ProviderIdentityCapability,
+} from "./execution-identity"
 
 export const SEVERITY_LEVELS = ["critical", "warning", "info"] as const
 export type Severity = typeof SEVERITY_LEVELS[number]
@@ -66,11 +87,13 @@ export const EXECUTION_SAFETY_FAULT_CATEGORIES = [
     "provider_rejected",
     "already_exists_conflict",
     "invalid_params",
+    "commit_unknown",
+    "duplicate_exposure",
     "unknown",
 ] as const
 export type ExecutionSafetyFaultCategory = typeof EXECUTION_SAFETY_FAULT_CATEGORIES[number]
 
-export interface ExecutionResult {
+export interface ExecutionResult extends ExecutionIdentityFields {
     orderId: string
     status: OrderStatus
     filledQuantity: number
@@ -125,6 +148,11 @@ export interface AccountState {
 
 export interface WorkingOrder {
     orderId: string
+    canonicalOrderId?: string
+    providerOrderId?: string
+    providerClientOrderId?: string
+    providerOrderAliases?: string[]
+    signedOrderFingerprint?: string
     instrument: string
     status: OrderStatus
     quantity: number
@@ -264,6 +292,11 @@ export interface PortfolioPendingOrder {
     ownershipStatus: ProviderOwnershipStatus
     expectedExternal?: boolean
     orderId: string
+    canonicalOrderId?: string
+    providerOrderId?: string
+    providerClientOrderId?: string
+    providerOrderAliases?: string[]
+    signedOrderFingerprint?: string
     instrument: string
     venue: string
     status: OrderStatus

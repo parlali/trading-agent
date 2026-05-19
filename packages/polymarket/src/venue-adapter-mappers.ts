@@ -61,14 +61,28 @@ export function mapOpenOrderStatus(order: PolymarketOpenOrder): ExecutionResult[
 export function mapOpenOrderToExecutionResult(order: PolymarketOpenOrder): ExecutionResult {
     const sizeMatched = Number(order.size_matched)
     const price = Number(order.price)
+    const signedOrderFingerprint = readPolymarketSignedOrderFingerprint(order)
 
     return {
         orderId: order.id,
+        providerOrderId: order.id,
+        providerClientOrderId: signedOrderFingerprint,
+        signedOrderFingerprint,
         status: mapOpenOrderStatus(order),
         filledQuantity: sizeMatched,
         fillPrice: sizeMatched > 0 ? price : undefined,
         timestamp: Date.now(),
     }
+}
+
+export function readPolymarketSignedOrderFingerprint(order: {
+    signedOrderFingerprint?: string
+    signed_order_fingerprint?: string
+    metadata?: Record<string, unknown>
+}): string | undefined {
+    return readTrimmedString(order.signedOrderFingerprint) ??
+        readTrimmedString(order.signed_order_fingerprint) ??
+        readTrimmedString(order.metadata?.signedOrderFingerprint)
 }
 
 export function matchesMarketQuery(

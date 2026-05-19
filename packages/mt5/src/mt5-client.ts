@@ -255,6 +255,7 @@ export class MT5Client {
         ticket: number
         volume?: number
         deviation?: number
+        comment?: string
     }): Promise<MT5OrderResult> {
         return await this.postMutation<MT5OrderResult>("/position/close", params)
     }
@@ -314,6 +315,7 @@ export class MT5Client {
 
         return {
             orderId: result.orderId || result.dealId || options.fallbackOrderId || "",
+            providerOrderId: result.orderId || result.dealId || options.fallbackOrderId || undefined,
             status: result.success ? options.successStatus ?? "filled" : "rejected",
             filledQuantity: result.success ? options.filledQuantity ?? result.volume : 0,
             fillPrice: result.success

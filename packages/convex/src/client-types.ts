@@ -193,9 +193,19 @@ export interface ExecutionSafetyFaultRow {
     strategyId: Id<"strategies">
     app: Exclude<App, "backend">
     instrument: string
-    category: "position_not_found_yet" | "provider_rejected" | "already_exists_conflict" | "invalid_params" | "unknown"
+    category: "position_not_found_yet" | "provider_rejected" | "already_exists_conflict" | "invalid_params" | "commit_unknown" | "duplicate_exposure" | "unknown"
     message: string
     providerPayload?: string
+    canonicalOrderId?: string
+    providerOrderId?: string
+    providerClientOrderId?: string
+    providerOrderAliases?: string[]
+    submitAttemptId?: string
+    submitAttemptSequence?: number
+    runId?: Id<"strategy_runs">
+    venue?: string
+    signedOrderFingerprint?: string
+    recoveryProbeEvidence?: Record<string, unknown>
     blocked: boolean
     occurredAt: number
     resolvedAt?: number
@@ -303,6 +313,16 @@ export interface RecordExecutionSafetyFaultArgs {
     category: ExecutionSafetyFaultRow["category"]
     message: string
     providerPayload?: string
+    canonicalOrderId?: string
+    providerOrderId?: string
+    providerClientOrderId?: string
+    providerOrderAliases?: string[]
+    submitAttemptId?: string
+    submitAttemptSequence?: number
+    runId?: Id<"strategy_runs">
+    venue?: string
+    signedOrderFingerprint?: string
+    recoveryProbeEvidence?: Record<string, unknown>
     blocked?: boolean
 }
 

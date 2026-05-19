@@ -25,6 +25,7 @@ export interface AlpacaPositionResponse {
 
 export interface AlpacaOrderResponse {
     id: string
+    client_order_id?: string
     status: string
     order_class?: string
     side?: "buy" | "sell"

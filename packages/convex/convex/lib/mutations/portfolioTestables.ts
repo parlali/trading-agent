@@ -13,9 +13,11 @@ import {
     buildProviderCloseIntent,
     buildProviderProtectionIntent,
     inferClosedOrderStatus,
+    resolveCanonicalProviderProtectionOrderId,
     resolveLiveWorkingOrderMatch,
 } from "./portfolioOrders"
 import { detectExposureGovernanceViolations } from "./portfolioGovernance"
+import { resolveExecutionFaultWorkingOrder } from "./portfolioRows"
 import {
     collectExpectedExternalInstruments,
     createDriftSummary,
@@ -36,6 +38,8 @@ export const portfolioGovernanceTestables = {
     resolvePositionOwnership,
     resolveOwnership,
     resolveLiveWorkingOrderMatch,
+    resolveCanonicalProviderProtectionOrderId,
+    resolveExecutionFaultWorkingOrder,
     buildProviderCloseIntent,
     buildProviderProtectionIntent,
     inferClosedOrderStatus,

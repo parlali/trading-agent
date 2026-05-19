@@ -8,6 +8,7 @@ import {
     PROVIDER_OWNERSHIP_STATUSES,
     STRATEGY_SAFETY_STATES,
     EXECUTION_SAFETY_FAULT_CATEGORIES,
+    EXECUTION_COMMIT_OUTCOMES,
 } from "@valiq-trading/core"
 import {
     ORDER_STATUSES,
@@ -29,6 +30,7 @@ export const appV = stringLiterals(APPS)
 export const orderStatusV = stringLiterals(ORDER_STATUSES)
 export const orderActionV = stringLiterals(ORDER_ACTIONS)
 export const orderTransitionTypeV = stringLiterals(ORDER_TRANSITION_TYPES)
+export const executionCommitOutcomeV = stringLiterals(EXECUTION_COMMIT_OUTCOMES)
 export const severityV = stringLiterals(SEVERITY_LEVELS)
 export const eventTypeV = stringLiterals(EVENT_TYPES)
 export const heartbeatStatusV = stringLiterals(["healthy", "degraded", "unhealthy"])
@@ -121,8 +123,15 @@ export const orderPollingV = v.object({
 
 export const orderCoreFieldsV = {
     orderId: v.string(),
+    canonicalOrderId: v.string(),
     providerOrderId: v.string(),
+    providerClientOrderId: v.optional(v.string()),
     providerOrderAliases: v.array(v.string()),
+    submitAttemptId: v.optional(v.string()),
+    submitAttemptSequence: v.optional(v.number()),
+    commitOutcome: executionCommitOutcomeV,
+    signedOrderFingerprint: v.optional(v.string()),
+    signedOrderMetadata: v.optional(v.any()),
     runId: v.id("strategy_runs"),
     strategyId: v.id("strategies"),
     venue: v.string(),

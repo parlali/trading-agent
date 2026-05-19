@@ -119,6 +119,8 @@ export default defineSchema({
     })
         .index("by_order_id", ["orderId"])
         .index("by_provider_order_id", ["providerOrderId"])
+        .index("by_provider_client_order_id", ["providerClientOrderId"])
+        .index("by_signed_order_fingerprint", ["signedOrderFingerprint"])
         .index("by_strategy_status", ["strategyId", "status"])
         .index("by_app_status", ["app", "status"])
         .index("by_run", ["runId"]),
@@ -265,6 +267,11 @@ export default defineSchema({
     provider_working_orders: defineTable({
         app: venueAppV,
         orderId: v.string(),
+        canonicalOrderId: v.optional(v.string()),
+        providerOrderId: v.optional(v.string()),
+        providerClientOrderId: v.optional(v.string()),
+        providerOrderAliases: v.optional(v.array(v.string())),
+        signedOrderFingerprint: v.optional(v.string()),
         strategyId: v.optional(v.id("strategies")),
         runId: v.optional(v.id("strategy_runs")),
         ownershipStatus: providerOwnershipStatusV,
@@ -287,6 +294,8 @@ export default defineSchema({
         syncedAt: v.number(),
     })
         .index("by_app", ["app"])
+        .index("by_provider_order_id", ["providerOrderId"])
+        .index("by_provider_client_order_id", ["providerClientOrderId"])
         .index("by_app_strategy", ["app", "strategyId"])
         .index("by_app_status", ["app", "status"]),
 
@@ -321,6 +330,16 @@ export default defineSchema({
         category: executionSafetyFaultCategoryV,
         message: v.string(),
         providerPayload: v.optional(v.string()),
+        canonicalOrderId: v.optional(v.string()),
+        providerOrderId: v.optional(v.string()),
+        providerClientOrderId: v.optional(v.string()),
+        providerOrderAliases: v.optional(v.array(v.string())),
+        submitAttemptId: v.optional(v.string()),
+        submitAttemptSequence: v.optional(v.number()),
+        runId: v.optional(v.id("strategy_runs")),
+        venue: v.optional(v.string()),
+        signedOrderFingerprint: v.optional(v.string()),
+        recoveryProbeEvidence: v.optional(v.any()),
         blocked: v.boolean(),
         occurredAt: v.number(),
         resolvedAt: v.optional(v.number()),

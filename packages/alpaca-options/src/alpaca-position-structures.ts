@@ -24,32 +24,15 @@ export interface PositionGroup {
     unrealizedPnl?: number
 }
 
-export interface GroupingResult {
-    groups: PositionGroup[]
-    consumedQuantities: Map<string, number>
-}
-
-type ParsedOptionContract = NonNullable<ReturnType<typeof parseOptionContractSymbol>>
-
-interface OptionPositionUnit {
-    position: AlpacaPositionResponse
-    parsed: ParsedOptionContract
-}
-
-interface OptionSpreadUnit {
-    shortLeg: OptionPositionUnit
-    longLeg: OptionPositionUnit
-    optionType: "call" | "put"
-}
-
-interface IronCondorUnit {
-    callSpread: OptionSpreadUnit
-    putSpread: OptionSpreadUnit
-}
-
-interface CreditVerticalUnit {
-    spread: OptionSpreadUnit
-    verticalSpreadType: AlpacaVerticalSpreadType
+interface PositionLike {
+    instrument: string
+    providerPositionId?: string
+    side: "long" | "short"
+    quantity: number
+    entryPrice: number
+    currentPrice?: number
+    unrealizedPnl?: number
+    metadata?: Record<string, unknown>
 }
 
 export function buildGroupCloseIntent(group: PositionGroup): OrderIntent {
@@ -97,359 +80,297 @@ function resolveGroupCloseLimitPrice(group: PositionGroup): number {
     return roundPrice(group.currentPrice)
 }
 
-export function isAlpacaOptionPosition(position: AlpacaPositionResponse): boolean {
-    return position.asset_class === undefined || position.asset_class === "us_option"
-}
-
-export function toResidualPosition(
-    position: AlpacaPositionResponse,
-    consumedQuantities: Map<string, number>
-): AlpacaPositionResponse | null {
-    const consumed = consumedQuantities.get(position.symbol.toUpperCase()) ?? 0
-    const total = parseOptionQuantity(position)
-    const remaining = total - consumed
-
-    if (remaining <= 0) {
-        return null
+export function resolveAlpacaCloseGroupsFromPositions<TPosition extends PositionLike>(
+    positions: TPosition[]
+): TPosition[] {
+    if (positions.length === 0) {
+        return []
     }
 
-    const unrealizedTotal = toNumber(position.unrealized_pl)
-    const scaledUnrealized = total > 0 && unrealizedTotal !== 0
-        ? (unrealizedTotal / total) * remaining
-        : undefined
+    const grouped: TPosition[] = []
+    const consumed = new Set<number>()
+    const claimGroups = groupPositionsByClaimInstrument(positions)
 
-    return {
-        ...position,
-        qty: String(remaining),
-        unrealized_pl: scaledUnrealized !== undefined ? String(scaledUnrealized) : position.unrealized_pl,
-    }
-}
-
-export function groupOptionStructures(positions: AlpacaPositionResponse[]): GroupingResult {
-    const buckets = new Map<string, OptionPositionUnit[]>()
-
-    for (const position of positions) {
-        const parsed = parseOptionContractSymbol(position.symbol)
-        if (!parsed) {
+    for (const group of claimGroups.values()) {
+        const first = group.entries[0]
+        if (!first) {
             continue
         }
 
-        const quantity = parseOptionQuantity(position)
-        if (quantity <= 0) {
+        for (const index of group.indexes) {
+            consumed.add(index)
+        }
+
+        const claim = parseClaimedStructureInstrument(group.claimInstrument)
+        if (!claim) {
             continue
         }
 
-        const key = `${parsed.underlying}:${parsed.expiration}`
-        const entry = buckets.get(key) ?? []
-        for (let index = 0; index < quantity; index++) {
-            entry.push({
-                position,
-                parsed,
-            })
-        }
-        buckets.set(key, entry)
-    }
-
-    const groups: PositionGroup[] = []
-    const consumedQuantities = new Map<string, number>()
-
-    for (const units of buckets.values()) {
-        const structures = buildStructureUnits(units)
-        const aggregated = [
-            ...aggregateCondorUnits(structures.condors),
-            ...aggregateVerticalUnits(structures.verticals),
-        ]
-
-        for (const group of aggregated) {
-            groups.push(group)
-            for (const leg of group.positions) {
-                const symbol = leg.symbol.toUpperCase()
-                consumedQuantities.set(symbol, (consumedQuantities.get(symbol) ?? 0) + group.quantity)
+        if (group.entries.length === 1 && first.instrument.trim().toUpperCase() === group.claimInstrument) {
+            grouped.push(first)
+        } else if (isCompleteClaimCloseGroup(claim, group.entries)) {
+            grouped.push(buildSyntheticClosePosition(first, group.claimInstrument, group.entries) as TPosition)
+        } else {
+            for (const index of group.indexes) {
+                consumed.delete(index)
             }
         }
     }
 
-    return {
-        groups,
-        consumedQuantities,
-    }
-}
-
-function buildStructureUnits(units: OptionPositionUnit[]): {
-    condors: IronCondorUnit[]
-    verticals: CreditVerticalUnit[]
-} {
-    const callShorts = units
-        .filter((unit) => unit.parsed.optionType === "call" && unit.position.side === "short")
-        .sort((left, right) => left.parsed.strike - right.parsed.strike)
-    const callLongs = units
-        .filter((unit) => unit.parsed.optionType === "call" && unit.position.side === "long")
-        .sort((left, right) => left.parsed.strike - right.parsed.strike)
-    const putShorts = units
-        .filter((unit) => unit.parsed.optionType === "put" && unit.position.side === "short")
-        .sort((left, right) => left.parsed.strike - right.parsed.strike)
-    const putLongs = units
-        .filter((unit) => unit.parsed.optionType === "put" && unit.position.side === "long")
-        .sort((left, right) => left.parsed.strike - right.parsed.strike)
-
-    const callSpreads = pairSpreads(callShorts, callLongs, Math.min(callShorts.length, callLongs.length), "call")
-    const putSpreads = pairSpreads(putShorts, putLongs, Math.min(putShorts.length, putLongs.length), "put")
-    const condorPairing = pairCondors(callSpreads, putSpreads)
-    const verticals: CreditVerticalUnit[] = [
-        ...condorPairing.remainingCallSpreads.map((spread) => ({
-            spread,
-            verticalSpreadType: "bear_call_credit" as const,
-        })),
-        ...condorPairing.remainingPutSpreads.map((spread) => ({
-            spread,
-            verticalSpreadType: "bull_put_credit" as const,
-        })),
-    ]
-
-    return {
-        condors: condorPairing.condors,
-        verticals,
-    }
-}
-
-function pairSpreads(
-    shorts: OptionPositionUnit[],
-    longs: OptionPositionUnit[],
-    maxCount: number,
-    optionType: "call" | "put"
-): OptionSpreadUnit[] {
-    const remainingShorts = [...shorts]
-    const remainingLongs = [...longs]
-    const spreads: OptionSpreadUnit[] = []
-
-    while (spreads.length < maxCount && remainingShorts.length > 0 && remainingLongs.length > 0) {
-        const shortLeg = remainingShorts.shift()
-        if (!shortLeg) {
-            break
+    positions.forEach((position, index) => {
+        if (!consumed.has(index)) {
+            grouped.push(position)
         }
-
-        const longIndex = selectLongLegIndex(shortLeg, remainingLongs, optionType)
-        if (longIndex === null) {
-            continue
-        }
-        const [longLeg] = remainingLongs.splice(longIndex, 1)
-        if (!longLeg) {
-            break
-        }
-
-        spreads.push({
-            shortLeg,
-            longLeg,
-            optionType,
-        })
-    }
-
-    return spreads
-}
-
-function selectLongLegIndex(
-    shortLeg: OptionPositionUnit,
-    longLegs: OptionPositionUnit[],
-    optionType: "call" | "put"
-): number | null {
-    const preferredIndex = longLegs.findIndex((longLeg) => {
-        return optionType === "call"
-            ? longLeg.parsed.strike > shortLeg.parsed.strike
-            : longLeg.parsed.strike < shortLeg.parsed.strike
     })
 
-    return preferredIndex >= 0 ? preferredIndex : null
+    return grouped
 }
 
-function pairCondors(
-    callSpreads: OptionSpreadUnit[],
-    putSpreads: OptionSpreadUnit[]
-): {
-    condors: IronCondorUnit[]
-    remainingCallSpreads: OptionSpreadUnit[]
-    remainingPutSpreads: OptionSpreadUnit[]
-} {
-    const remainingCalls = [...callSpreads]
-    const remainingPuts = [...putSpreads]
-    const unmatchedCalls: OptionSpreadUnit[] = []
-    const condors: IronCondorUnit[] = []
-
-    while (remainingCalls.length > 0 && remainingPuts.length > 0) {
-        const callSpread = remainingCalls.shift()
-        if (!callSpread) {
-            continue
-        }
-        const putIndex = selectPutSpreadIndex(callSpread, remainingPuts)
-        if (putIndex === null) {
-            unmatchedCalls.push(callSpread)
-            continue
-        }
-        const [putSpread] = remainingPuts.splice(putIndex, 1)
-        if (!putSpread) {
-            continue
-        }
-
-        condors.push({
-            callSpread,
-            putSpread,
-        })
-    }
-
-    return {
-        condors,
-        remainingCallSpreads: [...unmatchedCalls, ...remainingCalls],
-        remainingPutSpreads: remainingPuts,
-    }
+export function resolveAlpacaForceResetCloseGroupsFromPositions<TPosition extends PositionLike>(
+    positions: TPosition[]
+): TPosition[] {
+    return resolveAlpacaCloseGroupsFromPositions(positions)
 }
 
-function selectPutSpreadIndex(
-    callSpread: OptionSpreadUnit,
-    putSpreads: OptionSpreadUnit[]
-): number | null {
-    let closestIndex: number | null = null
-    let closestDistance = Number.POSITIVE_INFINITY
+function groupPositionsByClaimInstrument<TPosition extends PositionLike>(
+    positions: TPosition[]
+): Map<string, { claimInstrument: string; entries: TPosition[]; indexes: number[] }> {
+    const groups = new Map<string, { claimInstrument: string; entries: TPosition[]; indexes: number[] }>()
 
-    for (let index = 0; index < putSpreads.length; index++) {
-        const candidate = putSpreads[index]
-        if (!candidate) {
-            continue
-        }
-        if (candidate.shortLeg.parsed.strike >= callSpread.shortLeg.parsed.strike) {
-            continue
+    positions.forEach((position, index) => {
+        const claimInstrument = readClaimInstrument(position)
+        if (!claimInstrument || !parseClaimedStructureInstrument(claimInstrument)) {
+            return
         }
 
-        const distance = Math.abs(callSpread.shortLeg.parsed.strike - candidate.shortLeg.parsed.strike)
-        if (distance < closestDistance) {
-            closestDistance = distance
-            closestIndex = index
+        const group = groups.get(claimInstrument) ?? {
+            claimInstrument,
+            entries: [],
+            indexes: [],
+        }
+        group.entries.push(position)
+        group.indexes.push(index)
+        groups.set(claimInstrument, group)
+    })
+
+    return groups
+}
+
+function isCreditVerticalLongLeg(
+    shortLeg: NonNullable<ReturnType<typeof parseOptionContractSymbol>>,
+    longLeg: NonNullable<ReturnType<typeof parseOptionContractSymbol>>
+): boolean {
+    return shortLeg.optionType === "call"
+        ? longLeg.strike > shortLeg.strike
+        : longLeg.strike < shortLeg.strike
+}
+
+type ClaimedStructureInstrument = NonNullable<ReturnType<typeof parseClaimedStructureInstrument>>
+
+function isCompleteClaimCloseGroup<TPosition extends PositionLike>(
+    claim: ClaimedStructureInstrument,
+    entries: TPosition[]
+): boolean {
+    if (entries.length !== claim.legs.length) {
+        return false
+    }
+
+    const claimedLegs = new Set(claim.legs)
+    const entriesByInstrument = new Map(entries.map((entry) => [entry.instrument.trim().toUpperCase(), entry]))
+    if (entriesByInstrument.size !== entries.length) {
+        return false
+    }
+
+    for (const leg of claimedLegs) {
+        if (!entriesByInstrument.has(leg)) {
+            return false
         }
     }
 
-    return closestIndex
-}
-
-function aggregateCondorUnits(units: IronCondorUnit[]): PositionGroup[] {
-    const groupsByKey = new Map<string, IronCondorUnit[]>()
-
-    for (const unit of units) {
-        const key = buildCondorUnitKey(unit)
-        const entry = groupsByKey.get(key) ?? []
-        entry.push(unit)
-        groupsByKey.set(key, entry)
+    if (entries.some((entry) => !claimedLegs.has(entry.instrument.trim().toUpperCase()))) {
+        return false
     }
 
-    return Array.from(groupsByKey.values())
-        .map((groupUnits) => buildPositionGroupFromCondorUnits(groupUnits))
-        .filter((group): group is PositionGroup => Boolean(group))
-}
-
-function aggregateVerticalUnits(units: CreditVerticalUnit[]): PositionGroup[] {
-    const groupsByKey = new Map<string, CreditVerticalUnit[]>()
-
-    for (const unit of units) {
-        const key = buildVerticalUnitKey(unit)
-        const entry = groupsByKey.get(key) ?? []
-        entry.push(unit)
-        groupsByKey.set(key, entry)
+    const quantities = new Set(entries.map((entry) => entry.quantity))
+    const quantity = entries[0]?.quantity
+    if (quantities.size !== 1 || quantity === undefined || quantity <= 0 || !Number.isFinite(quantity)) {
+        return false
     }
 
-    return Array.from(groupsByKey.values())
-        .map((groupUnits) => buildPositionGroupFromVerticalUnits(groupUnits))
-        .filter((group): group is PositionGroup => Boolean(group))
+    if (claim.structureType === "credit_vertical") {
+        return isCompleteVerticalClaimCloseGroup(claim, entries)
+    }
+
+    return isCompleteIronCondorClaimCloseGroup(claim, entries)
 }
 
-function buildCondorUnitKey(unit: IronCondorUnit): string {
-    const legs = [
-        unit.callSpread.shortLeg.position.symbol,
-        unit.callSpread.longLeg.position.symbol,
-        unit.putSpread.shortLeg.position.symbol,
-        unit.putSpread.longLeg.position.symbol,
-    ]
-        .map((symbol) => symbol.trim().toUpperCase())
-        .sort()
-        .join("|")
+function isCompleteVerticalClaimCloseGroup<TPosition extends PositionLike>(
+    claim: ClaimedStructureInstrument,
+    entries: TPosition[]
+): boolean {
+    if (!claim.verticalSpreadType || entries.length !== 2) {
+        return false
+    }
 
-    return `${unit.callSpread.shortLeg.parsed.underlying}:${unit.callSpread.shortLeg.parsed.expiration}:${legs}`
+    const parsedEntries = readParsedClaimEntries(claim, entries)
+    if (!parsedEntries) {
+        return false
+    }
+
+    const shortEntry = parsedEntries.find((entry) => entry.position.side === "short")
+    const longEntry = parsedEntries.find((entry) => entry.position.side === "long")
+    if (!shortEntry || !longEntry) {
+        return false
+    }
+
+    const expectedOptionType = claim.verticalSpreadType === "bear_call_credit" ? "call" : "put"
+    return shortEntry.parsed.optionType === expectedOptionType &&
+        longEntry.parsed.optionType === expectedOptionType &&
+        isCreditVerticalLongLeg(shortEntry.parsed, longEntry.parsed)
 }
 
-function buildVerticalUnitKey(unit: CreditVerticalUnit): string {
-    const legs = [
-        unit.spread.shortLeg.position.symbol,
-        unit.spread.longLeg.position.symbol,
-    ]
-        .map((symbol) => symbol.trim().toUpperCase())
-        .sort()
-        .join("|")
+function isCompleteIronCondorClaimCloseGroup<TPosition extends PositionLike>(
+    claim: ClaimedStructureInstrument,
+    entries: TPosition[]
+): boolean {
+    if (entries.length !== 4) {
+        return false
+    }
 
-    return `${unit.verticalSpreadType}:${unit.spread.shortLeg.parsed.underlying}:${unit.spread.shortLeg.parsed.expiration}:${legs}`
+    const parsedEntries = readParsedClaimEntries(claim, entries)
+    if (!parsedEntries) {
+        return false
+    }
+
+    const calls = parsedEntries.filter((entry) => entry.parsed.optionType === "call")
+    const puts = parsedEntries.filter((entry) => entry.parsed.optionType === "put")
+    return isCompleteIronCondorSide(calls) && isCompleteIronCondorSide(puts)
 }
 
-function buildPositionGroupFromCondorUnits(units: IronCondorUnit[]): PositionGroup | null {
-    const first = units[0]
-    if (!first) {
+function isCompleteIronCondorSide<TPosition extends PositionLike>(
+    entries: Array<{ position: TPosition; parsed: NonNullable<ReturnType<typeof parseOptionContractSymbol>> }>
+): boolean {
+    if (entries.length !== 2) {
+        return false
+    }
+
+    const shortEntry = entries.find((entry) => entry.position.side === "short")
+    const longEntry = entries.find((entry) => entry.position.side === "long")
+    if (!shortEntry || !longEntry) {
+        return false
+    }
+
+    return isCreditVerticalLongLeg(shortEntry.parsed, longEntry.parsed)
+}
+
+function readParsedClaimEntries<TPosition extends PositionLike>(
+    claim: ClaimedStructureInstrument,
+    entries: TPosition[]
+): Array<{ position: TPosition; parsed: NonNullable<ReturnType<typeof parseOptionContractSymbol>> }> | null {
+    const parsedEntries = entries.map((position) => ({
+        position,
+        parsed: parseOptionContractSymbol(position.instrument),
+    }))
+
+    if (parsedEntries.some((entry) => !entry.parsed)) {
         return null
     }
 
-    const positions = [
-        first.callSpread.shortLeg.position,
-        first.callSpread.longLeg.position,
-        first.putSpread.shortLeg.position,
-        first.putSpread.longLeg.position,
-    ]
-    const underlying = first.callSpread.shortLeg.parsed.underlying
-    const expiration = first.callSpread.shortLeg.parsed.expiration
-    const quantity = units.length
-    const unrealizedPnl = units.reduce((sum, unit) => {
-        const unitLegs = [
-            unit.callSpread.shortLeg.position,
-            unit.callSpread.longLeg.position,
-            unit.putSpread.shortLeg.position,
-            unit.putSpread.longLeg.position,
-        ]
-        return sum + sumUnitUnrealizedPnl(unitLegs)
-    }, 0)
-
-    return buildPositionGroup({
-        structureType: "iron_condor",
-        underlying,
-        expiration,
-        quantity,
-        positions,
-        unrealizedPnl,
-    })
+    const normalized = parsedEntries as Array<{
+        position: TPosition
+        parsed: NonNullable<ReturnType<typeof parseOptionContractSymbol>>
+    }>
+    return normalized.every((entry) =>
+        entry.parsed.underlying === claim.underlying &&
+        entry.parsed.expiration === claim.expiration
+    )
+        ? normalized
+        : null
 }
 
-function buildPositionGroupFromVerticalUnits(units: CreditVerticalUnit[]): PositionGroup | null {
-    const first = units[0]
-    if (!first) {
-        return null
-    }
+export function isAlpacaRawOptionLegPosition(position: PositionLike): boolean {
+    return !position.instrument.includes(":") && Boolean(parseOptionContractSymbol(position.instrument))
+}
 
-    const positions = [
-        first.spread.shortLeg.position,
-        first.spread.longLeg.position,
-    ]
-    const underlying = first.spread.shortLeg.parsed.underlying
-    const expiration = first.spread.shortLeg.parsed.expiration
-    const quantity = units.length
-    const verticalSpreadType = first.verticalSpreadType
-    const unrealizedPnl = units.reduce((sum, unit) => {
-        const unitLegs = [
-            unit.spread.shortLeg.position,
-            unit.spread.longLeg.position,
-        ]
-        return sum + sumUnitUnrealizedPnl(unitLegs)
-    }, 0)
+function buildSyntheticClosePosition<TPosition extends PositionLike>(
+    first: TPosition,
+    instrument: string,
+    entries: TPosition[],
+    metadata: Record<string, unknown> = {}
+): Position {
+    const quantity = Math.min(...entries.map((entry) => entry.quantity))
+    const entryPrice = Math.abs(sumPositionPrices(entries, "entryPrice"))
+    const currentPrice = entries.every((entry) => entry.currentPrice !== undefined)
+        ? Math.abs(sumPositionPrices(entries, "currentPrice"))
+        : undefined
+    const unrealizedPnl = entries.some((entry) => entry.unrealizedPnl !== undefined)
+        ? entries.reduce((sum, entry) => sum + (entry.unrealizedPnl ?? 0), 0)
+        : undefined
 
-    return buildPositionGroup({
-        structureType: "credit_vertical",
-        verticalSpreadType,
-        underlying,
-        expiration,
+    return {
+        instrument,
+        providerPositionId: readClaimPositionId(first) ?? first.providerPositionId,
+        side: "short",
         quantity,
-        positions,
-        unrealizedPnl,
-    })
+        entryPrice: roundPrice(entryPrice),
+        currentPrice: currentPrice !== undefined ? roundPrice(currentPrice) : undefined,
+        unrealizedPnl: unrealizedPnl !== undefined ? roundPrice(unrealizedPnl) : undefined,
+        metadata: {
+            ...first.metadata,
+            ...metadata,
+            alpacaClaimInstrument: instrument,
+            alpacaCloseGroup: true,
+            providerLegs: entries.map((entry) => ({
+                instrument: entry.instrument,
+                providerPositionId: entry.providerPositionId,
+                side: entry.side,
+                quantity: entry.quantity,
+                entryPrice: entry.entryPrice,
+                currentPrice: entry.currentPrice,
+                positionKey: readMetadataString(entry.metadata, "positionKey"),
+            })),
+        },
+    }
+}
+
+function sumPositionPrices<TPosition extends PositionLike>(
+    positions: TPosition[],
+    key: "entryPrice" | "currentPrice"
+): number {
+    return positions.reduce((sum, position) => {
+        const value = position[key] ?? 0
+        const multiplier = position.side === "short" ? -1 : 1
+        return sum + value * multiplier
+    }, 0)
+}
+
+function readClaimInstrument(position: PositionLike): string | undefined {
+    return readMetadataString(position.metadata, "alpacaClaimInstrument") ??
+        readMetadataString(position.metadata, "claimInstrument") ??
+        (
+            parseClaimedStructureInstrument(position.instrument)
+                ? position.instrument.trim().toUpperCase()
+                : undefined
+        )
+}
+
+function readClaimPositionId(position: PositionLike): string | undefined {
+    return readMetadataString(position.metadata, "alpacaClaimPositionId") ??
+        readMetadataString(position.metadata, "claimId")
+}
+
+function readMetadataString(
+    metadata: Record<string, unknown> | undefined,
+    key: string
+): string | undefined {
+    const value = metadata?.[key]
+    return typeof value === "string" && value.trim()
+        ? value.trim()
+        : undefined
+}
+
+export function isAlpacaOptionPosition(position: AlpacaPositionResponse): boolean {
+    return position.asset_class === undefined || position.asset_class === "us_option"
 }
 
 function buildPositionGroup(args: {
@@ -488,16 +409,6 @@ function buildPositionGroup(args: {
     }
 }
 
-function sumUnitUnrealizedPnl(legs: AlpacaPositionResponse[]): number {
-    return legs.reduce((legSum, leg) => {
-        const totalQuantity = parseOptionQuantity(leg)
-        if (totalQuantity <= 0) {
-            return legSum
-        }
-        return legSum + (toNumber(leg.unrealized_pl) / totalQuantity)
-    }, 0)
-}
-
 function sumNetStructurePrice(
     positions: AlpacaPositionResponse[],
     resolvePrice: (position: AlpacaPositionResponse) => number
@@ -507,31 +418,6 @@ function sumNetStructurePrice(
         const multiplier = side === "short" ? -1 : 1
         return sum + resolvePrice(position) * multiplier
     }, 0)
-}
-
-export function mapGroupedPosition(group: PositionGroup): Position {
-    return {
-        instrument: group.instrument,
-        side: "short",
-        quantity: group.quantity,
-        entryPrice: group.entryPrice,
-        currentPrice: group.currentPrice,
-        unrealizedPnl: group.unrealizedPnl,
-        metadata: {
-            structureType: group.structureType,
-            verticalSpreadType: group.verticalSpreadType,
-            underlying: group.underlying,
-            expiration: group.expiration,
-            structureLegs: group.positions
-                .map((position) => position.symbol.trim().toUpperCase())
-                .sort(),
-            legs: group.positions.map((position) => ({
-                symbol: position.symbol,
-                side: position.side,
-                qty: Math.abs(toNumber(position.qty)),
-            })),
-        },
-    }
 }
 
 export function mapSinglePosition(position: AlpacaPositionResponse): Position {
@@ -558,26 +444,106 @@ export function resolveGroupForClose(
     positions: AlpacaPositionResponse[],
     instrument: string
 ): PositionGroup | null {
-    const grouped = groupOptionStructures(positions.filter(isAlpacaOptionPosition)).groups
-    const normalizedInstrument = instrument.trim().toUpperCase()
-    const directMatch = grouped.find((group) => group.instrument.trim().toUpperCase() === normalizedInstrument)
-    if (directMatch) {
-        return directMatch
+    const claim = parseClaimedStructureInstrument(instrument)
+    if (!claim) {
+        return null
     }
 
-    const byUnderlying = grouped.filter((group) => group.underlying === normalizedInstrument)
-    if (byUnderlying.length === 1) {
-        return byUnderlying[0] ?? null
+    const positionsBySymbol = new Map(
+        positions
+            .filter(isAlpacaOptionPosition)
+            .map((position) => [position.symbol.trim().toUpperCase(), position])
+    )
+    const claimedPositions = claim.legs
+        .map((leg) => positionsBySymbol.get(leg))
+        .filter((position): position is AlpacaPositionResponse => Boolean(position))
+
+    if (claimedPositions.length !== claim.legs.length) {
+        return null
     }
 
-    const bySymbol = grouped.filter((group) => {
-        return group.positions.some((position) => position.symbol.trim().toUpperCase() === normalizedInstrument)
+    const claimedEntries = claimedPositions.map(toClaimPositionLike)
+    if (!isCompleteClaimCloseGroup(claim, claimedEntries)) {
+        return null
+    }
+
+    const quantity = claimedEntries[0]?.quantity ?? 0
+    if (!Number.isFinite(quantity) || quantity <= 0) {
+        return null
+    }
+
+    const scaledPositions = claimedPositions.map((position) => ({
+        ...position,
+        qty: String(quantity),
+    }))
+    const unrealizedPnl = scaledPositions.reduce((sum, position) => sum + toNumber(position.unrealized_pl), 0)
+
+    return buildPositionGroup({
+        structureType: claim.structureType,
+        verticalSpreadType: claim.verticalSpreadType,
+        underlying: claim.underlying,
+        expiration: claim.expiration,
+        quantity,
+        positions: scaledPositions,
+        unrealizedPnl,
     })
-    if (bySymbol.length === 1) {
-        return bySymbol[0] ?? null
+}
+
+function toClaimPositionLike(position: AlpacaPositionResponse): PositionLike {
+    return {
+        instrument: position.symbol,
+        side: position.side,
+        quantity: parseOptionQuantity(position),
+        entryPrice: toNumber(position.avg_entry_price),
+        currentPrice: position.current_price ? toNumber(position.current_price) : undefined,
+        unrealizedPnl: position.unrealized_pl ? toNumber(position.unrealized_pl) : undefined,
+    }
+}
+
+function parseClaimedStructureInstrument(instrument: string): {
+    structureType: AlpacaStructureType
+    verticalSpreadType?: AlpacaVerticalSpreadType
+    underlying: string
+    expiration: string
+    legs: string[]
+} | null {
+    const [kind, first, second, third, legList] = instrument.trim().toUpperCase().split(":")
+
+    if (kind === "IC" && first && second && third) {
+        const legs = third.split("|").map((leg) => leg.trim()).filter(Boolean)
+        return legs.length === 4
+            ? {
+                structureType: "iron_condor",
+                underlying: first,
+                expiration: second,
+                legs,
+            }
+            : null
     }
 
-    return null
+    if (kind !== "VS" || !first || !second || !third || !legList) {
+        return null
+    }
+
+    const verticalSpreadType = first === "BULL_PUT_CREDIT"
+        ? "bull_put_credit"
+        : first === "BEAR_CALL_CREDIT"
+            ? "bear_call_credit"
+            : undefined
+    if (!verticalSpreadType) {
+        return null
+    }
+
+    const legs = legList.split("|").map((leg) => leg.trim()).filter(Boolean)
+    return legs.length === 2
+        ? {
+            structureType: "credit_vertical",
+            verticalSpreadType,
+            underlying: second,
+            expiration: third,
+            legs,
+        }
+        : null
 }
 
 export function toNumber(value: string | undefined): number {

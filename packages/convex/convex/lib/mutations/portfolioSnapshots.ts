@@ -256,7 +256,49 @@ async function replaceStrategyPositionClaims(
     await replacePositionClaims(ctx, {
         strategyId,
         app,
-        positionClaims: positions.map((position) => buildPositionClaim(position)),
+        positionClaims: positions.flatMap(buildSnapshotPositionClaims),
         updatedAt,
     })
+}
+
+function buildSnapshotPositionClaims(position: {
+    positionKey?: string
+    instrument: string
+    side: string
+    providerPositionId?: string
+    metadata?: string
+}): Array<{ instrument: string; sourceId?: string }> {
+    const claims = [buildPositionClaim(position)]
+    const metadata = readMetadataRecord(position.metadata)
+    const claimInstrument = readString(metadata?.alpacaClaimInstrument)
+
+    if (claimInstrument) {
+        claims.push({
+            instrument: claimInstrument,
+            sourceId: claimInstrument,
+        })
+    }
+
+    return claims
+}
+
+function readMetadataRecord(metadata: string | undefined): Record<string, unknown> | undefined {
+    if (!metadata) {
+        return undefined
+    }
+
+    try {
+        const parsed = JSON.parse(metadata)
+        return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+            ? parsed as Record<string, unknown>
+            : undefined
+    } catch {
+        return undefined
+    }
+}
+
+function readString(value: unknown): string | undefined {
+    return typeof value === "string" && value.trim()
+        ? value.trim()
+        : undefined
 }

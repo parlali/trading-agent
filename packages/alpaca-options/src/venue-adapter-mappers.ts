@@ -17,15 +17,11 @@ import { roundPrice } from "./alpaca-position-structures"
 
 export {
     buildGroupCloseIntent,
-    groupOptionStructures,
     isAlpacaOptionPosition,
-    mapGroupedPosition,
     mapSinglePosition,
     resolveGroupForClose,
     roundPrice,
     toNumber,
-    toResidualPosition,
-    type GroupingResult,
     type PositionGroup,
 } from "./alpaca-position-structures"
 
@@ -38,6 +34,8 @@ export function mapWorkingOrder(order: Awaited<ReturnType<AlpacaClient["getOpenO
 
     return {
         orderId: order.id,
+        providerOrderId: order.id,
+        providerClientOrderId: order.client_order_id,
         instrument: resolveOrderInstrument(order),
         status: mapAlpacaOrderStatus(order.status),
         quantity,
@@ -50,6 +48,7 @@ export function mapWorkingOrder(order: Awaited<ReturnType<AlpacaClient["getOpenO
         stopPrice: order.stop_price ? Number(order.stop_price) : undefined,
         avgFillPrice: order.filled_avg_price ? Number(order.filled_avg_price) : undefined,
         metadata: {
+            providerClientOrderId: order.client_order_id,
             legs: order.legs,
         },
     }

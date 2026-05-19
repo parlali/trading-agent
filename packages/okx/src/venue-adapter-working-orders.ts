@@ -42,6 +42,9 @@ export async function mapOKXWorkingOrders(args: {
 
             return {
                 orderId: toCompositeOrderId("order", order.instId, order.ordId),
+                providerOrderId: toCompositeOrderId("order", order.instId, order.ordId),
+                providerClientOrderId: order.clOrdId,
+                providerOrderAliases: [order.ordId, order.clOrdId].filter((value): value is string => Boolean(value)),
                 instrument: order.instId,
                 status: mapOKXOrderStatus(order.state),
                 quantity,
@@ -53,6 +56,8 @@ export async function mapOKXWorkingOrders(args: {
                 limitPrice: isFiniteNumberString(order.px) && Number(order.px) > 0 ? Number(order.px) : undefined,
                 avgFillPrice: isFiniteNumberString(order.avgPx) && Number(order.avgPx) > 0 ? Number(order.avgPx) : undefined,
                 metadata: {
+                    providerClientOrderId: order.clOrdId,
+                    ordId: order.ordId,
                     orderType: order.ordType,
                     reduceOnly: order.reduceOnly === "true",
                     tdMode: order.tdMode,
@@ -71,6 +76,9 @@ export async function mapOKXWorkingOrders(args: {
 
         return {
             orderId: toCompositeOrderId("algo", order.instId, order.algoId),
+            providerOrderId: toCompositeOrderId("algo", order.instId, order.algoId),
+            providerClientOrderId: order.algoClOrdId,
+            providerOrderAliases: [order.algoId, order.algoClOrdId].filter((value): value is string => Boolean(value)),
             instrument: order.instId,
             status: mapOKXAlgoOrderStatus(order.state),
             quantity,
@@ -82,6 +90,8 @@ export async function mapOKXWorkingOrders(args: {
             stopPrice: isFiniteNumberString(order.slTriggerPx) ? Number(order.slTriggerPx) : undefined,
             limitPrice: isFiniteNumberString(order.tpTriggerPx) ? Number(order.tpTriggerPx) : undefined,
             metadata: {
+                providerClientOrderId: order.algoClOrdId,
+                algoId: order.algoId,
                 orderType: order.ordType,
                 kind: "protection",
                 posSide: order.posSide,

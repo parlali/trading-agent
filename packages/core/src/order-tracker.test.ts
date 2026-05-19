@@ -156,6 +156,76 @@ function createFilledLifecycleVenue(): VenueAdapter {
 }
 
 describe("order lifecycle persistence", () => {
+    it("persists commit-unknown submissions without a provider order id", async () => {
+        const persistence = createMemoryOrderPersistence()
+        const pipeline = new ExecutionPipeline({
+            venue: {
+                ...createPendingLifecycleVenue(),
+                submitOrder: async () => {
+                    throw Object.assign(new Error("IPC recv failed"), {
+                        executionError: {
+                            source: "venue",
+                            message: "IPC recv failed",
+                            code: "IPC_RECV_FAILED",
+                            retryable: true,
+                        },
+                    })
+                },
+            },
+            venueName: "mt5",
+            policy: {
+                dryRun: false,
+                safety: {
+                    account: {
+                        allocationPercent: 100,
+                    },
+                },
+            },
+            riskValidators: [allowIntent],
+            logger: createLogger({ minLevel: "fatal" }),
+            orderPersistence: persistence.adapter,
+            runId: "run-commit-unknown",
+            strategyId: "strategy-1",
+        })
+
+        const { result, handle } = await pipeline.executeIntent(
+            {
+                instrument: "XAUUSD",
+                side: "buy",
+                quantity: 0.01,
+                orderType: "limit",
+                limitPrice: 4715.5,
+                timeInForce: "day",
+                metadata: {
+                    action: "entry",
+                },
+            },
+            account,
+            []
+        )
+
+        expect(result.commitOutcome).toBe("commit_unknown")
+        expect(result.status).toBe("pending")
+        expect(result.orderId).toMatch(/^vmte01/)
+        expect(handle?.orderId).toBe(result.orderId)
+
+        const snapshot = persistence.orders.get(result.orderId)
+        expect(snapshot).toMatchObject({
+            orderId: result.orderId,
+            canonicalOrderId: result.orderId,
+            providerOrderId: "",
+            providerClientOrderId: result.orderId,
+            commitOutcome: "commit_unknown",
+        })
+        expect(persistence.transitions[0]).toMatchObject({
+            orderId: result.orderId,
+            status: "pending",
+            details: expect.objectContaining({
+                commitOutcome: "commit_unknown",
+            }),
+        })
+    })
+
     it("keeps one canonical order id across provider replacements and assigns canonical transition sequences", async () => {
         const persistence = createMemoryOrderPersistence()
         const pipeline = new ExecutionPipeline({
@@ -176,7 +246,7 @@ describe("order lifecycle persistence", () => {
             strategyId: "strategy-1",
         })
 
-        await pipeline.executeIntent(
+        const submitted = await pipeline.executeIntent(
             {
                 instrument: "BTC-USDT-SWAP",
                 side: "buy",
@@ -198,13 +268,16 @@ describe("order lifecycle persistence", () => {
 
         const snapshot = await pipeline.getOrderSnapshot("provider-entry-1")
         expect(snapshot).not.toBeNull()
-        expect(snapshot?.orderId).toBe("provider-entry-1")
+        expect(snapshot?.orderId).toBe(submitted.result.orderId)
+        expect(snapshot?.providerClientOrderId).toBe(submitted.result.orderId)
         expect(snapshot?.providerOrderId).toBe("provider-entry-2")
         expect(snapshot?.status).toBe("pending")
-        expect(snapshot?.lastTransitionSequence).toBe(3)
+        expect(snapshot?.lastTransitionSequence).toBe(4)
 
-        expect(persistence.transitions.map((transition) => transition.sequence)).toEqual([1, 2, 3])
-        expect(new Set(persistence.transitions.map((transition) => transition.orderId))).toEqual(new Set(["provider-entry-1"]))
+        expect(persistence.transitions.map((transition) => transition.sequence)).toEqual([1, 2, 3, 4])
+        expect(persistence.transitions[0]?.details?.commitOutcome).toBe("commit_unknown")
+        expect(persistence.transitions[1]?.details?.commitOutcome).toBe("accepted")
+        expect(new Set(persistence.transitions.map((transition) => transition.orderId))).toEqual(new Set([submitted.result.orderId]))
     })
 
     it("preserves a filled lifecycle when a later modification attempt is rejected", async () => {

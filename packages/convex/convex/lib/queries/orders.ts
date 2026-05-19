@@ -2,24 +2,13 @@ import { query } from "../../_generated/server"
 import type { Doc } from "../../_generated/dataModel"
 import { v } from "convex/values"
 import { requireUser, requireUserOrServiceToken } from "../authGuards"
+import { findOrderRowByIdentity } from "../orderIdentityLookup"
 
 export const getOrderById = query({
     args: { serviceToken: v.optional(v.string()), orderId: v.string() },
     handler: async (ctx, args) => {
         await requireUserOrServiceToken(ctx, args.serviceToken)
-        const byCanonicalId = await ctx.db
-            .query("orders")
-            .withIndex("by_order_id", (q) => q.eq("orderId", args.orderId))
-            .first()
-
-        if (byCanonicalId) {
-            return byCanonicalId
-        }
-
-        return await ctx.db
-            .query("orders")
-            .withIndex("by_provider_order_id", (q) => q.eq("providerOrderId", args.orderId))
-            .first()
+        return await findOrderRowByIdentity(ctx.db, args.orderId)
     },
 })
 

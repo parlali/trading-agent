@@ -45,6 +45,7 @@ export function mapOrderResponse(order: AlpacaOrderResponse): ExecutionResult {
             retryable: false,
             details: {
                 orderId: order.id,
+                providerClientOrderId: order.client_order_id,
                 status: order.status,
             },
         })
@@ -60,6 +61,8 @@ export function mapOrderResponse(order: AlpacaOrderResponse): ExecutionResult {
 
     return {
         orderId: order.id,
+        providerOrderId: order.id,
+        providerClientOrderId: order.client_order_id,
         status,
         filledQuantity: Number(order.filled_qty ?? 0),
         fillPrice: order.filled_avg_price ? Number(order.filled_avg_price) : undefined,
@@ -70,7 +73,7 @@ export function mapOrderResponse(order: AlpacaOrderResponse): ExecutionResult {
     }
 }
 
-export function buildCreateOrderPayload(intent: OrderIntent): Record<string, unknown> {
+export function buildCreateOrderPayload(intent: OrderIntent, clientOrderId?: string): Record<string, unknown> {
     if (!Number.isInteger(intent.quantity) || intent.quantity <= 0) {
         throw createExecutionError("pre_validation", "Alpaca options orders require a positive integer quantity", {
             code: "INVALID_QUANTITY",
@@ -121,6 +124,7 @@ export function buildCreateOrderPayload(intent: OrderIntent): Record<string, unk
     }
 
     return {
+        client_order_id: clientOrderId,
         order_class: "mleg",
         type: mapOrderType(intent.orderType),
         time_in_force: intent.timeInForce,

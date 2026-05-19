@@ -225,3 +225,35 @@ describe("PolymarketClient.getCurrentPositions", () => {
         expect(url.searchParams.get("user")).toBe("0x1111111111111111111111111111111111111111")
     })
 })
+
+describe("PolymarketClient authenticated mutations", () => {
+    const fetchMock = vi.fn<typeof fetch>()
+    const originalFetch = globalThis.fetch
+
+    beforeEach(() => {
+        fetchMock.mockReset()
+        globalThis.fetch = fetchMock as typeof fetch
+    })
+
+    afterEach(() => {
+        globalThis.fetch = originalFetch
+    })
+
+    it("does not retry prepared order posting after a transport failure", async () => {
+        fetchMock.mockRejectedValue(new Error("socket timeout after provider commit"))
+
+        await expect(createClient().postPreparedOrder({
+            orderBody: {
+                order: {
+                    salt: "1",
+                },
+            },
+            signedOrderFingerprint: "fingerprint-1",
+            signedOrderMetadata: {
+                signedOrderFingerprint: "fingerprint-1",
+            },
+        })).rejects.toThrow("socket timeout after provider commit")
+
+        expect(fetchMock).toHaveBeenCalledTimes(1)
+    })
+})

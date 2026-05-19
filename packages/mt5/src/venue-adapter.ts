@@ -1,16 +1,21 @@
 import {
     createExecutionError,
+    createExecutionErrorDetail,
     ExecutionCostTracker,
+    formatExecutionError,
     getExecutionErrorDetail,
     type AccountState,
     type ExecutionCostAssessment,
     type ExecutionCostSnapshot,
     type ExecutionResult,
     type OrderIntent,
+    type OrderOperationContext,
     type PriceVerification,
     type PriceVerifier,
     type Position,
     type ProviderPositionClosure,
+    type SubmitOrderContext,
+    type SubmitRecoveryResult,
     type VenueAdapter,
     type WorkingOrder,
 } from "@valiq-trading/core"
@@ -39,6 +44,7 @@ import {
 } from "./venue-mappers"
 
 export class MT5VenueAdapter implements VenueAdapter, PriceVerifier {
+    readonly identityCapability = "native_client_id" as const
     private static readonly connectionPromises = new Map<string, Promise<void>>()
     private lastConnectedAt = 0
     private readonly CONNECTION_TTL = 60_000
@@ -136,8 +142,19 @@ export class MT5VenueAdapter implements VenueAdapter, PriceVerifier {
         })
     }
 
-    async submitOrder(intent: OrderIntent): Promise<ExecutionResult> {
+    async submitOrder(intent: OrderIntent, context?: SubmitOrderContext): Promise<ExecutionResult> {
+        if (!context?.identity.providerClientOrderId) {
+            throw createExecutionError("pre_validation", "MT5 live submission requires canonical execution identity", {
+                code: "MISSING_CANONICAL_ORDER_ID",
+                retryable: false,
+                details: {
+                    instrument: intent.instrument,
+                },
+            })
+        }
+
         await this.ensureConnected()
+        const providerClientOrderId = context.identity.providerClientOrderId
 
         const result = await this.client.submitOrder({
             symbol: intent.instrument,
@@ -148,40 +165,156 @@ export class MT5VenueAdapter implements VenueAdapter, PriceVerifier {
             stopLoss: intent.metadata?.stopLoss as number | undefined,
             takeProfit: intent.metadata?.takeProfit as number | undefined,
             magic: (intent.metadata?.magic as number) ?? 0,
-            comment: (intent.metadata?.comment as string) ?? "",
+            comment: providerClientOrderId,
         })
-
-        return mapMT5SubmissionResult(this.client, result, intent)
-    }
-
-    async cancelOrder(orderId: string): Promise<ExecutionResult> {
-        await this.ensureConnected()
-
-        return await this.withTicket(orderId, async (ticket) => {
-            const result = await this.client.cancelOrder({ ticket })
-            return this.client.mapOrderResultToExecution(result, {
-                fallbackOrderId: orderId,
-                successStatus: "cancelled",
-                filledQuantity: 0,
-            })
-        })
-    }
-
-    async cancelAllOrders(): Promise<{ cancelled: number; results: ExecutionResult[] }> {
-        await this.ensureConnected()
-
-        const response = await this.client.cancelAllOrders()
 
         return {
-            cancelled: response.cancelled,
-            results: response.results.map((result) =>
-                this.client.mapOrderResultToExecution(result, {
-                    fallbackOrderId: result.orderId,
-                    successStatus: "cancelled",
-                    filledQuantity: 0,
-                })
-            ),
+            ...mapMT5SubmissionResult(this.client, result, intent),
+            providerClientOrderId,
+            providerOrderId: result.orderId || result.dealId || undefined,
         }
+    }
+
+    classifySubmitError(error: unknown): "commit_unknown" | "rejected" | undefined {
+        const detail = getExecutionErrorDetail(error)
+        const text = `${detail?.message ?? ""} ${detail?.code ?? ""}`.toLowerCase()
+        if (
+            text.includes("ipc recv failed") ||
+            text.includes("socket close") ||
+            text.includes("socket closed") ||
+            text.includes("timeout") ||
+            text.includes("timed out")
+        ) {
+            return "commit_unknown"
+        }
+
+        return detail?.retryable ? "commit_unknown" : "rejected"
+    }
+
+    async recoverSubmittedOrder(
+        _intent: OrderIntent,
+        context: SubmitOrderContext,
+        _error?: unknown
+    ): Promise<SubmitRecoveryResult> {
+        await sleep(250)
+        return await this.withRecoverableRead(async () => {
+            const providerClientOrderId = context.identity.providerClientOrderId
+            const orders = await this.client.getOpenOrders()
+            const matches = orders.filter((order) => order.comment === providerClientOrderId)
+
+            if (matches.length > 1) {
+                return {
+                    outcome: "ambiguous",
+                    message: "MT5 commit-unknown recovery found multiple live orders with the canonical client id",
+                    matches: matches.map((order) => ({
+                        orderId: String(order.ticket),
+                        providerOrderId: String(order.ticket),
+                        providerClientOrderId,
+                        status: mapMT5OrderState(order.state),
+                        filledQuantity: 0,
+                        timestamp: Date.now(),
+                    })),
+                    details: {
+                        providerClientOrderId,
+                        tickets: matches.map((order) => order.ticket),
+                    },
+                }
+            }
+
+            if (matches.length === 1) {
+                const match = matches[0]!
+                return {
+                    outcome: "accepted",
+                    result: {
+                        orderId: String(match.ticket),
+                        providerOrderId: String(match.ticket),
+                        providerClientOrderId,
+                        status: mapMT5OrderState(match.state),
+                        filledQuantity: 0,
+                        timestamp: Date.now(),
+                        commitOutcome: "recovered",
+                    },
+                }
+            }
+
+            const positions = await this.client.getPositions()
+            const positionMatches = positions.filter((position) =>
+                position.comment === providerClientOrderId
+            )
+
+            if (positionMatches.length === 1) {
+                const match = positionMatches[0]!
+                return {
+                    outcome: "accepted",
+                    result: {
+                        orderId: String(match.ticket),
+                        providerOrderId: String(match.ticket),
+                        providerClientOrderId,
+                        status: "filled",
+                        filledQuantity: match.volume,
+                        fillPrice: match.openPrice > 0 ? match.openPrice : undefined,
+                        timestamp: Date.now(),
+                        commitOutcome: "recovered",
+                    },
+                }
+            }
+
+            if (positionMatches.length > 1) {
+                return {
+                    outcome: "ambiguous",
+                    message: "MT5 commit-unknown recovery found multiple live positions with the canonical client id",
+                    matches: positionMatches.map((position) => ({
+                        orderId: String(position.ticket),
+                        providerOrderId: String(position.ticket),
+                        providerClientOrderId,
+                        status: "filled",
+                        filledQuantity: position.volume,
+                        fillPrice: position.openPrice > 0 ? position.openPrice : undefined,
+                        timestamp: Date.now(),
+                    })),
+                    details: {
+                        providerClientOrderId,
+                        tickets: positionMatches.map((position) => position.ticket),
+                    },
+                }
+            }
+
+            return {
+                outcome: "not_found",
+                message: "MT5 commit-unknown recovery found no live order or position with the canonical client id",
+                details: {
+                    providerClientOrderId,
+                },
+            }
+        })
+    }
+
+    async cancelOrder(orderId: string, context?: OrderOperationContext): Promise<ExecutionResult> {
+        await this.ensureConnected()
+
+        const ticketIds = uniqueTickets([
+            orderId,
+            context?.canonicalOrderId,
+            context?.providerOrderId,
+            context?.providerClientOrderId,
+            ...(context?.providerOrderAliases ?? []),
+        ])
+
+        if (ticketIds.length === 0) {
+            return rejectInvalidMT5Ticket(orderId)
+        }
+
+        const results: ExecutionResult[] = []
+        for (const ticket of ticketIds) {
+            const result = await this.client.cancelOrder({ ticket })
+            results.push(this.client.mapOrderResultToExecution(result, {
+                fallbackOrderId: String(ticket),
+                successStatus: "cancelled",
+                filledQuantity: 0,
+            }))
+        }
+
+        return aggregateMT5CancelResults(orderId, results)
     }
 
     async modifyOrder(orderId: string, changes: Partial<OrderIntent>): Promise<ExecutionResult> {
@@ -214,7 +347,12 @@ export class MT5VenueAdapter implements VenueAdapter, PriceVerifier {
         })
     }
 
-    async closePosition(instrument: string): Promise<ExecutionResult> {
+    async closePosition(
+        instrument: string,
+        _preparedIntent?: OrderIntent,
+        context?: SubmitOrderContext
+    ): Promise<ExecutionResult> {
+        const providerClientOrderId = requireMT5CloseProviderClientOrderId(context, instrument)
         await this.ensureConnected()
 
         const positions = await this.client.getPositions()
@@ -232,18 +370,29 @@ export class MT5VenueAdapter implements VenueAdapter, PriceVerifier {
 
         const results: ExecutionResult[] = []
         for (const position of matchingPositions) {
-            const result = await this.client.closePosition({ ticket: position.ticket })
+            const result = await this.client.closePosition({
+                ticket: position.ticket,
+                comment: providerClientOrderId,
+            })
             results.push(
-                this.client.mapOrderResultToExecution(result, {
-                    fallbackOrderId: String(position.ticket),
-                })
+                {
+                    ...this.client.mapOrderResultToExecution(result, {
+                        fallbackOrderId: String(position.ticket),
+                    }),
+                    providerClientOrderId,
+                }
             )
         }
 
         return aggregateMT5CloseResults(instrument, results)
     }
 
-    async closeProviderPosition(position: Position): Promise<ExecutionResult> {
+    async closeProviderPosition(
+        position: Position,
+        _preparedIntent?: OrderIntent,
+        context?: SubmitOrderContext
+    ): Promise<ExecutionResult> {
+        const providerClientOrderId = requireMT5CloseProviderClientOrderId(context, position.instrument)
         await this.ensureConnected()
 
         const ticket = readMT5Ticket(position)
@@ -258,10 +407,16 @@ export class MT5VenueAdapter implements VenueAdapter, PriceVerifier {
             })
         }
 
-        const result = await this.client.closePosition({ ticket })
-        return this.client.mapOrderResultToExecution(result, {
-            fallbackOrderId: String(ticket),
+        const result = await this.client.closePosition({
+            ticket,
+            comment: providerClientOrderId,
         })
+        return {
+            ...this.client.mapOrderResultToExecution(result, {
+                fallbackOrderId: String(ticket),
+            }),
+            providerClientOrderId,
+        }
     }
 
     async getOrderStatus(orderId: string): Promise<ExecutionResult> {
@@ -367,16 +522,6 @@ export class MT5VenueAdapter implements VenueAdapter, PriceVerifier {
         })
     }
 
-    async closeAllPositions(): Promise<{ closed: number; results: ExecutionResult[] }> {
-        await this.ensureConnected()
-        const response = await this.client.closeAllPositions()
-
-        return {
-            closed: response.closed,
-            results: response.results.map((r) => this.client.mapOrderResultToExecution(r)),
-        }
-    }
-
     async assessSymbolExecutionCost(symbolInfo: MT5SymbolInfo): Promise<ExecutionCostAssessment> {
         const snapshots = this.executionCostTracker.needsWarmup(this.buildExecutionCostSnapshot(symbolInfo))
             ? await this.collectSymbolExecutionSnapshots(symbolInfo.symbol, symbolInfo, 3)
@@ -440,4 +585,68 @@ export function isMT5ConnectContention(error: unknown): boolean {
 
 async function sleep(delayMs: number): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, delayMs))
+}
+
+function aggregateMT5CancelResults(orderId: string, results: ExecutionResult[]): ExecutionResult {
+    const failed = results.filter((result) => result.status !== "cancelled")
+    const errorDetail = failed.length > 0
+        ? createExecutionErrorDetail(
+            "venue",
+            "Failed to cancel every MT5 provider ticket owned by the canonical request",
+            {
+                code: "MT5_CANONICAL_CANCEL_RESIDUAL_TICKETS",
+                retryable: true,
+                details: {
+                    failedTickets: failed.map((result) => result.providerOrderId ?? result.orderId),
+                    cancelledTickets: results
+                        .filter((result) => result.status === "cancelled")
+                        .map((result) => result.providerOrderId ?? result.orderId),
+                },
+            }
+        )
+        : undefined
+    return {
+        orderId: results.map((result) => result.orderId).filter(Boolean).join(",") || orderId,
+        providerOrderId: results.map((result) => result.providerOrderId ?? result.orderId).filter(Boolean).join(","),
+        providerOrderAliases: results.map((result) => result.orderId).filter((value) => value !== orderId),
+        status: failed.length === 0 ? "cancelled" : "rejected",
+        filledQuantity: 0,
+        timestamp: Date.now(),
+        error: errorDetail ? formatExecutionError(errorDetail) : undefined,
+        errorDetail,
+    }
+}
+
+function uniqueTickets(values: Array<string | undefined>): number[] {
+    const tickets = new Set<number>()
+
+    for (const value of values) {
+        if (!value) {
+            continue
+        }
+
+        const ticket = parseMT5Ticket(value)
+        if (ticket !== undefined) {
+            tickets.add(ticket)
+        }
+    }
+
+    return Array.from(tickets)
+}
+
+function requireMT5CloseProviderClientOrderId(
+    context: SubmitOrderContext | undefined,
+    instrument: string
+): string {
+    if (!context?.identity.providerClientOrderId) {
+        throw createExecutionError("pre_validation", "MT5 close requires canonical execution identity", {
+            code: "MISSING_CANONICAL_ORDER_ID",
+            retryable: false,
+            details: {
+                instrument,
+            },
+        })
+    }
+
+    return context.identity.providerClientOrderId
 }

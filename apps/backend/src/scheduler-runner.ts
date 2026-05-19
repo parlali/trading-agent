@@ -191,6 +191,36 @@ export async function runStrategy(
             ownedInstruments,
             ownershipScope,
             strategyRealizedPnl: 0,
+            executionSafetyFaultRecorder: async (fault) => {
+                await backend.recordExecutionSafetyFault({
+                    strategyId: strategy._id,
+                    app,
+                    instrument: fault.instrument,
+                    category: fault.category ?? "commit_unknown",
+                    message: fault.message,
+                    providerPayload: fault.providerPayload,
+                    canonicalOrderId: fault.canonicalOrderId,
+                    providerOrderId: fault.providerOrderId,
+                    providerClientOrderId: fault.providerClientOrderId,
+                    providerOrderAliases: fault.providerOrderAliases,
+                    submitAttemptId: fault.submitAttemptId,
+                    submitAttemptSequence: fault.submitAttemptSequence,
+                    runId,
+                    venue: fault.venue,
+                    signedOrderFingerprint: fault.signedOrderFingerprint,
+                    recoveryProbeEvidence: fault.recoveryProbeEvidence,
+                    blocked: true,
+                })
+                runLogger.error("Recorded execution safety fault", {
+                    strategyId: strategy._id,
+                    runId,
+                    app,
+                    instrument: fault.instrument,
+                    category: fault.category ?? "commit_unknown",
+                    canonicalOrderId: fault.canonicalOrderId,
+                    submitAttemptId: fault.submitAttemptId,
+                })
+            },
         })
         const activePipeline = pipeline
 

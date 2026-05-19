@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest"
-import { createExecutionError } from "@valiq-trading/core"
+import { createExecutionError, type Position } from "@valiq-trading/core"
 import { MT5Client, type MT5OrderResult, type MT5Position, type MT5PositionClosure, type MT5WorkerCredentials } from "./mt5-client.ts"
 import { MT5VenueAdapter } from "./venue-adapter.ts"
 
@@ -21,6 +21,20 @@ function createClient(): MT5Client {
     })
 
     return client
+}
+
+function createIdentityContext(canonicalOrderId: string, role: "entry" | "close" = "entry") {
+    return {
+        canonicalOrderId,
+        providerClientOrderId: canonicalOrderId,
+        providerOrderAliases: [],
+        submitAttemptId: "attempt",
+        submitAttemptSequence: 1,
+        commitOutcome: "accepted" as const,
+        venue: "mt5",
+        role,
+        sequence: 1,
+    }
 }
 
 describe("MT5VenueAdapter", () => {
@@ -139,22 +153,230 @@ describe("MT5VenueAdapter", () => {
 
     it("keeps successful limit submissions pending until provider status confirms a fill", async () => {
         const client = createClient()
-        client.submitOrder = async (): Promise<MT5OrderResult> => createOrderResult({
-            retcode: 10008,
-            retcodeDescription: "Order placed",
-            orderId: "1588167645",
-        })
+        let submittedComment = ""
+        client.submitOrder = async (params): Promise<MT5OrderResult> => {
+            submittedComment = params.comment ?? ""
+            return createOrderResult({
+                retcode: 10008,
+                retcodeDescription: "Order placed",
+                orderId: "1588167645",
+            })
+        }
 
         const adapter = new MT5VenueAdapter(client, credentials)
         const result = await adapter.submitOrder(createSubmissionIntent({
             orderType: "limit",
             limitPrice: 4715.5,
-        }))
+        }), {
+            identity: createIdentityContext("vmte01abcde23456"),
+        })
 
+        expect(submittedComment).toBe("vmte01abcde23456")
         expect(result.orderId).toBe("1588167645")
+        expect(result.providerClientOrderId).toBe("vmte01abcde23456")
         expect(result.status).toBe("pending")
         expect(result.filledQuantity).toBe(0)
         expect(result.fillPrice).toBeUndefined()
+    })
+
+    it("recovers one MT5 commit-unknown order by canonical comment", async () => {
+        const client = createClient()
+        client.getOpenOrders = async () => [{
+            ticket: 1607001000,
+            symbol: "XAUUSD",
+            type: "buy_limit",
+            volumeInitial: 0.01,
+            volumeCurrent: 0.01,
+            priceOpen: 4715.5,
+            stopLoss: 0,
+            takeProfit: 0,
+            state: "placed",
+            comment: "vmte01abcde23456",
+            magic: 0,
+            timeSetup: Date.now(),
+            timeDone: 0,
+        }]
+
+        const adapter = new MT5VenueAdapter(client, credentials)
+        const recovery = await adapter.recoverSubmittedOrder(
+            createSubmissionIntent({
+                orderType: "limit",
+                limitPrice: 4715.5,
+            }),
+            {
+                identity: createIdentityContext("vmte01abcde23456"),
+            },
+            new Error("IPC recv failed")
+        )
+
+        expect(recovery).toMatchObject({
+            outcome: "accepted",
+            result: {
+                providerOrderId: "1607001000",
+                providerClientOrderId: "vmte01abcde23456",
+                status: "pending",
+                commitOutcome: "recovered",
+            },
+        })
+    })
+
+    it("recovers one MT5 commit-unknown market fill from a live position canonical comment", async () => {
+        const client = createClient()
+        client.getOpenOrders = async () => []
+        client.getPositions = async () => [{
+            ...createPosition(1607002000, "XAUUSD", 4715.75),
+            comment: "vmte01filled1234",
+        }]
+
+        const adapter = new MT5VenueAdapter(client, credentials)
+        const recovery = await adapter.recoverSubmittedOrder(
+            createSubmissionIntent({
+                orderType: "market",
+            }),
+            {
+                identity: createIdentityContext("vmte01filled1234"),
+            },
+            new Error("IPC recv failed")
+        )
+
+        expect(recovery).toMatchObject({
+            outcome: "accepted",
+            result: {
+                providerOrderId: "1607002000",
+                providerClientOrderId: "vmte01filled1234",
+                status: "filled",
+                filledQuantity: 0.01,
+                fillPrice: 4715.75,
+                commitOutcome: "recovered",
+            },
+        })
+    })
+
+    it("reports every duplicate ticket when MT5 commit-unknown recovery is ambiguous", async () => {
+        const client = createClient()
+        const tickets = [1607001000, 1607001001, 1607001002, 1607001003, 1607001004]
+        client.getOpenOrders = async () => tickets.map((ticket) => ({
+            ticket,
+            symbol: "XAUUSD",
+            type: "buy_limit",
+            volumeInitial: 0.01,
+            volumeCurrent: 0.01,
+            priceOpen: 4715.5,
+            stopLoss: 0,
+            takeProfit: 0,
+            state: "placed",
+            comment: "vmte01abcde23456",
+            magic: 0,
+            timeSetup: Date.now(),
+            timeDone: 0,
+        }))
+
+        const adapter = new MT5VenueAdapter(client, credentials)
+        const recovery = await adapter.recoverSubmittedOrder(
+            createSubmissionIntent({
+                orderType: "limit",
+                limitPrice: 4715.5,
+            }),
+            {
+                identity: createIdentityContext("vmte01abcde23456"),
+            },
+            new Error("IPC recv failed")
+        )
+
+        expect(recovery).toMatchObject({
+            outcome: "ambiguous",
+            details: {
+                providerClientOrderId: "vmte01abcde23456",
+                tickets,
+            },
+        })
+        expect(recovery.outcome === "ambiguous" ? recovery.matches?.map((match) => match.providerOrderId) : []).toEqual(
+            tickets.map(String)
+        )
+    })
+
+    it("cancels every MT5 provider ticket alias and reports residual failures", async () => {
+        const client = createClient()
+        const cancelledTickets: number[] = []
+        client.cancelOrder = async ({ ticket }): Promise<MT5OrderResult> => {
+            cancelledTickets.push(ticket)
+            if (ticket === 1607001002) {
+                return createOrderResult({
+                    retcode: 10013,
+                    retcodeDescription: "Invalid request",
+                    orderId: String(ticket),
+                    success: false,
+                })
+            }
+
+            return createOrderResult({
+                retcode: 10009,
+                retcodeDescription: "Request completed",
+                orderId: String(ticket),
+                success: true,
+            })
+        }
+
+        const adapter = new MT5VenueAdapter(client, credentials)
+        const result = await adapter.cancelOrder("1607001000", {
+            providerOrderAliases: ["1607001001", "1607001002"],
+        })
+
+        expect(cancelledTickets).toEqual([1607001000, 1607001001, 1607001002])
+        expect(result.status).toBe("rejected")
+        expect(result.errorDetail).toMatchObject({
+            code: "MT5_CANONICAL_CANCEL_RESIDUAL_TICKETS",
+            details: {
+                failedTickets: ["1607001002"],
+                cancelledTickets: ["1607001000", "1607001001"],
+            },
+        })
+    })
+
+    it("cancels one parseable MT5 alias when the canonical id is not a ticket", async () => {
+        const client = createClient()
+        const cancelledTickets: number[] = []
+        client.cancelOrder = async ({ ticket }): Promise<MT5OrderResult> => {
+            cancelledTickets.push(ticket)
+            return createOrderResult({
+                retcode: 10009,
+                retcodeDescription: "Request completed",
+                orderId: String(ticket),
+                success: true,
+            })
+        }
+
+        const adapter = new MT5VenueAdapter(client, credentials)
+        const result = await adapter.cancelOrder("vmtx01abcde23456", {
+            canonicalOrderId: "vmtx01abcde23456",
+            providerOrderAliases: ["1607001001"],
+        })
+
+        expect(cancelledTickets).toEqual([1607001001])
+        expect(result.status).toBe("cancelled")
+        expect(result.providerOrderId).toBe("1607001001")
+    })
+
+    it("dedupes MT5 aliases across canonical, provider id, and aliases", async () => {
+        const client = createClient()
+        const cancelledTickets: number[] = []
+        client.cancelOrder = async ({ ticket }): Promise<MT5OrderResult> => {
+            cancelledTickets.push(ticket)
+            return createOrderResult({
+                retcode: 10009,
+                retcodeDescription: "Request completed",
+                orderId: String(ticket),
+                success: true,
+            })
+        }
+
+        const adapter = new MT5VenueAdapter(client, credentials)
+        await adapter.cancelOrder("vmtx01abcde23456", {
+            providerOrderId: "1607001001",
+            providerOrderAliases: ["1607001001", "1607001002"],
+        })
+
+        expect(cancelledTickets).toEqual([1607001001, 1607001002])
     })
 
     it("keeps market submissions filled on successful MT5 execution", async () => {
@@ -167,9 +389,12 @@ describe("MT5VenueAdapter", () => {
         const adapter = new MT5VenueAdapter(client, credentials)
         const result = await adapter.submitOrder(createSubmissionIntent({
             orderType: "market",
-        }))
+        }), {
+            identity: createIdentityContext("vmte01filled1234"),
+        })
 
         expect(result.orderId).toBe("1588140268")
+        expect(result.providerClientOrderId).toBe("vmte01filled1234")
         expect(result.status).toBe("filled")
         expect(result.filledQuantity).toBe(0.01)
         expect(result.fillPrice).toBe(4715.5)
@@ -237,6 +462,7 @@ describe("MT5VenueAdapter", () => {
     it("closes every MT5 position for the requested symbol", async () => {
         const client = createClient()
         const closedTickets: number[] = []
+        const closeComments: string[] = []
         let activeCloses = 0
         let maxActiveCloses = 0
         client.getPositions = async () => [
@@ -244,13 +470,14 @@ describe("MT5VenueAdapter", () => {
             createPosition(1588167645, "XAUUSD", 4715.47),
             createPosition(1589000000, "US30.cash", 39000),
         ]
-        client.closePosition = async ({ ticket }): Promise<MT5OrderResult> => {
+        client.closePosition = async ({ ticket, comment }): Promise<MT5OrderResult> => {
             activeCloses++
             maxActiveCloses = Math.max(maxActiveCloses, activeCloses)
 
             try {
                 await new Promise((resolve) => setTimeout(resolve, 0))
                 closedTickets.push(ticket)
+                closeComments.push(comment ?? "")
 
                 return {
                     retcode: 10009,
@@ -267,14 +494,62 @@ describe("MT5VenueAdapter", () => {
         }
 
         const adapter = new MT5VenueAdapter(client, credentials)
-        const result = await adapter.closePosition("XAUUSD")
+        const result = await adapter.closePosition("XAUUSD", undefined, {
+            identity: createIdentityContext("vmtc01abcde23456", "close"),
+        })
 
         expect(closedTickets).toEqual([1588140268, 1588167645])
+        expect(closeComments).toEqual(["vmtc01abcde23456", "vmtc01abcde23456"])
         expect(maxActiveCloses).toBe(1)
         expect(result.orderId).toBe("1588140268,1588167645")
+        expect(result.providerClientOrderId).toBe("vmtc01abcde23456")
         expect(result.status).toBe("filled")
         expect(result.filledQuantity).toBe(0.02)
         expect(result.fillPrice).toBe(4718.75)
+    })
+
+    it("fails closed before MT5 close mutation without canonical identity", async () => {
+        const client = createClient()
+        client.getPositions = vi.fn(async () => [])
+        client.closePosition = vi.fn(async () => createOrderResult({}))
+
+        const adapter = new MT5VenueAdapter(client, credentials)
+
+        await expect(adapter.closePosition("XAUUSD")).rejects.toThrow("MT5 close requires canonical execution identity")
+
+        expect(client.getPositions).not.toHaveBeenCalled()
+        expect(client.closePosition).not.toHaveBeenCalled()
+    })
+
+    it("passes canonical close identity when closing a provider position by ticket", async () => {
+        const client = createClient()
+        let closeComment = ""
+        client.closePosition = async ({ comment }): Promise<MT5OrderResult> => {
+            closeComment = comment ?? ""
+            return createOrderResult({
+                orderId: "1607003001",
+                dealId: "1607003001",
+                price: 4719,
+            })
+        }
+
+        const adapter = new MT5VenueAdapter(client, credentials)
+        const result = await adapter.closeProviderPosition({
+            instrument: "XAUUSD",
+            providerPositionId: "1607003000",
+            side: "long",
+            quantity: 0.01,
+            entryPrice: 4715.5,
+            metadata: {
+                ticket: 1607003000,
+            },
+        } satisfies Position, undefined, {
+            identity: createIdentityContext("vmtc01abcde23457", "close"),
+        })
+
+        expect(closeComment).toBe("vmtc01abcde23457")
+        expect(result.providerClientOrderId).toBe("vmtc01abcde23457")
+        expect(result.status).toBe("filled")
     })
 
     it("maps MT5 broker-side position closures into canonical provider close records", async () => {

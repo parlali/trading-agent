@@ -12,6 +12,7 @@ import {
 import {
     flattenVenueExposure,
     refreshProviderPortfolioState,
+    runWithResetExecutionContext,
 } from "./lib/safe-strategy-reset"
 
 type OperatorAction = "list" | "close" | "adopt"
@@ -87,11 +88,15 @@ async function closeUnownedExposure(
         return
     }
 
-    const { venue } = await createVenue(representativeStrategy, client)
-    const result = await flattenVenueExposure(venue, {
-        positions: exposure.positions,
-        workingOrders: exposure.orders,
-    })
+    const result = await runWithResetExecutionContext(
+        client,
+        representativeStrategy,
+        "unowned exposure flatten",
+        async ({ pipeline }) => await flattenVenueExposure(pipeline, {
+            positions: exposure.positions,
+            workingOrders: exposure.orders,
+        })
+    )
 
     console.log(`Closed ${result.closedPositions} position(s) and cancelled ${result.cancelledOrders} order(s) for ${app}`)
 

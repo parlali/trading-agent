@@ -40,6 +40,9 @@ export async function mapOKXExecutionResult(args: {
 
     return {
         orderId: toCompositeOrderId("order", args.instId, args.order.ordId),
+        providerOrderId: toCompositeOrderId("order", args.instId, args.order.ordId),
+        providerClientOrderId: args.order.clOrdId,
+        providerOrderAliases: [args.order.ordId, args.order.clOrdId].filter((value): value is string => Boolean(value)),
         status,
         filledQuantity,
         fillPrice,
@@ -76,6 +79,7 @@ function buildOKXOrderAccountingMetadata(
         fillPnl,
         providerAccountingSource: "okx_order",
         providerOrderId: order.ordId,
+        providerClientOrderId: order.clOrdId,
         tradeId: order.tradeId,
     }
 }

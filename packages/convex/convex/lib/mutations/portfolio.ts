@@ -9,6 +9,7 @@ import {
     getClaimInstrumentsForOrder,
     reconcileOrderInstrumentClaim,
     replacePositionClaims,
+    resolveAlpacaClaimedStructureForProviderLeg,
 } from "../instrumentClaims"
 import {
     buildProviderPositionKey,
@@ -26,6 +27,7 @@ import {
     repairMissingLivePositionClaimsFromFilledOrders,
     resolveOwnership,
 } from "./portfolioOwnership"
+import type { PortfolioMutationCtx } from "./portfolioTypes"
 import {
     applyClosedOrderInference,
     applyProviderWorkingOrderUpdate,
@@ -55,6 +57,7 @@ import {
     createDriftSummary,
     isExpectedExternalProviderRow,
     isStale,
+    readMetadataRecord,
     readOrderCancelAt,
 } from "./portfolioUtils"
 
@@ -83,6 +86,11 @@ const providerPositionInputV = v.object({
 
 const providerWorkingOrderInputV = v.object({
     orderId: v.string(),
+    canonicalOrderId: v.optional(v.string()),
+    providerOrderId: v.optional(v.string()),
+    providerClientOrderId: v.optional(v.string()),
+    providerOrderAliases: v.optional(v.array(v.string())),
+    signedOrderFingerprint: v.optional(v.string()),
     instrument: v.string(),
     status: orderStatusV,
     quantity: v.number(),
@@ -240,6 +248,15 @@ export const reconcileProviderPortfolio = mutation({
                 expectedExternalInstruments,
                 position
             )
+            const metadata = mergeProviderPositionMetadata(
+                resolveProviderPositionMetadataBase(position.metadata, previousPosition, ownership),
+                resolveAlpacaPositionClaimMetadata({
+                    app: args.app,
+                    position,
+                    ownership,
+                    claims: refreshedClaims,
+                })
+            )
 
             if (
                 hasPositionOwnershipMismatch({
@@ -263,6 +280,7 @@ export const reconcileProviderPortfolio = mutation({
                 takeProfit: position.takeProfit ?? protectionLevelsByInstrument.get(position.instrument)?.takeProfit,
                 positionKey,
                 expectedExternal,
+                metadata,
                 ...ownership,
             }
         })
@@ -297,6 +315,7 @@ export const reconcileProviderPortfolio = mutation({
 
             resolvedWorkingOrders.push({
                 ...order,
+                canonicalOrderId: existingOrder?.orderId ?? resolveCanonicalOrderIdFromProviderIdentity(order),
                 venue: existingOrder?.venue ?? importedProtectionOrder?.venue ?? args.venue,
                 action: existingOrder?.action ?? importedProtectionOrder?.action,
                 runId: existingOrder?.runId ?? importedProtectionOrder?.runId,
@@ -316,6 +335,12 @@ export const reconcileProviderPortfolio = mutation({
             strategies,
             positions: resolvedPositions,
             workingOrders: resolvedWorkingOrders,
+        })
+        await recordDuplicateExposureFaults(ctx, {
+            app: args.app,
+            violations: exposureViolations,
+            strategies,
+            updatedAt: now,
         })
 
         for (const existingOrder of activeOrders) {
@@ -386,6 +411,11 @@ export const reconcileProviderPortfolio = mutation({
         const nextProviderWorkingOrders = resolvedWorkingOrders.map((order) => ({
             app: args.app,
             orderId: order.orderId,
+            canonicalOrderId: order.canonicalOrderId,
+            providerOrderId: order.providerOrderId,
+            providerClientOrderId: order.providerClientOrderId,
+            providerOrderAliases: order.providerOrderAliases,
+            signedOrderFingerprint: order.signedOrderFingerprint,
             strategyId: order.strategyId,
             runId: order.runId,
             ownershipStatus: order.ownershipStatus,
@@ -576,6 +606,182 @@ export const reconcileProviderPortfolio = mutation({
         }
     },
 })
+
+function resolveCanonicalOrderIdFromProviderIdentity(order: {
+    canonicalOrderId?: string
+    providerClientOrderId?: string
+    providerOrderAliases?: string[]
+    signedOrderFingerprint?: string
+    metadata?: string
+}): string | undefined {
+    const metadata = readMetadataRecord(order.metadata)
+    const candidates = [
+        order.canonicalOrderId,
+        order.providerClientOrderId,
+        ...(order.providerOrderAliases ?? []),
+        typeof metadata?.canonicalOrderId === "string" ? metadata.canonicalOrderId : undefined,
+        typeof metadata?.providerClientOrderId === "string" ? metadata.providerClientOrderId : undefined,
+    ]
+
+    return candidates.find((candidate) =>
+        typeof candidate === "string" && /^v[a-z0-9]{5}[a-z2-7]{10}$/.test(candidate)
+    )
+}
+
+function resolveAlpacaPositionClaimMetadata(args: {
+    app: Doc<"strategies">["app"]
+    position: { instrument: string }
+    ownership: { strategyId?: Id<"strategies">; ownershipStatus: string }
+    claims: Array<Doc<"instrument_claims">>
+}): Record<string, unknown> | undefined {
+    if (
+        args.app !== "alpaca-options" ||
+        args.ownership.ownershipStatus !== "owned" ||
+        !args.ownership.strategyId
+    ) {
+        return undefined
+    }
+
+    const claim = resolveAlpacaClaimedStructureForProviderLeg({
+        instrument: args.position.instrument,
+        strategyId: String(args.ownership.strategyId),
+        claims: args.claims,
+    })
+    if (!claim) {
+        return undefined
+    }
+
+    return {
+        alpacaClaimInstrument: claim.instrument,
+        alpacaClaimStructureType: claim.structureType,
+        alpacaClaimVerticalSpreadType: claim.verticalSpreadType,
+        alpacaClaimUnderlying: claim.underlying,
+        alpacaClaimExpiration: claim.expiration,
+        alpacaClaimLegs: claim.legs,
+    }
+}
+
+function mergeProviderPositionMetadata(
+    current: string | undefined,
+    extra: Record<string, unknown> | undefined
+): string | undefined {
+    if (!extra) {
+        return current
+    }
+
+    return JSON.stringify({
+        ...(readMetadataRecord(current) ?? {}),
+        ...extra,
+    })
+}
+
+function resolveProviderPositionMetadataBase(
+    current: string | undefined,
+    previousPosition: Doc<"provider_positions"> | undefined,
+    ownership: { strategyId?: Id<"strategies">; ownershipStatus: string }
+): string | undefined {
+    if (current) {
+        return current
+    }
+
+    if (
+        ownership.ownershipStatus === "owned" &&
+        ownership.strategyId &&
+        previousPosition?.strategyId === ownership.strategyId
+    ) {
+        return previousPosition.metadata
+    }
+
+    return undefined
+}
+
+async function recordDuplicateExposureFaults(
+    ctx: PortfolioMutationCtx,
+    args: {
+        app: Doc<"strategies">["app"]
+        violations: string[]
+        strategies: Array<Doc<"strategies">>
+        updatedAt: number
+    }
+): Promise<void> {
+    if (args.violations.length === 0) {
+        return
+    }
+
+    const strategyMap = new Map(args.strategies.map((strategy) => [String(strategy._id), strategy]))
+    const existingFaults = await ctx.db
+        .query("execution_safety_faults")
+        .withIndex("by_app_blocked", (q) => q.eq("app", args.app).eq("blocked", true))
+        .collect()
+    const existingKeys = new Set(
+        existingFaults
+            .filter((fault) => fault.category === "duplicate_exposure")
+            .map((fault) => `${String(fault.strategyId)}:${fault.instrument}:${fault.message}`)
+    )
+
+    for (const violation of args.violations) {
+        const parsed = parseExposureViolation(violation)
+        if (!parsed) {
+            continue
+        }
+
+        const strategy = strategyMap.get(parsed.strategyId)
+        if (!strategy) {
+            continue
+        }
+
+        const message = `Provider reconciliation proved duplicate exposure: ${parsed.kind} on ${parsed.instrument}`
+        const key = `${parsed.strategyId}:${parsed.instrument}:${message}`
+        if (existingKeys.has(key)) {
+            continue
+        }
+
+        await ctx.db.insert("execution_safety_faults", {
+            strategyId: strategy._id,
+            app: args.app,
+            instrument: parsed.instrument,
+            category: "duplicate_exposure",
+            message,
+            providerPayload: JSON.stringify({
+                violation,
+                kind: parsed.kind,
+                instrument: parsed.instrument,
+            }),
+            blocked: true,
+            occurredAt: args.updatedAt,
+            resolvedAt: undefined,
+            resolutionNote: undefined,
+        })
+        await ctx.db.insert("alerts", {
+            strategyId: strategy._id,
+            app: args.app,
+            severity: "critical",
+            message: `[execution-safety] ${strategy.name} ${parsed.instrument}: duplicate_exposure -- ${message}`,
+            acknowledged: false,
+            timestamp: args.updatedAt,
+        })
+        existingKeys.add(key)
+    }
+}
+
+function parseExposureViolation(violation: string): {
+    strategyId: string
+    kind: string
+    instrument: string
+} | undefined {
+    const [strategyId, kind, ...instrumentParts] = violation.split(":")
+    const instrument = instrumentParts.join(":")
+
+    if (!strategyId || !kind || !instrument) {
+        return undefined
+    }
+
+    return {
+        strategyId,
+        kind,
+        instrument,
+    }
+}
 
 export const recordProviderSyncFailure = mutation({
     args: {

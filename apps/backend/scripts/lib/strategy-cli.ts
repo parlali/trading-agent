@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises"
 import { fileURLToPath } from "node:url"
 import { dirname, resolve } from "node:path"
 import {
+    createConvexOrderPersistenceAdapter,
     createTradingBackendClient,
     type CascadeDeleteCounts,
     type DeleteOrphanedStrategyHistoryBatchResult,
@@ -10,7 +11,7 @@ import {
     type DeleteAllStrategiesResult,
 } from "@valiq-trading/convex"
 import { parseStrategyMarkdownDocument } from "@valiq-trading/core"
-import type { App, StrategyConfig } from "@valiq-trading/core"
+import type { App, OrderPersistenceAdapter, StrategyConfig } from "@valiq-trading/core"
 
 const FULL_RESET_CLEAR_BATCH_SIZE = 20
 const FULL_RESET_CLEAR_MAX_BATCHES = 10000
@@ -49,6 +50,15 @@ function requireEnv(name: string): string {
 
 export function createClient(): TradingBackendClient {
     return createTradingBackendClient({
+        url: requireEnv("CONVEX_URL"),
+        machineAuth: {
+            serviceToken: requireEnv("BACKEND_SERVICE_TOKEN"),
+        },
+    })
+}
+
+export function createOrderPersistenceAdapter(): OrderPersistenceAdapter {
+    return createConvexOrderPersistenceAdapter({
         url: requireEnv("CONVEX_URL"),
         machineAuth: {
             serviceToken: requireEnv("BACKEND_SERVICE_TOKEN"),

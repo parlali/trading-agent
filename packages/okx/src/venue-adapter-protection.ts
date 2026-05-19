@@ -1,5 +1,7 @@
 import {
     createExecutionError,
+    createChildExecutionIdentity,
+    type ExecutionIdentityContext,
     type OrderIntent,
     type Position,
 } from "@valiq-trading/core"
@@ -41,6 +43,7 @@ export function matchesOKXPositionProtection(
 export async function buildOKXAttachedProtectionOrders(args: {
     instId: string
     intent: OrderIntent
+    identity?: ExecutionIdentityContext
     normalizePrice: (price: number) => Promise<number>
 }): Promise<OKXAttachedAlgoOrderParams[] | undefined> {
     if (isCloseAction(args.intent)) {
@@ -54,8 +57,20 @@ export async function buildOKXAttachedProtectionOrders(args: {
         return undefined
     }
 
+    const childIds = args.identity
+        ? {
+            takeProfit: createChildExecutionIdentity(args.identity, "take_profit").providerClientOrderId,
+            stopLoss: createChildExecutionIdentity(args.identity, "stop_loss").providerClientOrderId,
+        }
+        : undefined
+
     return [
         {
+            attachAlgoClOrdId: stopLoss !== undefined && takeProfit === undefined
+                ? childIds?.stopLoss
+                : takeProfit !== undefined && stopLoss === undefined
+                    ? childIds?.takeProfit
+                    : childIds?.takeProfit,
             slTriggerPx: stopLoss !== undefined
                 ? formatNumber(await args.normalizePrice(stopLoss))
                 : undefined,
@@ -104,6 +119,7 @@ export async function updateOKXProtectionOrders(args: {
     baseQuantityToContracts: (rules: OKXInstrumentRules, quantity: number) => number
     normalizePrice: (price: number) => Promise<number>
     resolvePositionPosSide: (side: Position["side"]) => OKXApiPosSide
+    identity: ExecutionIdentityContext
 }): Promise<{ cancelledOrderIds: string[]; createdOrderIds: string[] }> {
     const positions = await args.getPositions()
     const position = positions.find((entry) => entry.instrument === args.instrument)
@@ -189,12 +205,18 @@ async function buildProtectionAlgoOrderRequest(config: {
     size: string
 }): Promise<OKXPlaceAlgoOrderParams | undefined> {
     const args = config.args
+    const clientOrderId = resolveStandaloneProtectionClientOrderId(
+        args.identity,
+        args.stopLoss,
+        args.takeProfit
+    )
     const base = {
         instId: args.instrument,
         tdMode: args.marginMode,
         side: config.closeSide,
         posSide: config.posSide,
         sz: config.size,
+        algoClOrdId: clientOrderId,
     }
 
     if (args.stopLoss !== undefined && args.takeProfit !== undefined) {
@@ -227,6 +249,18 @@ async function buildProtectionAlgoOrderRequest(config: {
     }
 
     return undefined
+}
+
+function resolveStandaloneProtectionClientOrderId(
+    identity: ExecutionIdentityContext,
+    stopLoss: number | undefined,
+    takeProfit: number | undefined
+): string {
+    if (stopLoss !== undefined && takeProfit === undefined) {
+        return createChildExecutionIdentity(identity, "stop_loss").providerClientOrderId
+    }
+
+    return createChildExecutionIdentity(identity, "take_profit").providerClientOrderId
 }
 
 async function assertProtectionOrdersPending(

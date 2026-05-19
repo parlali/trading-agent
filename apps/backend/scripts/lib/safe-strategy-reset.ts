@@ -8,11 +8,18 @@ import {
     type TradingBackendClient,
 } from "@valiq-trading/convex"
 import {
+    createLogger,
+    ExecutionPipeline,
     validatePolicy,
     type Position,
     type VenueAdapter,
     type WorkingOrder,
 } from "@valiq-trading/core"
+import {
+    isAlpacaRawOptionLegPosition,
+    resolveAlpacaCloseGroupsFromPositions,
+} from "@valiq-trading/alpaca-options"
+import { createOrderPersistenceAdapter } from "./strategy-cli"
 import { AlpacaPlugin } from "../../src/plugins/alpaca"
 import { OKXPlugin } from "../../src/plugins/okx"
 import { MT5Plugin } from "../../src/plugins/mt5"
@@ -36,6 +43,12 @@ export interface SafeStrategyResetResult {
 export interface VenueResetContext {
     venue: VenueAdapter
     venueName: string
+    policy: Record<string, unknown>
+}
+
+export interface ResetExecutionContext extends VenueResetContext {
+    pipeline: ExecutionPipeline
+    runId: Id<"strategy_runs">
 }
 
 export interface VenueExposureResetResult {
@@ -43,6 +56,12 @@ export interface VenueExposureResetResult {
     closedPositions: number
     orderFailures: string[]
     positionFailures: string[]
+}
+
+export interface ResetFlattenExposure {
+    app?: StoredStrategy["app"]
+    positions: Array<ProviderPositionRow | Position>
+    workingOrders: Array<ProviderPendingOrderRow | WorkingOrder>
 }
 
 export interface VenueMarketClock {
@@ -53,7 +72,7 @@ export interface VenueMarketClock {
 
 export interface MarketClosedResetBlock {
     provider: string
-    positions: Array<Pick<ProviderPositionRow, "instrument"> | Pick<Position, "instrument">>
+    positions: Array<Partial<ProviderPositionRow & Position> & Pick<Position, "instrument">>
     workingOrders: Array<Pick<ProviderPendingOrderRow, "orderId" | "instrument" | "metadata"> | Pick<WorkingOrder, "orderId" | "instrument" | "metadata">>
     nextOpen?: string
 }
@@ -88,13 +107,19 @@ export async function resetStrategySafely(
     let closedPositions = 0
 
     if (!isDryRunStrategy(strategy)) {
-        const { venue } = await createVenue(strategy, client)
-        const result = await flattenVenueExposure(venue, {
-            positions: trackedPositions.map((position) => ({ instrument: position.instrument })),
-            workingOrders: trackedOrders.map((order) => ({ orderId: order.orderId })),
-        })
-        cancelledOrders = result.cancelledOrders
-        closedPositions = result.closedPositions
+        if (trackedPositions.length > 0 || trackedOrders.length > 0) {
+            const result = await runWithResetExecutionContext(
+                client,
+                strategy,
+                "safe strategy reset",
+                async ({ pipeline }) => await flattenVenueExposure(pipeline, {
+                    positions: trackedPositions,
+                    workingOrders: trackedOrders,
+                })
+            )
+            cancelledOrders = result.cancelledOrders
+            closedPositions = result.closedPositions
+        }
 
         await reconcileAndVerifyReset(client, strategy)
     }
@@ -159,23 +184,96 @@ export async function createVenue(
     return {
         venue: plugin.createVenueAdapter(policy, secrets),
         venueName: plugin.venueName,
+        policy,
+    }
+}
+
+export async function createResetExecutionContext(
+    client: TradingBackendClient,
+    strategy: StoredStrategy
+): Promise<ResetExecutionContext> {
+    const context = await createVenue(strategy, client)
+    const orderPersistence = createOrderPersistenceAdapter()
+    const runId = await client.createRun(strategy._id, strategy.app, "manual")
+    const logger = createLogger({
+        app: strategy.app,
+        strategyId: strategy._id,
+        runId,
+    }).child({
+        operation: "reset_flatten",
+    })
+    const pipeline = new ExecutionPipeline({
+        venue: context.venue,
+        venueName: context.venueName,
+        policy: context.policy,
+        logger,
+        tradeEventLogger: client,
+        orderPersistence,
+        runId,
+        strategyId: strategy._id,
+        executionSafetyFaultRecorder: async (fault) => {
+            await client.recordExecutionSafetyFault({
+                strategyId: strategy._id,
+                app: strategy.app,
+                instrument: fault.instrument,
+                category: fault.category ?? "commit_unknown",
+                message: fault.message,
+                providerPayload: fault.providerPayload,
+                canonicalOrderId: fault.canonicalOrderId,
+                providerOrderId: fault.providerOrderId,
+                providerClientOrderId: fault.providerClientOrderId,
+                providerOrderAliases: fault.providerOrderAliases,
+                submitAttemptId: fault.submitAttemptId,
+                submitAttemptSequence: fault.submitAttemptSequence,
+                runId,
+                venue: fault.venue,
+                signedOrderFingerprint: fault.signedOrderFingerprint,
+                recoveryProbeEvidence: fault.recoveryProbeEvidence,
+                blocked: true,
+            })
+        },
+    })
+
+    return {
+        ...context,
+        pipeline,
+        runId,
+    }
+}
+
+export async function runWithResetExecutionContext<T>(
+    client: TradingBackendClient,
+    strategy: StoredStrategy,
+    operation: string,
+    task: (context: ResetExecutionContext) => Promise<T>
+): Promise<T> {
+    const context = await createResetExecutionContext(client, strategy)
+
+    try {
+        const result = await task(context)
+        await client.updateRun(context.runId, "completed", `${operation} completed`)
+        return result
+    } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        await client.updateRun(context.runId, "failed", undefined, message)
+        throw error
+    } finally {
+        context.pipeline.stopAllTracking()
     }
 }
 
 export async function flattenVenueExposure(
-    venue: VenueAdapter,
-    exposure: {
-        positions: Array<Pick<ProviderPositionRow, "instrument"> | Pick<Position, "instrument">>
-        workingOrders: Array<Pick<ProviderPendingOrderRow, "orderId"> | Pick<WorkingOrder, "orderId">>
-    }
+    pipeline: Pick<ExecutionPipeline, "cancelOrder" | "closeProviderPosition">,
+    exposure: ResetFlattenExposure
 ): Promise<VenueExposureResetResult> {
     const cancelledOrders = await cancelOrders(
-        venue,
-        uniqueStrings(exposure.workingOrders.map((order) => order.orderId))
+        pipeline,
+        uniqueStrings(exposure.workingOrders.map(resolveWorkingOrderCancelId))
     )
     const closedPositions = await closePositions(
-        venue,
-        uniqueStrings(exposure.positions.map((position) => position.instrument))
+        pipeline,
+        exposure.positions,
+        exposure.app
     )
 
     return {
@@ -186,11 +284,45 @@ export async function flattenVenueExposure(
     }
 }
 
+export async function resolveResetFlattenExposure(
+    client: TradingBackendClient,
+    strategy: StoredStrategy,
+    liveExposure: ResetFlattenExposure
+): Promise<ResetFlattenExposure> {
+    if (strategy.app !== "alpaca-options") {
+        return {
+            app: strategy.app,
+            positions: liveExposure.positions,
+            workingOrders: liveExposure.workingOrders,
+        }
+    }
+
+    await refreshProviderPortfolioState(client, strategy)
+
+    const [reconciledPositions, reconciledWorkingOrders] = await Promise.all([
+        client.getPortfolioPositions(strategy.app),
+        client.getPortfolioPendingOrders(strategy.app),
+    ])
+    const liveProviderPositions = reconciledPositions.filter((position) =>
+        !isDryRunVirtualProviderPosition(position)
+    )
+
+    return {
+        app: strategy.app,
+        positions: liveProviderPositions.length > 0
+            ? liveProviderPositions
+            : liveExposure.positions,
+        workingOrders: reconciledWorkingOrders.length > 0
+            ? reconciledWorkingOrders
+            : liveExposure.workingOrders,
+    }
+}
+
 export async function detectMarketClosedResetBlock(
     provider: string,
     venue: VenueAdapter,
     exposure?: {
-        positions: Array<Pick<ProviderPositionRow, "instrument"> | Pick<Position, "instrument">>
+        positions: Array<Partial<ProviderPositionRow & Position> & Pick<Position, "instrument">>
         workingOrders: Array<Pick<ProviderPendingOrderRow, "orderId" | "instrument" | "metadata"> | Pick<WorkingOrder, "orderId" | "instrument" | "metadata">>
     }
 ): Promise<MarketClosedResetBlock | null> {
@@ -210,11 +342,24 @@ export async function detectMarketClosedResetBlock(
             venue.getWorkingOrders ? venue.getWorkingOrders() : Promise.resolve([]),
         ])
 
-    if (positions.length === 0 || workingOrders.length === 0) {
+    if (positions.length === 0) {
         return null
     }
 
-    const positionInstruments = new Set(positions.map((position) => position.instrument))
+    const groupedPositions = resolveAlpacaCloseGroupsFromPositions(positions as Array<ProviderPositionRow | Position>)
+    const positionInstruments = new Set([
+        ...positions.map((position) => position.instrument),
+        ...groupedPositions.map((position) => position.instrument),
+    ])
+    if (workingOrders.length === 0) {
+        return {
+            provider,
+            positions,
+            workingOrders: [],
+            nextOpen: clock.nextOpen,
+        }
+    }
+
     const matchingWorkingOrders = workingOrders.filter((order) =>
         positionInstruments.has(order.instrument) && isCloseWorkingOrder(order)
     )
@@ -248,7 +393,7 @@ export function isMarketClosedExecutionFailure(
 }
 
 async function cancelOrders(
-    venue: VenueAdapter,
+    pipeline: Pick<ExecutionPipeline, "cancelOrder">,
     orderIds: string[]
 ): Promise<{
     count: number
@@ -259,7 +404,7 @@ async function cancelOrders(
 
     for (const orderId of orderIds) {
         try {
-            const result = await venue.cancelOrder(orderId)
+            const result = await pipeline.cancelOrder(orderId, "reset flatten")
             if (result.status === "cancelled" || result.status === "filled") {
                 cancelled++
             } else {
@@ -278,26 +423,33 @@ async function cancelOrders(
 }
 
 async function closePositions(
-    venue: VenueAdapter,
-    instruments: string[]
+    pipeline: Pick<ExecutionPipeline, "closeProviderPosition">,
+    positions: Array<ProviderPositionRow | Position>,
+    app?: StoredStrategy["app"]
 ): Promise<{
     count: number
     failures: string[]
 }> {
     let closed = 0
     const failures: string[] = []
+    const closeRequests = resolveAlpacaCloseGroupsFromPositions(positions)
 
-    for (const instrument of instruments) {
+    for (const position of closeRequests) {
+        if (isUnsafeAlpacaRawLegClose(position, app)) {
+            failures.push(`position ${formatPositionIdentity(position)}: Alpaca raw option leg close requires complete claimed structure evidence`)
+            continue
+        }
+
         try {
-            const result = await venue.closePosition(instrument)
-            if (result.status === "filled" || result.status === "pending" || result.status === "partially_filled") {
+            const { result } = await pipeline.closeProviderPosition(position, "reset flatten")
+            if (result.status === "filled") {
                 closed++
             } else {
-                failures.push(`position ${instrument}: ${result.error ?? result.status}`)
+                failures.push(`position ${formatPositionIdentity(position)}: ${result.error ?? `close status ${result.status} does not prove flat exposure`}`)
             }
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error)
-            failures.push(`position ${instrument}: ${message}`)
+            failures.push(`position ${formatPositionIdentity(position)}: ${message}`)
         }
     }
 
@@ -305,6 +457,20 @@ async function closePositions(
         count: closed,
         failures,
     }
+}
+
+function isUnsafeAlpacaRawLegClose(position: ProviderPositionRow | Position, app?: StoredStrategy["app"]): boolean {
+    return (readPositionApp(position) ?? app) === "alpaca-options" && isAlpacaRawOptionLegPosition(position)
+}
+
+function readPositionApp(position: ProviderPositionRow | Position): string | undefined {
+    const app = (position as { app?: unknown }).app
+    return typeof app === "string" ? app : undefined
+}
+
+function isDryRunVirtualProviderPosition(position: ProviderPositionRow): boolean {
+    return position.metadata?.dryRun === true ||
+        position.metadata?.source === "strategy_virtual_position"
 }
 
 export async function reconcileAndVerifyReset(
@@ -400,6 +566,21 @@ async function getFreshness(
 
 function uniqueStrings(values: string[]): string[] {
     return Array.from(new Set(values))
+}
+
+function resolveWorkingOrderCancelId(order: ProviderPendingOrderRow | WorkingOrder): string {
+    return order.canonicalOrderId ??
+        order.providerClientOrderId ??
+        order.signedOrderFingerprint ??
+        order.providerOrderId ??
+        order.orderId
+}
+
+function formatPositionIdentity(position: ProviderPositionRow | Position): string {
+    const providerPositionId = position.providerPositionId
+    return providerPositionId
+        ? `${position.instrument}:${providerPositionId}`
+        : position.instrument
 }
 
 function formatRemainingExposure(

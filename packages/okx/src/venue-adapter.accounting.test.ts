@@ -134,6 +134,7 @@ describe("OKXVenueAdapter account snapshot semantics", () => {
             order: {
                 instId: "BTC-USDT-SWAP",
                 ordId: "9000000000000000001",
+                clOrdId: "voke01abcdef2345",
                 state: "filled",
                 ordType: "market",
                 side: "buy",
@@ -152,6 +153,11 @@ describe("OKXVenueAdapter account snapshot semantics", () => {
             contractsToBaseQuantity: (_rules, contracts) => contracts * 0.01,
         })
 
+        expect(result).toMatchObject({
+            providerOrderId: "order:BTC-USDT-SWAP:9000000000000000001",
+            providerClientOrderId: "voke01abcdef2345",
+            providerOrderAliases: expect.arrayContaining(["9000000000000000001", "voke01abcdef2345"]),
+        })
         expect(result.intentUpdates?.metadata).toMatchObject({
             fee: -12.345678,
             feeCcy: "USDT",

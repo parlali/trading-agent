@@ -147,6 +147,8 @@ export function mapMT5WorkingOrder(raw: MT5OpenOrder, observedAt: number = Date.
 
     return {
         orderId: String(raw.ticket),
+        providerOrderId: String(raw.ticket),
+        providerClientOrderId: raw.comment || undefined,
         instrument: raw.symbol,
         status: mapMT5OrderState(raw.state),
         quantity,
@@ -158,6 +160,7 @@ export function mapMT5WorkingOrder(raw: MT5OpenOrder, observedAt: number = Date.
         limitPrice: raw.priceOpen > 0 ? raw.priceOpen : undefined,
         stopPrice: raw.stopLoss > 0 ? raw.stopLoss : undefined,
         metadata: {
+            providerClientOrderId: raw.comment || undefined,
             takeProfit: raw.takeProfit > 0 ? raw.takeProfit : undefined,
             comment: raw.comment,
             magic: raw.magic,
@@ -239,6 +242,14 @@ export function aggregateMT5CloseResults(
         : filledResults.length > 0
             ? "partially_filled"
             : "rejected"
+    const providerOrderIds = results
+        .map((result) => result.providerOrderId ?? result.orderId)
+        .filter(Boolean)
+    const providerClientOrderIds = Array.from(new Set(
+        results
+            .map((result) => result.providerClientOrderId)
+            .filter((value): value is string => Boolean(value))
+    ))
     const errorDetail = failedResults.length > 0
         ? createExecutionErrorDetail("venue", `Failed to close every MT5 ${instrument} position`, {
             code: "MT5_BULK_CLOSE_INCOMPLETE",
@@ -251,6 +262,8 @@ export function aggregateMT5CloseResults(
 
     return {
         orderId: results.map((result) => result.orderId).filter(Boolean).join(","),
+        providerOrderId: providerOrderIds.join(",") || undefined,
+        providerClientOrderId: providerClientOrderIds.length === 1 ? providerClientOrderIds[0] : undefined,
         status,
         filledQuantity,
         fillPrice: filledQuantity > 0 ? fillValue / filledQuantity : undefined,

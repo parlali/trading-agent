@@ -54,6 +54,14 @@ export interface PostOrderResponse {
     orderID: string
     transactionsHashes: string[]
     status: string
+    signedOrderFingerprint?: string
+    signedOrderMetadata?: Record<string, unknown>
+}
+
+export interface PreparedPolymarketOrder {
+    orderBody: Record<string, unknown>
+    signedOrderFingerprint: string
+    signedOrderMetadata: Record<string, unknown>
 }
 
 export interface PolymarketOpenOrder {
@@ -70,6 +78,10 @@ export interface PolymarketOpenOrder {
     order_type: string
     created_at: string
     expiration: string
+    signedOrderFingerprint?: string
+    signed_order_fingerprint?: string
+    salt?: string
+    metadata?: Record<string, unknown>
 }
 
 export interface PolymarketTrade {
@@ -85,6 +97,10 @@ export interface PolymarketTrade {
     match_time: string
     outcome: string
     trader_side: string
+    maker_order_id?: string
+    signedOrderFingerprint?: string
+    signed_order_fingerprint?: string
+    metadata?: Record<string, unknown>
 }
 
 export interface PolymarketBalanceAllowance {
@@ -123,6 +139,7 @@ export interface PolymarketCurrentPosition {
 
 export interface CreateOrderParams {
     tokenId: string
+    canonicalOrderId: string
     side: "buy" | "sell"
     size: number
     price: number

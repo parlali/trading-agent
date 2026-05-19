@@ -17,6 +17,7 @@ import type {
     PolymarketOrderBook,
     PolymarketSignatureType,
     PolymarketTrade,
+    PreparedPolymarketOrder,
     PostOrderResponse,
 } from "./polymarket-client-types"
 export type {
@@ -29,6 +30,7 @@ export type {
     PolymarketOrderBook,
     PolymarketSignatureType,
     PolymarketTrade,
+    PreparedPolymarketOrder,
     PostOrderResponse,
 } from "./polymarket-client-types"
 import {
@@ -49,7 +51,8 @@ import {
     ORDER_EIP712_TYPES,
     ZERO_ADDRESS,
     calculateOrderAmounts,
-    generateSalt,
+    derivePolymarketSalt,
+    fingerprintPolymarketSignedOrder,
     roundToTickSize,
 } from "./polymarket-order-signing"
 
@@ -360,7 +363,7 @@ export class PolymarketClient {
     // Trading (L2 — HMAC auth required)
     // -----------------------------------------------------------------------
 
-    async createOrder(params: CreateOrderParams): Promise<PostOrderResponse> {
+    async prepareOrder(params: CreateOrderParams): Promise<PreparedPolymarketOrder> {
         const tickSize = await this.getTickSize(params.tokenId)
         const negRisk = params.negRisk ?? await this.getNegRisk(params.tokenId)
         const feeRateBps = await this.getFeeRateBps(params.tokenId)
@@ -373,7 +376,16 @@ export class PolymarketClient {
             price
         )
 
-        const salt = generateSalt()
+        const saltPayload = {
+            tokenId: params.tokenId,
+            side: params.side,
+            size: params.size,
+            price,
+            orderType: params.orderType,
+            expiration: params.expiration ?? 0,
+            negRisk,
+        }
+        const salt = derivePolymarketSalt(params.canonicalOrderId, saltPayload)
         const sideEnum = params.side === "buy" ? 0 : 1
         const expiration = params.expiration ?? 0
 
@@ -425,11 +437,46 @@ export class PolymarketClient {
             owner: maker,
             orderType: params.orderType,
         }
+        const signedOrderFingerprint = fingerprintPolymarketSignedOrder(orderBody.order)
+        const signedOrderMetadata = {
+            salt: orderBody.order.salt,
+            maker,
+            signer: this.address,
+            tokenId: params.tokenId,
+            side: params.side,
+            size: params.size,
+            price,
+            orderType: params.orderType,
+            negRisk,
+            makerAmount: orderBody.order.makerAmount,
+            takerAmount: orderBody.order.takerAmount,
+            expiration: orderBody.order.expiration,
+            nonce: orderBody.order.nonce,
+            signatureType: orderBody.order.signatureType,
+            signedOrderFingerprint,
+        }
 
+        return {
+            orderBody,
+            signedOrderFingerprint,
+            signedOrderMetadata,
+        }
+    }
+
+    async createOrder(params: CreateOrderParams): Promise<PostOrderResponse> {
+        const prepared = await this.prepareOrder(params)
+        return await this.postPreparedOrder(prepared)
+    }
+
+    async postPreparedOrder(prepared: PreparedPolymarketOrder): Promise<PostOrderResponse> {
         const response = await this.requestAuthenticated<PostOrderResponse>(
             "POST",
             "/order",
-            orderBody
+            prepared.orderBody,
+            undefined,
+            {
+                retry: false,
+            }
         )
 
         if (!response) {
@@ -437,8 +484,7 @@ export class PolymarketClient {
                 code: "EMPTY_RESPONSE",
                 retryable: true,
                 details: {
-                    tokenId: params.tokenId,
-                    side: params.side,
+                    signedOrderFingerprint: prepared.signedOrderFingerprint,
                 },
             })
         }
@@ -448,15 +494,18 @@ export class PolymarketClient {
                 code: response.status || "ORDER_REJECTED",
                 retryable: false,
                 details: {
-                    tokenId: params.tokenId,
-                    side: params.side,
-                    orderType: params.orderType,
+                    signedOrderFingerprint: prepared.signedOrderFingerprint,
+                    signedOrderMetadata: prepared.signedOrderMetadata,
                     response,
                 },
             })
         }
 
-        return response
+        return {
+            ...response,
+            signedOrderFingerprint: prepared.signedOrderFingerprint,
+            signedOrderMetadata: prepared.signedOrderMetadata,
+        }
     }
 
     async getOrder(orderId: string): Promise<PolymarketOpenOrder> {
@@ -485,15 +534,21 @@ export class PolymarketClient {
     }
 
     async cancelOrder(orderId: string): Promise<void> {
-        await this.requestAuthenticated("DELETE", "/order", { orderID: orderId })
+        await this.requestAuthenticated("DELETE", "/order", { orderID: orderId }, undefined, {
+            retry: false,
+        })
     }
 
     async cancelOrders(orderIds: string[]): Promise<void> {
-        await this.requestAuthenticated("DELETE", "/orders", orderIds)
+        await this.requestAuthenticated("DELETE", "/orders", orderIds, undefined, {
+            retry: false,
+        })
     }
 
     async cancelAll(): Promise<void> {
-        await this.requestAuthenticated("DELETE", "/cancel-all")
+        await this.requestAuthenticated("DELETE", "/cancel-all", undefined, undefined, {
+            retry: false,
+        })
     }
 
     async getTrades(params?: {
@@ -629,9 +684,10 @@ export class PolymarketClient {
         method: string,
         path: string,
         body?: unknown,
-        query?: Record<string, string | number | boolean | undefined>
+        query?: Record<string, string | number | boolean | undefined>,
+        options: { retry?: boolean } = {}
     ): Promise<T | undefined> {
-        return await this.withPolymarketRetry(async () => {
+        const execute = async () => {
             const bodyString = body ? JSON.stringify(body) : ""
             const headers = this.buildL2Headers(method, path, bodyString)
             const url = appendQueryParams(`${this.host}${path}`, query)
@@ -664,7 +720,13 @@ export class PolymarketClient {
             }
 
             return (await response.json()) as T
-        })
+        }
+
+        if (options.retry === false) {
+            return await execute()
+        }
+
+        return await this.withPolymarketRetry(execute)
     }
 
     private async withPolymarketRetry<T>(operation: () => Promise<T>): Promise<T> {

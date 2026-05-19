@@ -3,6 +3,7 @@ import {
     createExecutionErrorDetail,
     ExecutionCostTracker,
     formatExecutionError,
+    getExecutionErrorDetail,
     type AccountState,
     type ExecutionResult,
     type OrderIntent,
@@ -10,6 +11,8 @@ import {
     type PriceVerifier,
     type Position,
     type ProviderPositionClosure,
+    type SubmitOrderContext,
+    type SubmitRecoveryResult,
     type VenueAdapter,
     type WorkingOrder,
 } from "@valiq-trading/core"
@@ -62,6 +65,7 @@ interface NormalizedOrderSize {
 export type { OKXMarketPrice } from "./venue-adapter-market"
 
 export class OKXVenueAdapter implements VenueAdapter, PriceVerifier {
+    readonly identityCapability = "native_client_id" as const
     private readonly instrumentRulesCache = new Map<string, OKXInstrumentRules>()
     private accountConfigValidated = false
 
@@ -125,7 +129,17 @@ export class OKXVenueAdapter implements VenueAdapter, PriceVerifier {
         })
     }
 
-    async submitOrder(intent: OrderIntent): Promise<ExecutionResult> {
+    async submitOrder(intent: OrderIntent, context?: SubmitOrderContext): Promise<ExecutionResult> {
+        if (!context?.identity.providerClientOrderId) {
+            throw createExecutionError("pre_validation", "OKX live submission requires canonical execution identity", {
+                code: "MISSING_CANONICAL_ORDER_ID",
+                retryable: false,
+                details: {
+                    instrument: intent.instrument,
+                },
+            })
+        }
+
         const instId = normalizeInstrument(intent.instrument)
 
         if (intent.orderType !== "market" && intent.orderType !== "limit") {
@@ -197,10 +211,12 @@ export class OKXVenueAdapter implements VenueAdapter, PriceVerifier {
         const attachAlgoOrds = await buildOKXAttachedProtectionOrders({
             instId,
             intent,
+            identity: context.identity,
             normalizePrice: (price) => this.normalizePrice(instId, price),
         })
         const ack = await this.client.placeOrder({
             instId,
+            clOrdId: context.identity.providerClientOrderId,
             tdMode: this.config.marginMode,
             side: intent.side,
             ordType: mapToOKXOrderType(intent.orderType, intent.timeInForce),
@@ -213,6 +229,48 @@ export class OKXVenueAdapter implements VenueAdapter, PriceVerifier {
 
         const order = await this.client.getOrder(instId, ack.ordId)
         return await this.mapExecutionResult(instId, order)
+    }
+
+    classifySubmitError(error: unknown): "commit_unknown" | "rejected" | undefined {
+        const detail = getExecutionErrorDetail(error)
+        return detail?.retryable ? "commit_unknown" : "rejected"
+    }
+
+    async recoverSubmittedOrder(
+        intent: OrderIntent,
+        context: SubmitOrderContext
+    ): Promise<SubmitRecoveryResult> {
+        const instId = normalizeInstrument(intent.instrument)
+        const clientOrderId = context.identity.providerClientOrderId
+
+        try {
+            const order = await this.client.getOrderByClientOrderId(instId, clientOrderId)
+            return {
+                outcome: "accepted",
+                result: await this.mapExecutionResult(instId, order),
+            }
+        } catch {
+            const orders = await this.client.getOrdersPending("SWAP", instId)
+            const matches = orders.filter((order) => order.clOrdId === clientOrderId)
+            if (matches.length === 1) {
+                return {
+                    outcome: "accepted",
+                    result: await this.mapExecutionResult(instId, matches[0]!),
+                }
+            }
+
+            return {
+                outcome: matches.length === 0 ? "not_found" : "ambiguous",
+                message: matches.length === 0
+                    ? "OKX recovery found no order with the canonical clOrdId"
+                    : "OKX recovery found multiple orders with the canonical clOrdId",
+                details: {
+                    instId,
+                    clientOrderId,
+                    matchIds: matches.map((order) => order.ordId),
+                },
+            }
+        }
     }
 
     async cancelOrder(orderId: string): Promise<ExecutionResult> {
@@ -295,7 +353,7 @@ export class OKXVenueAdapter implements VenueAdapter, PriceVerifier {
         return await this.mapExecutionResult(parsed.instId, order)
     }
 
-    async closePosition(instrument: string): Promise<ExecutionResult> {
+    async closePosition(instrument: string, _preparedIntent?: OrderIntent, context?: SubmitOrderContext): Promise<ExecutionResult> {
         const instId = normalizeInstrument(instrument)
         const positions = await this.getPositions()
         const position = positions.find((entry) => entry.instrument === instId)
@@ -319,10 +377,20 @@ export class OKXVenueAdapter implements VenueAdapter, PriceVerifier {
             }
         }
 
-        return await this.closeProviderPosition(position)
+        return await this.closeProviderPosition(position, undefined, context)
     }
 
-    async closeProviderPosition(position: Position): Promise<ExecutionResult> {
+    async closeProviderPosition(position: Position, _preparedIntent?: OrderIntent, context?: SubmitOrderContext): Promise<ExecutionResult> {
+        if (!context?.identity.providerClientOrderId) {
+            throw createExecutionError("pre_validation", "OKX close submission requires canonical execution identity", {
+                code: "MISSING_CANONICAL_ORDER_ID",
+                retryable: false,
+                details: {
+                    instrument: position.instrument,
+                },
+            })
+        }
+
         const instId = normalizeInstrument(position.instrument)
         await cancelOKXProtectionOrders({
             client: this.client,
@@ -333,6 +401,7 @@ export class OKXVenueAdapter implements VenueAdapter, PriceVerifier {
         const sizing = await this.normalizeQuantity(instId, position.quantity)
         const ack = await this.client.placeOrder({
             instId,
+            clOrdId: context.identity.providerClientOrderId,
             tdMode: this.config.marginMode,
             side: position.side === "long" ? "sell" : "buy",
             ordType: "market",
@@ -535,8 +604,19 @@ export class OKXVenueAdapter implements VenueAdapter, PriceVerifier {
         instrument: string
         stopLoss?: number
         takeProfit?: number
+        identity: SubmitOrderContext["identity"]
     }): Promise<{ cancelledOrderIds: string[]; createdOrderIds: string[] }> {
         const instId = normalizeInstrument(config.instrument)
+        if (!config.identity?.providerClientOrderId) {
+            throw createExecutionError("pre_validation", "OKX protection update requires canonical execution identity", {
+                code: "MISSING_CANONICAL_ORDER_ID",
+                retryable: false,
+                details: {
+                    instrument: instId,
+                },
+            })
+        }
+
         return await updateOKXProtectionOrders({
             client: this.client,
             instrument: instId,
@@ -549,21 +629,8 @@ export class OKXVenueAdapter implements VenueAdapter, PriceVerifier {
                 this.baseQuantityToContracts(rules, quantity),
             normalizePrice: (price) => this.normalizePrice(instId, price),
             resolvePositionPosSide: (side) => this.resolvePositionPosSide(side),
+            identity: config.identity,
         })
-    }
-
-    async closeAllPositions(): Promise<{ closed: number; results: ExecutionResult[] }> {
-        const positions = await this.getPositions()
-        const results: ExecutionResult[] = []
-
-        for (const position of positions) {
-            results.push(await this.closePosition(position.instrument))
-        }
-
-        return {
-            closed: results.filter((result) => result.status === "filled" || result.status === "pending").length,
-            results,
-        }
     }
 
     private async assertTradingPreconditions(): Promise<void> {

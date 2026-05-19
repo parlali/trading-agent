@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest"
+import { getClaimInstrumentsForOrder } from "./instrumentClaims"
 import { portfolioGovernanceTestables } from "./mutations/portfolio"
 
 describe("portfolio governance helpers", () => {
@@ -183,9 +184,10 @@ describe("portfolio governance helpers", () => {
         ])
     })
 
-    it("matches MT5 live working orders to the canonical tracked order across provider ticket changes", () => {
+    it("does not match MT5 live working orders by same-intent geometry after provider ticket changes", () => {
         const trackedOrder = {
             orderId: "1608821812",
+            canonicalOrderId: "1608821812",
             providerOrderId: "1608821812",
             providerOrderAliases: [],
             venue: "mt5",
@@ -228,6 +230,48 @@ describe("portfolio governance helpers", () => {
             matchedActiveOrderIds: new Set(),
         } as never)
 
+        expect(matched).toBeUndefined()
+    })
+
+    it("matches MT5 live working orders by canonical provider client id", () => {
+        const trackedOrder = {
+            orderId: "vmte01abcdef2345",
+            canonicalOrderId: "vmte01abcdef2345",
+            providerOrderId: "",
+            providerClientOrderId: "vmte01abcdef2345",
+            providerOrderAliases: [],
+            venue: "mt5",
+            instrument: "XAUUSD",
+            status: "pending",
+            action: "entry",
+            quantity: 0.01,
+            filledQuantity: 0,
+            remainingQuantity: 0.01,
+            intent: {
+                side: "sell",
+            },
+        }
+
+        const matched = portfolioGovernanceTestables.resolveLiveWorkingOrderMatch({
+            app: "mt5",
+            liveOrder: {
+                orderId: "1608821205",
+                instrument: "XAUUSD",
+                status: "pending",
+                quantity: 0.01,
+                filledQuantity: 0,
+                remainingQuantity: 0.01,
+                metadata: JSON.stringify({
+                    providerClientOrderId: "vmte01abcdef2345",
+                }),
+            },
+            activeOrders: [trackedOrder],
+            activeOrdersById: new Map([
+                ["vmte01abcdef2345", trackedOrder],
+            ]),
+            matchedActiveOrderIds: new Set(),
+        } as never)
+
         expect(matched).toBe(trackedOrder)
     })
 
@@ -235,6 +279,7 @@ describe("portfolio governance helpers", () => {
         const violations = portfolioGovernanceTestables.detectExposureGovernanceViolations({
             strategies: [{
                 _id: "strategy-a",
+                app: "mt5",
                 policy: {
                     allowMultiplePendingEntryOrdersPerInstrument: false,
                     allowOverlappingExposure: false,
@@ -257,6 +302,72 @@ describe("portfolio governance helpers", () => {
 
         expect(violations).toEqual([
             "strategy-a:overlap:XAUUSD",
+        ])
+    })
+
+    it("detects Alpaca structure-order overlap against raw claimed provider legs", () => {
+        const vertical = "VS:BULL_PUT_CREDIT:SPY:2026-05-01:SPY260501P00694000|SPY260501P00695000"
+        const violations = portfolioGovernanceTestables.detectExposureGovernanceViolations({
+            strategies: [{
+                _id: "strategy-a",
+                app: "alpaca-options",
+                policy: {
+                    allowMultiplePendingEntryOrdersPerInstrument: false,
+                    allowOverlappingExposure: false,
+                },
+            }],
+            positions: [{
+                strategyId: "strategy-a",
+                ownershipStatus: "owned",
+                instrument: "SPY260501P00695000",
+                side: "short",
+            }],
+            workingOrders: [{
+                strategyId: "strategy-a",
+                ownershipStatus: "owned",
+                instrument: vertical,
+                action: "entry",
+                side: "sell",
+            }],
+        } as never)
+
+        expect(violations).toEqual([
+            `strategy-a:overlap:${vertical}`,
+        ])
+    })
+
+    it("detects duplicate Alpaca pending orders across equivalent structure aliases", () => {
+        const vertical = "VS:BULL_PUT_CREDIT:SPY:2026-05-01:SPY260501P00694000|SPY260501P00695000"
+        const violations = portfolioGovernanceTestables.detectExposureGovernanceViolations({
+            strategies: [{
+                _id: "strategy-a",
+                app: "alpaca-options",
+                policy: {
+                    allowMultiplePendingEntryOrdersPerInstrument: false,
+                    allowOverlappingExposure: true,
+                },
+            }],
+            positions: [],
+            workingOrders: [
+                {
+                    strategyId: "strategy-a",
+                    ownershipStatus: "owned",
+                    instrument: vertical,
+                    action: "entry",
+                    side: "sell",
+                },
+                {
+                    strategyId: "strategy-a",
+                    ownershipStatus: "owned",
+                    instrument: "SPY260501P00695000",
+                    action: "entry",
+                    side: "sell",
+                },
+            ],
+        } as never)
+
+        expect(violations).toEqual([
+            `strategy-a:multiple-working-orders:${vertical}:sell`,
         ])
     })
 
@@ -293,6 +404,69 @@ describe("portfolio governance helpers", () => {
                 takeProfit: 3450,
             },
         })
+    })
+
+    it("imports OKX provider protection rows only when canonical client identity is present", () => {
+        expect(portfolioGovernanceTestables.resolveCanonicalProviderProtectionOrderId({
+            providerClientOrderId: "vokt01abcde23456",
+            metadata: JSON.stringify({
+                kind: "protection",
+            }),
+        })).toBe("vokt01abcde23456")
+
+        expect(portfolioGovernanceTestables.resolveCanonicalProviderProtectionOrderId({
+            providerClientOrderId: undefined,
+            metadata: JSON.stringify({
+                kind: "protection",
+                algoId: "algo-1",
+            }),
+        })).toBeUndefined()
+
+        expect(portfolioGovernanceTestables.resolveCanonicalProviderProtectionOrderId({
+            providerClientOrderId: "algo-1",
+            metadata: JSON.stringify({
+                kind: "protection",
+            }),
+        })).toBeUndefined()
+    })
+
+    it("keeps duplicate-exposure faults blocked when provider truth matches more than one live order", () => {
+        const fault = {
+            category: "duplicate_exposure",
+            instrument: "XAUUSD",
+            canonicalOrderId: "vmtc01abcde23456",
+            providerOrderId: undefined,
+            providerClientOrderId: "vmtc01abcde23456",
+            providerOrderAliases: ["1607003000"],
+            signedOrderFingerprint: undefined,
+        }
+        const firstOrder = {
+            orderId: "1607003000",
+            providerOrderId: "1607003000",
+            providerClientOrderId: "vmtc01abcde23456",
+            providerOrderAliases: [],
+            signedOrderFingerprint: undefined,
+            instrument: "XAUUSD",
+            ownershipStatus: "owned",
+        }
+        const secondOrder = {
+            orderId: "1607003001",
+            providerOrderId: "1607003001",
+            providerClientOrderId: undefined,
+            providerOrderAliases: ["vmtc01abcde23456"],
+            signedOrderFingerprint: undefined,
+            instrument: "XAUUSD",
+            ownershipStatus: "owned",
+        }
+
+        expect(portfolioGovernanceTestables.resolveExecutionFaultWorkingOrder(
+            fault as never,
+            [firstOrder] as never
+        )).toBe(firstOrder)
+        expect(portfolioGovernanceTestables.resolveExecutionFaultWorkingOrder(
+            fault as never,
+            [firstOrder, secondOrder] as never
+        )).toBeUndefined()
     })
 
     it("infers MT5 closed-order fill from provider ticket match and cancels stale unmatched rows", () => {
@@ -338,6 +512,42 @@ describe("portfolio governance helpers", () => {
         expect(staleRow.status).toBe("cancelled")
     })
 
+    it("infers MT5 market-order fills from canonical comments on live positions", () => {
+        const order = {
+            orderId: "vmte01filled1234",
+            providerOrderId: undefined,
+            providerClientOrderId: "vmte01filled1234",
+            providerOrderAliases: [],
+            action: "entry",
+            quantity: 0.01,
+            filledQuantity: 0,
+            avgFillPrice: undefined,
+            instrument: "XAUUSD",
+            lastTransitionSequence: 0,
+            intent: {
+                side: "buy",
+            },
+        }
+
+        const inferredFill = portfolioGovernanceTestables.inferClosedOrderStatus({
+            app: "mt5",
+            order,
+            livePositions: [
+                {
+                    instrument: "XAUUSD",
+                    side: "long",
+                    quantity: 0.01,
+                    entryPrice: 4715.75,
+                    metadata: JSON.stringify({ ticket: 1607002000, comment: "vmte01filled1234" }),
+                },
+            ],
+        } as never)
+
+        expect(inferredFill.status).toBe("filled")
+        expect(inferredFill.filledQuantity).toBe(0.01)
+        expect(inferredFill.avgFillPrice).toBe(4715.75)
+    })
+
     it("infers non-MT5 entry fills from provider-truth live positions", () => {
         const order = {
             orderId: "order:BTC-USDT-SWAP:root",
@@ -375,7 +585,7 @@ describe("portfolio governance helpers", () => {
         })
     })
 
-    it("infers Alpaca vertical fills when provider truth groups the legs into an iron condor", () => {
+    it("does not infer Alpaca vertical fills from one matching raw provider leg", () => {
         const order = {
             orderId: "alpaca-put-vertical",
             providerOrderId: "alpaca-put-vertical",
@@ -400,7 +610,7 @@ describe("portfolio governance helpers", () => {
             order,
             livePositions: [
                 {
-                    instrument: "IC:SPY:2026-05-01:SPY260501C00720000|SPY260501C00721000|SPY260501P00694000|SPY260501P00695000",
+                    instrument: "SPY260501P00695000",
                     side: "short",
                     quantity: 1,
                     entryPrice: 0.44,
@@ -408,12 +618,229 @@ describe("portfolio governance helpers", () => {
             ],
         } as never)
 
+        expect(inferredFill).toEqual({ status: "cancelled" })
+    })
+
+    it("infers Alpaca vertical fills only when every claimed leg is proven", () => {
+        const order = createAlpacaVerticalOrder({ quantity: 2 })
+
+        const inferredFill = portfolioGovernanceTestables.inferClosedOrderStatus({
+            app: "alpaca-options",
+            order,
+            livePositions: [
+                {
+                    instrument: "SPY260501P00695000",
+                    side: "short",
+                    quantity: 2,
+                    entryPrice: 0.44,
+                },
+                {
+                    instrument: "SPY260501P00694000",
+                    side: "long",
+                    quantity: 2,
+                    entryPrice: 0.19,
+                },
+            ],
+        } as never)
+
+        expect(inferredFill).toEqual({
+            status: "filled",
+            filledQuantity: 2,
+            remainingQuantity: 0,
+            avgFillPrice: 0.25,
+        })
+    })
+
+    it("infers Alpaca partial fills only when all claimed legs have bounded residual quantity", () => {
+        const order = createAlpacaVerticalOrder({ quantity: 3 })
+
+        const inferredFill = portfolioGovernanceTestables.inferClosedOrderStatus({
+            app: "alpaca-options",
+            order,
+            livePositions: [
+                {
+                    instrument: "SPY260501P00695000",
+                    side: "short",
+                    quantity: 1,
+                    entryPrice: 0.44,
+                },
+                {
+                    instrument: "SPY260501P00694000",
+                    side: "long",
+                    quantity: 1,
+                    entryPrice: 0.19,
+                },
+            ],
+        } as never)
+
+        expect(inferredFill).toEqual({
+            status: "partially_filled",
+            filledQuantity: 1,
+            remainingQuantity: 2,
+            avgFillPrice: 0.25,
+        })
+    })
+
+    it("rejects Alpaca entry-fill inference when a claimed leg has the wrong direction", () => {
+        const order = createAlpacaVerticalOrder({ quantity: 1 })
+
+        const inferredFill = portfolioGovernanceTestables.inferClosedOrderStatus({
+            app: "alpaca-options",
+            order,
+            livePositions: [
+                {
+                    instrument: "SPY260501P00695000",
+                    side: "long",
+                    quantity: 1,
+                    entryPrice: 0.44,
+                },
+                {
+                    instrument: "SPY260501P00694000",
+                    side: "long",
+                    quantity: 1,
+                    entryPrice: 0.19,
+                },
+            ],
+        } as never)
+
+        expect(inferredFill).toEqual({ status: "cancelled" })
+    })
+
+    it("infers true Alpaca four-leg IC fills from exact raw claimed legs", () => {
+        const order = {
+            orderId: "alpaca-ic",
+            providerOrderId: "alpaca-ic",
+            providerOrderAliases: [],
+            action: "entry",
+            quantity: 1,
+            filledQuantity: 0,
+            avgFillPrice: undefined,
+            instrument: "IC:SPY:2026-05-01:SPY260501C00720000|SPY260501C00721000|SPY260501P00694000|SPY260501P00695000",
+            lastTransitionSequence: 0,
+            intent: {
+                side: "sell",
+                legs: [
+                    { instrument: "SPY260501C00720000", side: "sell_to_open" },
+                    { instrument: "SPY260501C00721000", side: "buy_to_open" },
+                    { instrument: "SPY260501P00694000", side: "buy_to_open" },
+                    { instrument: "SPY260501P00695000", side: "sell_to_open" },
+                ],
+            },
+        }
+
+        const inferredFill = portfolioGovernanceTestables.inferClosedOrderStatus({
+            app: "alpaca-options",
+            order,
+            livePositions: [
+                { instrument: "SPY260501C00720000", side: "short", quantity: 1, entryPrice: 0.3 },
+                { instrument: "SPY260501C00721000", side: "long", quantity: 1, entryPrice: 0.12 },
+                { instrument: "SPY260501P00694000", side: "long", quantity: 1, entryPrice: 0.19 },
+                { instrument: "SPY260501P00695000", side: "short", quantity: 1, entryPrice: 0.44 },
+            ],
+        } as never)
+
         expect(inferredFill).toEqual({
             status: "filled",
             filledQuantity: 1,
             remainingQuantity: 0,
-            avgFillPrice: 0.44,
+            avgFillPrice: 0.43,
         })
+    })
+
+    it("keeps separate SPY call and put vertical claims from becoming an owned synthetic IC", () => {
+        const callStrategy = "strategy-call"
+        const putStrategy = "strategy-put"
+        const callVertical = "VS:BEAR_CALL_CREDIT:SPY:2026-05-01:SPY260501C00720000|SPY260501C00721000"
+        const putVertical = "VS:BULL_PUT_CREDIT:SPY:2026-05-01:SPY260501P00694000|SPY260501P00695000"
+        const syntheticIronCondor = "IC:SPY:2026-05-01:SPY260501C00720000|SPY260501C00721000|SPY260501P00694000|SPY260501P00695000"
+        const claimsByInstrument = buildClaimsByInstrument([
+            {
+                strategyId: callStrategy,
+                instruments: getClaimInstrumentsForOrder(callVertical, {
+                    legs: [
+                        { instrument: "SPY260501C00720000", side: "sell_to_open" },
+                        { instrument: "SPY260501C00721000", side: "buy_to_open" },
+                    ],
+                }),
+            },
+            {
+                strategyId: putStrategy,
+                instruments: getClaimInstrumentsForOrder(putVertical, {
+                    legs: [
+                        { instrument: "SPY260501P00694000", side: "buy_to_open" },
+                        { instrument: "SPY260501P00695000", side: "sell_to_open" },
+                    ],
+                }),
+            },
+        ])
+        const strategyMap = new Map([
+            [callStrategy, { _id: callStrategy }],
+            [putStrategy, { _id: putStrategy }],
+        ])
+
+        expect(portfolioGovernanceTestables.resolveOwnership({
+            app: "alpaca-options",
+            instrument: "SPY260501C00720000",
+            claimsByInstrument,
+            strategyMap,
+        } as never)).toEqual({
+            strategyId: callStrategy,
+            ownershipStatus: "owned",
+        })
+        expect(portfolioGovernanceTestables.resolveOwnership({
+            app: "alpaca-options",
+            instrument: "SPY260501P00695000",
+            claimsByInstrument,
+            strategyMap,
+        } as never)).toEqual({
+            strategyId: putStrategy,
+            ownershipStatus: "owned",
+        })
+        expect(portfolioGovernanceTestables.resolveOwnership({
+            app: "alpaca-options",
+            instrument: syntheticIronCondor,
+            claimsByInstrument,
+            strategyMap,
+        } as never)).toEqual({
+            ownershipStatus: "orphaned",
+        })
+    })
+
+    it("keeps a true four-leg Alpaca IC claim owned as one structure", () => {
+        const strategyId = "strategy-ic"
+        const ironCondor = "IC:SPY:2026-05-01:SPY260501C00720000|SPY260501C00721000|SPY260501P00694000|SPY260501P00695000"
+        const claimsByInstrument = buildClaimsByInstrument([
+            {
+                strategyId,
+                instruments: getClaimInstrumentsForOrder(ironCondor, {
+                    legs: [
+                        { instrument: "SPY260501C00720000", side: "sell_to_open" },
+                        { instrument: "SPY260501C00721000", side: "buy_to_open" },
+                        { instrument: "SPY260501P00694000", side: "buy_to_open" },
+                        { instrument: "SPY260501P00695000", side: "sell_to_open" },
+                    ],
+                }),
+            },
+        ])
+        const strategyMap = new Map([[strategyId, { _id: strategyId }]])
+
+        for (const instrument of [
+            ironCondor,
+            "SPY260501C00720000",
+            "SPY260501C00721000",
+            "SPY260501P00694000",
+            "SPY260501P00695000",
+        ]) {
+            expect(portfolioGovernanceTestables.resolveOwnership({
+                app: "alpaca-options",
+                instrument,
+                claimsByInstrument,
+                strategyMap,
+            } as never)).toEqual({
+                strategyId,
+                ownershipStatus: "owned",
+            })
+        }
     })
 
     it("infers close fills when the targeted position is no longer live", () => {
@@ -498,3 +925,43 @@ describe("portfolio governance helpers", () => {
         expect(flaggedAsExpectedExternal).toBe(true)
     })
 })
+
+function buildClaimsByInstrument(entries: Array<{
+    strategyId: string
+    instruments: string[]
+}>): Map<string, Set<string>> {
+    const claims = new Map<string, Set<string>>()
+
+    for (const entry of entries) {
+        for (const instrument of entry.instruments) {
+            const strategies = claims.get(instrument) ?? new Set<string>()
+            strategies.add(entry.strategyId)
+            claims.set(instrument, strategies)
+        }
+    }
+
+    return claims
+}
+
+function createAlpacaVerticalOrder(args: {
+    quantity: number
+}) {
+    return {
+        orderId: "alpaca-put-vertical",
+        providerOrderId: "alpaca-put-vertical",
+        providerOrderAliases: [],
+        action: "entry",
+        quantity: args.quantity,
+        filledQuantity: 0,
+        avgFillPrice: undefined,
+        instrument: "VS:BULL_PUT_CREDIT:SPY:2026-05-01:SPY260501P00694000|SPY260501P00695000",
+        lastTransitionSequence: 0,
+        intent: {
+            side: "sell",
+            legs: [
+                { instrument: "SPY260501P00694000", side: "buy_to_open" },
+                { instrument: "SPY260501P00695000", side: "sell_to_open" },
+            ],
+        },
+    }
+}

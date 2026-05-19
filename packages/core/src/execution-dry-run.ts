@@ -1,5 +1,5 @@
 import type { AccountState, ExecutionResult, OrderIntent, Position } from "./types"
-import type { DryRunOrderSimulator, VenueAdapter } from "./execution-contracts"
+import type { DryRunOrderSimulator, SubmitOrderContext, VenueAdapter } from "./execution-contracts"
 import {
     buildDryRunAccountState,
     createDryRunAccountLedgerPosition,
@@ -14,6 +14,7 @@ import {
     orderSideForPositionSide,
     readNumber,
 } from "./execution-metadata"
+import { createExecutionError } from "./utils"
 
 export class DryRunExecutionBook {
     private positions = new Map<string, Position>()
@@ -195,14 +196,30 @@ export class DryRunExecutionBook {
 
 export async function simulateDryRunOrder(
     venue: VenueAdapter,
-    intent: OrderIntent
+    intent: OrderIntent,
+    context?: SubmitOrderContext
 ): Promise<ExecutionResult> {
+    if (!context?.identity.canonicalOrderId) {
+        throw createExecutionError("pre_validation", "Dry-run execution requires canonical execution identity", {
+            code: "MISSING_CANONICAL_ORDER_ID",
+            retryable: false,
+            details: {
+                instrument: intent.instrument,
+            },
+        })
+    }
+
     if (hasDryRunOrderSimulator(venue)) {
-        return await venue.simulateDryRunOrder(intent)
+        return await venue.simulateDryRunOrder(intent, context)
     }
 
     return {
-        orderId: `dry-run-${Date.now()}`,
+        orderId: context.identity.canonicalOrderId,
+        canonicalOrderId: context.identity.canonicalOrderId,
+        providerClientOrderId: context.identity.providerClientOrderId,
+        commitOutcome: "accepted",
+        submitAttemptId: context.identity.submitAttemptId,
+        submitAttemptSequence: context.identity.submitAttemptSequence,
         status: "filled",
         filledQuantity: intent.quantity,
         fillPrice: intent.limitPrice ?? (intent.metadata?.estimatedPrice as number) ?? 0,

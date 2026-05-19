@@ -16,8 +16,15 @@ function normalizeOrderSnapshot(snapshot: OrderSnapshot | null): OrderSnapshot |
 
     return {
         ...snapshot,
+        canonicalOrderId: snapshot.canonicalOrderId ?? snapshot.orderId,
         providerOrderId: snapshot.providerOrderId ?? snapshot.orderId,
+        providerClientOrderId: snapshot.providerClientOrderId,
         providerOrderAliases: snapshot.providerOrderAliases ?? [],
+        submitAttemptId: snapshot.submitAttemptId,
+        submitAttemptSequence: snapshot.submitAttemptSequence,
+        commitOutcome: snapshot.commitOutcome ?? "accepted",
+        signedOrderFingerprint: snapshot.signedOrderFingerprint,
+        signedOrderMetadata: snapshot.signedOrderMetadata,
         lastTransitionSequence: snapshot.lastTransitionSequence ?? 0,
     }
 }
@@ -37,8 +44,15 @@ export const createConvexOrderPersistenceAdapter = (
                 async () => await client.mutation(api.mutations.upsertOrder, {
                     ...requireMachineAuth(),
                     orderId: snapshot.orderId,
+                    canonicalOrderId: snapshot.canonicalOrderId,
                     providerOrderId: snapshot.providerOrderId,
+                    providerClientOrderId: snapshot.providerClientOrderId,
                     providerOrderAliases: snapshot.providerOrderAliases,
+                    submitAttemptId: snapshot.submitAttemptId,
+                    submitAttemptSequence: snapshot.submitAttemptSequence,
+                    commitOutcome: snapshot.commitOutcome,
+                    signedOrderFingerprint: snapshot.signedOrderFingerprint,
+                    signedOrderMetadata: snapshot.signedOrderMetadata,
                     runId: snapshot.runId as Id<"strategy_runs">,
                     strategyId: snapshot.strategyId as Id<"strategies">,
                     venue: snapshot.venue,

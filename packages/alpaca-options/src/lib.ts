@@ -33,4 +33,9 @@ export type {
     AlpacaVerticalSpreadType,
     ParsedOptionContract,
 } from "./risk-rules"
+export {
+    resolveAlpacaForceResetCloseGroupsFromPositions,
+    isAlpacaRawOptionLegPosition,
+    resolveAlpacaCloseGroupsFromPositions,
+} from "./alpaca-position-structures"
 export { AlpacaOptionsVenueAdapter } from "./venue-adapter"

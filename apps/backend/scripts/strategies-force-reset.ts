@@ -15,6 +15,8 @@ import {
     isMarketClosedExecutionFailure,
     type MarketClosedResetBlock,
     reconcileAndVerifyReset,
+    resolveResetFlattenExposure,
+    runWithResetExecutionContext,
 } from "./lib/safe-strategy-reset"
 import type {
     DeleteStrategyBatchResult,
@@ -22,7 +24,6 @@ import type {
     StoredStrategy,
     TradingBackendClient,
 } from "@valiq-trading/convex"
-import { MT5VenueAdapter } from "@valiq-trading/mt5"
 
 const FORCE_RESET_FLATTEN_ATTEMPTS = 5
 const FORCE_RESET_FLATTEN_DELAY_MS = 1500
@@ -39,6 +40,11 @@ runScript(async () => {
     const deleted = createDeleteTotals()
     const deferredStrategyIds = new Set<string>()
     const deferredProviderApps = new Set<StoredStrategy["app"]>()
+    const deferredProviderReasons = new Map<StoredStrategy["app"], string>()
+    const deferProviderApp = (app: StoredStrategy["app"], reason: string) => {
+        deferredProviderApps.add(app)
+        deferredProviderReasons.set(app, reason)
+    }
 
     if (strategies.length === 0) {
         console.log("No strategies found. Running full reset cleanup and audit...")
@@ -68,67 +74,94 @@ runScript(async () => {
                 continue
             }
 
+            if (deferredProviderApps.has(strategy.app)) {
+                console.log(`    skipping venue flatten because ${deferredProviderReasons.get(strategy.app)}`)
+                continue
+            }
+
             for (let attempt = 1; attempt <= FORCE_RESET_FLATTEN_ATTEMPTS; attempt++) {
-                const { venue } = await createVenue(strategy, client)
-                const [positions, workingOrders] = await Promise.all([
-                    venue.getPositions(),
-                    venue.getWorkingOrders ? venue.getWorkingOrders() : Promise.resolve([]),
-                ])
+                const outcome = await runWithResetExecutionContext(
+                    client,
+                    strategy,
+                    `force reset flatten attempt ${attempt}`,
+                    async ({ venue, pipeline }) => {
+                        const [positions, workingOrders] = await Promise.all([
+                            venue.getPositions(),
+                            venue.getWorkingOrders ? venue.getWorkingOrders() : Promise.resolve([]),
+                        ])
 
-                if (positions.length === 0 && workingOrders.length === 0) {
-                    break
-                }
+                        if (positions.length === 0 && workingOrders.length === 0) {
+                            return { stop: true, deferred: false }
+                        }
 
-                const preExistingMarketCloseBlock = await detectMarketClosedResetBlock(strategy.app, venue, {
-                    positions,
-                    workingOrders,
-                })
-                if (preExistingMarketCloseBlock) {
-                    printMarketClosedResetBlock(strategy, preExistingMarketCloseBlock)
-                    deferredStrategyIds.add(String(strategy._id))
-                    deferredProviderApps.add(strategy.app)
-                    break
-                }
-
-                console.log(
-                    `    attempt ${attempt}/${FORCE_RESET_FLATTEN_ATTEMPTS}: ${positions.length} live position(s), ${workingOrders.length} live working order(s)`
-                )
-
-                const result =
-                    venue instanceof MT5VenueAdapter && workingOrders.length > 0
-                        ? await flattenMT5Exposure(venue, positions, workingOrders)
-                        : await flattenVenueExposure(venue, {
+                        const flattenExposure = await resolveResetFlattenExposure(client, strategy, {
+                            app: strategy.app,
                             positions,
                             workingOrders,
                         })
+                        printAlpacaEmergencyCloseGroups(flattenExposure.positions)
 
-                cancelledOrders += result.cancelledOrders
-                closedPositions += result.closedPositions
+                        const preExistingMarketCloseBlock = await detectMarketClosedResetBlock(strategy.app, venue, flattenExposure)
+                        if (preExistingMarketCloseBlock) {
+                            printMarketClosedResetBlock(strategy, preExistingMarketCloseBlock)
+                            return { stop: true, deferred: true }
+                        }
 
-                for (const failure of result.orderFailures) {
-                    console.log(`      ${failure}`)
-                }
+                        console.log(
+                            `    attempt ${attempt}/${FORCE_RESET_FLATTEN_ATTEMPTS}: ${positions.length} live position(s), ${workingOrders.length} live working order(s)`
+                        )
 
-                for (const failure of result.positionFailures) {
-                    console.log(`      ${failure}`)
-                }
+                        const result = await flattenVenueExposure(pipeline, flattenExposure)
 
-                const marketClosedFailure = [
-                    ...result.orderFailures,
-                    ...result.positionFailures,
-                ].find((failure) => isMarketClosedExecutionFailure(strategy.app, failure))
-                if (marketClosedFailure) {
-                    printMarketClosedExecutionFailure(strategy, marketClosedFailure)
+                        cancelledOrders += result.cancelledOrders
+                        closedPositions += result.closedPositions
+
+                        for (const failure of result.orderFailures) {
+                            console.log(`      ${failure}`)
+                        }
+
+                        for (const failure of result.positionFailures) {
+                            console.log(`      ${failure}`)
+                        }
+
+                        const marketClosedFailure = [
+                            ...result.orderFailures,
+                            ...result.positionFailures,
+                        ].find((failure) => isMarketClosedExecutionFailure(strategy.app, failure))
+                        if (marketClosedFailure) {
+                            printMarketClosedExecutionFailure(strategy, marketClosedFailure)
+                            return { stop: true, deferred: true }
+                        }
+
+                        const postPositions = await venue.getPositions()
+                        const postWorkingOrders = venue.getWorkingOrders
+                            ? await venue.getWorkingOrders()
+                            : []
+                        const postFlattenExposure = await resolveResetFlattenExposure(client, strategy, {
+                            app: strategy.app,
+                            positions: postPositions,
+                            workingOrders: postWorkingOrders,
+                        })
+                        const marketCloseBlock = await detectMarketClosedResetBlock(strategy.app, venue, postFlattenExposure)
+                        if (marketCloseBlock) {
+                            printMarketClosedResetBlock(strategy, marketCloseBlock)
+                            return { stop: true, deferred: true }
+                        }
+
+                        return { stop: false, deferred: false }
+                    }
+                )
+
+                if (outcome.deferred) {
                     deferredStrategyIds.add(String(strategy._id))
-                    deferredProviderApps.add(strategy.app)
+                    deferProviderApp(
+                        strategy.app,
+                        "provider market closed or existing close orders are still live; live provider rows intentionally preserved"
+                    )
                     break
                 }
 
-                const marketCloseBlock = await detectMarketClosedResetBlock(strategy.app, venue)
-                if (marketCloseBlock) {
-                    printMarketClosedResetBlock(strategy, marketCloseBlock)
-                    deferredStrategyIds.add(String(strategy._id))
-                    deferredProviderApps.add(strategy.app)
+                if (outcome.stop) {
                     break
                 }
 
@@ -175,7 +208,7 @@ runScript(async () => {
     if (deferredProviderApps.size > 0) {
         console.log("Full reset audit deferred for provider exposure:")
         for (const app of deferredProviderApps) {
-            console.log(`  ${app}: provider market closed; live provider rows intentionally preserved`)
+            console.log(`  ${app}: ${deferredProviderReasons.get(app) ?? "live provider rows intentionally preserved"}`)
         }
         console.log("Backend reset completed with deferred provider cleanup")
     } else {
@@ -234,12 +267,31 @@ function getRepresentativeStrategiesByApp(
     return Array.from(strategiesByApp.values())
 }
 
+function printAlpacaEmergencyCloseGroups(
+    positions: Array<{ instrument: string; metadata?: Record<string, unknown> }>
+): void {
+    const emergencyGroups = positions.filter((position) =>
+        position.metadata?.alpacaEmergencyCloseGroup === true
+    )
+
+    if (emergencyGroups.length === 0) {
+        return
+    }
+
+    console.log(
+        `    warning: emergency reconstructed ${emergencyGroups.length} Alpaca raw-leg close group(s) from provider positions: ${emergencyGroups.map((position) => position.instrument).join(", ")}`
+    )
+}
+
 function printMarketClosedResetBlock(
     strategy: StoredStrategy,
     block: MarketClosedResetBlock
 ): void {
+    const closeOrderDetail = block.workingOrders.length > 0
+        ? `${block.workingOrders.length} matching working close order(s)`
+        : "no working close order(s)"
     console.log(
-        `    warning: ${block.provider} market is closed and ${block.positions.length} provider position(s) still have ${block.workingOrders.length} matching working close order(s).`
+        `    warning: ${block.provider} market is closed and ${block.positions.length} provider position(s) remain with ${closeOrderDetail}.`
     )
     if (block.nextOpen) {
         console.log(`    next provider open: ${block.nextOpen}`)
@@ -365,38 +417,4 @@ function sumDeleteCounts(result: DeleteStrategyBatchResult): number {
 
 async function sleep(delayMs: number): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, delayMs))
-}
-
-async function flattenMT5Exposure(
-    venue: MT5VenueAdapter,
-    positions: Awaited<ReturnType<MT5VenueAdapter["getPositions"]>>,
-    workingOrders: Awaited<ReturnType<MT5VenueAdapter["getWorkingOrders"]>>
-): Promise<{
-    cancelledOrders: number
-    closedPositions: number
-    orderFailures: string[]
-    positionFailures: string[]
-}> {
-    const cancelled = await venue.cancelAllOrders()
-    const orderFailures: string[] = []
-
-    for (const result of cancelled.results) {
-        if (result.status !== "cancelled" && result.status !== "filled") {
-            orderFailures.push(
-                `MT5 order ${result.orderId || "<unknown>"}: ${result.error ?? result.status}`
-            )
-        }
-    }
-
-    const closed = await flattenVenueExposure(venue, {
-        positions,
-        workingOrders: [],
-    })
-
-    return {
-        cancelledOrders: cancelled.cancelled,
-        closedPositions: closed.closedPositions,
-        orderFailures: [...orderFailures, ...closed.orderFailures],
-        positionFailures: closed.positionFailures,
-    }
 }

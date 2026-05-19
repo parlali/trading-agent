@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest"
+import { createExecutionError } from "@valiq-trading/core"
 import type { PolymarketClient, PolymarketMarket } from "./polymarket-client.ts"
 import {
     POLYMARKET_SEARCH_MARKETS_MAX_LIVE_PRICE_TOKENS,
@@ -59,8 +60,12 @@ function createClient() {
     const getPrice = vi.fn()
     const getMarketBySlug = vi.fn()
     const getTokenBalance = vi.fn()
+    const prepareOrder = vi.fn()
+    const postPreparedOrder = vi.fn()
     const createOrder = vi.fn()
     const getOrder = vi.fn()
+    const getOpenOrders = vi.fn()
+    const getTrades = vi.fn()
     const cancelOrder = vi.fn()
 
     return {
@@ -73,8 +78,12 @@ function createClient() {
             getPrice,
             getMarketBySlug,
             getTokenBalance,
+            prepareOrder,
+            postPreparedOrder,
             createOrder,
             getOrder,
+            getOpenOrders,
+            getTrades,
             cancelOrder,
         } as unknown as PolymarketClient,
         getTopLiquidMarketsForCategory,
@@ -85,9 +94,30 @@ function createClient() {
         getPrice,
         getMarketBySlug,
         getTokenBalance,
+        prepareOrder,
+        postPreparedOrder,
         createOrder,
         getOrder,
+        getOpenOrders,
+        getTrades,
         cancelOrder,
+    }
+}
+
+function createIdentityContext(canonicalOrderId: string, signedOrderFingerprint?: string) {
+    return {
+        identity: {
+            canonicalOrderId,
+            providerClientOrderId: canonicalOrderId,
+            providerOrderAliases: [],
+            submitAttemptId: "attempt",
+            submitAttemptSequence: 1,
+            commitOutcome: "accepted" as const,
+            signedOrderFingerprint,
+            venue: "polymarket",
+            role: "close" as const,
+            sequence: 1,
+        },
     }
 }
 
@@ -174,7 +204,7 @@ describe("PolymarketVenueAdapter.getMarketPrice", () => {
 describe("PolymarketVenueAdapter.closePosition", () => {
     it("submits live closes with canonical provider identity from current positions", async () => {
         const client = createClient()
-        client.getTokenBalance.mockResolvedValue(10)
+        client.getTokenBalance.mockResolvedValue(15)
         client.getCurrentPositions.mockResolvedValue([
             {
                 asset: "token-active",
@@ -199,21 +229,137 @@ describe("PolymarketVenueAdapter.closePosition", () => {
             asks: [{ price: "0.6", size: "10" }],
             last_trade_price: "0.59",
         }))
-        client.createOrder.mockResolvedValue({
+        client.prepareOrder.mockImplementation(async (params: { price: number; size: number }) => ({
+            orderBody: {
+                order: {},
+            },
+            signedOrderFingerprint: "signed-fingerprint",
+            signedOrderMetadata: {
+                price: params.price,
+                size: params.size,
+                signedOrderFingerprint: "signed-fingerprint",
+            },
+        }))
+        client.postPreparedOrder.mockResolvedValue({
             orderID: "close-order-1",
             status: "matched",
+            signedOrderFingerprint: "signed-fingerprint",
         })
 
         const venue = new PolymarketVenueAdapter(client.client)
-        const result = await venue.closePosition("token-active")
+        const closeIntent = await venue.buildCloseIntent("token-active")
+        const context = createIdentityContext("vpmc01close12345")
+        await venue.prepareOrderIdentity({
+            ...closeIntent,
+            quantity: 10,
+        }, context)
+        const result = await venue.closePosition("token-active", closeIntent, context)
 
         expect(result.status).toBe("filled")
-        expect(client.createOrder).toHaveBeenCalledWith(expect.objectContaining({
+        expect(result.filledQuantity).toBe(10)
+        expect(client.prepareOrder).toHaveBeenCalledWith(expect.objectContaining({
             tokenId: "token-active",
+            canonicalOrderId: "vpmc01close12345",
             side: "sell",
             size: 10,
             price: 0.59,
         }))
+        expect(client.postPreparedOrder).toHaveBeenCalled()
+    })
+
+    it("fails closed when token balance falls below the prepared close quantity", async () => {
+        const client = createClient()
+        client.getTokenBalance.mockResolvedValue(5)
+        client.getCurrentPositions.mockResolvedValue([
+            {
+                asset: "token-active",
+                conditionId: "condition-active",
+                title: "Will it happen?",
+                outcome: "Yes",
+                slug: "will-it-happen",
+                size: 10,
+                avgPrice: 0.4,
+                curPrice: 0.6,
+                cashPnl: 2,
+                redeemable: false,
+                mergeable: false,
+                endDate: "2026-12-31",
+            },
+        ])
+        client.getPrice.mockResolvedValue(0.59)
+        client.prepareOrder.mockImplementation(async (params: { price: number; size: number }) => ({
+            orderBody: {
+                order: {},
+            },
+            signedOrderFingerprint: "signed-fingerprint",
+            signedOrderMetadata: {
+                price: params.price,
+                size: params.size,
+                signedOrderFingerprint: "signed-fingerprint",
+            },
+        }))
+
+        const venue = new PolymarketVenueAdapter(client.client)
+        const closeIntent = await venue.buildCloseIntent("token-active")
+        const context = createIdentityContext("vpmc01close12345")
+        await venue.prepareOrderIdentity(closeIntent, context)
+        const result = await venue.closePosition("token-active", closeIntent, context)
+
+        expect(result.status).toBe("rejected")
+        expect(result.errorDetail).toMatchObject({
+            code: "POLYMARKET_CLOSE_BALANCE_BELOW_PREPARED_QUANTITY",
+        })
+        expect(client.postPreparedOrder).not.toHaveBeenCalled()
+    })
+
+    it("rejects submissions when the intent quantity differs from the prepared signed size", async () => {
+        const client = createClient()
+        client.prepareOrder.mockImplementation(async (params: { price: number; size: number }) => ({
+            orderBody: {
+                order: {},
+            },
+            signedOrderFingerprint: "signed-fingerprint",
+            signedOrderMetadata: {
+                price: params.price,
+                size: params.size,
+                signedOrderFingerprint: "signed-fingerprint",
+            },
+        }))
+
+        const venue = new PolymarketVenueAdapter(client.client)
+        const context = createIdentityContext("vpmc01close12345")
+        const intent = {
+            instrument: "token-active",
+            side: "sell" as const,
+            quantity: 10,
+            orderType: "limit" as const,
+            limitPrice: 0.59,
+            timeInForce: "ioc" as const,
+            metadata: {
+                tokenId: "token-active",
+                conditionId: "condition-active",
+                marketSlug: "will-it-happen",
+                question: "Will it happen?",
+                outcome: "Yes",
+            },
+        }
+
+        await venue.prepareOrderIdentity(intent, context)
+
+        await expect(venue.submitOrder({
+            ...intent,
+            quantity: 15,
+        }, context)).rejects.toMatchObject({
+            executionError: {
+                code: "PREPARED_SIGNED_ORDER_SIZE_MISMATCH",
+            },
+        })
+        await expect(venue.submitOrder(intent, context)).rejects.toMatchObject({
+            executionError: {
+                code: "MISSING_PREPARED_SIGNED_ORDER",
+            },
+        })
+        expect(client.postPreparedOrder).not.toHaveBeenCalled()
     })
 
     it("fails closed when a live close cannot resolve canonical provider identity", async () => {
@@ -229,7 +375,7 @@ describe("PolymarketVenueAdapter.closePosition", () => {
 })
 
 describe("PolymarketVenueAdapter.modifyOrder", () => {
-    it("resolves replacement identity before cancelling the existing order", async () => {
+    it("fails closed without cancelling or replacing the existing order", async () => {
         const client = createClient()
         client.getOrder.mockResolvedValue({
             id: "order-1",
@@ -251,9 +397,166 @@ describe("PolymarketVenueAdapter.modifyOrder", () => {
 
         const venue = new PolymarketVenueAdapter(client.client)
 
-        await expect(venue.modifyOrder("order-1", { limitPrice: 0.51 })).rejects.toThrow("market lookup failed")
+        const result = await venue.modifyOrder("order-1", { limitPrice: 0.51 })
+
+        expect(result.status).toBe("rejected")
+        expect(result.errorDetail?.code).toBe("POLYMARKET_MODIFY_REQUIRES_NEW_SUBMISSION")
         expect(client.cancelOrder).not.toHaveBeenCalled()
+        expect(client.postPreparedOrder).not.toHaveBeenCalled()
         expect(client.createOrder).not.toHaveBeenCalled()
+    })
+})
+
+describe("PolymarketVenueAdapter.recoverSubmittedOrder", () => {
+    it("recovers duplicated posts only from an exact signed-order fingerprint match", async () => {
+        const client = createClient()
+        client.getOpenOrders.mockResolvedValue([
+            createOpenOrder({
+                id: "wrong-order",
+                signedOrderFingerprint: "fingerprint-wrong",
+            }),
+            createOpenOrder({
+                id: "matching-order",
+                signedOrderFingerprint: "fingerprint-correct",
+            }),
+        ])
+        client.getTrades.mockResolvedValue([])
+        const venue = new PolymarketVenueAdapter(client.client)
+
+        const recovery = await venue.recoverSubmittedOrder(
+            createPolymarketIntent(),
+            createIdentityContext("vpme01abcde23456", "fingerprint-correct"),
+            createDuplicateOrderError("fingerprint-correct")
+        )
+
+        expect(recovery.outcome).toBe("accepted")
+        expect(recovery.outcome === "accepted" ? recovery.result.orderId : undefined).toBe("matching-order")
+        expect(recovery.outcome === "accepted" ? recovery.result.signedOrderFingerprint : undefined).toBe("fingerprint-correct")
+    })
+
+    it("does not recover a geometry match when the provider cannot prove the fingerprint", async () => {
+        const client = createClient()
+        client.getOpenOrders.mockResolvedValue([
+            createOpenOrder({
+                id: "geometry-only-order",
+                signedOrderFingerprint: undefined,
+            }),
+        ])
+        client.getTrades.mockResolvedValue([])
+        const venue = new PolymarketVenueAdapter(client.client)
+
+        const recovery = await venue.recoverSubmittedOrder(
+            createPolymarketIntent(),
+            createIdentityContext("vpme01abcde23456", "fingerprint-correct"),
+            createDuplicateOrderError("fingerprint-correct")
+        )
+
+        expect(recovery).toMatchObject({
+            outcome: "not_found",
+            details: {
+                exactOpenMatchCount: 0,
+                openCandidateCount: 1,
+            },
+        })
+    })
+
+    it("uses recent matched activity plus provider order lookup for terminal duplicate proof", async () => {
+        const client = createClient()
+        client.getOpenOrders.mockResolvedValue([])
+        client.getTrades.mockResolvedValue([
+            createTrade({
+                maker_order_id: "terminal-order",
+                signedOrderFingerprint: "fingerprint-correct",
+            }),
+        ])
+        client.getOrder.mockResolvedValue(createOpenOrder({
+            id: "terminal-order",
+            status: "matched",
+            signedOrderFingerprint: "fingerprint-correct",
+        }))
+        const venue = new PolymarketVenueAdapter(client.client)
+
+        const recovery = await venue.recoverSubmittedOrder(
+            createPolymarketIntent(),
+            createIdentityContext("vpme01abcde23456", "fingerprint-correct"),
+            createDuplicateOrderError("fingerprint-correct")
+        )
+
+        expect(client.getOrder).toHaveBeenCalledWith("terminal-order")
+        expect(recovery.outcome).toBe("accepted")
+        expect(recovery.outcome === "accepted" ? recovery.result.orderId : undefined).toBe("terminal-order")
+    })
+
+    it("probes persisted signed fingerprints for retryable non-duplicate submit failures", async () => {
+        const client = createClient()
+        client.getOpenOrders.mockResolvedValue([
+            createOpenOrder({
+                id: "matching-order",
+                signedOrderFingerprint: "fingerprint-correct",
+            }),
+        ])
+        client.getTrades.mockResolvedValue([])
+        const venue = new PolymarketVenueAdapter(client.client)
+
+        const recovery = await venue.recoverSubmittedOrder(
+            createPolymarketIntent(),
+            createIdentityContext("vpme01abcde23456", "fingerprint-correct"),
+            createRetryablePostError()
+        )
+
+        expect(client.getOpenOrders).toHaveBeenCalled()
+        expect(recovery.outcome).toBe("accepted")
+        expect(recovery.outcome === "accepted" ? recovery.result.orderId : undefined).toBe("matching-order")
+    })
+
+    it("dedupes a partial fill seen in both open orders and trades by provider order id", async () => {
+        const client = createClient()
+        client.getOpenOrders.mockResolvedValue([
+            createOpenOrder({
+                id: "partial-order",
+                status: "live",
+                size_matched: "3",
+                signedOrderFingerprint: "fingerprint-correct",
+            }),
+        ])
+        client.getTrades.mockResolvedValue([
+            createTrade({
+                maker_order_id: "partial-order",
+                signedOrderFingerprint: "fingerprint-correct",
+            }),
+        ])
+        const venue = new PolymarketVenueAdapter(client.client)
+
+        const recovery = await venue.recoverSubmittedOrder(
+            createPolymarketIntent(),
+            createIdentityContext("vpme01abcde23456", "fingerprint-correct"),
+            createDuplicateOrderError("fingerprint-correct")
+        )
+
+        expect(client.getOrder).not.toHaveBeenCalled()
+        expect(recovery.outcome).toBe("accepted")
+        expect(recovery.outcome === "accepted" ? recovery.result.orderId : undefined).toBe("partial-order")
+        expect(recovery.outcome === "accepted" ? recovery.result.status : undefined).toBe("partially_filled")
+    })
+
+    it("refuses duplicate recovery when the persisted fingerprint differs from the provider error", async () => {
+        const client = createClient()
+        const venue = new PolymarketVenueAdapter(client.client)
+
+        const recovery = await venue.recoverSubmittedOrder(
+            createPolymarketIntent(),
+            createIdentityContext("vpme01abcde23456", "fingerprint-persisted"),
+            createDuplicateOrderError("fingerprint-provider")
+        )
+
+        expect(recovery).toMatchObject({
+            outcome: "not_found",
+            details: {
+                persistedSignedOrderFingerprint: "fingerprint-persisted",
+                signedOrderFingerprint: "fingerprint-provider",
+            },
+        })
+        expect(client.getOpenOrders).not.toHaveBeenCalled()
     })
 })
 
@@ -337,4 +640,71 @@ describe("PolymarketVenueAdapter.getPositions", () => {
 
 function countEnrichedTokens(markets: Awaited<ReturnType<PolymarketVenueAdapter["searchMarkets"]>>): number {
     return markets.flatMap((market) => market.tokens).filter((token) => token.midpoint !== undefined).length
+}
+
+function createPolymarketIntent() {
+    return {
+        instrument: "token-1-yes",
+        side: "buy" as const,
+        quantity: 10,
+        orderType: "limit" as const,
+        limitPrice: 0.52,
+        timeInForce: "gtc" as const,
+    }
+}
+
+function createDuplicateOrderError(signedOrderFingerprint: string): Error {
+    return createExecutionError("venue", "Polymarket duplicate order", {
+        code: "INVALID_ORDER_DUPLICATED",
+        retryable: false,
+        details: {
+            signedOrderFingerprint,
+        },
+    })
+}
+
+function createRetryablePostError(): Error {
+    return createExecutionError("venue", "Polymarket post timed out", {
+        code: "NETWORK_TIMEOUT",
+        retryable: true,
+    })
+}
+
+function createOpenOrder(overrides: Record<string, unknown> = {}) {
+    return {
+        id: "order-1",
+        status: "live",
+        owner: "owner",
+        market: "condition-1",
+        asset_id: "token-1-yes",
+        side: "buy",
+        original_size: "10",
+        size_matched: "0",
+        price: "0.52",
+        outcome: "Yes",
+        order_type: "GTC",
+        created_at: "2026-04-12T00:00:00.000Z",
+        expiration: "0",
+        signedOrderFingerprint: "fingerprint-correct",
+        ...overrides,
+    }
+}
+
+function createTrade(overrides: Record<string, unknown> = {}) {
+    return {
+        id: "trade-1",
+        taker_order_id: "taker-order",
+        market: "condition-1",
+        asset_id: "token-1-yes",
+        side: "buy",
+        size: "10",
+        price: "0.52",
+        fee_rate_bps: "0",
+        status: "matched",
+        match_time: "2026-04-12T00:00:00.000Z",
+        outcome: "Yes",
+        trader_side: "maker",
+        signedOrderFingerprint: "fingerprint-correct",
+        ...overrides,
+    }
 }

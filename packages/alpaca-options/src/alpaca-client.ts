@@ -6,6 +6,7 @@ import {
     type ExecutionErrorDetail,
     type ExecutionResult,
     type OrderIntent,
+    type SubmitOrderContext,
 } from "@valiq-trading/core"
 import type {
     AlpacaAccountResponse,
@@ -220,12 +221,14 @@ export class AlpacaClient {
         return normalizeEquitySnapshotResponse(symbol, response)
     }
 
-    async createOrder(intent: OrderIntent): Promise<ExecutionResult> {
-        const payload = buildCreateOrderPayload(intent)
+    async createOrder(intent: OrderIntent, context?: SubmitOrderContext): Promise<ExecutionResult> {
+        const payload = buildCreateOrderPayload(intent, context?.identity.providerClientOrderId)
 
         const response = await this.request<AlpacaOrderResponse>("/v2/orders", {
             method: "POST",
             body: JSON.stringify(payload),
+        }, {
+            retry: false,
         })
 
         return mapOrderResponse(response)
@@ -236,9 +239,18 @@ export class AlpacaClient {
         return mapOrderResponse(response)
     }
 
+    async getOrderByClientOrderId(clientOrderId: string): Promise<ExecutionResult> {
+        const response = await this.request<AlpacaOrderResponse>(
+            `/v2/orders:by_client_order_id?client_order_id=${encodeURIComponent(clientOrderId)}`
+        )
+        return mapOrderResponse(response)
+    }
+
     async cancelOrder(orderId: string): Promise<ExecutionResult> {
         await this.request(`/v2/orders/${orderId}`, {
             method: "DELETE",
+        }, {
+            retry: false,
         })
 
         return await this.getOrder(orderId)
@@ -283,13 +295,19 @@ export class AlpacaClient {
         const response = await this.request<AlpacaOrderResponse>(`/v2/orders/${orderId}`, {
             method: "PATCH",
             body: JSON.stringify(payload),
+        }, {
+            retry: false,
         })
 
         return mapOrderResponse(response)
     }
 
-    private async request<T = unknown>(path: string, init: RequestInit = {}): Promise<T> {
-        return await this.requestAgainstBaseUrl<T>(this.tradingBaseUrl, path, init)
+    private async request<T = unknown>(
+        path: string,
+        init: RequestInit = {},
+        options: { retry?: boolean } = {}
+    ): Promise<T> {
+        return await this.requestAgainstBaseUrl<T>(this.tradingBaseUrl, path, init, options)
     }
 
     private async dataRequest<T = unknown>(path: string, init: RequestInit = {}): Promise<T> {
@@ -299,29 +317,41 @@ export class AlpacaClient {
     private async requestAgainstBaseUrl<T = unknown>(
         baseUrl: string,
         path: string,
+        init: RequestInit = {},
+        options: { retry?: boolean } = {}
+    ): Promise<T> {
+        const execute = async () => await this.requestOnceAgainstBaseUrl<T>(baseUrl, path, init)
+        if (options.retry === false) {
+            return await execute()
+        }
+
+        return await retryWithBackoff(execute, 3, 1000)
+    }
+
+    private async requestOnceAgainstBaseUrl<T = unknown>(
+        baseUrl: string,
+        path: string,
         init: RequestInit = {}
     ): Promise<T> {
-        return await retryWithBackoff(async () => {
-            const response = await fetchWithTimeout(`${baseUrl}${path}`, {
-                ...init,
-                headers: {
-                    "APCA-API-KEY-ID": this.apiKey,
-                    "APCA-API-SECRET-KEY": this.secretKey,
-                    "APCA-ACCOUNT-ID": this.accountId,
-                    "Content-Type": "application/json",
-                    ...init.headers,
-                },
-            }, ALPACA_REQUEST_TIMEOUT_MS, `Alpaca request ${path}`)
+        const response = await fetchWithTimeout(`${baseUrl}${path}`, {
+            ...init,
+            headers: {
+                "APCA-API-KEY-ID": this.apiKey,
+                "APCA-API-SECRET-KEY": this.secretKey,
+                "APCA-ACCOUNT-ID": this.accountId,
+                "Content-Type": "application/json",
+                ...init.headers,
+            },
+        }, ALPACA_REQUEST_TIMEOUT_MS, `Alpaca request ${path}`)
 
-            if (!response.ok) {
-                throw await toAlpacaApiError(response)
-            }
+        if (!response.ok) {
+            throw await toAlpacaApiError(response)
+        }
 
-            if (response.status === 204) {
-                return {} as T
-            }
+        if (response.status === 204) {
+            return {} as T
+        }
 
-            return await response.json() as T
-        }, 3, 1000)
+        return await response.json() as T
     }
 }
