@@ -130,7 +130,7 @@ export const getStrategyOwnershipScope = query({
             instruments.add(order.instrument)
             workingOrderIds.add(order.orderId)
             workingOrderIds.add(order.providerOrderId)
-            for (const alias of order.providerOrderAliases) {
+            for (const alias of order.providerOrderAliases ?? []) {
                 workingOrderIds.add(alias)
             }
         }

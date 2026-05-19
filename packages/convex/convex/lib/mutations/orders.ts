@@ -308,13 +308,13 @@ export const logOrderTransition = mutation({
 
 type UpsertOrderArgs = {
     orderId: string
-    canonicalOrderId: string
+    canonicalOrderId?: string
     providerOrderId: string
     providerClientOrderId?: string
-    providerOrderAliases: string[]
+    providerOrderAliases?: string[]
     submitAttemptId?: string
     submitAttemptSequence?: number
-    commitOutcome: ExecutionCommitOutcome
+    commitOutcome?: ExecutionCommitOutcome
     signedOrderFingerprint?: string
     signedOrderMetadata?: unknown
     runId: Id<"strategy_runs">
@@ -359,13 +359,13 @@ export async function upsertOrderRow(
     const existing = await findOrderRowByIdentity(ctx.db, args.orderId)
     const payload = {
         orderId: args.orderId,
-        canonicalOrderId: args.canonicalOrderId,
+        canonicalOrderId: args.canonicalOrderId ?? args.orderId,
         providerOrderId: args.providerOrderId,
         providerClientOrderId: args.providerClientOrderId,
         providerOrderAliases: mergeOrderAliases(existing, args),
         submitAttemptId: args.submitAttemptId,
         submitAttemptSequence: args.submitAttemptSequence,
-        commitOutcome: args.commitOutcome,
+        commitOutcome: args.commitOutcome ?? "accepted",
         signedOrderFingerprint: args.signedOrderFingerprint,
         signedOrderMetadata: args.signedOrderMetadata,
         runId: args.runId,
@@ -450,7 +450,7 @@ function mergeOrderAliases(
 ): string[] {
     const aliases = new Set<string>([
         ...(existing?.providerOrderAliases ?? []),
-        ...args.providerOrderAliases,
+        ...(args.providerOrderAliases ?? []),
     ])
 
     const existingProviderOrderId = existing?.providerOrderId

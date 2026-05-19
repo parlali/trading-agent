@@ -13,6 +13,14 @@ function rotr(value: number, shift: number): number {
     return (value >>> shift) | (value << (32 - shift))
 }
 
+function readWord(words: Uint32Array, index: number): number {
+    const value = words[index]
+    if (value === undefined) {
+        throw new Error(`Missing SHA-256 word at index ${index}`)
+    }
+    return value
+}
+
 export function sha256(input: Uint8Array): Uint8Array {
     const bitLength = input.length * 8
     const paddedLength = ((input.length + 9 + 63) & ~63)
@@ -39,9 +47,11 @@ export function sha256(input: Uint8Array): Uint8Array {
         }
 
         for (let index = 16; index < 64; index++) {
-            const s0 = rotr(words[index - 15], 7) ^ rotr(words[index - 15], 18) ^ (words[index - 15] >>> 3)
-            const s1 = rotr(words[index - 2], 17) ^ rotr(words[index - 2], 19) ^ (words[index - 2] >>> 10)
-            words[index] = (words[index - 16] + s0 + words[index - 7] + s1) >>> 0
+            const w15 = readWord(words, index - 15)
+            const w2 = readWord(words, index - 2)
+            const s0 = rotr(w15, 7) ^ rotr(w15, 18) ^ (w15 >>> 3)
+            const s1 = rotr(w2, 17) ^ rotr(w2, 19) ^ (w2 >>> 10)
+            words[index] = (readWord(words, index - 16) + s0 + readWord(words, index - 7) + s1) >>> 0
         }
 
         let a = h0
@@ -56,7 +66,7 @@ export function sha256(input: Uint8Array): Uint8Array {
         for (let index = 0; index < 64; index++) {
             const s1 = rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25)
             const ch = (e & f) ^ (~e & g)
-            const temp1 = (h + s1 + ch + K[index] + words[index]) >>> 0
+            const temp1 = (h + s1 + ch + (K[index] ?? 0) + readWord(words, index)) >>> 0
             const s0 = rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22)
             const maj = (a & b) ^ (a & c) ^ (b & c)
             const temp2 = (s0 + maj) >>> 0
