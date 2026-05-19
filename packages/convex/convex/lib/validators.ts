@@ -123,13 +123,13 @@ export const orderPollingV = v.object({
 
 export const orderCoreFieldsV = {
     orderId: v.string(),
-    canonicalOrderId: v.string(),
+    canonicalOrderId: v.optional(v.string()),
     providerOrderId: v.string(),
     providerClientOrderId: v.optional(v.string()),
-    providerOrderAliases: v.array(v.string()),
+    providerOrderAliases: v.optional(v.array(v.string())),
     submitAttemptId: v.optional(v.string()),
     submitAttemptSequence: v.optional(v.number()),
-    commitOutcome: executionCommitOutcomeV,
+    commitOutcome: v.optional(executionCommitOutcomeV),
     signedOrderFingerprint: v.optional(v.string()),
     signedOrderMetadata: v.optional(v.any()),
     runId: v.id("strategy_runs"),

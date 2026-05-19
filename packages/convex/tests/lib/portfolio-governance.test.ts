@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
-import { getClaimInstrumentsForOrder } from "./instrumentClaims"
-import { portfolioGovernanceTestables } from "./mutations/portfolio"
+import { getClaimInstrumentsForOrder } from "../../convex/lib/instrumentClaims"
+import { portfolioGovernanceTestables } from "../../convex/lib/mutations/portfolio"
 
 describe("portfolio governance helpers", () => {
     it("keeps MT5 provider-position ownership stable for ticket 1600791764 across sync/restart", () => {

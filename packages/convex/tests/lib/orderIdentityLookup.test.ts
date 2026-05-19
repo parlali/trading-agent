@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { findOrderRowByIdentity } from "./orderIdentityLookup"
+import { findOrderRowByIdentity } from "../../convex/lib/orderIdentityLookup"
 
 describe("order identity lookup", () => {
     it("resolves persisted orders by provider order aliases", async () => {

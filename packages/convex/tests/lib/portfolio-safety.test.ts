@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest"
-import { createEmptyCascadeDeleteCounts } from "./cascadeDelete"
+import { createEmptyCascadeDeleteCounts } from "../../convex/lib/cascadeDelete"
 import {
     assertStrategyDeletionSafe,
     deleteFinalStrategyAppRows,
     deleteStrategyTableBatch,
-} from "./mutations/strategyCascadeDelete"
-import { buildStrategyPositionSnapshotHashPayload } from "./mutations/portfolioSnapshots"
+} from "../../convex/lib/mutations/strategyCascadeDelete"
+import { buildStrategyPositionSnapshotHashPayload } from "../../convex/lib/mutations/portfolioSnapshots"
 
 type RowsByTable = Record<string, unknown[] | undefined>
 type MutableRow = { _id: string, [key: string]: unknown }

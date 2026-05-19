@@ -6,7 +6,7 @@ import type {
     ExecutionCommitOutcome,
     ExecutionIdentityFields,
     ProviderIdentityCapability,
-} from "./execution-identity"
+} from "./execution-identity-constants"
 
 export {
     ACTIVE_VENUE_APPS,
@@ -32,7 +32,7 @@ export {
     EXECUTION_IDENTITY_VENUES,
     EXECUTION_ORDER_ROLES,
     PROVIDER_IDENTITY_CAPABILITIES,
-} from "./execution-identity"
+} from "./execution-identity-constants"
 export type {
     OrderIntent,
     OrderLeg,
@@ -48,7 +48,7 @@ export type {
     ExecutionOrderRole,
     PreparedExecutionIdentity,
     ProviderIdentityCapability,
-} from "./execution-identity"
+} from "./execution-identity-constants"
 
 export const SEVERITY_LEVELS = ["critical", "warning", "info"] as const
 export type Severity = typeof SEVERITY_LEVELS[number]

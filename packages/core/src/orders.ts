@@ -1,11 +1,11 @@
 import type { ExecutionResult, Severity } from "./types"
 import type { OrderIntent } from "./order-intent-types"
 import { createExecutionErrorDetail, formatExecutionError } from "./utils"
+import type { ExecutionCommitOutcome } from "./execution-identity-constants"
 import {
     getExecutionIdentityCandidates as collectExecutionIdentityCandidates,
     mergeIdentityAliases,
-    type ExecutionCommitOutcome,
-} from "./execution-identity"
+} from "./execution-identity-shared"
 import {
     ACTIVE_ORDER_STATUSES,
     TERMINAL_ORDER_STATUSES,

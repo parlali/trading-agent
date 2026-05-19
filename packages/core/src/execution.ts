@@ -81,7 +81,8 @@ import {
 
 export * from "./dry-run-ledger"
 export * from "./price-verification"
-export * from "./execution-identity"
+export * from "./execution-identity-constants"
+export * from "./execution-identity-shared"
 export * from "./execution-submit-recovery"
 export type {
     ClosePositionOptions,

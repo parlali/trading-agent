@@ -1,10 +1,10 @@
 import {
     createExecutionError,
-    createChildExecutionIdentity,
     type ExecutionIdentityContext,
     type OrderIntent,
     type Position,
 } from "@valiq-trading/core"
+import { createChildExecutionIdentity } from "@valiq-trading/core/execution-identity"
 import type {
     OKXAlgoOrder,
     OKXApiPosSide,

@@ -4,7 +4,7 @@ import type {
     SubmitRecoveryResult,
     VenueAdapter,
 } from "./execution-contracts"
-import type { ExecutionIdentityContext } from "./execution-identity"
+import type { ExecutionIdentityContext } from "./execution-identity-constants"
 import {
     createExecutionErrorDetail,
     formatExecutionError,

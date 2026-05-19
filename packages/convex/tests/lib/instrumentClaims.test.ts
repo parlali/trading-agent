@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { getClaimInstrumentsForOrder, getProviderInstrumentClaimAliases } from "./instrumentClaims"
+import { getClaimInstrumentsForOrder, getProviderInstrumentClaimAliases } from "../../convex/lib/instrumentClaims"
 
 describe("getClaimInstrumentsForOrder", () => {
     it("expands multi-leg option orders into parent and leg claim instruments", () => {

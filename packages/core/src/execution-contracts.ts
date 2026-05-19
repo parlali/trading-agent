@@ -13,7 +13,7 @@ import type {
     ExecutionIdentityContext,
     PreparedExecutionIdentity,
     ProviderIdentityCapability,
-} from "./execution-identity"
+} from "./execution-identity-constants"
 import type {
     OrderPersistenceAdapter,
     OrderSnapshot,

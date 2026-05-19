@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest"
 import { resolveAlpacaCloseGroupsFromPositions } from "@valiq-trading/alpaca-options"
-import { getClaimInstrumentsForOrder } from "./instrumentClaims"
-import { reconcileProviderPortfolio } from "./mutations/portfolio"
-import { resolveExecutionSafetyFaultsFromProviderTruth } from "./mutations/portfolioRows"
-import { getPortfolioPositions } from "./queries/portfolio"
+import { getClaimInstrumentsForOrder } from "../../convex/lib/instrumentClaims"
+import { reconcileProviderPortfolio } from "../../convex/lib/mutations/portfolio"
+import { resolveExecutionSafetyFaultsFromProviderTruth } from "../../convex/lib/mutations/portfolioRows"
+import { getPortfolioPositions } from "../../convex/lib/queries/portfolio"
 
 type Row = {
     _id: string

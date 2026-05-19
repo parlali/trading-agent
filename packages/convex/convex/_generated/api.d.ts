@@ -41,6 +41,7 @@ import type * as lib_mutations_system from "../lib/mutations/system.js";
 import type * as lib_mutations_systemHeartbeats from "../lib/mutations/systemHeartbeats.js";
 import type * as lib_mutations_systemManualRuns from "../lib/mutations/systemManualRuns.js";
 import type * as lib_mutations_systemReset from "../lib/mutations/systemReset.js";
+import type * as lib_orderIdentityLookup from "../lib/orderIdentityLookup.js";
 import type * as lib_providerPositions from "../lib/providerPositions.js";
 import type * as lib_queries_dashboard from "../lib/queries/dashboard.js";
 import type * as lib_queries_orders from "../lib/queries/orders.js";
@@ -96,6 +97,7 @@ declare const fullApi: ApiFromModules<{
   "lib/mutations/systemHeartbeats": typeof lib_mutations_systemHeartbeats;
   "lib/mutations/systemManualRuns": typeof lib_mutations_systemManualRuns;
   "lib/mutations/systemReset": typeof lib_mutations_systemReset;
+  "lib/orderIdentityLookup": typeof lib_orderIdentityLookup;
   "lib/providerPositions": typeof lib_providerPositions;
   "lib/queries/dashboard": typeof lib_queries_dashboard;
   "lib/queries/orders": typeof lib_queries_orders;
