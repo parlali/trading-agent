@@ -446,6 +446,7 @@ export interface TradingBackendClient extends TradeEventLogger, AgentMessageLogg
     triggerManualRun(strategyId: Id<"strategies">): Promise<Id<"manual_run_requests">>
     acknowledgeAlert(alertId: Id<"alerts">): Promise<void>
     getStrategyOwnedInstruments(strategyId: Id<"strategies">): Promise<string[]>
+    getInstrumentClaimsForStrategy(strategyId: Id<"strategies">): Promise<Array<{ instrument: string }>>
     getStrategyOwnershipScope(strategyId: Id<"strategies">): Promise<StrategyOwnershipScopeRow>
     getAllOwnedInstrumentsByApp(app: Exclude<App, "backend">): Promise<Array<{ instrument: string, strategyId: string }>>
     getLatestPositions(strategyId: Id<"strategies">): Promise<Position[]>

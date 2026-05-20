@@ -18,6 +18,7 @@ import {
 import {
     isAlpacaRawOptionLegPosition,
     resolveAlpacaCloseGroupsFromPositions,
+    resolveAlpacaForceResetCloseGroupsFromPositions,
 } from "@valiq-trading/alpaca-options"
 import { createOrderPersistenceAdapter } from "./strategy-cli"
 import { AlpacaPlugin } from "../../src/plugins/alpaca"
@@ -62,6 +63,7 @@ export interface ResetFlattenExposure {
     app?: StoredStrategy["app"]
     positions: Array<ProviderPositionRow | Position>
     workingOrders: Array<ProviderPendingOrderRow | WorkingOrder>
+    forceReset?: boolean
 }
 
 export interface VenueMarketClock {
@@ -262,10 +264,16 @@ export async function runWithResetExecutionContext<T>(
     }
 }
 
+export type FlattenVenueExposureOptions = {
+    forceReset?: boolean
+}
+
 export async function flattenVenueExposure(
     pipeline: Pick<ExecutionPipeline, "cancelOrder" | "closeProviderPosition">,
-    exposure: ResetFlattenExposure
+    exposure: ResetFlattenExposure,
+    options: FlattenVenueExposureOptions = {}
 ): Promise<VenueExposureResetResult> {
+    const forceReset = options.forceReset ?? exposure.forceReset
     const cancelledOrders = await cancelOrders(
         pipeline,
         uniqueStrings(exposure.workingOrders.map(resolveWorkingOrderCancelId))
@@ -273,7 +281,10 @@ export async function flattenVenueExposure(
     const closedPositions = await closePositions(
         pipeline,
         exposure.positions,
-        exposure.app
+        exposure.app,
+        {
+            forceReset,
+        }
     )
 
     return {
@@ -294,6 +305,7 @@ export async function resolveResetFlattenExposure(
             app: strategy.app,
             positions: liveExposure.positions,
             workingOrders: liveExposure.workingOrders,
+            forceReset: liveExposure.forceReset,
         }
     }
 
@@ -306,15 +318,17 @@ export async function resolveResetFlattenExposure(
     const liveProviderPositions = reconciledPositions.filter((position) =>
         !isDryRunVirtualProviderPosition(position)
     )
+    const selectedPositions = liveProviderPositions.length > 0
+        ? liveProviderPositions
+        : liveExposure.positions
 
     return {
         app: strategy.app,
-        positions: liveProviderPositions.length > 0
-            ? liveProviderPositions
-            : liveExposure.positions,
+        positions: selectedPositions,
         workingOrders: reconciledWorkingOrders.length > 0
             ? reconciledWorkingOrders
             : liveExposure.workingOrders,
+        forceReset: liveExposure.forceReset,
     }
 }
 
@@ -425,14 +439,17 @@ async function cancelOrders(
 async function closePositions(
     pipeline: Pick<ExecutionPipeline, "closeProviderPosition">,
     positions: Array<ProviderPositionRow | Position>,
-    app?: StoredStrategy["app"]
+    app?: StoredStrategy["app"],
+    options: FlattenVenueExposureOptions = {}
 ): Promise<{
     count: number
     failures: string[]
 }> {
     let closed = 0
     const failures: string[] = []
-    const closeRequests = resolveAlpacaCloseGroupsFromPositions(positions)
+    const closeRequests = app === "alpaca-options" && options.forceReset
+        ? resolveAlpacaForceResetCloseGroupsFromPositions(positions)
+        : resolveAlpacaCloseGroupsFromPositions(positions)
 
     for (const position of closeRequests) {
         if (isUnsafeAlpacaRawLegClose(position, app)) {

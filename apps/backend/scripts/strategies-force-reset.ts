@@ -15,6 +15,7 @@ import {
     isMarketClosedExecutionFailure,
     type MarketClosedResetBlock,
     reconcileAndVerifyReset,
+    refreshProviderPortfolioState,
     resolveResetFlattenExposure,
     runWithResetExecutionContext,
 } from "./lib/safe-strategy-reset"
@@ -24,6 +25,7 @@ import type {
     StoredStrategy,
     TradingBackendClient,
 } from "@valiq-trading/convex"
+import { resolveAlpacaForceResetCloseGroupsFromPositions } from "@valiq-trading/alpaca-options"
 
 const FORCE_RESET_FLATTEN_ATTEMPTS = 5
 const FORCE_RESET_FLATTEN_DELAY_MS = 1500
@@ -56,6 +58,15 @@ runScript(async () => {
 
         const recoveredBeforeDisable = await client.recoverRunningRuns()
         console.log(`Recovered running runs before disable: ${recoveredBeforeDisable}`)
+
+        for (const strategy of representativeStrategies) {
+            if (isDryRunStrategy(strategy) || deferredProviderApps.has(strategy.app)) {
+                continue
+            }
+
+            console.log(`  Syncing ${strategy.app} provider portfolio before disable using ${strategy.name}...`)
+            await refreshProviderPortfolioState(client, strategy)
+        }
 
         for (const strategy of strategies) {
             await client.disableStrategy(strategy._id)
@@ -98,6 +109,7 @@ runScript(async () => {
                             app: strategy.app,
                             positions,
                             workingOrders,
+                            forceReset: strategy.app === "alpaca-options",
                         })
                         printAlpacaEmergencyCloseGroups(flattenExposure.positions)
 
@@ -111,7 +123,9 @@ runScript(async () => {
                             `    attempt ${attempt}/${FORCE_RESET_FLATTEN_ATTEMPTS}: ${positions.length} live position(s), ${workingOrders.length} live working order(s)`
                         )
 
-                        const result = await flattenVenueExposure(pipeline, flattenExposure)
+                        const result = await flattenVenueExposure(pipeline, flattenExposure, {
+                            forceReset: true,
+                        })
 
                         cancelledOrders += result.cancelledOrders
                         closedPositions += result.closedPositions
@@ -141,6 +155,7 @@ runScript(async () => {
                             app: strategy.app,
                             positions: postPositions,
                             workingOrders: postWorkingOrders,
+                            forceReset: strategy.app === "alpaca-options",
                         })
                         const marketCloseBlock = await detectMarketClosedResetBlock(strategy.app, venue, postFlattenExposure)
                         if (marketCloseBlock) {
@@ -268,9 +283,20 @@ function getRepresentativeStrategiesByApp(
 }
 
 function printAlpacaEmergencyCloseGroups(
-    positions: Array<{ instrument: string; metadata?: Record<string, unknown> }>
+    positions: Array<{
+        instrument: string
+        side?: unknown
+        quantity?: unknown
+        entryPrice?: unknown
+        metadata?: Record<string, unknown>
+    }>
 ): void {
-    const emergencyGroups = positions.filter((position) =>
+    const emergencyGroups = resolveAlpacaForceResetCloseGroupsFromPositions(positions.map((position) => ({
+        ...position,
+        side: readPositionSide(position.side) ?? readPositionSide(position.metadata?.positionSide) ?? readPositionSide(position.metadata?.side) ?? "long",
+        quantity: readPositionNumber(position.quantity) ?? readPositionNumber(position.metadata?.quantity) ?? 1,
+        entryPrice: readPositionNumber(position.entryPrice) ?? readPositionNumber(position.metadata?.entryPrice) ?? 0,
+    }))).filter((position) =>
         position.metadata?.alpacaEmergencyCloseGroup === true
     )
 
@@ -281,6 +307,14 @@ function printAlpacaEmergencyCloseGroups(
     console.log(
         `    warning: emergency reconstructed ${emergencyGroups.length} Alpaca raw-leg close group(s) from provider positions: ${emergencyGroups.map((position) => position.instrument).join(", ")}`
     )
+}
+
+function readPositionSide(value: unknown): "long" | "short" | undefined {
+    return value === "long" || value === "short" ? value : undefined
+}
+
+function readPositionNumber(value: unknown): number | undefined {
+    return typeof value === "number" && Number.isFinite(value) ? value : undefined
 }
 
 function printMarketClosedResetBlock(

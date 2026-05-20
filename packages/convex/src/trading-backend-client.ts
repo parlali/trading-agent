@@ -632,6 +632,12 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
                 async () => await client.query(api.queries.getStrategyOwnedInstruments, { ...requireMachineAuth(), strategyId } as never) as string[]
             )
         },
+        async getInstrumentClaimsForStrategy(strategyId: Id<"strategies">): Promise<Array<{ instrument: string }>> {
+            return await runWithTimeout(
+                "Convex query getInstrumentClaimsForStrategy",
+                async () => await client.query(api.queries.getInstrumentClaimsForStrategy, { ...requireMachineAuth(), strategyId } as never) as Array<{ instrument: string }>
+            )
+        },
         async getStrategyOwnershipScope(strategyId: Id<"strategies">): Promise<StrategyOwnershipScopeRow> {
             return await runWithTimeout(
                 "Convex query getStrategyOwnershipScope",

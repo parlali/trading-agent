@@ -664,10 +664,18 @@ describe("resetStrategySafely", () => {
         expect(pipeline.closeProviderPosition).not.toHaveBeenCalled()
     })
 
-    it("refuses Alpaca raw vertical reconstruction during force reset", async () => {
+    it("reconstructs valid Alpaca vertical geometry during force reset", async () => {
         const pipeline = {
             cancelOrder: vi.fn(),
-            closeProviderPosition: vi.fn(),
+            closeProviderPosition: vi.fn(async () => ({
+                result: {
+                    orderId: "valc01close2345",
+                    status: "filled",
+                    filledQuantity: 1,
+                    timestamp: Date.now(),
+                },
+                validation: { allowed: true },
+            })),
         }
         const positions = [
             {
@@ -718,21 +726,21 @@ describe("resetStrategySafely", () => {
             app: "alpaca-options",
             positions,
             workingOrders: [],
+            forceReset: true,
         })
 
-        expect(result).toMatchObject({
-            closedPositions: 0,
-        })
-        expect(result.positionFailures).toHaveLength(6)
-        expect(result.positionFailures).toEqual(expect.arrayContaining([
-            expect.stringContaining("SPY260529C00754000"),
-            expect.stringContaining("SPY260529C00755000"),
-            expect.stringContaining("SPY260529P00679000"),
-            expect.stringContaining("SPY260529P00680000"),
-            expect.stringContaining("SPY260529P00715000"),
-            expect.stringContaining("SPY260529P00716000"),
-        ]))
-        expect(pipeline.closeProviderPosition).not.toHaveBeenCalled()
+        expect(result.closedPositions).toBe(3)
+        expect(result.positionFailures).toEqual([])
+        expect(pipeline.closeProviderPosition).toHaveBeenCalledTimes(3)
+        expect(pipeline.closeProviderPosition).toHaveBeenCalledWith(
+            expect.objectContaining({
+                metadata: expect.objectContaining({
+                    alpacaEmergencyCloseGroup: true,
+                    alpacaCloseGroup: true,
+                }),
+            }),
+            "reset flatten"
+        )
     })
 
     it("does not synthesize Alpaca close groups across unknown ownership scopes", async () => {

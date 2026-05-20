@@ -49,6 +49,21 @@ export const getStrategyOwnedInstruments = query({
     },
 })
 
+export const getInstrumentClaimsForStrategy = query({
+    args: { serviceToken: v.string(), strategyId: v.id("strategies") },
+    handler: async (ctx, args) => {
+        requireServiceToken(args.serviceToken)
+        const claims = await ctx.db
+            .query("instrument_claims")
+            .withIndex("by_strategy", (q) => q.eq("strategyId", args.strategyId))
+            .collect()
+
+        return claims.map((claim) => ({
+            instrument: claim.instrument,
+        }))
+    },
+})
+
 export const getStrategyOwnershipScope = query({
     args: { serviceToken: v.string(), strategyId: v.id("strategies") },
     handler: async (ctx, args) => {
