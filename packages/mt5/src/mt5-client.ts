@@ -23,7 +23,7 @@ export interface MT5WorkerCredentials {
 }
 
 export interface MT5ClientConfig {
-    /** Base URL of the Python worker (e.g. http://192.168.1.100:8090) */
+    /** Base URL of the Python worker */
     workerUrl: string
     /** Shared access key for auth */
     accessKey?: string
