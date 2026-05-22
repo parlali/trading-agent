@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
 import socket
 import sys
+import tempfile
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -38,6 +40,15 @@ RECOVERABLE_CONNECTION_ERRORS = {
     "query_failed",
 }
 
+PRE_SUBMIT_MUTATION_OPERATIONS = {
+    "order_submit",
+    "order_modify",
+    "order_cancel",
+    "order_cancel_all",
+    "position_close",
+    "position_close_all",
+}
+
 
 class MT5WorkerRuntime:
     def __init__(self, settings: Any):
@@ -56,6 +67,8 @@ class MT5WorkerRuntime:
         self._operation_lock: asyncio.Lock | None = None
         self._connect_lock: asyncio.Lock | None = None
         self._executor: ThreadPoolExecutor | None = None
+        self._singleton_lock_handle: Any | None = None
+        self._singleton_lock_path: str | None = None
 
     def assert_expected_repo_path(self) -> None:
         if os.name != "nt":
@@ -80,6 +93,7 @@ class MT5WorkerRuntime:
 
     def startup(self) -> None:
         self.assert_expected_repo_path()
+        self.acquire_singleton_guard()
         log.info("mt5_worker_starting", port=self.settings.worker_port)
         self.install_loop_exception_handler()
         self.start_listener_watchdog()
@@ -93,6 +107,64 @@ class MT5WorkerRuntime:
         sys.stdout.flush()
         sys.stderr.flush()
         os._exit(70)
+
+    def acquire_singleton_guard(self) -> None:
+        if os.name != "nt":
+            return
+
+        import msvcrt
+
+        portable_dir = os.path.abspath(os.path.expanduser(self.settings.mt5_portable_dir))
+        terminal_path = os.path.abspath(os.path.expanduser(self.settings.mt5_terminal_path))
+        lock_key = hashlib.sha256(f"{portable_dir}|{terminal_path}".encode("utf-8")).hexdigest()[:16]
+        lock_path = os.path.join(tempfile.gettempdir(), f"valiq-mt5-worker-{lock_key}.lock")
+        handle = open(lock_path, "a+b")
+
+        try:
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        except OSError:
+            handle.close()
+            self.terminate_for_restart(
+                "mt5_worker_singleton_lock_held",
+                {
+                    "portableDir": portable_dir,
+                    "terminalPath": terminal_path,
+                    "lockPath": lock_path,
+                },
+            )
+
+        handle.seek(0)
+        handle.truncate()
+        handle.write(f"pid={os.getpid()} portableDir={portable_dir} terminalPath={terminal_path}\n".encode("utf-8"))
+        handle.flush()
+        self._singleton_lock_handle = handle
+        self._singleton_lock_path = lock_path
+        log.info(
+            "mt5_worker_singleton_lock_acquired",
+            portableDir=portable_dir,
+            terminalPath=terminal_path,
+            lockPath=lock_path,
+        )
+
+    def release_singleton_guard(self) -> None:
+        handle = self._singleton_lock_handle
+        if handle is None:
+            return
+
+        if os.name == "nt":
+            import msvcrt
+
+            try:
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            except OSError as exc:
+                log.warning("mt5_worker_singleton_lock_release_failed", error=str(exc))
+
+        try:
+            handle.close()
+        finally:
+            self._singleton_lock_handle = None
+            self._singleton_lock_path = None
 
     def install_loop_exception_handler(self) -> None:
         loop = asyncio.get_running_loop()
@@ -241,7 +313,7 @@ class MT5WorkerRuntime:
             },
         }
 
-    def require_client(self) -> MT5Client:
+    def require_client(self, operation: str | None = None) -> MT5Client:
         if self.terminal_blocked:
             raise_worker_http_error(
                 "MT5 terminal IPC is blocked after a timed-out SDK operation. Restart the worker before trading.",
@@ -252,7 +324,7 @@ class MT5WorkerRuntime:
             raise_worker_http_error(
                 "MT5 not connected. Call POST /connect first.",
                 "not_connected",
-                False,
+                operation in RECOVERABLE_READ_OPERATIONS,
             )
         return self.client
 
@@ -288,18 +360,41 @@ class MT5WorkerRuntime:
             )
 
         lock = self._operation_lock_instance()
-        if lock.locked():
-            raise_worker_http_error(
-                f"MT5 operation already in progress: {self.state.get('activeOperation')}",
-                "operation_in_progress",
-                True,
-                details={
-                    "activeOperation": self.state.get("activeOperation"),
-                },
+        queue_started_at = time.time()
+        queue_timeout = self.settings.mt5_operation_queue_timeout_seconds
+        try:
+            await asyncio.wait_for(lock.acquire(), timeout=queue_timeout)
+        except (TimeoutError, asyncio.TimeoutError) as exc:
+            queued_for = time.time() - queue_started_at
+            message = f"MT5 operation queue timed out waiting for {self.state.get('activeOperation')}"
+            self.state.update({
+                "status": self._operation_status(),
+                "lastError": message,
+                "lastFinishedAt": time.time(),
+            })
+            log.warning(
+                "mt5_operation_queue_timeout",
+                operation=operation,
+                activeOperation=self.state.get("activeOperation"),
+                timeout_seconds=queue_timeout,
+                queued_seconds=queued_for,
             )
+            try:
+                raise_worker_http_error(
+                    message,
+                    "operation_queue_timeout",
+                    operation not in PRE_SUBMIT_MUTATION_OPERATIONS,
+                    details={
+                        "activeOperation": self.state.get("activeOperation"),
+                        "queuedSeconds": queued_for,
+                        "timeoutSeconds": queue_timeout,
+                    },
+                )
+            except Exception as http_exc:
+                raise http_exc from exc
 
         timeout = timeout_seconds if timeout_seconds is not None else self.settings.mt5_operation_timeout_seconds
-        async with lock:
+        try:
             started_at = time.time()
             self.state.update({
                 "status": "busy",
@@ -352,6 +447,8 @@ class MT5WorkerRuntime:
                     "lastFinishedAt": time.time(),
                 })
                 raise
+        finally:
+            lock.release()
 
     async def run_http_operation(
         self, operation: str, func: Callable[[], Any], timeout_seconds: float | None = None
@@ -371,6 +468,19 @@ class MT5WorkerRuntime:
             raise_mt5_connection_http_error(exc)
         except BlockingOperationTimeout as exc:
             raise_blocking_operation_http_error(exc)
+
+    async def run_client_http_operation(
+        self,
+        operation: str,
+        func: Callable[[MT5Client], Any],
+        timeout_seconds: float | None = None,
+    ) -> Any:
+        client = self.require_client(operation)
+        return await self.run_http_operation(
+            operation,
+            lambda: func(client),
+            timeout_seconds,
+        )
 
     def should_recover_connection(self, operation: str, exc: MT5ConnectionError) -> bool:
         if operation not in RECOVERABLE_READ_OPERATIONS:
@@ -414,15 +524,20 @@ class MT5WorkerRuntime:
 
     async def connect(self, login: int, password: str, server: str) -> dict[str, Any]:
         connect_lock = self._connect_lock_instance()
-        if connect_lock.locked():
+        try:
+            await asyncio.wait_for(
+                connect_lock.acquire(),
+                timeout=self.settings.mt5_operation_queue_timeout_seconds,
+            )
+        except (TimeoutError, asyncio.TimeoutError):
             return {
                 "success": False,
-                "error": "MT5 connect already in progress",
-                "errorType": "connect_in_progress",
+                "error": "MT5 connect queue timed out waiting for another connect operation",
+                "errorType": "connect_queue_timeout",
                 "retryable": True,
             }
 
-        async with connect_lock:
+        try:
             previous_client = self.client
 
             def connect_blocking() -> tuple[MT5Client, dict[str, Any]]:
@@ -465,6 +580,8 @@ class MT5WorkerRuntime:
                 "success": True,
                 "accountInfo": account_info,
             }
+        finally:
+            connect_lock.release()
 
     async def disconnect(self) -> dict[str, Any]:
         client = self.client
@@ -486,4 +603,5 @@ class MT5WorkerRuntime:
         if self._executor is not None:
             self._executor.shutdown(wait=False, cancel_futures=True)
             self._executor = None
+        self.release_singleton_guard()
         log.info("mt5_worker_stopped")

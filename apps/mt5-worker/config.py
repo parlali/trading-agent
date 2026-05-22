@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     reconnect_delay_seconds: float = 5.0
     mt5_connect_timeout_seconds: float = 75.0
     mt5_operation_timeout_seconds: float = 30.0
+    mt5_operation_queue_timeout_seconds: float = 20.0
 
     # Auth -- shared secret between TS orchestrator and this worker
     worker_access_key: str = ""

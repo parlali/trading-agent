@@ -8,6 +8,7 @@ import {
 } from "./state"
 import type { SyncStrategyEntry } from "./state"
 import type { VenueApp } from "./types"
+import { readProviderPortfolioForSync } from "./provider-portfolio-read"
 
 export const ACCOUNT_SCOPE = "single-account-per-venue" as const
 
@@ -58,14 +59,12 @@ export async function reconcileProviderPortfolio(args: {
     driftDetected: boolean
     driftSummary?: string
 }> {
-    const [accountState, positions, workingOrders] = await Promise.all([
-        args.venue.getAccountState(),
-        args.venue.getPositions(),
-        args.venue.getWorkingOrders ? args.venue.getWorkingOrders() : Promise.resolve([]),
-    ])
-    const positionClosures = args.venue.getRecentPositionClosures
-        ? await args.venue.getRecentPositionClosures()
-        : []
+    const {
+        accountState,
+        positions,
+        workingOrders,
+        positionClosures,
+    } = await readProviderPortfolioForSync(args.app, args.venue)
 
     const reconciliation = await backend.reconcileProviderPortfolio(
         args.app,

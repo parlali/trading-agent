@@ -29,6 +29,7 @@ import {
     type RunSystemContextDigest,
     type Scheduler,
     type StrategyRiskState,
+    type WorkingOrder,
 } from "@valiq-trading/core"
 import type { VenueApp, VenuePlugin } from "./types"
 import { buildToolPool } from "./scheduler-tool-pool"
@@ -108,21 +109,34 @@ export async function runStrategy(
         ownershipScopeRow,
         allOwnedInstruments,
         storedPositions,
-        initialPositions,
-        initialWorkingOrders,
-        initialProviderAccountState,
     ] = await Promise.all([
         backend.getStrategyOwnershipScope(strategy._id),
         backend.getAllOwnedInstrumentsByApp(app),
         storedPositionsPromise,
-        isDryRun
-            ? storedPositionsPromise
-            : venue.getPositions(),
-        !isDryRun && venue.getWorkingOrders ? venue.getWorkingOrders() : Promise.resolve([]),
-        isDryRun
-            ? Promise.resolve(undefined)
-            : venue.getAccountState(),
     ])
+    let initialPositions: Position[]
+    let initialWorkingOrders: WorkingOrder[]
+    let initialProviderAccountState: AccountState | undefined
+
+    if (isDryRun) {
+        initialPositions = storedPositions ?? []
+        initialWorkingOrders = []
+        initialProviderAccountState = undefined
+    } else if (app === "mt5") {
+        initialPositions = await venue.getPositions()
+        initialWorkingOrders = venue.getWorkingOrders ? await venue.getWorkingOrders() : []
+        initialProviderAccountState = await venue.getAccountState()
+    } else {
+        [
+            initialPositions,
+            initialWorkingOrders,
+            initialProviderAccountState,
+        ] = await Promise.all([
+            venue.getPositions(),
+            venue.getWorkingOrders ? venue.getWorkingOrders() : Promise.resolve([]),
+            venue.getAccountState(),
+        ])
+    }
     const ownershipScope = {
         instruments: new Set(ownershipScopeRow.instruments),
         positionKeys: new Set(ownershipScopeRow.positionKeys),

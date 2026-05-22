@@ -1,7 +1,7 @@
 import { readFiniteNumber, type AgentMessageLogger, type StrategyRunContext, type Logger } from "@valiq-trading/core"
-import type { ToolRegistry } from "./tool-registry"
+import type { ToolDefinition, ToolRegistry } from "./tool-registry"
 import { LLMClient } from "./llm-client"
-import type { LLMClientConfig, LLMUsage } from "./llm-client"
+import type { LLMClientConfig, LLMUsage, ToolCall } from "./llm-client"
 import { ConversationManager } from "./conversation"
 import { buildSystemPrompt } from "./prompt-builder"
 
@@ -41,6 +41,12 @@ export interface OpportunityCoverageMetrics {
     filled: number
     closed: number
     realizedPnl: number
+}
+
+type ValidToolCall = {
+    toolCall: ToolCall
+    toolDef: ToolDefinition
+    parsedArgs: unknown
 }
 
 const DEFAULT_MAX_ITERATIONS = 25
@@ -237,11 +243,7 @@ export async function executeAgentRun(
                     response.content ?? "",
                 )
 
-                const valid: Array<{
-                    toolCall: typeof response.toolCalls[number]
-                    toolDef: ReturnType<typeof tools.get> & {}
-                    parsedArgs: unknown
-                }> = []
+                const valid: ValidToolCall[] = []
 
                 for (const toolCall of response.toolCalls) {
                     const toolName = toolCall.function.name
@@ -333,7 +335,8 @@ export async function executeAgentRun(
                 }
 
                 if (valid.length > 0) {
-                    logger.info("Executing tools in parallel", {
+                    const executeSequentially = context.app === "mt5"
+                    logger.info(executeSequentially ? "Executing MT5 tools sequentially" : "Executing tools in parallel", {
                         tools: valid.map(v => v.toolCall.function.name),
                         count: valid.length,
                         runId: context.runId,
@@ -342,16 +345,9 @@ export async function executeAgentRun(
                     const remainingMs = runTimeoutMs - (Date.now() - runStartedAt)
                     const toolTimeoutMs = Math.max(Math.min(remainingMs, TOOL_TIMEOUT_MS), 5000)
 
-                    const results = await Promise.allSettled(
-                        valid.map(({ toolDef, parsedArgs }) =>
-                            Promise.race([
-                                toolDef.handler(parsedArgs),
-                                new Promise<never>((_, reject) =>
-                                    setTimeout(() => reject(new Error(`Tool timed out after ${Math.round(toolTimeoutMs / 1000)}s`)), toolTimeoutMs)
-                                ),
-                            ])
-                        )
-                    )
+                    const results = executeSequentially
+                        ? await executeToolsSequentially(valid, toolTimeoutMs)
+                        : await executeToolsInParallel(valid, toolTimeoutMs)
 
                     for (let i = 0; i < valid.length; i++) {
                         const entry = valid[i]!
@@ -485,6 +481,53 @@ function normalizeToolErrorSignature(errorResult: string): string {
         .replace(/"stack":"[^"]+"/g, "")
         .replace(/\d{4}-\d{2}-\d{2}T[^"]+/g, "timestamp")
         .slice(0, 1000)
+}
+
+async function executeToolsInParallel(
+    valid: ValidToolCall[],
+    toolTimeoutMs: number
+): Promise<PromiseSettledResult<unknown>[]> {
+    return await Promise.allSettled(
+        valid.map(({ toolDef, parsedArgs }) =>
+            executeToolWithTimeout(toolDef, parsedArgs, toolTimeoutMs)
+        )
+    )
+}
+
+async function executeToolsSequentially(
+    valid: ValidToolCall[],
+    toolTimeoutMs: number
+): Promise<PromiseSettledResult<unknown>[]> {
+    const results: PromiseSettledResult<unknown>[] = []
+
+    for (const { toolDef, parsedArgs } of valid) {
+        try {
+            results.push({
+                status: "fulfilled",
+                value: await executeToolWithTimeout(toolDef, parsedArgs, toolTimeoutMs),
+            })
+        } catch (reason) {
+            results.push({
+                status: "rejected",
+                reason,
+            })
+        }
+    }
+
+    return results
+}
+
+async function executeToolWithTimeout(
+    toolDef: ToolDefinition,
+    parsedArgs: unknown,
+    toolTimeoutMs: number
+): Promise<unknown> {
+    return await Promise.race([
+        toolDef.handler(parsedArgs),
+        new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error(`Tool timed out after ${Math.round(toolTimeoutMs / 1000)}s`)), toolTimeoutMs)
+        ),
+    ])
 }
 
 function repeatedToolErrorResult(

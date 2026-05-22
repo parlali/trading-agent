@@ -8,7 +8,6 @@ import uvicorn
 from fastapi import Depends, FastAPI, Header, HTTPException
 
 from config import settings
-from mt5_client import MT5Client
 from worker_contracts import rejected_order_result
 from worker_models import (
     CancelOrderRequest,
@@ -30,10 +29,6 @@ def verify_access_key(x_worker_key: str = Header(default="")) -> None:
     supplied_key = x_worker_key.strip()
     if not key or not supplied_key or not compare_digest(supplied_key, key):
         raise HTTPException(status_code=401, detail="Unauthorized")
-
-
-def get_client() -> MT5Client:
-    return runtime.require_client()
 
 
 @asynccontextmanager
@@ -66,29 +61,28 @@ async def disconnect() -> dict[str, Any]:
 
 
 @app.get("/account", dependencies=[Depends(verify_access_key)])
-async def get_account(client: MT5Client = Depends(get_client)) -> dict[str, Any]:
-    return await runtime.run_http_operation("account", client.get_account_info)
+async def get_account() -> dict[str, Any]:
+    return await runtime.run_client_http_operation("account", lambda client: client.get_account_info())
 
 
 @app.get("/positions", dependencies=[Depends(verify_access_key)])
-async def get_positions(client: MT5Client = Depends(get_client)) -> list[dict[str, Any]]:
-    return await runtime.run_http_operation("positions", client.get_positions)
+async def get_positions() -> list[dict[str, Any]]:
+    return await runtime.run_client_http_operation("positions", lambda client: client.get_positions())
 
 
 @app.get("/orders", dependencies=[Depends(verify_access_key)])
-async def get_orders(client: MT5Client = Depends(get_client)) -> list[dict[str, Any]]:
-    return await runtime.run_http_operation("orders", client.get_open_orders)
+async def get_orders() -> list[dict[str, Any]]:
+    return await runtime.run_client_http_operation("orders", lambda client: client.get_open_orders())
 
 
 @app.post("/order/submit", dependencies=[Depends(verify_access_key)])
 async def submit_order(
     req: SubmitOrderRequest,
-    client: MT5Client = Depends(get_client),
 ) -> dict[str, Any]:
     try:
-        return await runtime.run_http_operation(
+        return await runtime.run_client_http_operation(
             "order_submit",
-            lambda: client.submit_order(
+            lambda client: client.submit_order(
                 symbol=req.symbol,
                 side=req.side,
                 volume=req.volume,
@@ -108,12 +102,11 @@ async def submit_order(
 @app.post("/order/modify", dependencies=[Depends(verify_access_key)])
 async def modify_position(
     req: ModifyPositionRequest,
-    client: MT5Client = Depends(get_client),
 ) -> dict[str, Any]:
     try:
-        return await runtime.run_http_operation(
+        return await runtime.run_client_http_operation(
             "order_modify",
-            lambda: client.modify_position(
+            lambda client: client.modify_position(
                 ticket=req.ticket,
                 stop_loss=req.stopLoss,
                 take_profit=req.takeProfit,
@@ -126,24 +119,21 @@ async def modify_position(
 @app.post("/order/cancel", dependencies=[Depends(verify_access_key)])
 async def cancel_order(
     req: CancelOrderRequest,
-    client: MT5Client = Depends(get_client),
 ) -> dict[str, Any]:
     try:
-        return await runtime.run_http_operation(
+        return await runtime.run_client_http_operation(
             "order_cancel",
-            lambda: client.cancel_order(req.ticket),
+            lambda client: client.cancel_order(req.ticket),
         )
     except ValueError as exc:
         return rejected_order_result(exc, str(req.ticket))
 
 
 @app.post("/order/cancel-all", dependencies=[Depends(verify_access_key)])
-async def cancel_all_orders(
-    client: MT5Client = Depends(get_client),
-) -> dict[str, Any]:
-    results = await runtime.run_http_operation(
+async def cancel_all_orders() -> dict[str, Any]:
+    results = await runtime.run_client_http_operation(
         "order_cancel_all",
-        client.cancel_all_orders,
+        lambda client: client.cancel_all_orders(),
     )
     return {
         "cancelled": sum(1 for result in results if result.get("success")),
@@ -154,12 +144,11 @@ async def cancel_all_orders(
 @app.post("/position/close", dependencies=[Depends(verify_access_key)])
 async def close_position(
     req: ClosePositionRequest,
-    client: MT5Client = Depends(get_client),
 ) -> dict[str, Any]:
     try:
-        return await runtime.run_http_operation(
+        return await runtime.run_client_http_operation(
             "position_close",
-            lambda: client.close_position(
+            lambda client: client.close_position(
                 ticket=req.ticket,
                 volume=req.volume,
                 deviation=req.deviation,
@@ -170,12 +159,10 @@ async def close_position(
 
 
 @app.post("/position/close-all", dependencies=[Depends(verify_access_key)])
-async def close_all_positions(
-    client: MT5Client = Depends(get_client),
-) -> dict[str, Any]:
-    results = await runtime.run_http_operation(
+async def close_all_positions() -> dict[str, Any]:
+    results = await runtime.run_client_http_operation(
         "position_close_all",
-        client.close_all_positions,
+        lambda client: client.close_all_positions(),
     )
     return {
         "closed": sum(1 for result in results if result.get("success")),
@@ -186,33 +173,30 @@ async def close_all_positions(
 @app.post("/position/closures", dependencies=[Depends(verify_access_key)])
 async def get_position_closures(
     req: PositionClosuresRequest,
-    client: MT5Client = Depends(get_client),
 ) -> list[dict[str, Any]]:
-    return await runtime.run_http_operation(
+    return await runtime.run_client_http_operation(
         "position_closures",
-        lambda: client.get_position_closures(req.lookbackHours),
+        lambda client: client.get_position_closures(req.lookbackHours),
     )
 
 
 @app.post("/symbol/info", dependencies=[Depends(verify_access_key)])
 async def get_symbol_info(
     req: SymbolInfoRequest,
-    client: MT5Client = Depends(get_client),
 ) -> list[dict[str, Any]]:
-    return await runtime.run_http_operation(
+    return await runtime.run_client_http_operation(
         "symbol_info",
-        lambda: client.get_symbol_info_batch(req.symbols),
+        lambda client: client.get_symbol_info_batch(req.symbols),
     )
 
 
 @app.post("/order/status", dependencies=[Depends(verify_access_key)])
 async def get_order_status(
     req: GetOrderRequest,
-    client: MT5Client = Depends(get_client),
 ) -> dict[str, Any]:
-    result = await runtime.run_http_operation(
+    result = await runtime.run_client_http_operation(
         "order_status",
-        lambda: client.get_order(req.orderId),
+        lambda client: client.get_order(req.orderId),
     )
     if result is None:
         raise HTTPException(status_code=404, detail=f"Order {req.orderId} not found")

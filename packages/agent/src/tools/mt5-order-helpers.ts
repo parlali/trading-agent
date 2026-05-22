@@ -176,10 +176,8 @@ export async function prepareMT5Order(
         return rejected(exposureViolation)
     }
 
-    const [account, positions] = await Promise.all([
-        pipeline.getAccountState(),
-        pipeline.getPositions(),
-    ])
+    const account = await pipeline.getAccountState()
+    const positions = await pipeline.getPositions()
 
     const lotResult = calculateLotSize({
         accountBalance: getRiskBudgetBase(account),
@@ -275,10 +273,8 @@ async function checkMT5ExposureGuards(
     policy: MT5Policy,
     action: "entry" | "adjustment"
 ): Promise<string | null> {
-    const [positions, trackedOrders] = await Promise.all([
-        pipeline.getPositions(),
-        Promise.resolve(pipeline.getTrackedOrders()),
-    ])
+    const positions = await pipeline.getPositions()
+    const trackedOrders = pipeline.getTrackedOrders()
 
     const activeEntryOrders = trackedOrders.filter((order) =>
         ACTIVE_ORDER_STATUSES.includes(order.status) &&

@@ -61,8 +61,11 @@ class FakeBulkCloseMT5(FakeMT5):
 
 
 class FakeRouteClient:
+    login = 1
+
     def __init__(self, error: Exception):
         self.error = error
+        self._connected = True
 
     def submit_order(self, **kwargs: object) -> object:
         raise self.error
@@ -72,6 +75,9 @@ class FakeRouteClient:
 
     def get_positions(self) -> object:
         raise self.error
+
+    def disconnect(self) -> None:
+        self._connected = False
 
 
 def assert_query_failure(call: Callable[[], object]) -> None:
@@ -103,22 +109,26 @@ async def assert_route_http_error(call: Callable[[], object]) -> None:
 async def run_endpoint_harness() -> None:
     import main
 
+    main.runtime.reset_state()
+    main.runtime.client = FakeRouteClient(MT5ConnectionError("IPC recv failed", error_type="query_failed"))
+
     await assert_route_http_error(lambda: main.submit_order(
         main.SubmitOrderRequest(symbol="XAUUSD", side="buy", volume=0.01),
-        FakeRouteClient(MT5ConnectionError("IPC recv failed", error_type="query_failed")),
     ))
 
-    await assert_route_http_error(lambda: main.get_positions(
-        FakeRouteClient(MT5ConnectionError("IPC recv failed", error_type="query_failed")),
-    ))
+    main.runtime.client = FakeRouteClient(MT5ConnectionError("IPC recv failed", error_type="query_failed"))
+    await assert_route_http_error(lambda: main.get_positions())
 
-    result = await main.close_position(
-        main.ClosePositionRequest(ticket=202),
-        FakeRouteClient(ValueError("Position 202 not found")),
-    )
-    assert result["success"] is False
-    assert result["orderId"] == ""
-    assert "Position 202 not found" in result["retcodeDescription"]
+    main.runtime.client = FakeRouteClient(ValueError("Position 202 not found"))
+    try:
+        result = await main.close_position(
+            main.ClosePositionRequest(ticket=202),
+        )
+        assert result["success"] is False
+        assert result["orderId"] == ""
+        assert "Position 202 not found" in result["retcodeDescription"]
+    finally:
+        main.runtime.client = None
 
     main.runtime.shutdown()
 

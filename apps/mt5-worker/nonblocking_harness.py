@@ -64,15 +64,18 @@ async def run_harness() -> None:
     preserved_client = FakeConnectedClient()
     main.runtime.client = preserved_client
     operation_lock = main.runtime._operation_lock_instance()
+    original_queue_timeout = main.runtime.settings.mt5_operation_queue_timeout_seconds
+    main.runtime.settings.mt5_operation_queue_timeout_seconds = 0.01
     await operation_lock.acquire()
     try:
         try:
             await main.runtime.connect(1, "secret", "broker")
         except main.HTTPException as exc:
             assert exc.status_code == 503
-            assert exc.detail["errorType"] == "operation_in_progress"
+            assert exc.detail["errorType"] == "operation_queue_timeout"
+            assert exc.detail["retryable"] is True
         else:
-            raise AssertionError("Expected connect to fail while operation lock is held")
+            raise AssertionError("Expected connect to queue-timeout while operation lock is held")
 
         assert main.runtime.client is preserved_client
         assert preserved_client._connected is True
@@ -81,14 +84,16 @@ async def run_harness() -> None:
             await main.runtime.disconnect()
         except main.HTTPException as exc:
             assert exc.status_code == 503
-            assert exc.detail["errorType"] == "operation_in_progress"
+            assert exc.detail["errorType"] == "operation_queue_timeout"
+            assert exc.detail["retryable"] is True
         else:
-            raise AssertionError("Expected disconnect to fail while operation lock is held")
+            raise AssertionError("Expected disconnect to queue-timeout while operation lock is held")
 
         assert main.runtime.client is preserved_client
         assert preserved_client._connected is True
     finally:
         operation_lock.release()
+        main.runtime.settings.mt5_operation_queue_timeout_seconds = original_queue_timeout
         main.runtime.client = None
 
     recoverable_client = FakeRecoverableClient()

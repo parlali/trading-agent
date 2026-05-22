@@ -187,3 +187,115 @@ describe("executeAgentRun degraded research", () => {
         expect(result.degradedResearch?.reasons.some((reason) => reason.includes("search_markets"))).toBe(true)
     })
 })
+
+describe("executeAgentRun MT5 tool execution", () => {
+    it("executes MT5 run tool calls sequentially", async () => {
+        const chat = vi.fn(async (): Promise<LLMResponse> => {
+            const callIndex = chat.mock.calls.length
+            if (callIndex === 1) {
+                return {
+                    content: null,
+                    toolCalls: [
+                        {
+                            id: "call-first",
+                            type: "function",
+                            function: {
+                                name: "first_mt5_tool",
+                                arguments: "{}",
+                            },
+                        },
+                        {
+                            id: "call-second",
+                            type: "function",
+                            function: {
+                                name: "second_mt5_tool",
+                                arguments: "{}",
+                            },
+                        },
+                    ],
+                    usage: baseUsage,
+                    finishReason: "tool_calls",
+                }
+            }
+
+            return {
+                content: "MT5 tools completed",
+                toolCalls: [],
+                usage: baseUsage,
+                finishReason: "stop",
+            }
+        })
+
+        const llm = await import("./llm-client")
+        vi.spyOn(llm.LLMClient.prototype, "chat").mockImplementation(chat)
+
+        const executionOrder: string[] = []
+        const tools = new ToolRegistry()
+        tools.register({
+            name: "first_mt5_tool",
+            description: "First MT5 tool",
+            parameters: z.object({}),
+            jsonSchema: { type: "object", properties: {} },
+            handler: async () => {
+                executionOrder.push("first:start")
+                await new Promise(resolve => setTimeout(resolve, 25))
+                executionOrder.push("first:end")
+                return { ok: true }
+            },
+        })
+        tools.register({
+            name: "second_mt5_tool",
+            description: "Second MT5 tool",
+            parameters: z.object({}),
+            jsonSchema: { type: "object", properties: {} },
+            handler: async () => {
+                executionOrder.push("second:start")
+                executionOrder.push("second:end")
+                return { ok: true }
+            },
+        })
+
+        const result = await executeAgentRun(
+            {
+                runId: "run-mt5-serial",
+                strategyId: "strategy-1",
+                app: "mt5",
+                timestamp: Date.now(),
+                trigger: "cron",
+                positions: [],
+                accountState: {
+                    balance: 10_000,
+                    equity: 10_000,
+                    buyingPower: 10_000,
+                    marginUsed: 0,
+                    marginAvailable: 10_000,
+                    openPnl: 0,
+                    dayPnl: 0,
+                },
+                policy: {
+                    dryRun: false,
+                    model: "test-model",
+                },
+                context: "MT5 serial execution test",
+            },
+            {
+                llm: {
+                    apiKey: "test",
+                    model: "test-model",
+                },
+                tools,
+                logger: createLogger({ minLevel: "fatal" }),
+                maxIterations: 3,
+            }
+        )
+
+        expect(result.error).toBeUndefined()
+        expect(result.summary).toBe("MT5 tools completed")
+        expect(executionOrder).toEqual([
+            "first:start",
+            "first:end",
+            "second:start",
+            "second:end",
+        ])
+    })
+})

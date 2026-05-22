@@ -147,7 +147,17 @@ class MT5Client:
                 stderr=result.stderr.strip(),
             )
 
-    def connect(self) -> bool:
+    def _initialize_terminal(self, terminal_exe: str) -> bool:
+        return mt5.initialize(
+            terminal_exe,
+            login=self.login,
+            password=self.password,
+            server=self.server,
+            timeout=settings.mt5_initialize_timeout_ms,
+            portable=True,
+        )
+
+    def connect(self, reset_terminal: bool = False) -> bool:
         """Initialize MT5 SDK and log in to the account."""
         if mt5 is None:
             raise MT5ConnectionError(
@@ -159,23 +169,18 @@ class MT5Client:
         portable_dir = self._ensure_portable_dir()
         terminal_exe = os.path.join(portable_dir, "terminal64.exe")
         self._shutdown_sdk_connection()
-        self._stop_portable_terminal_processes(terminal_exe)
+        if reset_terminal:
+            self._stop_portable_terminal_processes(terminal_exe)
 
         log.info(
             "mt5_connecting",
             login=self.login,
             server=self.server,
             timeout_ms=settings.mt5_initialize_timeout_ms,
+            reset_terminal=reset_terminal,
         )
 
-        ok = mt5.initialize(
-            terminal_exe,
-            login=self.login,
-            password=self.password,
-            server=self.server,
-            timeout=settings.mt5_initialize_timeout_ms,
-            portable=True,
-        )
+        ok = self._initialize_terminal(terminal_exe)
 
         if ok:
             self._connected = True
@@ -186,23 +191,16 @@ class MT5Client:
         failure = classify_connection_error(err)
         mt5.shutdown()
 
-        # Retry once if retryable
         if failure["retryable"]:
             log.warning(
-                "mt5_first_attempt_failed_retrying",
+                "mt5_warm_connect_failed_cold_retrying",
                 error_type=failure["error_type"],
                 message=failure["message"],
             )
+            self._stop_portable_terminal_processes(terminal_exe)
             time.sleep(settings.reconnect_delay_seconds)
 
-            ok = mt5.initialize(
-                terminal_exe,
-                login=self.login,
-                password=self.password,
-                server=self.server,
-                timeout=settings.mt5_initialize_timeout_ms,
-                portable=True,
-            )
+            ok = self._initialize_terminal(terminal_exe)
 
             if ok:
                 self._connected = True
