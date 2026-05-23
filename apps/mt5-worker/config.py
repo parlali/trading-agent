@@ -39,6 +39,7 @@ class Settings(BaseSettings):
     worker_listener_watchdog_timeout_seconds: float = 2.0
     worker_listener_watchdog_failure_threshold: int = 3
     worker_expected_repo_suffix: str = ""
+    worker_state_path: str = ""
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 

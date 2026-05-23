@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import os
 import socket
 import sys
@@ -69,6 +70,7 @@ class MT5WorkerRuntime:
         self._executor: ThreadPoolExecutor | None = None
         self._singleton_lock_handle: Any | None = None
         self._singleton_lock_path: str | None = None
+        self._state_file_path = self.resolve_state_file_path()
 
     def assert_expected_repo_path(self) -> None:
         if os.name != "nt":
@@ -94,6 +96,7 @@ class MT5WorkerRuntime:
     def startup(self) -> None:
         self.assert_expected_repo_path()
         self.acquire_singleton_guard()
+        self.persist_state()
         log.info("mt5_worker_starting", port=self.settings.worker_port)
         self.install_loop_exception_handler()
         self.start_listener_watchdog()
@@ -293,13 +296,42 @@ class MT5WorkerRuntime:
 
     def reset_state(self) -> None:
         self.terminal_blocked = False
-        self.state.update({
+        self.update_state({
             "status": "disconnected",
             "activeOperation": None,
             "lastError": None,
             "lastStartedAt": None,
             "lastFinishedAt": None,
         })
+
+    def resolve_state_file_path(self) -> str:
+        configured = str(getattr(self.settings, "worker_state_path", "")).strip()
+        if configured:
+            return os.path.abspath(os.path.expanduser(configured))
+
+        return os.path.join(tempfile.gettempdir(), f"valiq-mt5-worker-state-{self.settings.worker_port}.json")
+
+    def update_state(self, values: dict[str, Any]) -> None:
+        self.state.update(values)
+        self.persist_state()
+
+    def persist_state(self) -> None:
+        payload = {
+            **self.state,
+            "pid": os.getpid(),
+            "terminalBlocked": self.terminal_blocked,
+            "updatedAt": time.time(),
+        }
+        path = self._state_file_path
+        tmp_path = f"{path}.tmp"
+
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(tmp_path, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle, sort_keys=True)
+            os.replace(tmp_path, path)
+        except Exception as exc:
+            log.warning("mt5_worker_state_persist_failed", path=path, error=str(exc))
 
     def health(self) -> dict[str, Any]:
         connected = self.client is not None and self.client._connected and not self.terminal_blocked
@@ -367,7 +399,7 @@ class MT5WorkerRuntime:
         except (TimeoutError, asyncio.TimeoutError) as exc:
             queued_for = time.time() - queue_started_at
             message = f"MT5 operation queue timed out waiting for {self.state.get('activeOperation')}"
-            self.state.update({
+            self.update_state({
                 "status": self._operation_status(),
                 "lastError": message,
                 "lastFinishedAt": time.time(),
@@ -396,7 +428,7 @@ class MT5WorkerRuntime:
         timeout = timeout_seconds if timeout_seconds is not None else self.settings.mt5_operation_timeout_seconds
         try:
             started_at = time.time()
-            self.state.update({
+            self.update_state({
                 "status": "busy",
                 "activeOperation": operation,
                 "lastError": None,
@@ -409,7 +441,7 @@ class MT5WorkerRuntime:
                     loop.run_in_executor(self._executor_instance(), func),
                     timeout=timeout,
                 )
-                self.state.update({
+                self.update_state({
                     "status": self._operation_status(),
                     "activeOperation": None,
                     "lastFinishedAt": time.time(),
@@ -417,7 +449,7 @@ class MT5WorkerRuntime:
                 return result
             except (TimeoutError, asyncio.TimeoutError) as exc:
                 self.terminal_blocked = True
-                self.state.update({
+                self.update_state({
                     "status": "degraded",
                     "activeOperation": None,
                     "lastError": f"{operation} timed out after {timeout:.1f}s",
@@ -440,7 +472,7 @@ class MT5WorkerRuntime:
                 )
                 raise BlockingOperationTimeout(operation, timeout) from exc
             except Exception as exc:
-                self.state.update({
+                self.update_state({
                     "status": self._operation_status(),
                     "activeOperation": None,
                     "lastError": str(exc),
@@ -483,7 +515,8 @@ class MT5WorkerRuntime:
         )
 
     def should_recover_connection(self, operation: str, exc: MT5ConnectionError) -> bool:
-        if operation not in RECOVERABLE_READ_OPERATIONS:
+        recoverable_operation = operation in RECOVERABLE_READ_OPERATIONS or operation in PRE_SUBMIT_MUTATION_OPERATIONS
+        if not recoverable_operation:
             return False
         if exc.error_type not in RECOVERABLE_CONNECTION_ERRORS:
             return False
@@ -518,7 +551,7 @@ class MT5WorkerRuntime:
                 reconnect_blocking,
                 self.settings.mt5_connect_timeout_seconds,
             )
-            self.state["status"] = "connected"
+            self.update_state({"status": "connected"})
             log.info("mt5_reconnected", operation=operation, login=client.login)
             return True
 
@@ -560,7 +593,7 @@ class MT5WorkerRuntime:
                     self.settings.mt5_connect_timeout_seconds,
                 )
                 self.client = client
-                self.state["status"] = "connected"
+                self.update_state({"status": "connected"})
             except MT5ConnectionError as exc:
                 return {
                     "success": False,
@@ -600,6 +633,11 @@ class MT5WorkerRuntime:
         if self.client is not None:
             self.client.disconnect()
             self.client = None
+        self.update_state({
+            "status": "disconnected",
+            "activeOperation": None,
+            "lastFinishedAt": time.time(),
+        })
         if self._executor is not None:
             self._executor.shutdown(wait=False, cancel_futures=True)
             self._executor = None

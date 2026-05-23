@@ -179,6 +179,15 @@ describe("MT5VenueAdapter", () => {
         expect(result.fillPrice).toBeUndefined()
     })
 
+    it("treats a closed submit socket as commit-unknown", () => {
+        const adapter = new MT5VenueAdapter(createClient(), credentials)
+        const outcome = adapter.classifySubmitError(
+            new Error("The socket connection was closed unexpectedly. For more information, pass `verbose: true` in the second argument to fetch()")
+        )
+
+        expect(outcome).toBe("commit_unknown")
+    })
+
     it("recovers one MT5 commit-unknown order by canonical comment", async () => {
         const client = createClient()
         client.getOpenOrders = async () => [{

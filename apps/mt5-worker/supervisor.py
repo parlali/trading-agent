@@ -5,6 +5,7 @@ import os
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -68,6 +69,11 @@ class WorkerSupervisor:
         self.timeout_seconds = read_float_env("WORKER_SUPERVISOR_TIMEOUT_SECONDS", 3.0)
         self.failure_threshold = max(1, read_int_env("WORKER_SUPERVISOR_FAILURE_THRESHOLD", 2))
         self.restart_delay_seconds = read_float_env("WORKER_SUPERVISOR_RESTART_DELAY_SECONDS", 2.0)
+        self.active_operation_grace_seconds = read_float_env("WORKER_SUPERVISOR_ACTIVE_OPERATION_GRACE_SECONDS", 90.0)
+        self.state_path = os.environ.get("WORKER_STATE_PATH", "").strip() or os.path.join(
+            tempfile.gettempdir(),
+            f"valiq-mt5-worker-state-{self.worker_port}.json",
+        )
         self.child: subprocess.Popen[bytes] | None = None
         self.stopping = False
 
@@ -80,6 +86,7 @@ class WorkerSupervisor:
             intervalSeconds=self.interval_seconds,
             timeoutSeconds=self.timeout_seconds,
             failureThreshold=self.failure_threshold,
+            activeOperationGraceSeconds=self.active_operation_grace_seconds,
         )
 
         while not self.stopping:
@@ -128,6 +135,12 @@ class WorkerSupervisor:
 
             result = self.health_check()
             if result["ok"]:
+                if result.get("activeOperation"):
+                    log(
+                        "health_probe_tolerated_active_operation",
+                        operation=result["activeOperation"],
+                        ageSeconds=result.get("activeOperationAgeSeconds"),
+                    )
                 if failures > 0:
                     log("health_recovered", failures=failures)
                 failures = 0
@@ -166,7 +179,43 @@ class WorkerSupervisor:
                     return {"ok": False, "error": f"worker status {body.get('status')}"}
                 return {"ok": True, "error": ""}
         except (OSError, TimeoutError, urllib.error.URLError, json.JSONDecodeError) as exc:
+            tolerated = self.active_operation_health()
+            if tolerated["ok"]:
+                return tolerated
             return {"ok": False, "error": str(exc)}
+
+    def active_operation_health(self) -> dict[str, Any]:
+        child = self.child
+        if child is None:
+            return {"ok": False, "error": "no child process"}
+
+        try:
+            with open(self.state_path, "r", encoding="utf-8") as handle:
+                state = json.load(handle)
+        except (OSError, json.JSONDecodeError) as exc:
+            return {"ok": False, "error": f"state unavailable: {exc}"}
+
+        if int(state.get("pid") or 0) != child.pid:
+            return {"ok": False, "error": "state belongs to another process"}
+
+        active_operation = state.get("activeOperation")
+        started_at = state.get("lastStartedAt")
+        if not active_operation or not isinstance(started_at, (int, float)):
+            return {"ok": False, "error": "no active operation"}
+
+        age_seconds = max(0.0, time.time() - float(started_at))
+        if age_seconds > self.active_operation_grace_seconds:
+            return {
+                "ok": False,
+                "error": f"active operation {active_operation} exceeded supervisor grace",
+            }
+
+        return {
+            "ok": True,
+            "error": "",
+            "activeOperation": active_operation,
+            "activeOperationAgeSeconds": round(age_seconds, 3),
+        }
 
     def stop_child(self) -> None:
         child = self.child

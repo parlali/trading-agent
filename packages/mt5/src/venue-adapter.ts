@@ -177,11 +177,17 @@ export class MT5VenueAdapter implements VenueAdapter, PriceVerifier {
 
     classifySubmitError(error: unknown): "commit_unknown" | "rejected" | undefined {
         const detail = getExecutionErrorDetail(error)
-        const text = `${detail?.message ?? ""} ${detail?.code ?? ""}`.toLowerCase()
+        const rawMessage = error instanceof Error ? error.message : String(error)
+        const text = `${detail?.message ?? ""} ${detail?.code ?? ""} ${rawMessage}`.toLowerCase()
         if (
             text.includes("ipc recv failed") ||
+            text.includes("ipc send failed") ||
             text.includes("socket close") ||
             text.includes("socket closed") ||
+            text.includes("socket connection was closed") ||
+            text.includes("connection was closed unexpectedly") ||
+            text.includes("connection reset") ||
+            text.includes("econnreset") ||
             text.includes("timeout") ||
             text.includes("timed out")
         ) {

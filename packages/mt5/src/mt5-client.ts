@@ -10,6 +10,7 @@ import {
     createExecutionErrorDetail,
     fetchWithTimeout,
     formatExecutionError,
+    getErrorMessage,
     getExecutionErrorDetail,
     retryWithBackoff,
     type ExecutionResult,
@@ -384,6 +385,21 @@ export class MT5Client {
             }
 
             return (await response.json()) as T
+        } catch (error) {
+            const detail = getExecutionErrorDetail(error)
+            if (detail) {
+                throw error
+            }
+
+            throw createExecutionError("network", getErrorMessage(error), {
+                code: "MT5_WORKER_NETWORK",
+                retryable: true,
+                details: {
+                    method,
+                    path,
+                    workerUrl: this.workerUrl,
+                },
+            })
         } finally {
             clearTimeout(timeoutId)
         }

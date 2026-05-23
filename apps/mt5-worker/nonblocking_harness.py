@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 
 from worker_test_stubs import install_dependency_stubs
 
 install_dependency_stubs()
 import main
+import supervisor
 from mt5_errors import MT5ConnectionError
 
 
@@ -50,6 +52,46 @@ class FakeRecoverableClient:
 
     def disconnect(self) -> None:
         self._connected = False
+
+
+class FakePreSubmitRecoverableClient:
+    login = 3
+
+    def __init__(self) -> None:
+        self._connected = True
+        self.connect_calls = 0
+        self.account_calls = 0
+        self.submit_calls = 0
+
+    def connect(self) -> None:
+        self.connect_calls += 1
+        self._connected = True
+
+    def get_account_info(self) -> dict[str, object]:
+        self.account_calls += 1
+        return {
+            "login": self.login,
+            "equity": 1000,
+        }
+
+    def submit_order(self) -> dict[str, object]:
+        self.submit_calls += 1
+        if self.submit_calls == 1:
+            self._connected = False
+            raise MT5ConnectionError("MT5 session is not connected", error_type="not_connected")
+        return {
+            "success": True,
+        }
+
+    def disconnect(self) -> None:
+        self._connected = False
+
+
+class FakeChild:
+    pid = os.getpid()
+
+    def poll(self) -> None:
+        return None
 
 
 async def run_harness() -> None:
@@ -105,6 +147,19 @@ async def run_harness() -> None:
     assert recoverable_client.connect_calls == 1
     assert recoverable_client.account_calls == 3
 
+    pre_submit_client = FakePreSubmitRecoverableClient()
+    main.runtime.reset_state()
+    main.runtime.client = pre_submit_client
+    submitted = await main.runtime.run_client_http_operation(
+        "order_submit",
+        lambda client: client.submit_order(),
+    )
+
+    assert submitted["success"] is True
+    assert pre_submit_client.connect_calls == 1
+    assert pre_submit_client.account_calls == 1
+    assert pre_submit_client.submit_calls == 2
+
     async def wedged_call() -> None:
         try:
             await main.runtime.run_operation(
@@ -122,9 +177,15 @@ async def run_harness() -> None:
     task = asyncio.create_task(wedged_call())
     await asyncio.sleep(0.01)
     during = await main.health()
+    supervisor_probe = supervisor.WorkerSupervisor()
+    supervisor_probe.child = FakeChild()
+    supervisor_probe.state_path = main.runtime._state_file_path
+    tolerated = supervisor_probe.active_operation_health()
 
     assert during["workerState"]["activeOperation"] == "connect"
     assert during["status"] == "ok"
+    assert tolerated["ok"] is True
+    assert tolerated["activeOperation"] == "connect"
 
     await task
     after = await main.health()
