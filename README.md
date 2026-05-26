@@ -74,6 +74,8 @@ Any machine that runs `apps/mt5-worker` must keep the broker server database at 
 
 If the file is missing, the worker fails closed with a clear error instead of starting against a stale or implicit fallback path.
 
+Use a worker-specific `MT5_PORTABLE_DIR` on machines that run other MT5 automation. The default example is `C:\mt5-trading` so other services that manage `C:\mt5` cannot mutate this worker's portable terminals or broker server database.
+
 On Windows deployments, set `WORKER_EXPECTED_REPO_SUFFIX` if you want the worker to fail closed unless it is running from an expected repo path.
 
 ### Polymarket Funder Address

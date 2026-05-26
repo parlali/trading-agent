@@ -18,7 +18,7 @@ class Settings(BaseSettings):
     worker_port: int = 8090
 
     # MT5 terminal settings (Windows paths)
-    mt5_portable_dir: str = "C:\\mt5"
+    mt5_portable_dir: str = "C:\\mt5-trading"
     mt5_terminal_path: str = "C:\\Program Files\\MetaTrader 5\\terminal64.exe"
     mt5_servers_dat_path: str = str(DEFAULT_MT5_SERVERS_DAT_PATH)
     mt5_initialize_timeout_ms: int = 60_000
