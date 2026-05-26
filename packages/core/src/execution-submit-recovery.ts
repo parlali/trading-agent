@@ -143,10 +143,44 @@ export async function submitWithIdentity(args: {
 }): Promise<ExecutionResult> {
     try {
         const result = await args.submit()
-        return normalizeExecutionResultIdentity(result, args.context.identity)
+        const normalizedResult = normalizeExecutionResultIdentity(result, args.context.identity)
+        if (normalizedResult.status !== "rejected") {
+            return normalizedResult
+        }
+
+        return await recoverRejectedSubmitResult(args, normalizedResult)
     } catch (error) {
         return await recoverSubmitError(args, error)
     }
+}
+
+async function recoverRejectedSubmitResult(
+    args: {
+        venue: VenueAdapter
+        intent: OrderIntent
+        context: SubmitOrderContext
+    },
+    result: ExecutionResult
+): Promise<ExecutionResult> {
+    if (!args.venue.recoverSubmittedOrder) {
+        return result
+    }
+
+    const resultError = createRejectedResultError(result)
+    const recovery = await runRecoveryProbe(args.venue, args.intent, args.context, resultError)
+    if (recovery.outcome === "accepted") {
+        return normalizeExecutionResultIdentity(recovery.result, args.context.identity, "recovered")
+    }
+
+    if (recovery.outcome === "not_found" && !isRecoveryProbeFailure(recovery)) {
+        return result
+    }
+
+    return createCommitUnknownExecutionResult({
+        identity: args.context.identity,
+        error: resultError,
+        recovery,
+    })
 }
 
 async function recoverSubmitError(
@@ -175,6 +209,34 @@ async function recoverSubmitError(
         error,
         recovery,
     })
+}
+
+function createRejectedResultError(
+    result: ExecutionResult
+): Error & { executionError: NonNullable<ExecutionResult["errorDetail"]> } {
+    const detail = result.errorDetail ??
+        createExecutionErrorDetail("venue", result.error ?? "Provider returned rejected submit result", {
+            code: "SUBMIT_RESULT_REJECTED",
+            retryable: false,
+            details: {
+                orderId: result.orderId,
+                providerOrderId: result.providerOrderId,
+                providerClientOrderId: result.providerClientOrderId,
+                status: result.status,
+                commitOutcome: result.commitOutcome,
+            },
+        })
+    const error = new Error(formatExecutionError(detail)) as Error & {
+        executionError: NonNullable<ExecutionResult["errorDetail"]>
+    }
+    error.executionError = detail
+    return error
+}
+
+function isRecoveryProbeFailure(
+    recovery: Extract<SubmitRecoveryResult, { outcome: "not_found" | "ambiguous" }>
+): boolean {
+    return recovery.details?.recoveryError !== undefined
 }
 
 function mergeRecoveryProviderAliases(

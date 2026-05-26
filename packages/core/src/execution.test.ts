@@ -196,6 +196,97 @@ describe("ExecutionPipeline commit-unknown safety", () => {
         expect(faultRecorder).toHaveBeenCalledOnce()
     })
 
+    it("recovers a returned rejected submit result when provider truth shows a live order", async () => {
+        const faultRecorder = vi.fn(async () => {})
+        const venue = {
+            ...createVenue(),
+            submitOrder: vi.fn(async (_intent: OrderIntent, context?: SubmitOrderContext) => ({
+                orderId: context?.identity.canonicalOrderId ?? "canonical",
+                canonicalOrderId: context?.identity.canonicalOrderId,
+                providerClientOrderId: context?.identity.providerClientOrderId,
+                submitAttemptId: context?.identity.submitAttemptId,
+                submitAttemptSequence: context?.identity.submitAttemptSequence,
+                status: "rejected" as const,
+                filledQuantity: 0,
+                timestamp: Date.now(),
+                error: "Provider returned rejected while broker order may have been placed",
+            })),
+            recoverSubmittedOrder: vi.fn(async (_intent: OrderIntent, context: SubmitOrderContext) => ({
+                outcome: "accepted" as const,
+                result: {
+                    orderId: "1668935417",
+                    providerOrderId: "1668935417",
+                    providerClientOrderId: context.identity.providerClientOrderId,
+                    status: "pending" as const,
+                    filledQuantity: 0,
+                    timestamp: Date.now(),
+                },
+            })),
+        }
+        const pipeline = createPipeline({
+            venue,
+            venueName: "mt5",
+            executionSafetyFaultRecorder: faultRecorder,
+        })
+
+        const result = await pipeline.executeIntent({
+            instrument: "XAUUSD",
+            side: "sell",
+            quantity: 0.02,
+            orderType: "limit",
+            limitPrice: 4538.5,
+            timeInForce: "gtc",
+        }, account, [])
+
+        expect(result.result.status).toBe("pending")
+        expect(result.result.commitOutcome).toBe("recovered")
+        expect(result.result.providerOrderId).toBe("1668935417")
+        expect(result.result.providerClientOrderId).toMatch(/^vmte01[a-z2-7]{10}$/)
+        expect(venue.recoverSubmittedOrder).toHaveBeenCalledOnce()
+        expect(faultRecorder).not.toHaveBeenCalled()
+    })
+
+    it("keeps a returned rejected submit result rejected when provider recovery finds nothing", async () => {
+        const faultRecorder = vi.fn(async () => {})
+        const venue = {
+            ...createVenue(),
+            submitOrder: vi.fn(async (_intent: OrderIntent, context?: SubmitOrderContext) => ({
+                orderId: context?.identity.canonicalOrderId ?? "canonical",
+                canonicalOrderId: context?.identity.canonicalOrderId,
+                providerClientOrderId: context?.identity.providerClientOrderId,
+                submitAttemptId: context?.identity.submitAttemptId,
+                submitAttemptSequence: context?.identity.submitAttemptSequence,
+                status: "rejected" as const,
+                filledQuantity: 0,
+                timestamp: Date.now(),
+                error: "Invalid price",
+            })),
+            recoverSubmittedOrder: vi.fn(async () => ({
+                outcome: "not_found" as const,
+                message: "No provider order found with the canonical client id",
+            })),
+        }
+        const pipeline = createPipeline({
+            venue,
+            venueName: "mt5",
+            executionSafetyFaultRecorder: faultRecorder,
+        })
+
+        const result = await pipeline.executeIntent({
+            instrument: "XAUUSD",
+            side: "sell",
+            quantity: 0.02,
+            orderType: "limit",
+            limitPrice: 1,
+            timeInForce: "gtc",
+        }, account, [])
+
+        expect(result.result.status).toBe("rejected")
+        expect(result.result.commitOutcome).toBe("rejected")
+        expect(venue.recoverSubmittedOrder).toHaveBeenCalledOnce()
+        expect(faultRecorder).not.toHaveBeenCalled()
+    })
+
     it("persists ambiguous recovery matches as provider aliases on the commit-unknown fault", async () => {
         const faultRecorder = vi.fn(async () => {})
         const venue = {
