@@ -445,9 +445,6 @@ class MT5Client:
         request: dict[str, Any] = {
             "action": mt5.TRADE_ACTION_REMOVE,
             "order": ticket,
-            "symbol": order.symbol,
-            "magic": order.magic,
-            "comment": "cancel",
         }
 
         result = mt5.order_send(request)

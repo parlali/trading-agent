@@ -586,11 +586,11 @@ function uniqueStrings(values: string[]): string[] {
 }
 
 function resolveWorkingOrderCancelId(order: ProviderPendingOrderRow | WorkingOrder): string {
-    return order.canonicalOrderId ??
+    return order.providerOrderId ??
+        order.orderId ??
+        order.canonicalOrderId ??
         order.providerClientOrderId ??
-        order.signedOrderFingerprint ??
-        order.providerOrderId ??
-        order.orderId
+        order.signedOrderFingerprint
 }
 
 function formatPositionIdentity(position: ProviderPositionRow | Position): string {

@@ -44,12 +44,50 @@ class FakePosition:
     ticket = 202
 
 
+class FakeCancelOrder:
+    ticket = 303
+    symbol = "XAUUSD"
+    magic = 123
+
+
+class FakeOrderSendResult:
+    retcode = 10009
+    retcode_external = 0
+    order = 303
+    deal = 0
+    volume = 0.0
+    price = 0.0
+    comment = "Request executed"
+    bid = 0.0
+    ask = 0.0
+
+
 class FakeBulkCancelMT5(FakeMT5):
     def orders_get(self, *args: object, **kwargs: object) -> tuple[FakeOrder, ...] | None:
         if "ticket" in kwargs:
             return None
 
         return (FakeOrder(),)
+
+
+class FakeCancelRequestMT5(FakeMT5):
+    TRADE_ACTION_REMOVE = 8
+    TRADE_RETCODE_DONE = 10009
+    TRADE_RETCODE_PLACED = 10008
+    TRADE_RETCODE_DONE_PARTIAL = 10010
+
+    def __init__(self) -> None:
+        self.requests: list[dict[str, object]] = []
+
+    def orders_get(self, *args: object, **kwargs: object) -> tuple[FakeCancelOrder, ...] | None:
+        if kwargs.get("ticket") == FakeCancelOrder.ticket:
+            return (FakeCancelOrder(),)
+
+        return ()
+
+    def order_send(self, request: dict[str, object]) -> FakeOrderSendResult:
+        self.requests.append(request)
+        return FakeOrderSendResult()
 
 
 class FakeBulkCloseMT5(FakeMT5):
@@ -148,6 +186,15 @@ def run_harness() -> None:
 
         mt5_client.mt5 = FakeBulkCancelMT5()
         assert_query_failure(client.cancel_all_orders)
+
+        cancel_mt5 = FakeCancelRequestMT5()
+        mt5_client.mt5 = cancel_mt5
+        cancel_result = client.cancel_order(FakeCancelOrder.ticket)
+        assert cancel_result["success"] is True
+        assert cancel_mt5.requests == [{
+            "action": cancel_mt5.TRADE_ACTION_REMOVE,
+            "order": FakeCancelOrder.ticket,
+        }]
 
         mt5_client.mt5 = FakeBulkCloseMT5()
         assert_query_failure(client.close_all_positions)

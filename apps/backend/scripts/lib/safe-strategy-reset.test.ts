@@ -463,7 +463,7 @@ describe("resetStrategySafely", () => {
             cancelledOrders: 1,
             closedPositions: 1,
         })
-        expect(pipeline.cancelOrder).toHaveBeenCalledWith("valx01abcde23456", "reset flatten")
+        expect(pipeline.cancelOrder).toHaveBeenCalledWith("provider-order-1", "reset flatten")
         expect(pipeline.closeProviderPosition).toHaveBeenCalledWith(position, "reset flatten")
     })
 
