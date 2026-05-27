@@ -408,19 +408,56 @@ class MT5Client:
 
         return map_order_result(mt5, result)
 
-    def modify_position(
+    def modify_order(
         self,
         ticket: int,
+        price: float | None = None,
         stop_loss: float | None = None,
         take_profit: float | None = None,
     ) -> dict[str, Any]:
-        """Modify an existing position's SL/TP."""
         self.ensure_connected()
+
+        order = self._find_open_order(ticket)
+        if order is not None:
+            return self._modify_pending_order(ticket, order, price, stop_loss, take_profit)
 
         pos = self._find_position(ticket)
         if pos is None:
-            raise ValueError(f"Position {ticket} not found")
+            raise ValueError(f"Order or position {ticket} not found")
 
+        return self._modify_position(ticket, pos, stop_loss, take_profit)
+
+    def _modify_pending_order(
+        self,
+        ticket: int,
+        order: Any,
+        price: float | None,
+        stop_loss: float | None,
+        take_profit: float | None,
+    ) -> dict[str, Any]:
+        request: dict[str, Any] = {
+            "action": mt5.TRADE_ACTION_MODIFY,
+            "order": ticket,
+            "symbol": order.symbol,
+            "price": price if price is not None else order.price_open,
+            "sl": stop_loss if stop_loss is not None else order.sl,
+            "tp": take_profit if take_profit is not None else order.tp,
+            "type_time": mt5.ORDER_TIME_GTC,
+        }
+
+        result = mt5.order_send(request)
+        if result is None:
+            self._raise_mt5_error("order_send.modify_order", error_type="order_failed")
+
+        return map_order_result(mt5, result)
+
+    def _modify_position(
+        self,
+        ticket: int,
+        pos: Any,
+        stop_loss: float | None,
+        take_profit: float | None,
+    ) -> dict[str, Any]:
         request: dict[str, Any] = {
             "action": mt5.TRADE_ACTION_SLTP,
             "position": ticket,
@@ -434,6 +471,18 @@ class MT5Client:
             self._raise_mt5_error("order_send.modify_position", error_type="order_failed")
 
         return map_order_result(mt5, result)
+
+    def modify_position(
+        self,
+        ticket: int,
+        stop_loss: float | None = None,
+        take_profit: float | None = None,
+    ) -> dict[str, Any]:
+        return self.modify_order(
+            ticket=ticket,
+            stop_loss=stop_loss,
+            take_profit=take_profit,
+        )
 
     def cancel_order(self, ticket: int) -> dict[str, Any]:
         self.ensure_connected()

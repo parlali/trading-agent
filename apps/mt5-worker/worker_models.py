@@ -22,8 +22,9 @@ class SubmitOrderRequest(BaseModel):
     deviation: int = 20
 
 
-class ModifyPositionRequest(BaseModel):
+class ModifyOrderRequest(BaseModel):
     ticket: int
+    price: float | None = None
     stopLoss: float | None = None
     takeProfit: float | None = None
 

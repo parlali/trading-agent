@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest"
 import { createExecutionError, type Position } from "@valiq-trading/core"
-import { MT5Client, type MT5OrderResult, type MT5Position, type MT5PositionClosure, type MT5WorkerCredentials } from "./mt5-client.ts"
+import { MT5Client, type MT5OrderResult, type MT5Position, type MT5PositionClosure, type MT5SymbolInfo, type MT5WorkerCredentials } from "./mt5-client.ts"
 import { MT5VenueAdapter } from "./venue-adapter.ts"
 
 const credentials: MT5WorkerCredentials = {
@@ -325,6 +325,7 @@ describe("MT5VenueAdapter", () => {
                 success: true,
             })
         }
+        client.getOrderStatus = async () => null
 
         const adapter = new MT5VenueAdapter(client, credentials)
         const result = await adapter.cancelOrder("1607001000", {
@@ -338,8 +339,46 @@ describe("MT5VenueAdapter", () => {
             details: {
                 failedTickets: ["1607001002"],
                 cancelledTickets: ["1607001000", "1607001001"],
+                failedResults: [
+                    expect.objectContaining({
+                        providerOrderId: "1607001002",
+                        status: "rejected",
+                    }),
+                ],
             },
         })
+    })
+
+    it("reconciles a failed MT5 cancel with current terminal provider status", async () => {
+        const client = createClient()
+        const cancelledTickets: number[] = []
+        client.cancelOrder = async ({ ticket }): Promise<MT5OrderResult> => {
+            cancelledTickets.push(ticket)
+            return createOrderResult({
+                retcode: 10013,
+                retcodeDescription: "Invalid request",
+                orderId: String(ticket),
+                success: false,
+            })
+        }
+        client.getOrderStatus = async () => ({
+            ticket: 1607001002,
+            symbol: "XAUUSD",
+            type: "buy_limit",
+            volume: 0,
+            volumeInitial: 0.01,
+            price: 4715.5,
+            state: "filled",
+        })
+
+        const adapter = new MT5VenueAdapter(client, credentials)
+        const result = await adapter.cancelOrder("1607001002")
+
+        expect(cancelledTickets).toEqual([1607001002])
+        expect(result.status).toBe("filled")
+        expect(result.filledQuantity).toBe(0.01)
+        expect(result.fillPrice).toBe(4715.5)
+        expect(result.errorDetail).toBeUndefined()
     })
 
     it("cancels one parseable MT5 alias when the canonical id is not a ticket", async () => {
@@ -407,6 +446,102 @@ describe("MT5VenueAdapter", () => {
         expect(result.status).toBe("filled")
         expect(result.filledQuantity).toBe(0.01)
         expect(result.fillPrice).toBe(4715.5)
+    })
+
+    it("does not send zero stop prices as MT5 market execution prices", async () => {
+        const client = createClient()
+        let submittedPrice: number | undefined
+        client.submitOrder = async (params): Promise<MT5OrderResult> => {
+            submittedPrice = params.price
+            return createOrderResult({
+                orderId: "1588140268",
+                dealId: "1588140268",
+            })
+        }
+
+        const adapter = new MT5VenueAdapter(client, credentials)
+        const result = await adapter.submitOrder(createSubmissionIntent({
+            orderType: "market",
+            stopPrice: 0,
+        }), {
+            identity: createIdentityContext("vmte01filled1234"),
+        })
+
+        expect(submittedPrice).toBeUndefined()
+        expect(result.status).toBe("filled")
+    })
+
+    it("ignores zero stop prices during MT5 price verification", async () => {
+        const client = createClient()
+        client.getSymbolInfo = async () => [createSymbolInfo({
+            bid: 4715.25,
+            ask: 4715.5,
+        })]
+
+        const adapter = new MT5VenueAdapter(client, credentials)
+        const verification = await adapter.verify({
+            instrument: "XAUUSD",
+            side: "sell",
+            quantity: 0.01,
+            orderType: "market",
+            stopPrice: 0,
+            timeInForce: "gtc",
+        })
+
+        expect(verification.proposedPrice).toBe(4715.25)
+        expect(verification.driftPercent).toBe(0)
+    })
+
+    it("modifies MT5 pending order price and protection through the order modify endpoint", async () => {
+        const client = createClient()
+        let modifyParams: Parameters<MT5Client["modifyOrder"]>[0] | undefined
+        client.modifyOrder = async (params): Promise<MT5OrderResult> => {
+            modifyParams = params
+            return createOrderResult({
+                orderId: "1607001002",
+                volume: 0,
+            })
+        }
+
+        const adapter = new MT5VenueAdapter(client, credentials)
+        const result = await adapter.modifyOrder("1607001002", {
+            limitPrice: 4716,
+            metadata: {
+                stopLoss: 4705,
+                takeProfit: 4730,
+            },
+        })
+
+        expect(modifyParams).toEqual({
+            ticket: 1607001002,
+            price: 4716,
+            stopLoss: 4705,
+            takeProfit: 4730,
+        })
+        expect(result.status).toBe("pending")
+        expect(result.errorDetail).toBeUndefined()
+    })
+
+    it("treats MT5 no-change modify responses as accepted no-ops", async () => {
+        const client = createClient()
+        client.modifyOrder = async (): Promise<MT5OrderResult> => createOrderResult({
+            retcode: 10025,
+            retcodeDescription: "No changes",
+            orderId: "1607001002",
+            volume: 0,
+            price: 0,
+            success: false,
+        })
+
+        const adapter = new MT5VenueAdapter(client, credentials)
+        const result = await adapter.modifyOrder("1607001002", {
+            metadata: {
+                stopLoss: 4705,
+            },
+        })
+
+        expect(result.status).toBe("pending")
+        expect(result.errorDetail).toBeUndefined()
     })
 
     it("does not treat open MT5 order volume as filled quantity", async () => {
@@ -693,12 +828,34 @@ function createAccountInfo() {
 function createSubmissionIntent(overrides: {
     orderType: "market" | "limit"
     limitPrice?: number
+    stopPrice?: number
 }) {
     return {
         instrument: "XAUUSD",
         side: "buy" as const,
         quantity: 0.01,
         timeInForce: "gtc" as const,
+        ...overrides,
+    }
+}
+
+function createSymbolInfo(overrides: Partial<MT5SymbolInfo>): MT5SymbolInfo {
+    return {
+        symbol: "XAUUSD",
+        digits: 2,
+        point: 0.01,
+        pipSize: 0.01,
+        tickValue: 1,
+        contractSize: 100,
+        currency: "USD",
+        description: "Gold",
+        spread: 25,
+        volumeMin: 0.01,
+        volumeMax: 100,
+        volumeStep: 0.01,
+        fillingMode: 2,
+        bid: 4715.25,
+        ask: 4715.5,
         ...overrides,
     }
 }

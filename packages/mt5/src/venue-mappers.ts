@@ -107,11 +107,11 @@ export function resolveMT5VerificationPrice(
     intent: OrderIntent,
     symbolInfo?: MT5SymbolInfo
 ): number | undefined {
-    if (typeof intent.limitPrice === "number") {
+    if (isPositiveMT5Price(intent.limitPrice)) {
         return intent.limitPrice
     }
 
-    if (typeof intent.stopPrice === "number") {
+    if (isPositiveMT5Price(intent.stopPrice)) {
         return intent.stopPrice
     }
 
@@ -125,6 +125,10 @@ export function resolveMT5VerificationPrice(
     }
 
     return undefined
+}
+
+export function isPositiveMT5Price(value: number | undefined): value is number {
+    return typeof value === "number" && Number.isFinite(value) && value > 0
 }
 
 export function resolveMT5ComparisonPrice(

@@ -62,6 +62,14 @@ class FakeOrderSendResult:
     ask = 0.0
 
 
+class FakePendingModifyOrder:
+    ticket = 404
+    symbol = "XAUUSD"
+    price_open = 4715.5
+    sl = 4700.0
+    tp = 4730.0
+
+
 class FakeBulkCancelMT5(FakeMT5):
     def orders_get(self, *args: object, **kwargs: object) -> tuple[FakeOrder, ...] | None:
         if "ticket" in kwargs:
@@ -83,6 +91,30 @@ class FakeCancelRequestMT5(FakeMT5):
         if kwargs.get("ticket") == FakeCancelOrder.ticket:
             return (FakeCancelOrder(),)
 
+        return ()
+
+    def order_send(self, request: dict[str, object]) -> FakeOrderSendResult:
+        self.requests.append(request)
+        return FakeOrderSendResult()
+
+
+class FakeModifyPendingOrderMT5(FakeMT5):
+    TRADE_ACTION_MODIFY = 5
+    ORDER_TIME_GTC = 0
+    TRADE_RETCODE_DONE = 10009
+    TRADE_RETCODE_PLACED = 10008
+    TRADE_RETCODE_DONE_PARTIAL = 10010
+
+    def __init__(self) -> None:
+        self.requests: list[dict[str, object]] = []
+
+    def orders_get(self, *args: object, **kwargs: object) -> tuple[FakePendingModifyOrder, ...]:
+        if kwargs.get("ticket") == FakePendingModifyOrder.ticket:
+            return (FakePendingModifyOrder(),)
+
+        return ()
+
+    def positions_get(self, *args: object, **kwargs: object) -> tuple[object, ...]:
         return ()
 
     def order_send(self, request: dict[str, object]) -> FakeOrderSendResult:
@@ -194,6 +226,25 @@ def run_harness() -> None:
         assert cancel_mt5.requests == [{
             "action": cancel_mt5.TRADE_ACTION_REMOVE,
             "order": FakeCancelOrder.ticket,
+        }]
+
+        modify_mt5 = FakeModifyPendingOrderMT5()
+        mt5_client.mt5 = modify_mt5
+        modify_result = client.modify_order(
+            FakePendingModifyOrder.ticket,
+            price=4716.0,
+            stop_loss=4705.0,
+            take_profit=4735.0,
+        )
+        assert modify_result["success"] is True
+        assert modify_mt5.requests == [{
+            "action": modify_mt5.TRADE_ACTION_MODIFY,
+            "order": FakePendingModifyOrder.ticket,
+            "symbol": FakePendingModifyOrder.symbol,
+            "price": 4716.0,
+            "sl": 4705.0,
+            "tp": 4735.0,
+            "type_time": modify_mt5.ORDER_TIME_GTC,
         }]
 
         mt5_client.mt5 = FakeBulkCloseMT5()

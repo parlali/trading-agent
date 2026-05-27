@@ -38,6 +38,7 @@ import {
     readMT5Ticket,
     rejectInvalidMT5Ticket,
     rejectMT5PreValidation,
+    isPositiveMT5Price,
     resolveMT5ComparisonPrice,
     resolveMT5FilledQuantity,
     resolveMT5VerificationPrice,
@@ -161,7 +162,7 @@ export class MT5VenueAdapter implements VenueAdapter, PriceVerifier {
             side: intent.side,
             volume: intent.quantity,
             orderType: intent.orderType,
-            price: intent.limitPrice ?? intent.stopPrice,
+            price: resolveMT5MutationPrice(intent),
             stopLoss: intent.metadata?.stopLoss as number | undefined,
             takeProfit: intent.metadata?.takeProfit as number | undefined,
             magic: (intent.metadata?.magic as number) ?? 0,
@@ -313,11 +314,16 @@ export class MT5VenueAdapter implements VenueAdapter, PriceVerifier {
         const results: ExecutionResult[] = []
         for (const ticket of ticketIds) {
             const result = await this.client.cancelOrder({ ticket })
-            results.push(this.client.mapOrderResultToExecution(result, {
+            const mappedResult = this.client.mapOrderResultToExecution(result, {
                 fallbackOrderId: String(ticket),
                 successStatus: "cancelled",
                 filledQuantity: 0,
-            }))
+            })
+            results.push(
+                mappedResult.status === "cancelled"
+                    ? mappedResult
+                    : await this.reconcileFailedCancel(ticket, mappedResult)
+            )
         }
 
         return aggregateMT5CancelResults(orderId, results)
@@ -326,13 +332,18 @@ export class MT5VenueAdapter implements VenueAdapter, PriceVerifier {
     async modifyOrder(orderId: string, changes: Partial<OrderIntent>): Promise<ExecutionResult> {
         await this.ensureConnected()
 
-        const stopLoss = changes.stopPrice ?? (changes.metadata?.stopLoss as number | undefined)
-        const takeProfit = changes.limitPrice ?? (changes.metadata?.takeProfit as number | undefined)
+        const price = isPositiveMT5Price(changes.limitPrice)
+            ? changes.limitPrice
+            : isPositiveMT5Price(changes.stopPrice)
+                ? changes.stopPrice
+                : undefined
+        const stopLoss = changes.metadata?.stopLoss as number | undefined
+        const takeProfit = changes.metadata?.takeProfit as number | undefined
 
-        if (stopLoss === undefined && takeProfit === undefined) {
+        if (price === undefined && stopLoss === undefined && takeProfit === undefined) {
             return rejectMT5PreValidation({
                 orderId,
-                message: "Provide newStopLoss, newTakeProfit, or both",
+                message: "Provide a new price, newStopLoss, newTakeProfit, or any combination",
                 code: "MISSING_MODIFICATION_FIELDS",
                 details: {
                     orderId,
@@ -341,14 +352,18 @@ export class MT5VenueAdapter implements VenueAdapter, PriceVerifier {
         }
 
         return await this.withTicket(orderId, async (ticket) => {
-            const result = await this.client.modifyPosition({
+            const result = await this.client.modifyOrder({
                 ticket,
+                price,
                 stopLoss,
                 takeProfit,
             })
 
             return this.client.mapOrderResultToExecution(result, {
                 fallbackOrderId: orderId,
+                successStatus: "pending",
+                filledQuantity: 0,
+                successRetcodes: [10025],
             })
         })
     }
@@ -582,6 +597,38 @@ export class MT5VenueAdapter implements VenueAdapter, PriceVerifier {
 
         return await handler(ticket)
     }
+
+    private async reconcileFailedCancel(
+        ticket: number,
+        cancelResult: ExecutionResult
+    ): Promise<ExecutionResult> {
+        try {
+            const status = await this.getOrderStatus(String(ticket))
+            return status.status === "pending" || status.status === "partially_filled"
+                ? {
+                    ...cancelResult,
+                    providerOrderId: cancelResult.providerOrderId ?? String(ticket),
+                    providerOrderAliases: mergeProviderOrderAliases(
+                        cancelResult.providerOrderAliases,
+                        [status.orderId, status.providerOrderId]
+                    ),
+                    errorDetail: mergeCancelStatusEvidence(cancelResult, status),
+                    error: cancelResult.error,
+                }
+                : {
+                    ...status,
+                    providerOrderId: status.providerOrderId ?? String(ticket),
+                    providerOrderAliases: mergeProviderOrderAliases(
+                        cancelResult.providerOrderAliases,
+                        [cancelResult.orderId, cancelResult.providerOrderId]
+                    ),
+                    errorDetail: undefined,
+                    error: undefined,
+                }
+        } catch {
+            return cancelResult
+        }
+    }
 }
 
 export function isMT5ConnectContention(error: unknown): boolean {
@@ -594,8 +641,15 @@ async function sleep(delayMs: number): Promise<void> {
 }
 
 function aggregateMT5CancelResults(orderId: string, results: ExecutionResult[]): ExecutionResult {
-    const failed = results.filter((result) => result.status !== "cancelled")
-    const errorDetail = failed.length > 0
+    const unresolved = results.filter((result) => result.status !== "cancelled" && result.errorDetail !== undefined)
+    const filledResults = results.filter((result) => result.status === "filled")
+    const filledQuantity = filledResults.reduce((total, result) => total + result.filledQuantity, 0)
+    const fillValue = filledResults.reduce(
+        (total, result) => total + result.filledQuantity * (result.fillPrice ?? 0),
+        0
+    )
+    const terminalResult = results.find((result) => result.status !== "cancelled" && result.errorDetail === undefined)
+    const errorDetail = unresolved.length > 0
         ? createExecutionErrorDetail(
             "venue",
             "Failed to cancel every MT5 provider ticket owned by the canonical request",
@@ -603,10 +657,14 @@ function aggregateMT5CancelResults(orderId: string, results: ExecutionResult[]):
                 code: "MT5_CANONICAL_CANCEL_RESIDUAL_TICKETS",
                 retryable: true,
                 details: {
-                    failedTickets: failed.map((result) => result.providerOrderId ?? result.orderId),
+                    failedTickets: unresolved.map((result) => result.providerOrderId ?? result.orderId),
                     cancelledTickets: results
                         .filter((result) => result.status === "cancelled")
                         .map((result) => result.providerOrderId ?? result.orderId),
+                    failedResults: unresolved.map(toMT5CancelEvidence),
+                    cancelledResults: results
+                        .filter((result) => result.status === "cancelled")
+                        .map(toMT5CancelEvidence),
                 },
             }
         )
@@ -615,11 +673,62 @@ function aggregateMT5CancelResults(orderId: string, results: ExecutionResult[]):
         orderId: results.map((result) => result.orderId).filter(Boolean).join(",") || orderId,
         providerOrderId: results.map((result) => result.providerOrderId ?? result.orderId).filter(Boolean).join(","),
         providerOrderAliases: results.map((result) => result.orderId).filter((value) => value !== orderId),
-        status: failed.length === 0 ? "cancelled" : "rejected",
-        filledQuantity: 0,
+        status: unresolved.length > 0 ? "rejected" : terminalResult?.status ?? "cancelled",
+        filledQuantity,
+        fillPrice: filledQuantity > 0 ? fillValue / filledQuantity : terminalResult?.fillPrice,
         timestamp: Date.now(),
         error: errorDetail ? formatExecutionError(errorDetail) : undefined,
         errorDetail,
+    }
+}
+
+function resolveMT5MutationPrice(intent: OrderIntent): number | undefined {
+    if (isPositiveMT5Price(intent.limitPrice)) {
+        return intent.limitPrice
+    }
+
+    return isPositiveMT5Price(intent.stopPrice) ? intent.stopPrice : undefined
+}
+
+function mergeProviderOrderAliases(
+    current: string[] | undefined,
+    values: Array<string | undefined>
+): string[] {
+    return Array.from(new Set([
+        ...(current ?? []),
+        ...values.filter((value): value is string => Boolean(value)),
+    ]))
+}
+
+function mergeCancelStatusEvidence(
+    cancelResult: ExecutionResult,
+    status: ExecutionResult
+) {
+    const detail = cancelResult.errorDetail
+    if (!detail) {
+        return undefined
+    }
+
+    return {
+        ...detail,
+        details: {
+            ...detail.details,
+            providerStatusAfterFailedCancel: toMT5CancelEvidence(status),
+        },
+    }
+}
+
+function toMT5CancelEvidence(result: ExecutionResult): Record<string, unknown> {
+    return {
+        orderId: result.orderId,
+        providerOrderId: result.providerOrderId,
+        providerClientOrderId: result.providerClientOrderId,
+        providerOrderAliases: result.providerOrderAliases,
+        status: result.status,
+        filledQuantity: result.filledQuantity,
+        fillPrice: result.fillPrice,
+        error: result.error,
+        errorDetail: result.errorDetail,
     }
 }
 

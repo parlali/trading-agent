@@ -14,7 +14,7 @@ from worker_models import (
     ClosePositionRequest,
     ConnectRequest,
     GetOrderRequest,
-    ModifyPositionRequest,
+    ModifyOrderRequest,
     PositionClosuresRequest,
     SubmitOrderRequest,
     SymbolInfoRequest,
@@ -100,14 +100,15 @@ async def submit_order(
 
 
 @app.post("/order/modify", dependencies=[Depends(verify_access_key)])
-async def modify_position(
-    req: ModifyPositionRequest,
+async def modify_order(
+    req: ModifyOrderRequest,
 ) -> dict[str, Any]:
     try:
         return await runtime.run_client_http_operation(
             "order_modify",
-            lambda client: client.modify_position(
+            lambda client: client.modify_order(
                 ticket=req.ticket,
+                price=req.price,
                 stop_loss=req.stopLoss,
                 take_profit=req.takeProfit,
             ),

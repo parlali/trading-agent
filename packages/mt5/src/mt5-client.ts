@@ -242,6 +242,15 @@ export class MT5Client {
         return await this.postMutation<MT5OrderResult>("/order/modify", params)
     }
 
+    async modifyOrder(params: {
+        ticket: number
+        price?: number
+        stopLoss?: number
+        takeProfit?: number
+    }): Promise<MT5OrderResult> {
+        return await this.postMutation<MT5OrderResult>("/order/modify", params)
+    }
+
     async cancelOrder(params: {
         ticket: number
     }): Promise<MT5OrderResult> {
@@ -298,9 +307,11 @@ export class MT5Client {
             successStatus?: ExecutionResult["status"]
             filledQuantity?: number
             fillPrice?: number
+            successRetcodes?: number[]
         } = {}
     ): ExecutionResult {
-        const errorDetail = result.success
+        const success = result.success || (options.successRetcodes ?? []).includes(result.retcode)
+        const errorDetail = success
             ? undefined
             : createExecutionErrorDetail("venue", result.retcodeDescription, {
                 code: String(result.retcode),
@@ -317,9 +328,9 @@ export class MT5Client {
         return {
             orderId: result.orderId || result.dealId || options.fallbackOrderId || "",
             providerOrderId: result.orderId || result.dealId || options.fallbackOrderId || undefined,
-            status: result.success ? options.successStatus ?? "filled" : "rejected",
-            filledQuantity: result.success ? options.filledQuantity ?? result.volume : 0,
-            fillPrice: result.success
+            status: success ? options.successStatus ?? "filled" : "rejected",
+            filledQuantity: success ? options.filledQuantity ?? result.volume : 0,
+            fillPrice: success
                 ? options.fillPrice ?? (result.price > 0 ? result.price : undefined)
                 : undefined,
             timestamp: Date.now(),
