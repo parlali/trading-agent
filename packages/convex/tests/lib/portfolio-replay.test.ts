@@ -637,7 +637,7 @@ describe("Convex Alpaca SPY replay", () => {
 })
 
 describe("Convex MT5 provider close replay", () => {
-    it("imports broker close history from the filled MT5 entry order after the live provider row is gone", async () => {
+    it("repairs a vanished MT5 entry order and imports broker close history after the live provider row is gone", async () => {
         process.env.BACKEND_SERVICE_TOKEN = "test-token"
         const strategyId = "strategy-mt5"
         const runId = "run-mt5"
@@ -671,16 +671,19 @@ describe("Convex MT5 provider close replay", () => {
                 app: "mt5",
                 venue: "mt5",
                 instrument: "XAUUSD",
-                status: "filled",
+                status: "cancelled",
                 action: "entry",
                 quantity: 0.01,
-                filledQuantity: 0.01,
-                remainingQuantity: 0,
-                avgFillPrice: 4434.18,
+                filledQuantity: 0,
+                remainingQuantity: 0.01,
                 submittedAt: openedAt,
                 updatedAt: openedAt + 1_000,
                 intent: {
                     instrument: "XAUUSD",
+                    limitPrice: 4434.18,
+                    metadata: {
+                        estimatedPrice: 4434.18,
+                    },
                     side: "sell",
                     quantity: 0.01,
                     orderType: "market",
@@ -737,6 +740,14 @@ describe("Convex MT5 provider close replay", () => {
             }],
         })
 
+        const entryOrder = db.rows.orders.find((order) => order.orderId === "1671162537")
+        expect(entryOrder).toMatchObject({
+            status: "filled",
+            filledQuantity: 0.01,
+            remainingQuantity: 0,
+            avgFillPrice: 4434.18,
+        })
+
         const closeOrder = db.rows.orders.find((order) => order.action === "close")
         if (!closeOrder) {
             throw new Error("Expected MT5 provider-close order")
@@ -763,12 +774,17 @@ describe("Convex MT5 provider close replay", () => {
             positionSide: "short",
         })
         expect(resolveCloseOrderRealizedPnl(closeOrder as never)).toBe(-23.32)
-        expect(db.rows.order_transitions).toEqual([
+        expect(db.rows.order_transitions).toEqual(expect.arrayContaining([
+            expect.objectContaining({
+                orderId: "1671162537",
+                previousStatus: "cancelled",
+                status: "filled",
+            }),
             expect.objectContaining({
                 orderId: `provider-close:mt5:XAUUSD:1671162537:${closedAt}`,
                 status: "filled",
             }),
-        ])
+        ]))
     })
 })
 

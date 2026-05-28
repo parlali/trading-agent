@@ -32,6 +32,7 @@ type ProviderClosePositionCandidate = Pick<
     strategyId: Id<"strategies">
     runId?: Id<"strategy_runs">
     requiresStrongClosureIdentity?: boolean
+    sourceOrder?: Doc<"orders">
 }
 
 export async function reconcileProviderPositionClosures(
@@ -86,6 +87,15 @@ export async function reconcileProviderPositionClosures(
         )
         if (!closure) {
             continue
+        }
+
+        if (position.sourceOrder && position.sourceOrder.status !== "filled" && position.sourceOrder.status !== "partially_filled") {
+            await repairMT5EntryOrderFromProviderClosure(ctx, {
+                order: position.sourceOrder,
+                position,
+                closure,
+                updatedAt: args.updatedAt,
+            })
         }
 
         const syntheticOrderId = buildProviderCloseOrderId(args.app, position, closure)
@@ -400,16 +410,20 @@ async function resolveHistoricMT5ProviderCloseCandidates(
         return []
     }
 
-    const orders = [
-        ...await ctx.db
+    const candidateStatuses = [
+        "filled",
+        "partially_filled",
+        "cancelled",
+        "rejected",
+        "expired",
+        "timed_out",
+    ] as const
+    const orders = (
+        await Promise.all(candidateStatuses.map(async (status) => await ctx.db
             .query("orders")
-            .withIndex("by_app_status", (q) => q.eq("app", args.app).eq("status", "filled"))
-            .collect(),
-        ...await ctx.db
-            .query("orders")
-            .withIndex("by_app_status", (q) => q.eq("app", args.app).eq("status", "partially_filled"))
-            .collect(),
-    ]
+            .withIndex("by_app_status", (q) => q.eq("app", args.app).eq("status", status))
+            .collect()))
+    ).flat()
 
     return orders
         .filter((order) =>
@@ -443,6 +457,7 @@ function resolveMT5HistoricProviderCloseCandidate(
         positionKey,
         syncedAt: Math.min(order.submittedAt, order.updatedAt),
         requiresStrongClosureIdentity: true,
+        sourceOrder: order,
         metadata: JSON.stringify({
             ticket: providerPositionId,
             providerOrderId: order.providerOrderId,
@@ -485,10 +500,15 @@ function resolveHistoricOrderEntryPrice(order: Doc<"orders">): number | undefine
     }
 
     const intent = readOrderIntentRecord(order.intent)
-    const estimatedPrice = intent?.estimatedPrice
-    return typeof estimatedPrice === "number" && Number.isFinite(estimatedPrice) && estimatedPrice > 0
-        ? estimatedPrice
+    const metadata = intent?.metadata && typeof intent.metadata === "object"
+        ? intent.metadata as Record<string, unknown>
         : undefined
+    return readPositiveNumber(
+        intent?.estimatedPrice,
+        intent?.limitPrice,
+        metadata?.estimatedPrice,
+        metadata?.entryPrice
+    )
 }
 
 function buildPositionClosureKey(closure: ProviderPositionClosureInput): string {
@@ -498,4 +518,78 @@ function buildPositionClosureKey(closure: ProviderPositionClosureInput): string 
         closure.closedAt,
         resolveProviderCloseOrderProviderId(closure) ?? closure.providerPositionId ?? "",
     ].join(":")
+}
+
+function readPositiveNumber(...values: unknown[]): number | undefined {
+    for (const value of values) {
+        if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+            return value
+        }
+    }
+
+    return undefined
+}
+
+async function repairMT5EntryOrderFromProviderClosure(
+    ctx: PortfolioMutationCtx,
+    args: {
+        order: Doc<"orders">
+        position: ProviderClosePositionCandidate
+        closure: ProviderPositionClosureInput
+        updatedAt: number
+    }
+): Promise<void> {
+    const previousStatus = args.order.status
+    await upsertOrderRow(ctx, {
+        orderId: args.order.orderId,
+        canonicalOrderId: args.order.canonicalOrderId ?? args.order.orderId,
+        providerOrderId: args.order.providerOrderId ?? args.order.orderId,
+        providerClientOrderId: args.order.providerClientOrderId,
+        providerOrderAliases: args.order.providerOrderAliases ?? [],
+        submitAttemptId: args.order.submitAttemptId,
+        submitAttemptSequence: args.order.submitAttemptSequence,
+        commitOutcome: args.order.commitOutcome === "accepted" ? "accepted" : "recovered",
+        signedOrderFingerprint: args.order.signedOrderFingerprint,
+        signedOrderMetadata: args.order.signedOrderMetadata,
+        runId: args.order.runId,
+        strategyId: args.order.strategyId,
+        venue: args.order.venue,
+        instrument: args.order.instrument,
+        status: "filled",
+        action: args.order.action,
+        quantity: args.order.quantity,
+        filledQuantity: args.position.quantity,
+        remainingQuantity: Math.max(args.order.quantity - args.position.quantity, 0),
+        avgFillPrice: args.position.entryPrice,
+        submittedAt: args.order.submittedAt,
+        updatedAt: args.closure.closedAt,
+        intent: args.order.intent,
+        metadata: args.order.metadata,
+        lastTransitionSequence: args.order.lastTransitionSequence,
+        polling: {
+            ...args.order.polling,
+            lastCheckedAt: args.updatedAt,
+            nextCheckAt: undefined,
+            timedOutAt: undefined,
+            lastError: undefined,
+        },
+    })
+
+    await appendOrderTransition(ctx, {
+        orderId: args.order.orderId,
+        runId: args.order.runId,
+        strategyId: args.order.strategyId,
+        type: "terminal",
+        status: "filled",
+        previousStatus,
+        reason: "Provider closure history proved this MT5 entry order filled before the broker-reported position close",
+        details: {
+            providerOrderId: args.order.providerOrderId ?? args.order.orderId,
+            providerPositionId: args.closure.providerPositionId,
+            filledQuantity: args.position.quantity,
+            avgFillPrice: args.position.entryPrice,
+            closeMetadata: parseJson<Record<string, unknown>>(args.closure.metadata),
+        },
+        timestamp: args.closure.closedAt,
+    })
 }
