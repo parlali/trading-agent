@@ -726,6 +726,7 @@ describe("MT5VenueAdapter", () => {
                 ticket: 1607001001,
                 orderId: 1607001000,
                 positionId: 1606516021,
+                fillPnl: -47.6,
                 profit: -47.6,
                 entry: 1,
                 reason: 4,

@@ -289,6 +289,7 @@ export function mapMT5PositionClosure(raw: MT5PositionClosure, observedAt: numbe
             ticket: raw.ticket,
             orderId: raw.orderId,
             positionId: raw.positionId,
+            fillPnl: raw.profit,
             profit: raw.profit,
             entry: raw.entry,
             reason: raw.reason,

@@ -255,7 +255,7 @@ function mt5PositionMatchesOrderIdentity(
     return getOrderProviderIdentifiers(order).some((identifier) => identifiers.has(identifier))
 }
 
-function getOrderProviderIdentifiers(order: OrderDoc): string[] {
+export function getOrderProviderIdentifiers(order: OrderDoc): string[] {
     return [
         order.providerOrderId,
         order.providerClientOrderId,

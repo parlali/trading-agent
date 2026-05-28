@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest"
 import { resolveAlpacaCloseGroupsFromPositions } from "@valiq-trading/alpaca-options"
+import { resolveCloseOrderRealizedPnl } from "@valiq-trading/core"
 import { getClaimInstrumentsForOrder } from "../../convex/lib/instrumentClaims"
 import { reconcileProviderPortfolio } from "../../convex/lib/mutations/portfolio"
 import { resolveExecutionSafetyFaultsFromProviderTruth } from "../../convex/lib/mutations/portfolioRows"
@@ -630,6 +631,142 @@ describe("Convex Alpaca SPY replay", () => {
                 blocked: true,
                 resolvedAt: undefined,
                 resolutionNote: undefined,
+            }),
+        ])
+    })
+})
+
+describe("Convex MT5 provider close replay", () => {
+    it("imports broker close history from the filled MT5 entry order after the live provider row is gone", async () => {
+        process.env.BACKEND_SERVICE_TOKEN = "test-token"
+        const strategyId = "strategy-mt5"
+        const runId = "run-mt5"
+        const openedAt = 1_779_900_000_000
+        const closedAt = openedAt + 600_000
+        const db = new FakeDb({
+            strategies: [{
+                _id: strategyId,
+                app: "mt5",
+                name: "MT5 Gold",
+                policy: { dryRun: false },
+            }],
+            strategy_runs: [{
+                _id: runId,
+                strategyId,
+                app: "mt5",
+                status: "completed",
+                startedAt: openedAt,
+                endedAt: openedAt + 30_000,
+            }],
+            instrument_claims: [],
+            orders: [{
+                _id: "order-entry",
+                orderId: "1671162537",
+                canonicalOrderId: "1671162537",
+                providerOrderId: "1671162537",
+                providerClientOrderId: "vmte01goldclose",
+                providerOrderAliases: [],
+                runId,
+                strategyId,
+                app: "mt5",
+                venue: "mt5",
+                instrument: "XAUUSD",
+                status: "filled",
+                action: "entry",
+                quantity: 0.01,
+                filledQuantity: 0.01,
+                remainingQuantity: 0,
+                avgFillPrice: 4434.18,
+                submittedAt: openedAt,
+                updatedAt: openedAt + 1_000,
+                intent: {
+                    instrument: "XAUUSD",
+                    side: "sell",
+                    quantity: 0.01,
+                    orderType: "market",
+                },
+                lastTransitionSequence: 1,
+                polling: {
+                    pollIntervalMs: 0,
+                    timeoutMs: 0,
+                    startedAt: openedAt,
+                    lastCheckedAt: openedAt + 1_000,
+                },
+            }],
+            provider_positions: [],
+            provider_working_orders: [],
+            provider_sync_state: [],
+            position_syncs: [],
+            positions: [],
+            execution_safety_faults: [],
+            account_snapshots: [],
+            control_plane_metrics: [],
+            alerts: [],
+        })
+        const ctx = { db } as never
+
+        await callRegistered(reconcileProviderPortfolio, ctx, {
+            serviceToken: "test-token",
+            app: "mt5",
+            venue: "mt5",
+            source: "periodic_sync",
+            accountState: {
+                balance: 813.97,
+                equity: 813.97,
+                buyingPower: 813.97,
+                marginUsed: 0,
+                marginAvailable: 813.97,
+                openPnl: 0,
+                dayPnl: 0,
+            },
+            positions: [],
+            workingOrders: [],
+            positionClosures: [{
+                instrument: "XAUUSD",
+                providerPositionId: "1671162537",
+                side: "short",
+                quantity: 0.01,
+                fillPrice: 4457.5,
+                closedAt,
+                metadata: JSON.stringify({
+                    orderId: 1672000000,
+                    positionId: 1671162537,
+                    fillPnl: -23.32,
+                    profit: -23.32,
+                }),
+            }],
+        })
+
+        const closeOrder = db.rows.orders.find((order) => order.action === "close")
+        if (!closeOrder) {
+            throw new Error("Expected MT5 provider-close order")
+        }
+        expect(closeOrder).toMatchObject({
+            orderId: `provider-close:mt5:XAUUSD:1671162537:${closedAt}`,
+            providerOrderId: "1672000000",
+            runId,
+            strategyId,
+            instrument: "XAUUSD",
+            status: "filled",
+            action: "close",
+            quantity: 0.01,
+            filledQuantity: 0.01,
+            avgFillPrice: 4457.5,
+        })
+        expect(((closeOrder.intent as Record<string, unknown>).metadata as Record<string, unknown>)).toMatchObject({
+            fillPnl: -23.32,
+            profit: -23.32,
+            providerReconciledClose: true,
+            providerPositionId: "1671162537",
+            providerPositionKey: "XAUUSD:1671162537",
+            entryPrice: 4434.18,
+            positionSide: "short",
+        })
+        expect(resolveCloseOrderRealizedPnl(closeOrder as never)).toBe(-23.32)
+        expect(db.rows.order_transitions).toEqual([
+            expect.objectContaining({
+                orderId: `provider-close:mt5:XAUUSD:1671162537:${closedAt}`,
+                status: "filled",
             }),
         ])
     })
