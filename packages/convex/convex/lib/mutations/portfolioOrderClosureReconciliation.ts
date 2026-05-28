@@ -100,10 +100,41 @@ export async function reconcileProviderPositionClosures(
 
         const syntheticOrderId = buildProviderCloseOrderId(args.app, position, closure)
         const providerOrderId = resolveProviderCloseOrderProviderId(closure)
+        const canonicalCloseOrder = await resolveExistingCanonicalCloseOrderForClosure(ctx, {
+            strategyId: position.strategyId,
+            closure,
+        })
         const existingOrder = await resolveExistingProviderCloseOrder(ctx, {
             syntheticOrderId,
             providerOrderId,
         })
+
+        if (existingOrder && isRetiredProviderCloseOrder(existingOrder) && !canonicalCloseOrder) {
+            importedClosureKeys.add(buildPositionClosureKey(closure))
+            continue
+        }
+
+        if (canonicalCloseOrder) {
+            if (canonicalCloseNeedsProviderClosureAttach(canonicalCloseOrder, closure)) {
+                await attachProviderClosureToCanonicalCloseOrder(ctx, {
+                    order: canonicalCloseOrder,
+                    position,
+                    closure,
+                    updatedAt: args.updatedAt,
+                })
+            }
+            if (existingOrder && existingOrder.orderId !== canonicalCloseOrder.orderId && existingOrder.status !== "cancelled") {
+                await retireDuplicateProviderCloseOrder(ctx, {
+                    order: existingOrder,
+                    canonicalOrderId: canonicalCloseOrder.orderId,
+                    closure,
+                    updatedAt: args.updatedAt,
+                })
+            }
+            importedClosureKeys.add(buildPositionClosureKey(closure))
+            continue
+        }
+
         const orderId = existingOrder?.orderId ?? syntheticOrderId
         const canonicalOrderId = existingOrder?.canonicalOrderId ?? orderId
 
@@ -528,6 +559,256 @@ function readPositiveNumber(...values: unknown[]): number | undefined {
     }
 
     return undefined
+}
+
+async function resolveExistingCanonicalCloseOrderForClosure(
+    ctx: PortfolioMutationCtx,
+    args: {
+        strategyId: Id<"strategies">
+        closure: ProviderPositionClosureInput
+    }
+): Promise<Doc<"orders"> | undefined> {
+    const statuses = ["filled", "partially_filled"] as const
+    const orders = (
+        await Promise.all(statuses.map(async (status) => await ctx.db
+            .query("orders")
+            .withIndex("by_strategy_status", (q) => q.eq("strategyId", args.strategyId).eq("status", status))
+            .collect()))
+    ).flat()
+    const closureIds = buildPositionClosureIdentityCandidates(args.closure)
+
+    return orders.find((order) =>
+        order.action === "close" &&
+        order.instrument === args.closure.instrument &&
+        !isSyntheticProviderCloseOrder(order) &&
+        hasSharedProviderPositionIdentity(buildOrderCloseIdentityCandidates(order), closureIds)
+    )
+}
+
+function canonicalCloseNeedsProviderClosureAttach(
+    order: Doc<"orders">,
+    closure: ProviderPositionClosureInput
+): boolean {
+    const intent = readOrderIntentRecord(order.intent)
+    const metadata = intent?.metadata && typeof intent.metadata === "object"
+        ? intent.metadata as Record<string, unknown>
+        : undefined
+    if (metadata?.providerReconciledClose !== true) {
+        return true
+    }
+
+    const closureMetadata = parseJson<Record<string, unknown>>(closure.metadata)
+    const closurePnl = typeof closureMetadata?.fillPnl === "number"
+        ? closureMetadata.fillPnl
+        : closureMetadata?.profit
+    if (typeof closurePnl === "number" && metadata.fillPnl !== closurePnl) {
+        return true
+    }
+
+    return false
+}
+
+function isSyntheticProviderCloseOrder(order: Doc<"orders">): boolean {
+    return order.orderId.startsWith("provider-close:")
+}
+
+function isRetiredProviderCloseOrder(order: Doc<"orders">): boolean {
+    const intent = readOrderIntentRecord(order.intent)
+    const metadata = intent?.metadata && typeof intent.metadata === "object"
+        ? intent.metadata as Record<string, unknown>
+        : undefined
+    return isSyntheticProviderCloseOrder(order) &&
+        order.status === "cancelled" &&
+        metadata?.providerReconciledCloseRetired === true
+}
+
+function buildOrderCloseIdentityCandidates(order: Doc<"orders">): Set<string> {
+    const identifiers = new Set<string>()
+    const intent = readOrderIntentRecord(order.intent)
+    const metadata = intent?.metadata && typeof intent.metadata === "object"
+        ? intent.metadata as Record<string, unknown>
+        : undefined
+
+    addKnownIdentifier(identifiers, metadata?.ticket)
+    addKnownIdentifier(identifiers, metadata?.identifier)
+    addKnownIdentifier(identifiers, metadata?.positionId)
+    addKnownIdentifier(identifiers, metadata?.providerPositionId)
+
+    const providerPositionKey = metadata?.providerPositionKey
+    addKnownIdentifier(identifiers, providerPositionKey)
+    if (typeof providerPositionKey === "string" && providerPositionKey.includes(":")) {
+        addKnownIdentifier(identifiers, providerPositionKey.split(":").at(-1))
+    }
+
+    return identifiers
+}
+
+async function attachProviderClosureToCanonicalCloseOrder(
+    ctx: PortfolioMutationCtx,
+    args: {
+        order: Doc<"orders">
+        position: ProviderClosePositionCandidate
+        closure: ProviderPositionClosureInput
+        updatedAt: number
+    }
+): Promise<void> {
+    await upsertOrderRow(ctx, {
+        orderId: args.order.orderId,
+        canonicalOrderId: args.order.canonicalOrderId ?? args.order.orderId,
+        providerOrderId: args.order.providerOrderId ?? args.order.orderId,
+        providerClientOrderId: args.order.providerClientOrderId,
+        providerOrderAliases: args.order.providerOrderAliases ?? [],
+        submitAttemptId: args.order.submitAttemptId,
+        submitAttemptSequence: args.order.submitAttemptSequence,
+        commitOutcome: args.order.commitOutcome ?? "accepted",
+        signedOrderFingerprint: args.order.signedOrderFingerprint,
+        signedOrderMetadata: args.order.signedOrderMetadata,
+        runId: args.order.runId,
+        strategyId: args.order.strategyId,
+        venue: args.order.venue,
+        instrument: args.order.instrument,
+        status: args.order.status,
+        action: args.order.action,
+        quantity: args.order.quantity,
+        filledQuantity: args.order.filledQuantity,
+        remainingQuantity: args.order.remainingQuantity,
+        avgFillPrice: args.order.avgFillPrice ?? args.closure.fillPrice,
+        submittedAt: args.order.submittedAt,
+        updatedAt: args.closure.closedAt,
+        intent: buildCanonicalCloseIntentWithProviderClosure(args.order, args.position, args.closure),
+        metadata: args.order.metadata,
+        lastTransitionSequence: args.order.lastTransitionSequence,
+        polling: {
+            ...args.order.polling,
+            lastCheckedAt: args.updatedAt,
+            nextCheckAt: undefined,
+            timedOutAt: undefined,
+        },
+    })
+
+    await appendOrderTransition(ctx, {
+        orderId: args.order.orderId,
+        runId: args.order.runId,
+        strategyId: args.order.strategyId,
+        type: "status_change",
+        status: args.order.status,
+        previousStatus: args.order.status,
+        reason: "Provider closure history attached broker-reported realized PnL to this MT5 close order",
+        details: {
+            providerPositionId: args.closure.providerPositionId,
+            fillPrice: args.closure.fillPrice,
+            quantity: args.closure.quantity,
+            metadata: parseJson<Record<string, unknown>>(args.closure.metadata),
+        },
+        timestamp: args.closure.closedAt,
+    })
+}
+
+function buildCanonicalCloseIntentWithProviderClosure(
+    order: Doc<"orders">,
+    position: ProviderClosePositionCandidate,
+    closure: ProviderPositionClosureInput
+): Record<string, unknown> {
+    const intent = readOrderIntentRecord(order.intent) ?? {}
+    const currentMetadata = intent.metadata && typeof intent.metadata === "object"
+        ? intent.metadata as Record<string, unknown>
+        : {}
+    const metadata = {
+        ...currentMetadata,
+        ...readMetadataRecord(position.metadata),
+        ...parseJson<Record<string, unknown>>(closure.metadata),
+        providerReconciledClose: true,
+        providerPositionId: currentMetadata.providerPositionId ?? position.providerPositionId,
+        providerPositionKey: currentMetadata.providerPositionKey ?? position.positionKey,
+        entryPrice: currentMetadata.entryPrice ?? position.entryPrice,
+        positionSide: currentMetadata.positionSide ?? position.side,
+        estimatedPrice: closure.fillPrice,
+    }
+
+    return {
+        ...intent,
+        metadata,
+    }
+}
+
+async function retireDuplicateProviderCloseOrder(
+    ctx: PortfolioMutationCtx,
+    args: {
+        order: Doc<"orders">
+        canonicalOrderId: string
+        closure: ProviderPositionClosureInput
+        updatedAt: number
+    }
+): Promise<void> {
+    await upsertOrderRow(ctx, {
+        orderId: args.order.orderId,
+        canonicalOrderId: args.canonicalOrderId,
+        providerOrderId: args.order.providerOrderId ?? args.order.orderId,
+        providerClientOrderId: args.order.providerClientOrderId,
+        providerOrderAliases: args.order.providerOrderAliases ?? [],
+        submitAttemptId: args.order.submitAttemptId,
+        submitAttemptSequence: args.order.submitAttemptSequence,
+        commitOutcome: args.order.commitOutcome ?? "accepted",
+        signedOrderFingerprint: args.order.signedOrderFingerprint,
+        signedOrderMetadata: args.order.signedOrderMetadata,
+        runId: args.order.runId,
+        strategyId: args.order.strategyId,
+        venue: args.order.venue,
+        instrument: args.order.instrument,
+        status: "cancelled",
+        action: args.order.action,
+        quantity: args.order.quantity,
+        filledQuantity: 0,
+        remainingQuantity: args.order.quantity,
+        avgFillPrice: args.order.avgFillPrice,
+        submittedAt: args.order.submittedAt,
+        updatedAt: args.updatedAt,
+        intent: buildRetiredProviderCloseIntent(args.order, args.canonicalOrderId),
+        metadata: args.order.metadata,
+        lastTransitionSequence: args.order.lastTransitionSequence,
+        polling: {
+            ...args.order.polling,
+            lastCheckedAt: args.updatedAt,
+            nextCheckAt: undefined,
+            timedOutAt: undefined,
+            lastError: "Retired duplicate synthetic provider-close row after broker PnL was attached to the canonical close order",
+        },
+    })
+
+    await appendOrderTransition(ctx, {
+        orderId: args.order.orderId,
+        runId: args.order.runId,
+        strategyId: args.order.strategyId,
+        type: "terminal",
+        status: "cancelled",
+        previousStatus: args.order.status,
+        reason: "Retired duplicate synthetic provider-close row after broker PnL was attached to the canonical MT5 close order",
+        details: {
+            canonicalOrderId: args.canonicalOrderId,
+            providerPositionId: args.closure.providerPositionId,
+            metadata: parseJson<Record<string, unknown>>(args.closure.metadata),
+        },
+        timestamp: args.updatedAt,
+    })
+}
+
+function buildRetiredProviderCloseIntent(
+    order: Doc<"orders">,
+    canonicalOrderId: string
+): Record<string, unknown> {
+    const intent = readOrderIntentRecord(order.intent) ?? {}
+    const currentMetadata = intent.metadata && typeof intent.metadata === "object"
+        ? intent.metadata as Record<string, unknown>
+        : {}
+
+    return {
+        ...intent,
+        metadata: {
+            ...currentMetadata,
+            providerReconciledCloseRetired: true,
+            providerReconciledDuplicateOfOrderId: canonicalOrderId,
+        },
+    }
 }
 
 async function repairMT5EntryOrderFromProviderClosure(
