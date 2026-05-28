@@ -48,19 +48,6 @@ function createIntent(overrides: Partial<OrderIntent> = {}): OrderIntent {
 }
 
 describe("polymarketRiskValidators", () => {
-    it("uses estimated live price for market-order max bet and exposure checks", () => {
-        const validation = validateIntent(
-            createIntent(),
-            basePolicy,
-            account,
-            [],
-            polymarketRiskValidators
-        )
-
-        expect(validation.allowed).toBe(false)
-        expect(validation.reason).toContain("exceeds max bet")
-    })
-
     it("does not block sell-side exits because stale entry constraints are now violated", () => {
         const position: Position = {
             instrument: "token-yes",

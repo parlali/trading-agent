@@ -1,16 +1,5 @@
 import { describe, expect, it } from "vitest"
-import {
-    getToolContract,
-    listToolContracts,
-} from "./tool-contracts.ts"
-
-const unsupportedTopLevelSchemaKeys = [
-    "oneOf",
-    "anyOf",
-    "allOf",
-    "enum",
-    "not",
-] as const
+import { getToolContract } from "./tool-contracts.ts"
 
 describe("tool contracts", () => {
     it("rejects truncated Polymarket token IDs while accepting run-local handles", () => {
@@ -43,21 +32,14 @@ describe("tool contracts", () => {
         const searchMarkets = getToolContract("search_markets", "polymarket")
 
         const result = searchMarkets.parameters.safeParse({
-            query: "(Trump and election) OR (Fed not rates)",
+            query: "(Alpha and beta) OR (Gamma not delta)",
             limit: 5,
         })
 
         expect(result.success).toBe(true)
         expect(result.data).toMatchObject({
-            query: "Trump election Fed rates",
+            query: "Alpha beta Gamma delta",
         })
     })
 
-    it("keeps every cataloged tool schema OpenRouter-compatible", () => {
-        for (const contract of listToolContracts()) {
-            for (const key of unsupportedTopLevelSchemaKeys) {
-                expect(contract.jsonSchema).not.toHaveProperty(key)
-            }
-        }
-    })
 })

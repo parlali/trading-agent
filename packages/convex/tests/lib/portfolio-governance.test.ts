@@ -585,166 +585,128 @@ describe("portfolio governance helpers", () => {
         })
     })
 
-    it("does not infer Alpaca vertical fills from one matching raw provider leg", () => {
-        const order = {
-            orderId: "alpaca-put-vertical",
-            providerOrderId: "alpaca-put-vertical",
-            providerOrderAliases: [],
-            action: "entry",
-            quantity: 1,
-            filledQuantity: 0,
-            avgFillPrice: undefined,
-            instrument: "VS:BULL_PUT_CREDIT:SPY:2026-05-01:SPY260501P00694000|SPY260501P00695000",
-            lastTransitionSequence: 0,
-            intent: {
-                side: "sell",
-                legs: [
-                    { instrument: "SPY260501P00694000", side: "buy_to_open" },
-                    { instrument: "SPY260501P00695000", side: "sell_to_open" },
+    it("rejects Alpaca structure entry-fill inference without complete claimed-leg proof", () => {
+        const cases = [
+            {
+                name: "one raw leg only",
+                order: createAlpacaVerticalOrder({ quantity: 1 }),
+                livePositions: [
+                    {
+                        instrument: "SPY260501P00695000",
+                        side: "short",
+                        quantity: 1,
+                        entryPrice: 0.44,
+                    },
                 ],
             },
-        }
-
-        const inferredFill = portfolioGovernanceTestables.inferClosedOrderStatus({
-            app: "alpaca-options",
-            order,
-            livePositions: [
-                {
-                    instrument: "SPY260501P00695000",
-                    side: "short",
-                    quantity: 1,
-                    entryPrice: 0.44,
-                },
-            ],
-        } as never)
-
-        expect(inferredFill).toEqual({ status: "cancelled" })
-    })
-
-    it("infers Alpaca vertical fills only when every claimed leg is proven", () => {
-        const order = createAlpacaVerticalOrder({ quantity: 2 })
-
-        const inferredFill = portfolioGovernanceTestables.inferClosedOrderStatus({
-            app: "alpaca-options",
-            order,
-            livePositions: [
-                {
-                    instrument: "SPY260501P00695000",
-                    side: "short",
-                    quantity: 2,
-                    entryPrice: 0.44,
-                },
-                {
-                    instrument: "SPY260501P00694000",
-                    side: "long",
-                    quantity: 2,
-                    entryPrice: 0.19,
-                },
-            ],
-        } as never)
-
-        expect(inferredFill).toEqual({
-            status: "filled",
-            filledQuantity: 2,
-            remainingQuantity: 0,
-            avgFillPrice: 0.25,
-        })
-    })
-
-    it("infers Alpaca partial fills only when all claimed legs have bounded residual quantity", () => {
-        const order = createAlpacaVerticalOrder({ quantity: 3 })
-
-        const inferredFill = portfolioGovernanceTestables.inferClosedOrderStatus({
-            app: "alpaca-options",
-            order,
-            livePositions: [
-                {
-                    instrument: "SPY260501P00695000",
-                    side: "short",
-                    quantity: 1,
-                    entryPrice: 0.44,
-                },
-                {
-                    instrument: "SPY260501P00694000",
-                    side: "long",
-                    quantity: 1,
-                    entryPrice: 0.19,
-                },
-            ],
-        } as never)
-
-        expect(inferredFill).toEqual({
-            status: "partially_filled",
-            filledQuantity: 1,
-            remainingQuantity: 2,
-            avgFillPrice: 0.25,
-        })
-    })
-
-    it("rejects Alpaca entry-fill inference when a claimed leg has the wrong direction", () => {
-        const order = createAlpacaVerticalOrder({ quantity: 1 })
-
-        const inferredFill = portfolioGovernanceTestables.inferClosedOrderStatus({
-            app: "alpaca-options",
-            order,
-            livePositions: [
-                {
-                    instrument: "SPY260501P00695000",
-                    side: "long",
-                    quantity: 1,
-                    entryPrice: 0.44,
-                },
-                {
-                    instrument: "SPY260501P00694000",
-                    side: "long",
-                    quantity: 1,
-                    entryPrice: 0.19,
-                },
-            ],
-        } as never)
-
-        expect(inferredFill).toEqual({ status: "cancelled" })
-    })
-
-    it("infers true Alpaca four-leg IC fills from exact raw claimed legs", () => {
-        const order = {
-            orderId: "alpaca-ic",
-            providerOrderId: "alpaca-ic",
-            providerOrderAliases: [],
-            action: "entry",
-            quantity: 1,
-            filledQuantity: 0,
-            avgFillPrice: undefined,
-            instrument: "IC:SPY:2026-05-01:SPY260501C00720000|SPY260501C00721000|SPY260501P00694000|SPY260501P00695000",
-            lastTransitionSequence: 0,
-            intent: {
-                side: "sell",
-                legs: [
-                    { instrument: "SPY260501C00720000", side: "sell_to_open" },
-                    { instrument: "SPY260501C00721000", side: "buy_to_open" },
-                    { instrument: "SPY260501P00694000", side: "buy_to_open" },
-                    { instrument: "SPY260501P00695000", side: "sell_to_open" },
+            {
+                name: "wrong claimed-leg direction",
+                order: createAlpacaVerticalOrder({ quantity: 1 }),
+                livePositions: [
+                    {
+                        instrument: "SPY260501P00695000",
+                        side: "long",
+                        quantity: 1,
+                        entryPrice: 0.44,
+                    },
+                    {
+                        instrument: "SPY260501P00694000",
+                        side: "long",
+                        quantity: 1,
+                        entryPrice: 0.19,
+                    },
                 ],
             },
+        ]
+
+        for (const testCase of cases) {
+            const inferredFill = portfolioGovernanceTestables.inferClosedOrderStatus({
+                app: "alpaca-options",
+                order: testCase.order,
+                livePositions: testCase.livePositions,
+            } as never)
+
+            expect(inferredFill, testCase.name).toEqual({ status: "cancelled" })
         }
+    })
 
-        const inferredFill = portfolioGovernanceTestables.inferClosedOrderStatus({
-            app: "alpaca-options",
-            order,
-            livePositions: [
-                { instrument: "SPY260501C00720000", side: "short", quantity: 1, entryPrice: 0.3 },
-                { instrument: "SPY260501C00721000", side: "long", quantity: 1, entryPrice: 0.12 },
-                { instrument: "SPY260501P00694000", side: "long", quantity: 1, entryPrice: 0.19 },
-                { instrument: "SPY260501P00695000", side: "short", quantity: 1, entryPrice: 0.44 },
-            ],
-        } as never)
+    it("infers Alpaca structure entry fills from complete raw claimed-leg proof", () => {
+        const cases = [
+            {
+                name: "vertical full fill",
+                order: createAlpacaVerticalOrder({ quantity: 2 }),
+                livePositions: [
+                    {
+                        instrument: "SPY260501P00695000",
+                        side: "short",
+                        quantity: 2,
+                        entryPrice: 0.44,
+                    },
+                    {
+                        instrument: "SPY260501P00694000",
+                        side: "long",
+                        quantity: 2,
+                        entryPrice: 0.19,
+                    },
+                ],
+                expected: {
+                    status: "filled",
+                    filledQuantity: 2,
+                    remainingQuantity: 0,
+                    avgFillPrice: 0.25,
+                },
+            },
+            {
+                name: "vertical partial fill",
+                order: createAlpacaVerticalOrder({ quantity: 3 }),
+                livePositions: [
+                    {
+                        instrument: "SPY260501P00695000",
+                        side: "short",
+                        quantity: 1,
+                        entryPrice: 0.44,
+                    },
+                    {
+                        instrument: "SPY260501P00694000",
+                        side: "long",
+                        quantity: 1,
+                        entryPrice: 0.19,
+                    },
+                ],
+                expected: {
+                    status: "partially_filled",
+                    filledQuantity: 1,
+                    remainingQuantity: 2,
+                    avgFillPrice: 0.25,
+                },
+            },
+            {
+                name: "iron condor full fill",
+                order: createAlpacaIronCondorOrder(),
+                livePositions: [
+                    { instrument: "SPY260501C00720000", side: "short", quantity: 1, entryPrice: 0.3 },
+                    { instrument: "SPY260501C00721000", side: "long", quantity: 1, entryPrice: 0.12 },
+                    { instrument: "SPY260501P00694000", side: "long", quantity: 1, entryPrice: 0.19 },
+                    { instrument: "SPY260501P00695000", side: "short", quantity: 1, entryPrice: 0.44 },
+                ],
+                expected: {
+                    status: "filled",
+                    filledQuantity: 1,
+                    remainingQuantity: 0,
+                    avgFillPrice: 0.43,
+                },
+            },
+        ]
 
-        expect(inferredFill).toEqual({
-            status: "filled",
-            filledQuantity: 1,
-            remainingQuantity: 0,
-            avgFillPrice: 0.43,
-        })
+        for (const testCase of cases) {
+            const inferredFill = portfolioGovernanceTestables.inferClosedOrderStatus({
+                app: "alpaca-options",
+                order: testCase.order,
+                livePositions: testCase.livePositions,
+            } as never)
+
+            expect(inferredFill, testCase.name).toEqual(testCase.expected)
+        }
     })
 
     it("keeps separate SPY call and put vertical claims from becoming an owned synthetic IC", () => {
@@ -904,7 +866,7 @@ describe("portfolio governance helpers", () => {
                 _id: "strategy-manual",
                 policy: {
                     safety: {
-                        expectedExternalInstruments: ["will-the-us-acquire-any-part-of-greenland-in-2026"],
+                        expectedExternalInstruments: ["synthetic-external-market-2026"],
                     },
                 },
             },
@@ -916,8 +878,8 @@ describe("portfolio governance helpers", () => {
                 instrument: "token-active",
                 metadata: JSON.stringify({
                     tokenId: "token-active",
-                    marketSlug: "will-the-us-acquire-any-part-of-greenland-in-2026",
-                    slug: "will-the-us-acquire-any-part-of-greenland-in-2026",
+                    marketSlug: "synthetic-external-market-2026",
+                    slug: "synthetic-external-market-2026",
                 }),
             }
         )
@@ -959,6 +921,29 @@ function createAlpacaVerticalOrder(args: {
         intent: {
             side: "sell",
             legs: [
+                { instrument: "SPY260501P00694000", side: "buy_to_open" },
+                { instrument: "SPY260501P00695000", side: "sell_to_open" },
+            ],
+        },
+    }
+}
+
+function createAlpacaIronCondorOrder() {
+    return {
+        orderId: "alpaca-ic",
+        providerOrderId: "alpaca-ic",
+        providerOrderAliases: [],
+        action: "entry",
+        quantity: 1,
+        filledQuantity: 0,
+        avgFillPrice: undefined,
+        instrument: "IC:SPY:2026-05-01:SPY260501C00720000|SPY260501C00721000|SPY260501P00694000|SPY260501P00695000",
+        lastTransitionSequence: 0,
+        intent: {
+            side: "sell",
+            legs: [
+                { instrument: "SPY260501C00720000", side: "sell_to_open" },
+                { instrument: "SPY260501C00721000", side: "buy_to_open" },
                 { instrument: "SPY260501P00694000", side: "buy_to_open" },
                 { instrument: "SPY260501P00695000", side: "sell_to_open" },
             ],

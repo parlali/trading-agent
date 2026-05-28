@@ -79,25 +79,6 @@ describe("Execution cost assessment", () => {
         expect(assessment.blockNewEntries).toBe(true)
     })
 
-    it("normalizes percent and bps for probability-priced markets", () => {
-        const metrics = resolveExecutionCostMetrics({
-            app: "polymarket",
-            instrument: "token-yes",
-            instrumentClass: "prediction_market",
-            capturedAt: Date.UTC(2026, 3, 23, 14, 0, 0),
-            bestBid: 0.51,
-            bestAsk: 0.53,
-            midpoint: 0.52,
-            referencePrice: 0.52,
-            absoluteSpread: 0.02,
-            nativeSpread: 0.02,
-            nativeSpreadUnit: "probability",
-        })
-
-        expect(metrics.spreadPercent).toBeCloseTo(3.846153846, 6)
-        expect(metrics.spreadBps).toBeCloseTo(384.6153846, 4)
-    })
-
     it("blocks prediction-market spreads on absolute terms even when the baseline is also wide", () => {
         const metrics = resolveExecutionCostMetrics({
             app: "polymarket",

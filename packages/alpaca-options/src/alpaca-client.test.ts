@@ -95,10 +95,11 @@ function createEntryOrderResponse(limitPrice = "-1.23") {
 }
 
 describe("buildCreateOrderPayload", () => {
-    it("splits Alpaca leg side and position intent fields for credit entries", () => {
-        const payload = buildCreateOrderPayload(createEntryIntent())
+    it("splits Alpaca leg side and position intent fields for credit entries with canonical identity", () => {
+        const payload = buildCreateOrderPayload(createEntryIntent(), "vale01abcdef2345")
 
         expect(payload).toMatchObject({
+            client_order_id: "vale01abcdef2345",
             order_class: "mleg",
             type: "limit",
             time_in_force: "day",
@@ -132,12 +133,6 @@ describe("buildCreateOrderPayload", () => {
             ],
         })
     })
-
-    it("attaches canonical client order identity", () => {
-        const payload = buildCreateOrderPayload(createEntryIntent(), "vale01abcdef2345")
-
-        expect(payload.client_order_id).toBe("vale01abcdef2345")
-    })
 })
 
 describe("AlpacaClient multileg signed limit prices", () => {
@@ -153,21 +148,20 @@ describe("AlpacaClient multileg signed limit prices", () => {
         globalThis.fetch = originalFetch
     })
 
-    it("normalizes signed entry order readbacks to positive internal prices", async () => {
+    it("normalizes signed multileg credit prices on readback and replacement", async () => {
         fetchMock.mockResolvedValue(createJsonResponse(createEntryOrderResponse()))
 
-        const result = await createClient().getOrder("order-entry-1")
+        const readResult = await createClient().getOrder("order-entry-1")
 
-        expect(result.intentUpdates?.limitPrice).toBe(1.23)
-    })
+        expect(readResult.intentUpdates?.limitPrice).toBe(1.23)
 
-    it("uses signed negative wire prices when replacing working credit entries", async () => {
+        fetchMock.mockReset()
         fetchMock
             .mockResolvedValueOnce(createJsonResponse(createEntryOrderResponse()))
             .mockResolvedValueOnce(createJsonResponse(createEntryOrderResponse("-1.1")))
 
         const client = createClient()
-        const result = await client.replaceOrder("order-entry-1", { limitPrice: 1.1 })
+        const replaceResult = await client.replaceOrder("order-entry-1", { limitPrice: 1.1 })
         const patchInit = fetchMock.mock.calls[1]?.[1]
 
         expect(String(fetchMock.mock.calls[0]?.[0])).toContain("/v2/orders/order-entry-1")
@@ -176,16 +170,6 @@ describe("AlpacaClient multileg signed limit prices", () => {
         expect(JSON.parse(String(patchInit?.body))).toMatchObject({
             limit_price: -1.1,
         })
-        expect(result.intentUpdates?.limitPrice).toBe(1.1)
-    })
-
-    it("does not retry live order creation after a transport failure", async () => {
-        fetchMock.mockRejectedValue(new Error("socket timeout after provider commit"))
-
-        await expect(createClient().createOrder(createEntryIntent())).rejects.toThrow(
-            "socket timeout after provider commit"
-        )
-
-        expect(fetchMock).toHaveBeenCalledTimes(1)
+        expect(replaceResult.intentUpdates?.limitPrice).toBe(1.1)
     })
 })

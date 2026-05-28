@@ -6,7 +6,7 @@ import {
 import type { Position, WorkingOrder } from "./types"
 
 describe("provider ownership scope filters", () => {
-    it("uses provider-position keys instead of instrument-only matching when exact keys exist", () => {
+    it("uses exact provider position and working-order keys when they exist", () => {
         const positions: Position[] = [
             {
                 instrument: "XAUUSD",
@@ -29,9 +29,7 @@ describe("provider ownership scope filters", () => {
             positionKeys: new Set(["XAUUSD:1600791764"]),
             workingOrderIds: new Set(),
         })).toEqual([positions[0]])
-    })
 
-    it("uses provider working-order IDs instead of instrument-only matching when exact IDs exist", () => {
         const orders: WorkingOrder[] = [
             {
                 orderId: "order:BTC-USDT-SWAP:btc-owned",

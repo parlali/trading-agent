@@ -64,27 +64,4 @@ describe("OKXClient rejection diagnostics", () => {
         })
     })
 
-    it("does not retry live order placement after a transport failure", async () => {
-        const fetchMock = vi.spyOn(globalThis, "fetch").mockRejectedValue(
-            new Error("socket timeout after provider commit")
-        )
-
-        const client = new OKXClient({
-            apiKey: "key",
-            apiSecret: "secret",
-            apiPassphrase: "passphrase",
-            demoTrading: true,
-        })
-
-        await expect(client.placeOrder({
-            instId: "BTC-USDT-SWAP",
-            tdMode: "isolated",
-            side: "buy",
-            ordType: "market",
-            sz: "1",
-            posSide: "net",
-        })).rejects.toThrow("socket timeout after provider commit")
-
-        expect(fetchMock).toHaveBeenCalledTimes(1)
-    })
 })

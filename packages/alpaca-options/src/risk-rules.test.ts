@@ -21,77 +21,84 @@ function validate(intent: OrderIntent) {
 }
 
 describe("alpaca structure validator", () => {
-    it("accepts 4-leg iron condor credit entries", () => {
-        const result = validate({
-            instrument: "SPY",
-            side: "sell",
-            quantity: 1,
-            orderType: "limit",
-            limitPrice: 1.2,
-            timeInForce: "day",
-            legs: [
-                {
-                    instrument: "SPY260417C00550000",
-                    side: "sell_to_open",
+    it("accepts Alpaca credit entry structures and canonicalizes their instruments", () => {
+        const cases = [
+            {
+                intent: {
+                    instrument: "SPY",
+                    side: "sell" as const,
                     quantity: 1,
+                    orderType: "limit" as const,
+                    limitPrice: 1.2,
+                    timeInForce: "day" as const,
+                    legs: [
+                        {
+                            instrument: "SPY260417C00550000",
+                            side: "sell_to_open" as const,
+                            quantity: 1,
+                        },
+                        {
+                            instrument: "SPY260417C00555000",
+                            side: "buy_to_open" as const,
+                            quantity: 1,
+                        },
+                        {
+                            instrument: "SPY260417P00500000",
+                            side: "sell_to_open" as const,
+                            quantity: 1,
+                        },
+                        {
+                            instrument: "SPY260417P00495000",
+                            side: "buy_to_open" as const,
+                            quantity: 1,
+                        },
+                    ],
                 },
-                {
-                    instrument: "SPY260417C00555000",
-                    side: "buy_to_open",
+                instrumentPrefix: "IC:SPY:2026-04-17:",
+                metadata: {
+                    structureType: "iron_condor",
+                    underlying: "SPY",
+                    expiration: "2026-04-17",
+                },
+            },
+            {
+                intent: {
+                    instrument: "SPY",
+                    side: "sell" as const,
                     quantity: 1,
+                    orderType: "limit" as const,
+                    limitPrice: 0.85,
+                    timeInForce: "day" as const,
+                    legs: [
+                        {
+                            instrument: "SPY260417P00500000",
+                            side: "sell_to_open" as const,
+                            quantity: 1,
+                        },
+                        {
+                            instrument: "SPY260417P00495000",
+                            side: "buy_to_open" as const,
+                            quantity: 1,
+                        },
+                    ],
                 },
-                {
-                    instrument: "SPY260417P00500000",
-                    side: "sell_to_open",
-                    quantity: 1,
+                instrumentPrefix: "VS:BULL_PUT_CREDIT:SPY:2026-04-17:",
+                metadata: {
+                    structureType: "credit_vertical",
+                    verticalSpreadType: "bull_put_credit",
+                    underlying: "SPY",
+                    expiration: "2026-04-17",
                 },
-                {
-                    instrument: "SPY260417P00495000",
-                    side: "buy_to_open",
-                    quantity: 1,
-                },
-            ],
-        })
+            },
+        ]
 
-        expect(result.allowed).toBe(true)
-        expect(result.adjustedIntent?.instrument.startsWith("IC:SPY:2026-04-17:")).toBe(true)
-        expect(result.adjustedIntent?.metadata).toMatchObject({
-            structureType: "iron_condor",
-            underlying: "SPY",
-            expiration: "2026-04-17",
-        })
-    })
+        for (const testCase of cases) {
+            const result = validate(testCase.intent)
 
-    it("accepts 2-leg bull put credit entries", () => {
-        const result = validate({
-            instrument: "SPY",
-            side: "sell",
-            quantity: 1,
-            orderType: "limit",
-            limitPrice: 0.85,
-            timeInForce: "day",
-            legs: [
-                {
-                    instrument: "SPY260417P00500000",
-                    side: "sell_to_open",
-                    quantity: 1,
-                },
-                {
-                    instrument: "SPY260417P00495000",
-                    side: "buy_to_open",
-                    quantity: 1,
-                },
-            ],
-        })
-
-        expect(result.allowed).toBe(true)
-        expect(result.adjustedIntent?.instrument.startsWith("VS:BULL_PUT_CREDIT:SPY:2026-04-17:")).toBe(true)
-        expect(result.adjustedIntent?.metadata).toMatchObject({
-            structureType: "credit_vertical",
-            verticalSpreadType: "bull_put_credit",
-            underlying: "SPY",
-            expiration: "2026-04-17",
-        })
+            expect(result.allowed).toBe(true)
+            expect(result.adjustedIntent?.instrument.startsWith(testCase.instrumentPrefix)).toBe(true)
+            expect(result.adjustedIntent?.metadata).toMatchObject(testCase.metadata)
+        }
     })
 
     it("accepts 2-leg credit vertical closes and normalizes top-level side to buy", () => {

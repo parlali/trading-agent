@@ -24,6 +24,7 @@ function createResetCounts(overrides: Record<string, number | boolean> = {}) {
         appHeartbeats: 0,
         manualRunRequests: 0,
         alerts: 0,
+        strategies: 0,
         ...overrides,
     }
 }

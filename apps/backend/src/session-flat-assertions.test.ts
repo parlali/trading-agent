@@ -6,7 +6,7 @@ import {
 import type { Position, WorkingOrder } from "@valiq-trading/core"
 
 describe("session-flat provider-sync assertions", () => {
-    it("flags only exact strategy-owned working orders that remain live after session flat", () => {
+    it("flags only exact strategy-owned live exposure after session flat", () => {
         const orders: WorkingOrder[] = [
             {
                 orderId: "order:BTC-USDT-SWAP:owned",
@@ -45,9 +45,7 @@ describe("session-flat provider-sync assertions", () => {
             positionKeys: new Set(),
             workingOrderIds: new Set(["order:BTC-USDT-SWAP:owned", "order:BTC-USDT-SWAP:cancelled"]),
         })).toEqual([orders[0]])
-    })
 
-    it("flags only exact strategy-owned positions that remain live after session flat", () => {
         const positions: Position[] = [
             {
                 instrument: "XAUUSD",

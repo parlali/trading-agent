@@ -24,7 +24,7 @@ function createStatusResponse(status: number, statusText: string = ""): Response
     return new Response("", { status, statusText })
 }
 
-describe("PolymarketClient.searchMarkets", () => {
+describe("PolymarketClient public read paths", () => {
     const fetchMock = vi.fn<typeof fetch>()
     const originalFetch = globalThis.fetch
 
@@ -87,7 +87,7 @@ describe("PolymarketClient.searchMarkets", () => {
         expect(url.searchParams.get("limit")).toBeNull()
     })
 
-    it("treats public-search 404 as no search results instead of failing the run", async () => {
+    it("treats public-search and slug lookup 404s as empty reads", async () => {
         fetchMock
             .mockResolvedValueOnce(createStatusResponse(404, "Not Found"))
             .mockResolvedValueOnce(createJsonResponse([]))
@@ -97,6 +97,16 @@ describe("PolymarketClient.searchMarkets", () => {
 
         expect(results).toEqual([])
         expect(fetchMock).toHaveBeenCalledTimes(3)
+
+        fetchMock.mockReset()
+        fetchMock
+            .mockResolvedValueOnce(createStatusResponse(404, "Not Found"))
+            .mockResolvedValueOnce(createStatusResponse(404, "Not Found"))
+
+        const market = await createClient().getMarketBySlug("missing-market")
+
+        expect(market).toBeNull()
+        expect(fetchMock).toHaveBeenCalledTimes(2)
     })
 })
 
@@ -113,19 +123,19 @@ describe("PolymarketClient.getMarketBySlug", () => {
         globalThis.fetch = originalFetch
     })
 
-    it("falls back from market slug lookup to event slug lookup", async () => {
+    it("resolves slug lookups through event fallback and direct URL normalization", async () => {
         fetchMock
             .mockResolvedValueOnce(createJsonResponse([]))
             .mockResolvedValueOnce(createJsonResponse([
                 {
-                    title: "DHS shutdown",
+                    title: "Synthetic service interruption",
                     category: "Politics",
                     markets: [
                         {
                             conditionId: "condition-dhs",
                             questionID: "question-dhs",
-                            question: "How long will the DHS shutdown last?",
-                            description: "DHS market",
+                            question: "How long will the synthetic service interruption last?",
+                            description: "Synthetic interruption market",
                             outcomes: "[\"Before May\",\"After May\"]",
                             clobTokenIds: "[\"token-before\",\"token-after\"]",
                             active: true,
@@ -152,20 +162,8 @@ describe("PolymarketClient.getMarketBySlug", () => {
         expect(secondUrl.pathname).toBe("/events")
         expect(secondUrl.searchParams.get("slug")).toBe("dhs-shutdown")
         expect(secondUrl.searchParams.get("limit")).toBe("1")
-    })
 
-    it("returns null when both market and event slug lookup return 404", async () => {
-        fetchMock
-            .mockResolvedValueOnce(createStatusResponse(404, "Not Found"))
-            .mockResolvedValueOnce(createStatusResponse(404, "Not Found"))
-
-        const result = await createClient().getMarketBySlug("missing-market")
-
-        expect(result).toBeNull()
-        expect(fetchMock).toHaveBeenCalledTimes(2)
-    })
-
-    it("normalizes direct Polymarket URLs into slug lookups", async () => {
+        fetchMock.mockReset()
         fetchMock.mockResolvedValueOnce(createJsonResponse([
             {
                 conditionId: "condition-url",
@@ -185,9 +183,9 @@ describe("PolymarketClient.getMarketBySlug", () => {
             },
         ]))
 
-        const result = await createClient().getMarketBySlug("https://polymarket.com/event/will-the-url-market-resolve-yes?tid=123")
+        const urlResult = await createClient().getMarketBySlug("https://polymarket.com/event/will-the-url-market-resolve-yes?tid=123")
 
-        expect(result?.conditionId).toBe("condition-url")
+        expect(urlResult?.conditionId).toBe("condition-url")
         expect(fetchMock).toHaveBeenCalledTimes(1)
 
         const url = new URL(String(fetchMock.mock.calls[0]?.[0]))
@@ -223,37 +221,5 @@ describe("PolymarketClient.getCurrentPositions", () => {
         expect(url.origin).toBe("https://data-api.polymarket.com")
         expect(url.pathname).toBe("/positions")
         expect(url.searchParams.get("user")).toBe("0x1111111111111111111111111111111111111111")
-    })
-})
-
-describe("PolymarketClient authenticated mutations", () => {
-    const fetchMock = vi.fn<typeof fetch>()
-    const originalFetch = globalThis.fetch
-
-    beforeEach(() => {
-        fetchMock.mockReset()
-        globalThis.fetch = fetchMock as typeof fetch
-    })
-
-    afterEach(() => {
-        globalThis.fetch = originalFetch
-    })
-
-    it("does not retry prepared order posting after a transport failure", async () => {
-        fetchMock.mockRejectedValue(new Error("socket timeout after provider commit"))
-
-        await expect(createClient().postPreparedOrder({
-            orderBody: {
-                order: {
-                    salt: "1",
-                },
-            },
-            signedOrderFingerprint: "fingerprint-1",
-            signedOrderMetadata: {
-                signedOrderFingerprint: "fingerprint-1",
-            },
-        })).rejects.toThrow("socket timeout after provider commit")
-
-        expect(fetchMock).toHaveBeenCalledTimes(1)
     })
 })

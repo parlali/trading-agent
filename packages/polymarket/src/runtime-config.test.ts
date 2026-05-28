@@ -5,30 +5,21 @@ import {
 } from "./runtime-config"
 
 describe("resolvePolymarketFunderAddress", () => {
-    it("requires an explicit funder address instead of deriving one", () => {
+    it("rejects missing or invalid explicit funder addresses", () => {
         expect(() => resolvePolymarketFunderAddress({
             POLYMARKET_FUNDER_ADDRESS: null,
             POLYMARKET_PRIVATE_KEY: "0x123",
         })).toThrow("Missing required secret: POLYMARKET_FUNDER_ADDRESS")
-    })
-
-    it("rejects invalid wallet addresses", () => {
         expect(() => resolvePolymarketFunderAddress({
             POLYMARKET_FUNDER_ADDRESS: "not-an-address",
-        })).toThrow(
-            "POLYMARKET_FUNDER_ADDRESS must be a valid 0x wallet address for the Polymarket profile or proxy wallet"
-        )
+        })).toThrow("POLYMARKET_FUNDER_ADDRESS must be a valid 0x wallet address for the Polymarket profile or proxy wallet")
     })
 
-    it("normalizes a valid wallet address", () => {
+    it("normalizes a valid wallet address for standalone and credential resolution", () => {
         expect(resolvePolymarketFunderAddress({
             POLYMARKET_FUNDER_ADDRESS: "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266",
         })).toBe("0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266")
-    })
-})
 
-describe("resolvePolymarketCredentials", () => {
-    it("uses the explicit normalized funder address in the runtime credentials", () => {
         const credentials = resolvePolymarketCredentials({
             POLYMARKET_PRIVATE_KEY: "private-key",
             POLYMARKET_API_KEY: "api-key",

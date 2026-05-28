@@ -67,25 +67,22 @@ describe("resolveStrategyAccountState", () => {
         expect(state.marginAvailable).toBe(2_500)
     })
 
-    it("fails closed when live strategy account allocation is missing", () => {
-        expect(() => resolveStrategyAccountState({
-            providerAccountState,
-            positions: [],
-            policy: {},
-        })).toThrow("policy.safety.account.allocationPercent")
-    })
-
-    it("fails closed when live strategy account allocation exceeds the whole account", () => {
-        expect(() => resolveStrategyAccountState({
-            providerAccountState,
-            positions: [],
-            policy: {
+    it("fails closed when live strategy account allocation is missing or invalid", () => {
+        for (const policy of [
+            {},
+            {
                 safety: {
                     account: {
                         allocationPercent: 101,
                     },
                 },
             },
-        })).toThrow("policy.safety.account.allocationPercent")
+        ]) {
+            expect(() => resolveStrategyAccountState({
+                providerAccountState,
+                positions: [],
+                policy,
+            })).toThrow("policy.safety.account.allocationPercent")
+        }
     })
 })

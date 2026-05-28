@@ -264,7 +264,7 @@ describe("resetStrategySafely", () => {
                     orderId: "alpaca-order-1",
                     instrument: "SPY-IC-1",
                     venue: "alpaca",
-                    status: "pending",
+                    status: "pending" as const,
                     quantity: 1,
                     filledQuantity: 0,
                     remainingQuantity: 1,
@@ -407,14 +407,14 @@ describe("resetStrategySafely", () => {
         const pipeline = {
             cancelOrder: vi.fn(async () => ({
                 orderId: "valc01abcde23456",
-                status: "cancelled",
+                status: "cancelled" as const,
                 filledQuantity: 0,
                 timestamp: Date.now(),
             })),
             closeProviderPosition: vi.fn(async () => ({
                 result: {
                     orderId: "valc01close2345",
-                    status: "filled",
+                    status: "filled" as const,
                     filledQuantity: 1,
                     timestamp: Date.now(),
                 },
@@ -473,7 +473,7 @@ describe("resetStrategySafely", () => {
             closeProviderPosition: vi.fn(async () => ({
                 result: {
                     orderId: "valc01close2345",
-                    status: "filled",
+                    status: "filled" as const,
                     filledQuantity: 1,
                     timestamp: Date.now(),
                 },
@@ -542,7 +542,7 @@ describe("resetStrategySafely", () => {
             closeProviderPosition: vi.fn(async () => ({
                 result: {
                     orderId: "valc01close2345",
-                    status: "pending",
+                    status: "pending" as const,
                     filledQuantity: 0,
                     timestamp: Date.now(),
                 },
@@ -577,7 +577,7 @@ describe("resetStrategySafely", () => {
             closeProviderPosition: vi.fn(async () => ({
                 result: {
                     orderId: "valc01close2345",
-                    status: "pending",
+                    status: "pending" as const,
                     filledQuantity: 0,
                     timestamp: Date.now(),
                 },
@@ -670,7 +670,7 @@ describe("resetStrategySafely", () => {
             closeProviderPosition: vi.fn(async () => ({
                 result: {
                     orderId: "valc01close2345",
-                    status: "filled",
+                    status: "filled" as const,
                     filledQuantity: 1,
                     timestamp: Date.now(),
                 },

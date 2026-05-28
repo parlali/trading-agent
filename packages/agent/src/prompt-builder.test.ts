@@ -67,8 +67,8 @@ describe("buildSystemPrompt previous-run handoff", () => {
             entryPrice: 0.61,
             currentPrice: 0.57,
             metadata: {
-                marketSlug: "will-the-us-acquire-any-part-of-greenland-in-2026",
-                question: "Will the US acquire any part of Greenland in 2026?",
+                marketSlug: "synthetic-external-market-2026",
+                question: "Will the synthetic external market resolve yes?",
                 tokenId: "2000000000000000000000000000000000000002",
             },
         }
@@ -78,26 +78,26 @@ describe("buildSystemPrompt previous-run handoff", () => {
         context.accountState = accountState
         context.runtimeContextLines = [
             `Owned Polymarket token ${ownedPosition.instrument} remains eligible for management.`,
-            "Manual external Polymarket row will-the-us-acquire-any-part-of-greenland-in-2026 2000000000000000000000000000000000000002",
+            "Manual external Polymarket row synthetic-external-market-2026 2000000000000000000000000000000000000002",
         ]
         context.previousRunSummary = {
-            summary: "Prior handoff mentioned will-the-us-acquire-any-part-of-greenland-in-2026 and 2000000000000000000000000000000000000002.",
+            summary: "Prior handoff mentioned synthetic-external-market-2026 and 2000000000000000000000000000000000000002.",
             endedAt: Date.parse("2026-04-20T09:30:00.000Z"),
         }
         context.promptSanitizer = {
             blockedIdentifiers: [
-                "will-the-us-acquire-any-part-of-greenland-in-2026",
+                "synthetic-external-market-2026",
                 "2000000000000000000000000000000000000002",
-                "Will the US acquire any part of Greenland in 2026?",
+                "Will the synthetic external market resolve yes?",
             ],
         }
 
         const prompt = buildSystemPrompt(context, [])
 
         expect(prompt).toContain(ownedPosition.instrument)
-        expect(prompt).not.toContain("will-the-us-acquire-any-part-of-greenland-in-2026")
+        expect(prompt).not.toContain("synthetic-external-market-2026")
         expect(prompt).not.toContain("2000000000000000000000000000000000000002")
-        expect(prompt).not.toContain("Will the US acquire any part of Greenland in 2026?")
+        expect(prompt).not.toContain("Will the synthetic external market resolve yes?")
 
         const venue = {
             getPositions: async () => [ownedPosition, manualExternalPosition],

@@ -108,7 +108,7 @@ async function closeUnownedExposure(
         console.log(`  ${failure}`)
     }
 
-    await refreshProviderState(client, representativeStrategy)
+    await refreshProviderPortfolioState(client, representativeStrategy)
 
     const remaining = filterNonOwnedExposure(await getProviderExposure(client, app))
     if (remaining.positions.length > 0 || remaining.orders.length > 0) {

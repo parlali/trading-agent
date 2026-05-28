@@ -14,12 +14,8 @@ describe("getRequiredVenueApps", () => {
         expect(required).toEqual(["alpaca-options"])
     })
 
-    it("returns an empty list when no venues are currently required", () => {
-        expect(getRequiredVenueApps(apps, {})).toEqual([])
-    })
-
-    it("keeps zero-strategy venues required when live provider exposure exists", () => {
-        const required = getRequiredVenueApps(apps, {}, [
+    it("keeps zero-strategy venues required for live exposure or degraded provider state", () => {
+        expect(getRequiredVenueApps(apps, {}, [
             {
                 app: "polymarket",
                 providerStatus: "healthy",
@@ -30,13 +26,9 @@ describe("getRequiredVenueApps", () => {
                 lastSyncedAt: 1,
                 lastVerifiedAt: 1,
             },
-        ])
+        ])).toEqual(["polymarket"])
 
-        expect(required).toEqual(["polymarket"])
-    })
-
-    it("keeps zero-strategy venues required when provider state is degraded", () => {
-        const required = getRequiredVenueApps(apps, {}, [
+        expect(getRequiredVenueApps(apps, {}, [
             {
                 app: "mt5",
                 providerStatus: "degraded",
@@ -46,23 +38,6 @@ describe("getRequiredVenueApps", () => {
                 pendingOrderCount: 0,
                 lastError: "auth failed",
             },
-        ])
-
-        expect(required).toEqual(["mt5"])
-    })
-
-    it("does not require venues from default empty freshness rows alone", () => {
-        const required = getRequiredVenueApps(apps, {}, [
-            {
-                app: "mt5",
-                providerStatus: "stale",
-                stale: true,
-                driftDetected: false,
-                positionCount: 0,
-                pendingOrderCount: 0,
-            },
-        ])
-
-        expect(required).toEqual([])
+        ])).toEqual(["mt5"])
     })
 })

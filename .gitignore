@@ -53,6 +53,7 @@ venv/
 **/*.js.map
 **/*.d.ts
 **/*.d.ts.map
+!apps/dashboard/css.d.ts
 
 # Convex generated files (required for client imports, re-include)
 !packages/convex/convex/_generated/

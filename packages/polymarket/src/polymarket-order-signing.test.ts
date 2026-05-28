@@ -5,7 +5,7 @@ import {
 } from "./polymarket-order-signing.ts"
 
 describe("Polymarket deterministic signed-order identity", () => {
-    it("derives stable salts from canonical order identity and normalized payload", () => {
+    it("derives stable salts and fingerprints normalized signed order payloads", () => {
         const payload = {
             tokenId: "123",
             side: "buy",
@@ -21,9 +21,7 @@ describe("Polymarket deterministic signed-order identity", () => {
         expect(derivePolymarketSalt("vpme01abcdef2345", payload).toString()).not.toBe(
             derivePolymarketSalt("vpme02abcdef2345", payload).toString()
         )
-    })
 
-    it("fingerprints the exact signed order body independent of key insertion order", () => {
         const left = fingerprintPolymarketSignedOrder({
             salt: "1",
             maker: "0xmaker",

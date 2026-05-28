@@ -126,33 +126,33 @@ class FakeQuery {
 }
 
 describe("Convex Alpaca SPY replay", () => {
-    it("keeps Gemini call vertical and GPT put vertical separate through provider reconciliation", async () => {
+    it("keeps separate call and put vertical strategies isolated through provider reconciliation", async () => {
         process.env.BACKEND_SERVICE_TOKEN = "test-token"
-        const gemini = "strategy-gemini"
-        const gpt = "strategy-gpt"
+        const callStrategy = "strategy-call-vertical"
+        const putStrategy = "strategy-put-vertical"
         const callVertical = "VS:BEAR_CALL_CREDIT:SPY:2026-05-01:SPY260501C00720000|SPY260501C00721000"
         const putVertical = "VS:BULL_PUT_CREDIT:SPY:2026-05-01:SPY260501P00694000|SPY260501P00695000"
         const db = new FakeDb({
             strategies: [
                 {
-                    _id: gemini,
+                    _id: callStrategy,
                     app: "alpaca-options",
-                    name: "Gemini SPY calls",
+                    name: "SPY call vertical",
                     policy: { dryRun: false },
                 },
                 {
-                    _id: gpt,
+                    _id: putStrategy,
                     app: "alpaca-options",
-                    name: "GPT SPY puts",
+                    name: "SPY put vertical",
                     policy: { dryRun: false },
                 },
             ],
             instrument_claims: [
-                ...buildClaims(gemini, callVertical, [
+                ...buildClaims(callStrategy, callVertical, [
                     { instrument: "SPY260501C00720000", side: "sell_to_open" },
                     { instrument: "SPY260501C00721000", side: "buy_to_open" },
                 ]),
-                ...buildClaims(gpt, putVertical, [
+                ...buildClaims(putStrategy, putVertical, [
                     { instrument: "SPY260501P00694000", side: "buy_to_open" },
                     { instrument: "SPY260501P00695000", side: "sell_to_open" },
                 ]),
@@ -195,10 +195,10 @@ describe("Convex Alpaca SPY replay", () => {
 
         const providerPositions = db.rows.provider_positions ?? []
         expect(providerPositions).toHaveLength(4)
-        expect(providerPositions.find((row) => row.instrument === "SPY260501C00720000")?.strategyId).toBe(gemini)
-        expect(providerPositions.find((row) => row.instrument === "SPY260501C00721000")?.strategyId).toBe(gemini)
-        expect(providerPositions.find((row) => row.instrument === "SPY260501P00694000")?.strategyId).toBe(gpt)
-        expect(providerPositions.find((row) => row.instrument === "SPY260501P00695000")?.strategyId).toBe(gpt)
+        expect(providerPositions.find((row) => row.instrument === "SPY260501C00720000")?.strategyId).toBe(callStrategy)
+        expect(providerPositions.find((row) => row.instrument === "SPY260501C00721000")?.strategyId).toBe(callStrategy)
+        expect(providerPositions.find((row) => row.instrument === "SPY260501P00694000")?.strategyId).toBe(putStrategy)
+        expect(providerPositions.find((row) => row.instrument === "SPY260501P00695000")?.strategyId).toBe(putStrategy)
         expect(providerPositions.some((row) => String(row.instrument).startsWith("IC:"))).toBe(false)
         expect(providerPositions.some((row) => row.ownershipStatus !== "owned")).toBe(false)
         expect(readMetadata(providerPositions.find((row) => row.instrument === "SPY260501C00720000")?.metadata)).toMatchObject({
@@ -214,10 +214,10 @@ describe("Convex Alpaca SPY replay", () => {
         }) as Array<{ strategyName?: string; instrument: string; side: "long" | "short"; quantity: number; entryPrice: number; metadata?: Record<string, unknown> }>
         expect(rows).toHaveLength(4)
         expect(rows.map((row: { strategyName?: string }) => row.strategyName).sort()).toEqual([
-            "GPT SPY puts",
-            "GPT SPY puts",
-            "Gemini SPY calls",
-            "Gemini SPY calls",
+            "SPY call vertical",
+            "SPY call vertical",
+            "SPY put vertical",
+            "SPY put vertical",
         ])
         expect(rows.find((row) => row.instrument === "SPY260501C00720000")?.metadata).toMatchObject({
             alpacaClaimInstrument: callVertical,
@@ -381,187 +381,124 @@ describe("Convex Alpaca SPY replay", () => {
         )).toBe(true)
     })
 
-    it("does not clear duplicate-exposure faults from recovered order docs while owned exposure remains", async () => {
+    it("keeps or clears duplicate-exposure faults from provider-truth residual exposure", async () => {
         const strategyId = "strategy-overlap"
-        const db = new FakeDb({
-            strategies: [{
-                _id: strategyId,
-                app: "mt5",
-                name: "Overlap strategy",
-                policy: {
-                    dryRun: false,
-                },
-            }],
-            orders: [{
-                _id: "order-recovered",
-                strategyId,
-                app: "mt5",
-                orderId: "vmtc01abcde23456",
-                providerClientOrderId: "vmtc01abcde23456",
-                instrument: "XAUUSD",
-                status: "pending",
-                commitOutcome: "recovered",
-            }],
-            execution_safety_faults: [{
-                _id: "fault-overlap",
-                strategyId,
-                app: "mt5",
-                instrument: "XAUUSD",
-                category: "duplicate_exposure",
-                canonicalOrderId: "vmtc01abcde23456",
-                providerClientOrderId: "vmtc01abcde23456",
-                providerOrderAliases: [],
-                message: "Provider reconciliation proved duplicate exposure: overlap on XAUUSD",
-                blocked: true,
-                occurredAt: Date.now(),
-                resolvedAt: undefined,
-                resolutionNote: undefined,
-            }],
-            alerts: [],
-        })
-        const ctx = { db } as never
-
-        await resolveExecutionSafetyFaultsFromProviderTruth(ctx, {
-            app: "mt5",
-            positions: [{
-                instrument: "XAUUSD",
-                ownershipStatus: "owned",
-            }],
-            workingOrders: [],
-            updatedAt: Date.now(),
-        } as never)
-
-        expect(db.rows.execution_safety_faults).toEqual([
-            expect.objectContaining({
-                _id: "fault-overlap",
-                blocked: true,
-                resolvedAt: undefined,
-                resolutionNote: undefined,
-            }),
-        ])
-        expect(db.rows.alerts).toEqual([])
-    })
-
-    it("does not clear duplicate-exposure faults from one matching live order while residual exposure remains", async () => {
-        const strategyId = "strategy-overlap"
-        const db = new FakeDb({
-            strategies: [{
-                _id: strategyId,
-                app: "mt5",
-                name: "Overlap strategy",
-                policy: {
-                    dryRun: false,
-                },
-            }],
-            orders: [],
-            execution_safety_faults: [{
-                _id: "fault-overlap",
-                strategyId,
-                app: "mt5",
-                instrument: "XAUUSD",
-                category: "duplicate_exposure",
-                canonicalOrderId: "vmtc01abcde23456",
-                providerClientOrderId: "vmtc01abcde23456",
-                providerOrderAliases: [],
-                message: "Provider reconciliation proved duplicate exposure: overlap on XAUUSD",
-                blocked: true,
-                occurredAt: Date.now(),
-                resolvedAt: undefined,
-                resolutionNote: undefined,
-            }],
-            alerts: [],
-        })
-        const ctx = { db } as never
-
-        await resolveExecutionSafetyFaultsFromProviderTruth(ctx, {
-            app: "mt5",
-            positions: [{
-                instrument: "XAUUSD",
-                ownershipStatus: "owned",
-            }],
-            workingOrders: [{
-                orderId: "1607003000",
-                providerOrderId: "1607003000",
-                providerClientOrderId: "vmtc01abcde23456",
-                providerOrderAliases: [],
-                signedOrderFingerprint: undefined,
-                instrument: "XAUUSD",
-                ownershipStatus: "owned",
-            }],
-            updatedAt: Date.now(),
-        } as never)
-
-        expect(db.rows.execution_safety_faults).toEqual([
-            expect.objectContaining({
-                _id: "fault-overlap",
-                blocked: true,
-                resolvedAt: undefined,
-                resolutionNote: undefined,
-            }),
-        ])
-        expect(db.rows.alerts).toEqual([])
-    })
-
-    it("clears duplicate-exposure faults when exactly one matching live order remains without residual exposure", async () => {
-        const strategyId = "strategy-overlap"
-        const db = new FakeDb({
-            strategies: [{
-                _id: strategyId,
-                app: "mt5",
-                name: "Overlap strategy",
-                policy: {
-                    dryRun: false,
-                },
-            }],
-            execution_safety_faults: [{
-                _id: "fault-overlap",
-                strategyId,
-                app: "mt5",
-                instrument: "XAUUSD",
-                category: "duplicate_exposure",
-                canonicalOrderId: "vmtc01abcde23456",
-                providerClientOrderId: "vmtc01abcde23456",
-                providerOrderAliases: [],
-                message: "Provider reconciliation proved duplicate exposure: overlap on XAUUSD",
-                blocked: true,
-                occurredAt: Date.now(),
-                resolvedAt: undefined,
-                resolutionNote: undefined,
-            }],
-            alerts: [],
-        })
-        const ctx = { db } as never
         const updatedAt = Date.now()
-
-        await resolveExecutionSafetyFaultsFromProviderTruth(ctx, {
+        const fault = {
+            _id: "fault-overlap",
+            strategyId,
             app: "mt5",
-            positions: [],
-            workingOrders: [{
-                orderId: "1607003000",
-                providerOrderId: "1607003000",
-                providerClientOrderId: "vmtc01abcde23456",
-                providerOrderAliases: [],
-                signedOrderFingerprint: undefined,
-                instrument: "XAUUSD",
-                ownershipStatus: "owned",
+            instrument: "XAUUSD",
+            category: "duplicate_exposure",
+            canonicalOrderId: "vmtc01abcde23456",
+            providerClientOrderId: "vmtc01abcde23456",
+            providerOrderAliases: [],
+            message: "Provider reconciliation proved duplicate exposure: overlap on XAUUSD",
+            blocked: true,
+            occurredAt: updatedAt,
+            resolvedAt: undefined,
+            resolutionNote: undefined,
+        }
+        const matchingWorkingOrder = {
+            orderId: "1607003000",
+            providerOrderId: "1607003000",
+            providerClientOrderId: "vmtc01abcde23456",
+            providerOrderAliases: [],
+            signedOrderFingerprint: undefined,
+            instrument: "XAUUSD",
+            ownershipStatus: "owned",
+        }
+        const createDb = (orders: Row[] = []) => new FakeDb({
+            strategies: [{
+                _id: strategyId,
+                app: "mt5",
+                name: "Overlap strategy",
+                policy: {
+                    dryRun: false,
+                },
             }],
-            updatedAt,
-        } as never)
+            orders,
+            execution_safety_faults: [fault],
+            alerts: [],
+        })
+        const cases = [
+            {
+                name: "recovered order doc while owned exposure remains",
+                orders: [{
+                    _id: "order-recovered",
+                    strategyId,
+                    app: "mt5",
+                    orderId: "vmtc01abcde23456",
+                    providerClientOrderId: "vmtc01abcde23456",
+                    instrument: "XAUUSD",
+                    status: "pending",
+                    commitOutcome: "recovered",
+                }],
+                positions: [{
+                    instrument: "XAUUSD",
+                    ownershipStatus: "owned",
+                }],
+                workingOrders: [],
+                expectedFault: {
+                    _id: "fault-overlap",
+                    blocked: true,
+                    resolvedAt: undefined,
+                    resolutionNote: undefined,
+                },
+                expectedAlert: undefined,
+            },
+            {
+                name: "matching live order while residual exposure remains",
+                orders: [],
+                positions: [{
+                    instrument: "XAUUSD",
+                    ownershipStatus: "owned",
+                }],
+                workingOrders: [matchingWorkingOrder],
+                expectedFault: {
+                    _id: "fault-overlap",
+                    blocked: true,
+                    resolvedAt: undefined,
+                    resolutionNote: undefined,
+                },
+                expectedAlert: undefined,
+            },
+            {
+                name: "one matching live order without residual exposure",
+                orders: [],
+                positions: [],
+                workingOrders: [matchingWorkingOrder],
+                expectedFault: {
+                    _id: "fault-overlap",
+                    blocked: false,
+                    resolvedAt: updatedAt,
+                    resolutionNote: "Provider reconciliation proved live canonical working order 1607003000",
+                },
+                expectedAlert: expect.objectContaining({
+                    strategyId,
+                    severity: "info",
+                }),
+            },
+        ]
 
-        expect(db.rows.execution_safety_faults).toEqual([
-            expect.objectContaining({
-                _id: "fault-overlap",
-                blocked: false,
-                resolvedAt: updatedAt,
-                resolutionNote: "Provider reconciliation proved live canonical working order 1607003000",
-            }),
-        ])
-        expect(db.rows.alerts).toEqual([
-            expect.objectContaining({
-                strategyId,
-                severity: "info",
-            }),
-        ])
+        for (const testCase of cases) {
+            const db = createDb(testCase.orders)
+            const ctx = { db } as never
+
+            await resolveExecutionSafetyFaultsFromProviderTruth(ctx, {
+                app: "mt5",
+                positions: testCase.positions,
+                workingOrders: testCase.workingOrders,
+                updatedAt,
+            } as never)
+
+            expect(db.rows.execution_safety_faults, testCase.name).toEqual([
+                expect.objectContaining(testCase.expectedFault),
+            ])
+            expect(db.rows.alerts, testCase.name).toEqual(
+                testCase.expectedAlert ? [testCase.expectedAlert] : []
+            )
+        }
     })
 
     it("does not clear Alpaca structure safety faults while claimed raw legs remain live", async () => {
@@ -739,7 +676,8 @@ describe("Convex MT5 provider close replay", () => {
             }],
         })
 
-        const entryOrder = db.rows.orders.find((order) => order.orderId === "1671162537")
+        const orders = db.rows.orders ?? []
+        const entryOrder = orders.find((order) => order.orderId === "1671162537")
         expect(entryOrder).toMatchObject({
             status: "filled",
             filledQuantity: 0.01,
@@ -747,7 +685,7 @@ describe("Convex MT5 provider close replay", () => {
             avgFillPrice: 4434.18,
         })
 
-        const closeOrder = db.rows.orders.find((order) => order.action === "close")
+        const closeOrder = orders.find((order) => order.action === "close")
         if (!closeOrder) {
             throw new Error("Expected MT5 provider-close order")
         }
@@ -980,7 +918,8 @@ describe("Convex MT5 provider close replay", () => {
 
         await callRegistered(reconcileProviderPortfolio, ctx, reconcileArgs)
 
-        const canonicalClose = db.rows.orders.find((order) => order.orderId === "canonical-us30-close")
+        const orders = db.rows.orders ?? []
+        const canonicalClose = orders.find((order) => order.orderId === "canonical-us30-close")
         if (!canonicalClose) {
             throw new Error("Expected canonical MT5 close order")
         }
@@ -992,7 +931,7 @@ describe("Convex MT5 provider close replay", () => {
         })
         expect(resolveCloseOrderRealizedPnl(canonicalClose as never)).toBe(5.28)
 
-        const retiredSynthetic = db.rows.orders.find((order) => order.orderId === syntheticOrderId)
+        const retiredSynthetic = orders.find((order) => order.orderId === syntheticOrderId)
         if (!retiredSynthetic) {
             throw new Error("Expected retired synthetic MT5 close order")
         }
@@ -1008,8 +947,9 @@ describe("Convex MT5 provider close replay", () => {
         })
         expect(resolveCloseOrderRealizedPnl(retiredSynthetic as never)).toBeUndefined()
 
-        const orderCountAfterFirstSync = db.rows.orders.length
-        const transitionCountAfterFirstSync = db.rows.order_transitions.length
+        const transitions = db.rows.order_transitions ?? []
+        const orderCountAfterFirstSync = orders.length
+        const transitionCountAfterFirstSync = transitions.length
 
         await callRegistered(reconcileProviderPortfolio, ctx, reconcileArgs)
 

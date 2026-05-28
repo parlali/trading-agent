@@ -38,82 +38,82 @@ function createIdentityContext(canonicalOrderId: string, role: "entry" | "close"
 }
 
 describe("MT5VenueAdapter", () => {
-    it("serializes concurrent MT5 reconnects for the same worker account", async () => {
-        const client = createClient()
-        let connectCalls = 0
-        let releaseConnect: (() => void) | undefined
-        const connectReleased = new Promise<void>((resolve) => {
-            releaseConnect = resolve
-        })
+    it("bounds MT5 reconnect concurrency, safe-read retry, and transient connect contention", async () => {
+        {
+            const client = createClient()
+            let connectCalls = 0
+            let releaseConnect: (() => void) | undefined
+            const connectReleased = new Promise<void>((resolve) => {
+                releaseConnect = resolve
+            })
 
-        client.getHealth = async () => ({
-            status: "ok",
-            connected: false,
-            login: null,
-        })
-        client.connect = async () => {
-            connectCalls++
-            await connectReleased
-            return createAccountInfo()
-        }
-        client.getAccount = async () => createAccountInfo()
-        client.getPositions = async () => []
-        client.getOpenOrders = async () => []
-
-        const adapter = new MT5VenueAdapter(client, credentials)
-        const reads = Promise.all([
-            adapter.getAccountState(),
-            adapter.getPositions(),
-            adapter.getWorkingOrders(),
-        ])
-
-        await vi.waitFor(() => {
-            expect(connectCalls).toBe(1)
-        })
-
-        releaseConnect?.()
-        await reads
-
-        expect(connectCalls).toBe(1)
-    })
-
-    it("reconnects and retries one safe MT5 read after a dropped worker session", async () => {
-        const client = createClient()
-        let healthConnected = true
-        let connectCalls = 0
-        let accountCalls = 0
-
-        client.getHealth = async () => ({
-            status: "ok",
-            connected: healthConnected,
-            login: healthConnected ? credentials.login : null,
-        })
-        client.connect = async () => {
-            connectCalls++
-            healthConnected = true
-            return createAccountInfo()
-        }
-        client.getAccount = async () => {
-            accountCalls++
-            if (accountCalls === 1) {
-                healthConnected = false
-                throw createExecutionError("venue", "MT5 worker error: 503 Service Unavailable MT5 not connected", {
-                    code: "not_connected",
-                    retryable: true,
-                })
+            client.getHealth = async () => ({
+                status: "ok",
+                connected: false,
+                login: null,
+            })
+            client.connect = async () => {
+                connectCalls++
+                await connectReleased
+                return createAccountInfo()
             }
-            return createAccountInfo()
+            client.getAccount = async () => createAccountInfo()
+            client.getPositions = async () => []
+            client.getOpenOrders = async () => []
+
+            const adapter = new MT5VenueAdapter(client, credentials)
+            const reads = Promise.all([
+                adapter.getAccountState(),
+                adapter.getPositions(),
+                adapter.getWorkingOrders(),
+            ])
+
+            await vi.waitFor(() => {
+                expect(connectCalls).toBe(1)
+            })
+
+            releaseConnect?.()
+            await reads
+
+            expect(connectCalls).toBe(1)
         }
 
-        const adapter = new MT5VenueAdapter(client, credentials)
-        const state = await adapter.getAccountState()
+        {
+            const client = createClient()
+            let healthConnected = true
+            let connectCalls = 0
+            let accountCalls = 0
 
-        expect(state.equity).toBe(1000)
-        expect(connectCalls).toBe(1)
-        expect(accountCalls).toBe(2)
-    })
+            client.getHealth = async () => ({
+                status: "ok",
+                connected: healthConnected,
+                login: healthConnected ? credentials.login : null,
+            })
+            client.connect = async () => {
+                connectCalls++
+                healthConnected = true
+                return createAccountInfo()
+            }
+            client.getAccount = async () => {
+                accountCalls++
+                if (accountCalls === 1) {
+                    healthConnected = false
+                    throw createExecutionError("venue", "MT5 worker error: 503 Service Unavailable MT5 not connected", {
+                        code: "not_connected",
+                        retryable: true,
+                    })
+                }
+                return createAccountInfo()
+            }
 
-    it("waits through transient worker connect contention before MT5 reads", async () => {
+            const adapter = new MT5VenueAdapter(client, credentials)
+            const state = await adapter.getAccountState()
+
+            expect(state.equity).toBe(1000)
+            expect(connectCalls).toBe(1)
+            expect(accountCalls).toBe(2)
+        }
+
         vi.useFakeTimers()
 
         try {
@@ -448,7 +448,7 @@ describe("MT5VenueAdapter", () => {
         expect(result.fillPrice).toBe(4715.5)
     })
 
-    it("does not send zero stop prices as MT5 market execution prices", async () => {
+    it("ignores zero stop prices during MT5 market submission and verification", async () => {
         const client = createClient()
         let submittedPrice: number | undefined
         client.submitOrder = async (params): Promise<MT5OrderResult> => {
@@ -469,16 +469,12 @@ describe("MT5VenueAdapter", () => {
 
         expect(submittedPrice).toBeUndefined()
         expect(result.status).toBe("filled")
-    })
 
-    it("ignores zero stop prices during MT5 price verification", async () => {
-        const client = createClient()
         client.getSymbolInfo = async () => [createSymbolInfo({
             bid: 4715.25,
             ask: 4715.5,
         })]
 
-        const adapter = new MT5VenueAdapter(client, credentials)
         const verification = await adapter.verify({
             instrument: "XAUUSD",
             side: "sell",

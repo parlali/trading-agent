@@ -54,30 +54,30 @@ function entryIntent(overrides: Partial<OrderIntent> = {}): OrderIntent {
 }
 
 describe("okxRiskValidators", () => {
-    it("rejects entry intents that use timeInForce=day", () => {
-        const result = validateIntent(
-            entryIntent({ timeInForce: "day" }),
-            policy,
-            account,
-            positions,
-            okxRiskValidators
-        )
+    it("rejects entry intents with bounded OKX execution guardrail violations", () => {
+        const cases = [
+            {
+                intent: entryIntent({ timeInForce: "day" }),
+                reason: "timeInForce=day",
+            },
+            {
+                intent: entryIntent({ metadata: { action: "entry" } }),
+                reason: "require stopLoss",
+            },
+        ]
 
-        expect(result.allowed).toBe(false)
-        expect(result.reason).toContain("timeInForce=day")
-    })
+        for (const testCase of cases) {
+            const result = validateIntent(
+                testCase.intent,
+                policy,
+                account,
+                positions,
+                okxRiskValidators
+            )
 
-    it("rejects entry intents without stopLoss", () => {
-        const result = validateIntent(
-            entryIntent({ metadata: { action: "entry" } }),
-            policy,
-            account,
-            positions,
-            okxRiskValidators
-        )
-
-        expect(result.allowed).toBe(false)
-        expect(result.reason).toContain("require stopLoss")
+            expect(result.allowed).toBe(false)
+            expect(result.reason).toContain(testCase.reason)
+        }
     })
 
     it("allows close intents without stopLoss", () => {

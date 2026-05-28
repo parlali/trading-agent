@@ -29,16 +29,35 @@ function buildIntent(overrides: Partial<OrderIntent> = {}): OrderIntent {
 }
 
 describe("createStrategySafetyValidator", () => {
-    it("allows new entries when strategy safety state is healthy", () => {
+    it("allows healthy entries and explicit risk-reducing actions", () => {
         const validator = createStrategySafetyValidator({
             safetyState: "healthy",
         })
 
-        const result = validator(buildIntent(), {}, accountState, positions)
-        expect(result.allowed).toBe(true)
+        expect(validator(buildIntent(), {}, accountState, positions).allowed).toBe(true)
+
+        const cooldownValidator = createStrategySafetyValidator({
+            safetyState: "cooldown",
+        })
+        const blockedValidator = createStrategySafetyValidator({
+            safetyState: "blocked",
+        })
+
+        expect(cooldownValidator(buildIntent({
+            side: "sell",
+            metadata: {
+                action: "close",
+            },
+        }), {}, accountState, positions).allowed).toBe(true)
+        expect(blockedValidator(buildIntent({
+            metadata: {
+                action: "adjustment",
+                riskReducing: true,
+            },
+        }), {}, accountState, positions).allowed).toBe(true)
     })
 
-    it("blocks new risk during cooldown", () => {
+    it("blocks new risk during cooldown and preserves the specific cooldown reason", () => {
         const validator = createStrategySafetyValidator({
             safetyState: "cooldown",
             reason: "Cooldown active",
@@ -47,21 +66,16 @@ describe("createStrategySafetyValidator", () => {
         const result = validator(buildIntent(), {}, accountState, positions)
         expect(result.allowed).toBe(false)
         expect(result.reason).toContain("Cooldown active")
-    })
 
-    it("allows risk-reducing close actions during cooldown", () => {
-        const validator = createStrategySafetyValidator({
+        const instrumentValidator = createStrategySafetyValidator({
             safetyState: "cooldown",
+            blockedInstruments: new Set(["ETH-USDT-SWAP"]),
+            blockedInstrumentReason: "Instrument is blocked because strategy cooldown is active (forced_exit_cluster). Only risk-reducing actions are allowed until the cooldown expires.",
         })
-
-        const result = validator(buildIntent({
-            side: "sell",
-            metadata: {
-                action: "close",
-            },
-        }), {}, accountState, positions)
-
-        expect(result.allowed).toBe(true)
+        const instrumentResult = instrumentValidator(buildIntent({ instrument: "ETH-USDT-SWAP" }), {}, accountState, positions)
+        expect(instrumentResult.allowed).toBe(false)
+        expect(instrumentResult.reason).toContain("forced_exit_cluster")
+        expect(instrumentResult.reason).not.toContain("unresolved execution safety faults")
     })
 
     it("blocks instruments with unresolved safety faults even when strategy state is healthy", () => {
@@ -75,53 +89,22 @@ describe("createStrategySafetyValidator", () => {
         expect(result.reason).toContain("strategy safety governance")
     })
 
-    it("uses the cooldown reason for blocked instruments when cooldown is active", () => {
-        const validator = createStrategySafetyValidator({
-            safetyState: "cooldown",
-            blockedInstruments: new Set(["ETH-USDT-SWAP"]),
-            blockedInstrumentReason: "Instrument is blocked because strategy cooldown is active (forced_exit_cluster). Only risk-reducing actions are allowed until the cooldown expires.",
-        })
-
-        const result = validator(buildIntent({ instrument: "ETH-USDT-SWAP" }), {}, accountState, positions)
-        expect(result.allowed).toBe(false)
-        expect(result.reason).toContain("forced_exit_cluster")
-        expect(result.reason).not.toContain("unresolved execution safety faults")
-    })
-
-    it("allows explicitly risk-reducing adjustments", () => {
-        const validator = createStrategySafetyValidator({
-            safetyState: "blocked",
-        })
-
-        const result = validator(buildIntent({
-            metadata: {
-                action: "adjustment",
-                riskReducing: true,
-            },
-        }), {}, accountState, positions)
-
-        expect(result.allowed).toBe(true)
-    })
-
-    it("keeps execution degradation instrument-scoped when blocked instruments are explicit", () => {
-        const validator = createStrategySafetyValidator({
+    it("keeps execution degradation scoped when possible and global otherwise", () => {
+        const scopedValidator = createStrategySafetyValidator({
             safetyState: "execution_degraded",
             blockedInstruments: new Set(["BTC-USDT-SWAP"]),
         })
 
-        const sameInstrument = validator(buildIntent({ instrument: "BTC-USDT-SWAP" }), {}, accountState, positions)
-        const otherInstrument = validator(buildIntent({ instrument: "ETH-USDT-SWAP" }), {}, accountState, positions)
+        const sameInstrument = scopedValidator(buildIntent({ instrument: "BTC-USDT-SWAP" }), {}, accountState, positions)
+        const otherInstrument = scopedValidator(buildIntent({ instrument: "ETH-USDT-SWAP" }), {}, accountState, positions)
 
         expect(sameInstrument.allowed).toBe(false)
         expect(otherInstrument.allowed).toBe(true)
-    })
 
-    it("blocks globally when execution is degraded without explicit instrument scope", () => {
-        const validator = createStrategySafetyValidator({
+        const globalValidator = createStrategySafetyValidator({
             safetyState: "execution_degraded",
         })
-
-        const result = validator(buildIntent({ instrument: "ETH-USDT-SWAP" }), {}, accountState, positions)
+        const result = globalValidator(buildIntent({ instrument: "ETH-USDT-SWAP" }), {}, accountState, positions)
         expect(result.allowed).toBe(false)
     })
 })

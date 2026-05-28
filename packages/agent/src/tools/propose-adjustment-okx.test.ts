@@ -70,62 +70,62 @@ describe("createOKXProposeAdjustmentTool", () => {
         expect(classifyOKXProtectionFailure("pending protection disappeared after acknowledgement")).toBe("unknown")
     })
 
-    it("preserves an existing stop-loss for take-profit-only adjustments", async () => {
-        const pipeline = createPipeline({ stopLoss: 95, takeProfit: 112 })
-        const venue = createVenue({ stopLoss: 95, takeProfit: 118 })
-        const tool = createOKXProposeAdjustmentTool(pipeline as never, venue as never)
+    it("updates OKX protection while preserving unchanged stop-loss or take-profit legs", async () => {
+        const cases = [
+            {
+                name: "take-profit only",
+                refreshed: { stopLoss: 95, takeProfit: 118 },
+                input: {
+                    instrument: "BTC-USDT-SWAP",
+                    takeProfit: 118,
+                    reason: "raise target",
+                },
+                expected: {
+                    instrument: "BTC-USDT-SWAP",
+                    stopLoss: 95,
+                    takeProfit: 118,
+                },
+            },
+            {
+                name: "stop only",
+                refreshed: { stopLoss: 97, takeProfit: 112 },
+                input: {
+                    instrument: "BTC-USDT-SWAP",
+                    stopLoss: 97,
+                    reason: "tighten stop",
+                },
+                expected: {
+                    stopLoss: 97,
+                    takeProfit: 112,
+                },
+            },
+            {
+                name: "full protection",
+                refreshed: { stopLoss: 96, takeProfit: 116 },
+                input: {
+                    instrument: "BTC-USDT-SWAP",
+                    stopLoss: 96,
+                    takeProfit: 116,
+                    reason: "refresh both",
+                },
+                expected: {
+                    stopLoss: 96,
+                    takeProfit: 116,
+                },
+            },
+        ]
 
-        const result = await tool.handler({
-            instrument: "BTC-USDT-SWAP",
-            takeProfit: 118,
-            reason: "raise target",
-        }) as { status: string }
+        for (const testCase of cases) {
+            const pipeline = createPipeline({ stopLoss: 95, takeProfit: 112 })
+            const venue = createVenue(testCase.refreshed)
+            const tool = createOKXProposeAdjustmentTool(pipeline as never, venue as never)
 
-        expect(result.status).toBe("updated")
-        expect(venue.updateProtectionOrders).toHaveBeenCalledWith(expect.objectContaining({
-            instrument: "BTC-USDT-SWAP",
-            stopLoss: 95,
-            takeProfit: 118,
-        }))
-        expect(pipeline.closePosition).not.toHaveBeenCalled()
-    })
+            const result = await tool.handler(testCase.input) as { status: string }
 
-    it("preserves an existing take-profit for stop-only adjustments", async () => {
-        const pipeline = createPipeline({ stopLoss: 95, takeProfit: 112 })
-        const venue = createVenue({ stopLoss: 97, takeProfit: 112 })
-        const tool = createOKXProposeAdjustmentTool(pipeline as never, venue as never)
-
-        const result = await tool.handler({
-            instrument: "BTC-USDT-SWAP",
-            stopLoss: 97,
-            reason: "tighten stop",
-        }) as { status: string }
-
-        expect(result.status).toBe("updated")
-        expect(venue.updateProtectionOrders).toHaveBeenCalledWith(expect.objectContaining({
-            stopLoss: 97,
-            takeProfit: 112,
-        }))
-        expect(pipeline.closePosition).not.toHaveBeenCalled()
-    })
-
-    it("updates full stop and take-profit protection", async () => {
-        const pipeline = createPipeline({ stopLoss: 95, takeProfit: 112 })
-        const venue = createVenue({ stopLoss: 96, takeProfit: 116 })
-        const tool = createOKXProposeAdjustmentTool(pipeline as never, venue as never)
-
-        const result = await tool.handler({
-            instrument: "BTC-USDT-SWAP",
-            stopLoss: 96,
-            takeProfit: 116,
-            reason: "refresh both",
-        }) as { status: string }
-
-        expect(result.status).toBe("updated")
-        expect(venue.updateProtectionOrders).toHaveBeenCalledWith(expect.objectContaining({
-            stopLoss: 96,
-            takeProfit: 116,
-        }))
+            expect(result.status, testCase.name).toBe("updated")
+            expect(venue.updateProtectionOrders, testCase.name).toHaveBeenCalledWith(expect.objectContaining(testCase.expected))
+            expect(pipeline.closePosition, testCase.name).not.toHaveBeenCalled()
+        }
     })
 
     it("fails closed when provider truth cannot prove the intended final protection state", async () => {
@@ -189,92 +189,82 @@ describe("createOKXProposeAdjustmentTool", () => {
         }))
     })
 
-    it("fails closed and persists a fault when protection update rejects before create", async () => {
-        const faultRecorder = vi.fn(async () => {})
-        const pipeline = createPipeline({ stopLoss: 95, takeProfit: 112 })
-        const venue = createVenue({ stopLoss: 95, takeProfit: 112 })
-        venue.updateProtectionOrders.mockRejectedValue(new Error("invalid parameter before create"))
-        const tool = createOKXProposeAdjustmentTool(pipeline as never, venue as never, {
-            onExecutionSafetyFault: faultRecorder,
-        })
+    it("fails closed and persists a fault for bounded protection-update rejection stages", async () => {
+        const cases = [
+            {
+                name: "before create",
+                error: "invalid parameter before create",
+                input: {
+                    instrument: "BTC-USDT-SWAP",
+                    stopLoss: 97,
+                    reason: "tighten stop",
+                },
+                category: "invalid_params",
+                fault: {
+                    instrument: "BTC-USDT-SWAP",
+                    category: "invalid_params",
+                    message: "invalid parameter before create",
+                    canonicalOrderId: "vokm01abcde23456",
+                    providerClientOrderId: "vokm01abcde23456",
+                },
+            },
+            {
+                name: "after cancellation",
+                error: "cancelled old algo then /api/v5/trade/order-algo rejected sCode=51008",
+                input: {
+                    instrument: "BTC-USDT-SWAP",
+                    stopLoss: 97,
+                    takeProfit: 118,
+                    reason: "replace both",
+                },
+                category: "provider_rejected",
+                fault: {
+                    category: "provider_rejected",
+                    message: "cancelled old algo then /api/v5/trade/order-algo rejected sCode=51008",
+                },
+            },
+            {
+                name: "unproven pending acknowledgement",
+                error: "OKX protection order placement did not appear in pending algo orders for BTC-USDT-SWAP (code: PROTECTION_NOT_PENDING)",
+                input: {
+                    instrument: "BTC-USDT-SWAP",
+                    takeProfit: 118,
+                    reason: "raise target",
+                },
+                category: "unknown",
+                fault: {
+                    category: "unknown",
+                    providerPayload: expect.stringContaining("PROTECTION_NOT_PENDING"),
+                },
+            },
+        ]
 
-        const result = await tool.handler({
-            instrument: "BTC-USDT-SWAP",
-            stopLoss: 97,
-            reason: "tighten stop",
-        }) as { status: string; error?: string; protectionFailureCategory?: string; flattened?: boolean }
-
-        expect(result.status).toBe("rejected")
-        expect(result.error).toContain("Position was flattened to fail closed")
-        expect(result.protectionFailureCategory).toBe("invalid_params")
-        expect(result.flattened).toBe(true)
-        expect(pipeline.closePosition).toHaveBeenCalledWith(
-            "BTC-USDT-SWAP",
-            "Protection update failed; flattening to fail closed",
-            expect.objectContaining({
-                metadata: expect.objectContaining({
-                    executionSafetyCategory: "invalid_params",
-                }),
+        for (const testCase of cases) {
+            const faultRecorder = vi.fn(async () => {})
+            const pipeline = createPipeline({ stopLoss: 95, takeProfit: 112 })
+            const venue = createVenue({ stopLoss: 95, takeProfit: 112 })
+            venue.updateProtectionOrders.mockRejectedValue(new Error(testCase.error))
+            const tool = createOKXProposeAdjustmentTool(pipeline as never, venue as never, {
+                onExecutionSafetyFault: faultRecorder,
             })
-        )
-        expect(faultRecorder).toHaveBeenCalledWith(expect.objectContaining({
-            instrument: "BTC-USDT-SWAP",
-            category: "invalid_params",
-            message: "invalid parameter before create",
-            canonicalOrderId: "vokm01abcde23456",
-            providerClientOrderId: "vokm01abcde23456",
-        }))
-    })
 
-    it("fails closed and persists a fault when protection update rejects after cancellation", async () => {
-        const faultRecorder = vi.fn(async () => {})
-        const pipeline = createPipeline({ stopLoss: 95, takeProfit: 112 })
-        const venue = createVenue({ stopLoss: 95, takeProfit: 112 })
-        venue.updateProtectionOrders.mockRejectedValue(new Error("cancelled old algo then /api/v5/trade/order-algo rejected sCode=51008"))
-        const tool = createOKXProposeAdjustmentTool(pipeline as never, venue as never, {
-            onExecutionSafetyFault: faultRecorder,
-        })
+            const result = await tool.handler(testCase.input) as { status: string; error?: string; protectionFailureCategory?: string; flattened?: boolean }
 
-        const result = await tool.handler({
-            instrument: "BTC-USDT-SWAP",
-            stopLoss: 97,
-            takeProfit: 118,
-            reason: "replace both",
-        }) as { status: string; protectionFailureCategory?: string; flattened?: boolean }
-
-        expect(result.status).toBe("rejected")
-        expect(result.protectionFailureCategory).toBe("provider_rejected")
-        expect(result.flattened).toBe(true)
-        expect(pipeline.closePosition).toHaveBeenCalledOnce()
-        expect(faultRecorder).toHaveBeenCalledWith(expect.objectContaining({
-            category: "provider_rejected",
-            message: "cancelled old algo then /api/v5/trade/order-algo rejected sCode=51008",
-        }))
-    })
-
-    it("fails closed when protection create acknowledgement cannot be proven pending", async () => {
-        const faultRecorder = vi.fn(async () => {})
-        const pipeline = createPipeline({ stopLoss: 95, takeProfit: 112 })
-        const venue = createVenue({ stopLoss: 95, takeProfit: 112 })
-        venue.updateProtectionOrders.mockRejectedValue(new Error("OKX protection order placement did not appear in pending algo orders for BTC-USDT-SWAP (code: PROTECTION_NOT_PENDING)"))
-        const tool = createOKXProposeAdjustmentTool(pipeline as never, venue as never, {
-            onExecutionSafetyFault: faultRecorder,
-        })
-
-        const result = await tool.handler({
-            instrument: "BTC-USDT-SWAP",
-            takeProfit: 118,
-            reason: "raise target",
-        }) as { status: string; protectionFailureCategory?: string; flattened?: boolean }
-
-        expect(result.status).toBe("rejected")
-        expect(result.protectionFailureCategory).toBe("unknown")
-        expect(result.flattened).toBe(true)
-        expect(pipeline.closePosition).toHaveBeenCalledOnce()
-        expect(faultRecorder).toHaveBeenCalledWith(expect.objectContaining({
-            category: "unknown",
-            providerPayload: expect.stringContaining("PROTECTION_NOT_PENDING"),
-        }))
+            expect(result.status, testCase.name).toBe("rejected")
+            expect(result.error, testCase.name).toContain("Position was flattened to fail closed")
+            expect(result.protectionFailureCategory, testCase.name).toBe(testCase.category)
+            expect(result.flattened, testCase.name).toBe(true)
+            expect(pipeline.closePosition, testCase.name).toHaveBeenCalledWith(
+                "BTC-USDT-SWAP",
+                "Protection update failed; flattening to fail closed",
+                expect.objectContaining({
+                    metadata: expect.objectContaining({
+                        executionSafetyCategory: testCase.category,
+                    }),
+                })
+            )
+            expect(faultRecorder, testCase.name).toHaveBeenCalledWith(expect.objectContaining(testCase.fault))
+        }
     })
 
     it("persists residual exposure evidence when fail-closed flattening fails", async () => {

@@ -27,31 +27,29 @@ describe("MT5Client.mapOrderResultToExecution", () => {
 })
 
 describe("MT5Client transport retry policy", () => {
-    it("does not retry order submission mutations", async () => {
-        const transport = createFailingTransport()
-        const client = createTransportClient(transport.fetch)
+    it("does not retry order submission mutations or worker-owned connect calls", async () => {
+        const submitTransport = createFailingTransport()
+        const submitClient = createTransportClient(submitTransport.fetch)
 
-        await expect(client.submitOrder({
+        await expect(submitClient.submitOrder({
             symbol: "XAUUSD",
             side: "buy",
             volume: 0.01,
             orderType: "market",
         })).rejects.toThrow("MT5 worker error")
 
-        expect(transport.calls()).toBe(1)
-    })
+        expect(submitTransport.calls()).toBe(1)
 
-    it("does not retry MT5 connect while the worker owns broker reconnects", async () => {
-        const transport = createFailingTransport()
-        const client = createTransportClient(transport.fetch, 1_000)
+        const connectTransport = createFailingTransport()
+        const connectClient = createTransportClient(connectTransport.fetch, 1_000)
 
-        await expect(client.connect({
+        await expect(connectClient.connect({
             login: 1,
             password: "secret",
             server: "broker",
         })).rejects.toThrow("MT5 worker error")
 
-        expect(transport.calls()).toBe(1)
+        expect(connectTransport.calls()).toBe(1)
     })
 
     it("preserves structured worker errors on execution mutations", async () => {
