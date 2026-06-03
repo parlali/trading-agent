@@ -703,6 +703,8 @@ describe("MT5VenueAdapter", () => {
             volume: 1,
             price: 38952.4,
             profit: -47.6,
+            swap: 0.47,
+            commission: -0.12,
             timeDone: 1_714_240_000_000,
             entry: 1,
             reason: 4,
@@ -724,8 +726,11 @@ describe("MT5VenueAdapter", () => {
                 positionId: 1606516021,
                 fillPnl: -47.6,
                 profit: -47.6,
+                swap: 0.47,
+                commission: -0.12,
                 entry: 1,
                 reason: 4,
+                providerAccountingSource: "mt5_deal",
             },
         }])
     })

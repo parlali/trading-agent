@@ -3,6 +3,7 @@ import {
     computeRecentTradeDigest,
     computeRiskGovernanceState,
     createStrategySafetyValidator,
+    resolveCloseOrderRealizedPnl,
     resolveRiskWindowStarts,
     type AccountState,
     type OrderIntent,
@@ -200,6 +201,48 @@ describe("risk governance replay", () => {
 
         expect(result.dayRealizedPnl).toBeCloseTo(9.390279)
         expect(result.weekRealizedPnl).toBeCloseTo(9.390279)
+    })
+
+    it("does not synthesize OKX close PnL before provider close accounting arrives", () => {
+        const realized = resolveCloseOrderRealizedPnl({
+            action: "close",
+            status: "filled",
+            instrument: "ETH-USDT-SWAP",
+            updatedAt: Date.parse("2026-06-03T09:10:57.748Z"),
+            filledQuantity: 5.309,
+            avgFillPrice: 1877.49,
+            intent: {
+                metadata: {
+                    entryPrice: 1893.0604614805047,
+                    posId: "3618122936764637184",
+                    positionMode: "net_mode",
+                    positionSide: "short",
+                },
+            },
+        })
+
+        expect(realized).toBeUndefined()
+    })
+
+    it("includes MT5 swap and commission in provider-reported close PnL", () => {
+        const realized = resolveCloseOrderRealizedPnl({
+            action: "close",
+            status: "filled",
+            instrument: "XAUUSD",
+            updatedAt: Date.parse("2026-06-02T01:48:13.462Z"),
+            filledQuantity: 0.01,
+            avgFillPrice: 4485.71,
+            intent: {
+                metadata: {
+                    fillPnl: 8.73,
+                    swap: 0.47,
+                    commission: 0,
+                    providerAccountingSource: "mt5_deal",
+                },
+            },
+        })
+
+        expect(realized).toBeCloseTo(9.2)
     })
 
     it("expires cooldown deterministically when expiry is passed", () => {

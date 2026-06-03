@@ -76,6 +76,8 @@ export interface MT5PositionClosure {
     volume: number
     price: number
     profit: number
+    swap?: number
+    commission?: number
     timeDone: number
     entry: number
     reason: number

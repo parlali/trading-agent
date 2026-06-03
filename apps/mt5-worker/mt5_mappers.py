@@ -101,6 +101,8 @@ def map_position_closure(mt5_module: Any, deal: Any) -> dict[str, Any] | None:
         "volume": abs(float(deal.volume)),
         "price": float(deal.price),
         "profit": float(getattr(deal, "profit", 0.0)),
+        "swap": float(getattr(deal, "swap", 0.0)),
+        "commission": float(getattr(deal, "commission", 0.0)),
         "timeDone": read_mt5_timestamp_ms(deal, "time_msc", "time"),
         "entry": entry,
         "reason": int(getattr(deal, "reason", -1)),

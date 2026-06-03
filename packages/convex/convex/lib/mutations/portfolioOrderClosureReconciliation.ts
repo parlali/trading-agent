@@ -629,10 +629,19 @@ function buildOrderCloseIdentityCandidates(order: Doc<"orders">): Set<string> {
         ? intent.metadata as Record<string, unknown>
         : undefined
 
+    for (const identifier of getOrderProviderIdentifiers(order)) {
+        addKnownIdentifier(identifiers, identifier)
+        addCompositeProviderOrderIdentifier(identifiers, identifier)
+    }
+
     addKnownIdentifier(identifiers, metadata?.ticket)
     addKnownIdentifier(identifiers, metadata?.identifier)
+    addKnownIdentifier(identifiers, metadata?.orderId)
+    addKnownIdentifier(identifiers, metadata?.providerOrderId)
+    addKnownIdentifier(identifiers, metadata?.providerClientOrderId)
     addKnownIdentifier(identifiers, metadata?.positionId)
     addKnownIdentifier(identifiers, metadata?.providerPositionId)
+    addKnownIdentifier(identifiers, metadata?.posId)
 
     const providerPositionKey = metadata?.providerPositionKey
     addKnownIdentifier(identifiers, providerPositionKey)
@@ -641,6 +650,18 @@ function buildOrderCloseIdentityCandidates(order: Doc<"orders">): Set<string> {
     }
 
     return identifiers
+}
+
+function addCompositeProviderOrderIdentifier(
+    identifiers: Set<string>,
+    value: string
+): void {
+    const parts = value.split(":")
+    if (parts.length < 3) {
+        return
+    }
+
+    addKnownIdentifier(identifiers, parts.at(-1))
 }
 
 async function attachProviderClosureToCanonicalCloseOrder(
@@ -693,7 +714,7 @@ async function attachProviderClosureToCanonicalCloseOrder(
         type: "status_change",
         status: args.order.status,
         previousStatus: args.order.status,
-        reason: "Provider closure history attached broker-reported realized PnL to this MT5 close order",
+        reason: "Provider closure history attached broker-reported realized PnL to this canonical close order",
         details: {
             providerPositionId: args.closure.providerPositionId,
             fillPrice: args.closure.fillPrice,
@@ -782,7 +803,7 @@ async function retireDuplicateProviderCloseOrder(
         type: "terminal",
         status: "cancelled",
         previousStatus: args.order.status,
-        reason: "Retired duplicate synthetic provider-close row after broker PnL was attached to the canonical MT5 close order",
+        reason: "Retired duplicate synthetic provider-close row after broker PnL was attached to the canonical close order",
         details: {
             canonicalOrderId: args.canonicalOrderId,
             providerPositionId: args.closure.providerPositionId,

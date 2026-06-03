@@ -278,6 +278,9 @@ export function aggregateMT5CloseResults(
 }
 
 export function mapMT5PositionClosure(raw: MT5PositionClosure, observedAt: number = Date.now()): ProviderPositionClosure {
+    const swap = typeof raw.swap === "number" && Number.isFinite(raw.swap) ? raw.swap : undefined
+    const commission = typeof raw.commission === "number" && Number.isFinite(raw.commission) ? raw.commission : undefined
+
     return {
         instrument: raw.symbol,
         providerPositionId: String(raw.positionId),
@@ -291,8 +294,11 @@ export function mapMT5PositionClosure(raw: MT5PositionClosure, observedAt: numbe
             positionId: raw.positionId,
             fillPnl: raw.profit,
             profit: raw.profit,
+            ...(swap !== undefined ? { swap } : {}),
+            ...(commission !== undefined ? { commission } : {}),
             entry: raw.entry,
             reason: raw.reason,
+            providerAccountingSource: "mt5_deal",
         },
     }
 }

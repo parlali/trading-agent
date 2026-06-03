@@ -386,6 +386,10 @@ export function resolveCloseOrderRealizedPnl(order: RiskGovernanceOrderRecord): 
         return providerRealizedPnl
     }
 
+    if (requiresProviderReportedClosePnl(metadata)) {
+        return undefined
+    }
+
     const entryPrice = readFiniteNumber(metadata?.entryPrice)
     const closePrice = order.avgFillPrice
 
@@ -402,6 +406,13 @@ export function resolveCloseOrderRealizedPnl(order: RiskGovernanceOrderRecord): 
     }
 
     return (closePrice - entryPrice) * order.filledQuantity
+}
+
+function requiresProviderReportedClosePnl(
+    metadata: Record<string, unknown> | undefined
+): boolean {
+    return readTrimmedString(metadata?.posId) !== undefined ||
+        readTrimmedString(metadata?.positionMode) !== undefined
 }
 
 export function resolveOrderRealizedPnl(order: RiskGovernanceOrderRecord): number | undefined {
@@ -422,9 +433,11 @@ function resolveProviderReportedRealizedPnl(
 ): number | undefined {
     const fillPnl = readFiniteNumber(metadata?.fillPnl)
     const fee = resolveSettlementCurrencyFee(metadata)
+    const swap = readFiniteNumber(metadata?.swap)
+    const commission = readFiniteNumber(metadata?.commission)
 
     if (fillPnl !== undefined) {
-        return fillPnl + (fee ?? 0)
+        return fillPnl + (fee ?? 0) + (swap ?? 0) + (commission ?? 0)
     }
 
     if (!allowFeeOnly) {

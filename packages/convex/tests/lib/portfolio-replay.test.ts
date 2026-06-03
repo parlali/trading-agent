@@ -956,6 +956,158 @@ describe("Convex MT5 provider close replay", () => {
         expect(db.rows.orders).toHaveLength(orderCountAfterFirstSync)
         expect(db.rows.order_transitions).toHaveLength(transitionCountAfterFirstSync)
     })
+
+    it("attaches OKX fills-history PnL to the canonical close order without creating a duplicate provider close", async () => {
+        process.env.BACKEND_SERVICE_TOKEN = "test-token"
+        const strategyId = "strategy-okx-eth"
+        const runId = "run-okx-eth"
+        const openedAt = 1_780_430_000_000
+        const closedAt = openedAt + 657_748
+        const providerPositionId = "3618122936764637184"
+        const providerOrderId = "3621806927850020864"
+        const closeOrderId = "vokc01xwk7pn6xhx"
+        const db = new FakeDb({
+            strategies: [{
+                _id: strategyId,
+                app: "okx-swap",
+                name: "OKX ETH",
+                policy: { dryRun: false },
+            }],
+            strategy_runs: [{
+                _id: runId,
+                strategyId,
+                app: "okx-swap",
+                status: "completed",
+                startedAt: openedAt,
+                endedAt: openedAt + 30_000,
+            }],
+            instrument_claims: [],
+            orders: [{
+                _id: "order-okx-close",
+                orderId: closeOrderId,
+                canonicalOrderId: closeOrderId,
+                providerOrderId: `order:ETH-USDT-SWAP:${providerOrderId}`,
+                providerClientOrderId: closeOrderId,
+                providerOrderAliases: [providerOrderId],
+                runId,
+                strategyId,
+                app: "okx-swap",
+                venue: "okx",
+                instrument: "ETH-USDT-SWAP",
+                status: "filled",
+                action: "close",
+                quantity: 5.309,
+                filledQuantity: 5.309,
+                remainingQuantity: 0,
+                avgFillPrice: 1877.49,
+                submittedAt: closedAt - 2_000,
+                updatedAt: closedAt,
+                intent: {
+                    instrument: "ETH-USDT-SWAP",
+                    metadata: {
+                        entryPrice: 1893.0604614805047,
+                        posId: providerPositionId,
+                        positionMode: "net_mode",
+                        positionSide: "short",
+                    },
+                    side: "buy",
+                    quantity: 5.309,
+                    orderType: "market",
+                },
+                lastTransitionSequence: 1,
+                polling: {
+                    pollIntervalMs: 5_000,
+                    timeoutMs: 120_000,
+                    startedAt: closedAt - 2_000,
+                    lastCheckedAt: closedAt,
+                },
+            }],
+            provider_positions: [{
+                _id: "provider-position-okx",
+                app: "okx-swap",
+                positionKey: `ETH-USDT-SWAP:${providerPositionId}`,
+                providerPositionId,
+                strategyId,
+                ownershipStatus: "owned",
+                expectedExternal: false,
+                instrument: "ETH-USDT-SWAP",
+                side: "short",
+                quantity: 5.309,
+                entryPrice: 1893.0604614805047,
+                currentPrice: 1877.49,
+                unrealizedPnl: 82.66358,
+                metadata: JSON.stringify({
+                    posId: providerPositionId,
+                    positionMode: "net_mode",
+                    contractValue: 0.1,
+                    contractValueCurrency: "ETH",
+                }),
+                syncedAt: openedAt,
+            }],
+            provider_working_orders: [],
+            provider_sync_state: [],
+            position_syncs: [],
+            positions: [],
+            execution_safety_faults: [],
+            account_snapshots: [],
+            control_plane_metrics: [],
+            alerts: [],
+        })
+        const ctx = { db } as never
+
+        await callRegistered(reconcileProviderPortfolio, ctx, {
+            serviceToken: "test-token",
+            app: "okx-swap",
+            venue: "okx",
+            source: "periodic_sync",
+            accountState: {
+                balance: 40_000,
+                equity: 40_000,
+                buyingPower: 20_000,
+                marginUsed: 0,
+                marginAvailable: 20_000,
+                openPnl: 0,
+                dayPnl: 0,
+            },
+            positions: [],
+            workingOrders: [],
+            positionClosures: [{
+                instrument: "ETH-USDT-SWAP",
+                providerPositionId,
+                side: "short",
+                quantity: 5.309,
+                fillPrice: 1877.49,
+                closedAt,
+                metadata: JSON.stringify({
+                    orderId: providerOrderId,
+                    fillPnl: 82.66358,
+                    fee: -24.918986025,
+                    feeCcy: "USDT",
+                    source: "okx_fills_history",
+                }),
+            }],
+        })
+
+        const orders = db.rows.orders ?? []
+        expect(orders.filter((order) => order.action === "close")).toHaveLength(1)
+
+        const canonicalClose = orders.find((order) => order.orderId === closeOrderId)
+        if (!canonicalClose) {
+            throw new Error("Expected canonical OKX close order")
+        }
+
+        expect(((canonicalClose.intent as Record<string, unknown>).metadata as Record<string, unknown>)).toMatchObject({
+            fillPnl: 82.66358,
+            fee: -24.918986025,
+            feeCcy: "USDT",
+            providerReconciledClose: true,
+            providerPositionId,
+            providerPositionKey: `ETH-USDT-SWAP:${providerPositionId}`,
+            source: "okx_fills_history",
+        })
+        expect(resolveCloseOrderRealizedPnl(canonicalClose as never)).toBeCloseTo(57.744593975)
+        expect(orders.some((order) => String(order.orderId).startsWith("provider-close:okx-swap:"))).toBe(false)
+    })
 })
 
 function buildClaims(
