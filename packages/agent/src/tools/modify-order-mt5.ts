@@ -1,14 +1,14 @@
 import { z } from "zod"
 import type { ExecutionPipeline, OrderIntent } from "@valiq-trading/core"
-import type { ToolDefinition } from "../tool-registry"
+import type { ToolBinding } from "../tool-registry"
 import {
-    createToolDefinition,
+    createToolBinding,
     mt5ModifyOrderParamsSchema,
 } from "../tool-contracts"
 import { toExecutionToolResult } from "./execution-response"
 
-export function createMT5ModifyOrderTool(pipeline: ExecutionPipeline): ToolDefinition {
-    return createToolDefinition({
+export function createMT5ModifyOrderTool(pipeline: ExecutionPipeline): ToolBinding {
+    return createToolBinding({
         name: "modify_order",
         venue: "mt5",
         handler: async (params) => {

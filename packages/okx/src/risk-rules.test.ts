@@ -16,7 +16,10 @@ const positions: Position[] = []
 
 const policy = {
     dryRun: true,
-    model: "gpt-5.4",
+    llm: {
+        provider: "openrouter",
+        model: "gpt-5.4",
+    },
     safety: {
         sessionFlat: {
             enabled: false,

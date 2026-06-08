@@ -1,6 +1,6 @@
 import {
     createClient,
-    getStrategyModel,
+    getStrategyLlmSummary,
     loadStrategiesFromDocument,
     resolveArg,
     runScript,
@@ -27,7 +27,7 @@ runScript(async () => {
 
         const id = await client.addStrategy(config)
         imported++
-        console.log(`Added "${config.name}" (${config.app}, enabled=${config.enabled}, model=${getStrategyModel(config)}) -> ${id}`)
+        console.log(`Added "${config.name}" (${config.app}, enabled=${config.enabled}, llm=${getStrategyLlmSummary(config)}) -> ${id}`)
     }
 
     console.log(`\nImported ${imported} strategies${skipped > 0 ? `, skipped ${skipped}` : ""}`)

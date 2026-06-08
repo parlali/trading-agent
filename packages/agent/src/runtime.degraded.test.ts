@@ -75,12 +75,16 @@ describe("executeAgentRun degraded research", () => {
                 },
                 policy: {
                     dryRun: true,
-                    model: "gpt-5.4",
+                    llm: {
+                        provider: "openrouter",
+                        model: "gpt-5.4",
+                    },
                 },
                 context: "Replay invalid truncated token IDs",
             },
             {
-                llm: {
+                provider: {
+                    provider: "openrouter",
                     apiKey: "test",
                     model: "test-model",
                 },
@@ -166,12 +170,16 @@ describe("executeAgentRun degraded research", () => {
                 },
                 policy: {
                     dryRun: true,
-                    model: "gpt-5.4",
+                    llm: {
+                        provider: "openrouter",
+                        model: "gpt-5.4",
+                    },
                 },
                 context: "Discover then act",
             },
             {
-                llm: {
+                provider: {
+                    provider: "openrouter",
                     apiKey: "test",
                     model: "test-model",
                 },

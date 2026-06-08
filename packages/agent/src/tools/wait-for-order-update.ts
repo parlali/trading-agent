@@ -1,13 +1,13 @@
 import { z } from "zod"
 import type { ExecutionPipeline } from "@valiq-trading/core"
-import type { ToolDefinition } from "../tool-registry"
+import type { ToolBinding } from "../tool-registry"
 import {
-    createToolDefinition,
+    createToolBinding,
     waitForOrderUpdateParamsSchema,
 } from "../tool-contracts"
 
-export function createWaitForOrderUpdateTool(pipeline: ExecutionPipeline): ToolDefinition {
-    return createToolDefinition({
+export function createWaitForOrderUpdateTool(pipeline: ExecutionPipeline): ToolBinding {
+    return createToolBinding({
         name: "wait_for_order_update",
         handler: async (params) => {
             const validated = params as z.infer<typeof waitForOrderUpdateParamsSchema>

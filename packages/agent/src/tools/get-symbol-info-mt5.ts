@@ -1,15 +1,15 @@
 import { z } from "zod"
 import { resolveMT5NormalizedSpread, type MT5VenueAdapter } from "@valiq-trading/mt5"
-import type { ToolDefinition } from "../tool-registry"
+import type { ToolBinding } from "../tool-registry"
 import {
-    createToolDefinition,
+    createToolBinding,
     singleSymbolParamsSchema,
 } from "../tool-contracts"
 
 export function createMT5GetSymbolInfoTool(
     venue: MT5VenueAdapter
-): ToolDefinition {
-    return createToolDefinition({
+): ToolBinding {
+    return createToolBinding({
         name: "get_symbol_info",
         venue: "mt5",
         handler: async (params) => {

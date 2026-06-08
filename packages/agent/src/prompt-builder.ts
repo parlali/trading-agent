@@ -348,7 +348,8 @@ function sanitizePolicyValue(value: unknown, path: string[] = []): unknown {
 
 function isHiddenPolicyPath(path: string[]): boolean {
     const joined = path.join(".")
-    return joined === "model" ||
+    return joined === "llm" ||
+        joined === "model" ||
         joined === "reasoning" ||
         joined === "safety.expectedExternalInstruments"
 }

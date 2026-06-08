@@ -1,0 +1,463 @@
+import { describe, expect, it, vi } from "vitest"
+import { createLogger, type StrategyRunContext } from "@valiq-trading/core"
+import { ConversationManager } from "../../conversation"
+import { ToolRegistry } from "../../tool-registry"
+import type { ToolExecutionEngine, ToolExecutionFatalFault } from "../../tool-execution-engine"
+import type { AgentProviderRunArgs } from "../types"
+import type { JsonRpcErrorPayload, JsonRpcId, JsonRpcMessage } from "./codex-json-rpc-client"
+import {
+    CodexAppServerProvider,
+    type CodexAppServerClient,
+    type CodexAppServerClientFactoryArgs,
+    type CodexAppServerProviderDependencies,
+} from "./codex-app-server-provider"
+
+describe("CodexAppServerProvider", () => {
+    it("accumulates assistant deltas, token usage, and final summary from notifications", async () => {
+        let client: FakeCodexClient | undefined
+        const provider = createProvider({
+            createClient: (args) => {
+                client = new FakeCodexClient(args, async (fake) => {
+                    fake.emitNotification({
+                        method: "item/agentMessage/delta",
+                        params: { delta: "Codex " },
+                    })
+                    fake.emitNotification({
+                        method: "item/agentMessage/delta",
+                        params: { delta: "complete" },
+                    })
+                    fake.emitNotification({
+                        method: "thread/tokenUsage/updated",
+                        params: {
+                            tokenUsage: {
+                                last: {
+                                    inputTokens: 17,
+                                    outputTokens: 9,
+                                    reasoningOutputTokens: 4,
+                                },
+                            },
+                        },
+                    })
+                    fake.emitNotification({
+                        method: "turn/completed",
+                        params: {
+                            threadId: "thread-1",
+                            turn: {
+                                id: "turn-1",
+                                status: "completed",
+                            },
+                        },
+                    })
+                })
+                return client
+            },
+        })
+
+        const result = await provider.run(createRunArgs())
+
+        expect(result.summary).toBe("Codex complete")
+        expect(result.error).toBeUndefined()
+        expect(result.usage).toMatchObject({
+            promptTokens: 17,
+            completionTokens: 9,
+            reasoningTokens: 4,
+        })
+        expect(result.diagnostics).toMatchObject({
+            provider: "codex",
+            model: "codex-test",
+            authMode: "chatgpt",
+            codexThreadId: "thread-1",
+            codexTurnIds: ["turn-1"],
+            rateLimitSnapshotBefore: { before: true },
+            rateLimitSnapshotAfter: { after: true },
+        })
+        expect(client?.requests.map((request) => request.method)).toContain("thread/start")
+        expect(client?.requests.map((request) => request.method)).toContain("turn/start")
+        const threadStart = client?.requests.find((request) => request.method === "thread/start")
+        expect(threadStart?.params).toMatchObject({
+            runtimeWorkspaceRoots: [],
+            approvalPolicy: "never",
+            sandbox: "read-only",
+            environments: [],
+            dynamicTools: [],
+            baseInstructions: "Trading system prompt",
+            developerInstructions: null,
+            config: {
+                web_search: "disabled",
+                approval_policy: "never",
+                sandbox_mode: "read-only",
+                allow_login_shell: false,
+                features: {
+                    apps: false,
+                    browser_use: false,
+                    browser_use_external: false,
+                    computer_use: false,
+                    image_generation: false,
+                    multi_agent: false,
+                    plugins: false,
+                    shell_tool: false,
+                    unified_exec: false,
+                    web_search: false,
+                    web_search_cached: false,
+                    web_search_request: false,
+                    workspace_dependencies: false,
+                },
+                plugins: {
+                    "browser@openai-bundled": {
+                        enabled: false,
+                    },
+                    "documents@openai-primary-runtime": {
+                        enabled: false,
+                    },
+                    "github@openai-curated": {
+                        enabled: false,
+                    },
+                    "presentations@openai-primary-runtime": {
+                        enabled: false,
+                    },
+                    "spreadsheets@openai-primary-runtime": {
+                        enabled: false,
+                    },
+                },
+                mcp_servers: {
+                    openaiDeveloperDocs: {
+                        enabled: false,
+                    },
+                    valiq_run: {
+                        enabled: true,
+                        required: true,
+                        enabled_tools: ["fake_tool"],
+                    },
+                },
+            },
+        })
+        const turnStart = client?.requests.find((request) => request.method === "turn/start")
+        expect(turnStart?.params).toMatchObject({
+            runtimeWorkspaceRoots: [],
+            approvalPolicy: "never",
+            sandbox: "read-only",
+            environments: [],
+        })
+    })
+
+    it("fails closed when Codex starts a non-run MCP server", async () => {
+        let client: FakeCodexClient | undefined
+        const provider = createProvider({
+            createClient: (args) => {
+                client = new FakeCodexClient(args, async (fake) => {
+                    fake.emitNotification({
+                        method: "mcpServer/startupStatus/updated",
+                        params: {
+                            name: "openaiDeveloperDocs",
+                            status: "ready",
+                            error: null,
+                        },
+                    })
+                    fake.emitNotification({
+                        method: "turn/completed",
+                        params: {
+                            threadId: "thread-1",
+                            turn: {
+                                id: "turn-1",
+                                status: "completed",
+                            },
+                        },
+                    })
+                })
+                return client
+            },
+        })
+
+        const result = await provider.run(createRunArgs())
+
+        expect(result.error).toContain("Codex started non-run MCP server openaiDeveloperDocs with status ready")
+        expect(client?.requests.some((request) => request.method === "turn/interrupt")).toBe(true)
+    })
+
+    it("declines forbidden approval requests, interrupts the turn, and fails the run", async () => {
+        let client: FakeCodexClient | undefined
+        const provider = createProvider({
+            createClient: (args) => {
+                client = new FakeCodexClient(args, async (fake) => {
+                    await fake.emitServerRequest({
+                        id: "approval-1",
+                        method: "item/commandExecution/requestApproval",
+                        params: {},
+                    })
+                    fake.emitNotification({
+                        method: "turn/completed",
+                        params: {
+                            threadId: "thread-1",
+                            turn: {
+                                id: "turn-1",
+                                status: "completed",
+                            },
+                        },
+                    })
+                })
+                return client
+            },
+        })
+
+        const result = await provider.run(createRunArgs())
+
+        expect(result.error).toContain("Codex attempted forbidden capability through item/commandExecution/requestApproval")
+        expect(client?.responses).toEqual([{
+            id: "approval-1",
+            result: { decision: "decline" },
+        }])
+        expect(client?.requests.some((request) => request.method === "turn/interrupt")).toBe(true)
+    })
+
+    it("rejects forbidden permission requests, interrupts the turn, and fails the run", async () => {
+        let client: FakeCodexClient | undefined
+        const provider = createProvider({
+            createClient: (args) => {
+                client = new FakeCodexClient(args, async (fake) => {
+                    await fake.emitServerRequest({
+                        id: "permissions-1",
+                        method: "item/permissions/requestApproval",
+                        params: {},
+                    })
+                    fake.emitNotification({
+                        method: "turn/completed",
+                        params: {
+                            threadId: "thread-1",
+                            turn: {
+                                id: "turn-1",
+                                status: "completed",
+                            },
+                        },
+                    })
+                })
+                return client
+            },
+        })
+
+        const result = await provider.run(createRunArgs())
+
+        expect(result.error).toContain("Codex attempted forbidden capability through item/permissions/requestApproval")
+        expect(client?.rejections).toEqual([{
+            id: "permissions-1",
+            error: {
+                code: -32000,
+                message: "Codex attempted forbidden capability through item/permissions/requestApproval",
+            },
+        }])
+        expect(client?.requests.some((request) => request.method === "turn/interrupt")).toBe(true)
+    })
+
+    it("interrupts the turn when the shared tool engine enters fatal state", async () => {
+        let fatalFault: ToolExecutionFatalFault | undefined
+        let triggerFatalFault: (() => Promise<void> | void) | undefined
+        let client: FakeCodexClient | undefined
+        const provider = createProvider({
+            startRunToolServer: async (args) => {
+                triggerFatalFault = args.onFatalFault
+                return createFakeMcpServer()
+            },
+            createClient: (args) => {
+                client = new FakeCodexClient(args, async (fake) => {
+                    fatalFault = {
+                        toolName: "propose_order",
+                        toolResult: "{\"error\":\"credential missing\"}",
+                        reason: "safety-critical propose_order tool failure",
+                    }
+                    await triggerFatalFault?.()
+                    fake.emitNotification({
+                        method: "turn/completed",
+                        params: {
+                            threadId: "thread-1",
+                            turn: {
+                                id: "turn-1",
+                                status: "completed",
+                            },
+                        },
+                    })
+                })
+                return client
+            },
+        })
+
+        const result = await provider.run(createRunArgs({
+            toolEngine: createFakeToolEngine(() => fatalFault),
+        }))
+
+        expect(result.error).toContain("Circuit breaker: safety-critical propose_order tool failure")
+        expect(client?.requests.some((request) => request.method === "turn/interrupt")).toBe(true)
+    })
+})
+
+class FakeCodexClient implements CodexAppServerClient {
+    readonly requests: Array<{ method: string; params?: unknown }> = []
+    readonly responses: Array<{ id: JsonRpcId; result: unknown }> = []
+    readonly rejections: Array<{ id: JsonRpcId; error: JsonRpcErrorPayload }> = []
+    private rateLimitReads = 0
+
+    constructor(
+        private readonly args: CodexAppServerClientFactoryArgs,
+        private readonly completeTurn: (client: FakeCodexClient) => Promise<void> | void
+    ) {}
+
+    async initialize(): Promise<unknown> {
+        this.requests.push({ method: "initialize" })
+        return {}
+    }
+
+    async request(method: string, params?: unknown): Promise<unknown> {
+        this.requests.push({ method, params })
+
+        if (method === "account/read") {
+            return {
+                account: {
+                    type: "chatgpt",
+                },
+                requiresOpenaiAuth: false,
+            }
+        }
+        if (method === "account/rateLimits/read") {
+            this.rateLimitReads++
+            return this.rateLimitReads === 1
+                ? { rateLimits: { before: true } }
+                : { rateLimits: { after: true } }
+        }
+        if (method === "thread/start") {
+            return { thread: { id: "thread-1" } }
+        }
+        if (method === "turn/start") {
+            setTimeout(() => {
+                void this.completeTurn(this)
+            }, 0)
+            return { turn: { id: "turn-1" } }
+        }
+        if (method === "turn/interrupt") {
+            return {}
+        }
+
+        throw new Error(`Unexpected request ${method}`)
+    }
+
+    async respond(id: JsonRpcId, result: unknown): Promise<void> {
+        this.responses.push({ id, result })
+    }
+
+    async reject(id: JsonRpcId, error: JsonRpcErrorPayload): Promise<void> {
+        this.rejections.push({ id, error })
+    }
+
+    close(): void {}
+
+    emitNotification(message: JsonRpcMessage): void {
+        this.args.onNotification(message)
+    }
+
+    async emitServerRequest(message: JsonRpcMessage): Promise<void> {
+        await this.args.onServerRequest(message, this)
+    }
+}
+
+function createProvider(
+    dependencies: Partial<CodexAppServerProviderDependencies>
+): CodexAppServerProvider {
+    return new CodexAppServerProvider({
+        provider: "codex",
+        model: "codex-test",
+        authMode: "chatgpt",
+        runDirectory: "/tmp/valiq-codex-provider-test",
+        turnTimeoutMs: 1000,
+        requestTimeoutMs: 1000,
+    }, {
+        startRunToolServer: async () => createFakeMcpServer(),
+        ...dependencies,
+    })
+}
+
+function createRunArgs(
+    options: {
+        toolEngine?: ToolExecutionEngine
+    } = {}
+): AgentProviderRunArgs {
+    const conversation = new ConversationManager()
+    conversation.addSystemMessage("Trading system prompt")
+    conversation.addUserMessage("Run strategy")
+
+    return {
+        conversation,
+        context: createContext(),
+        tools: new ToolRegistry(),
+        toolEngine: options.toolEngine ?? createFakeToolEngine(() => undefined),
+        logger: createLogger({ minLevel: "fatal" }),
+        agentLogger: {
+            log: vi.fn(async () => undefined),
+        },
+        maxIterations: 1,
+        maxConsecutiveErrors: 1,
+        runStartedAt: Date.now(),
+        runTimeoutMs: 10_000,
+    }
+}
+
+function createContext(): StrategyRunContext {
+    return {
+        runId: "run-codex-provider-test",
+        strategyId: "strategy-codex-provider-test",
+        app: "polymarket",
+        timestamp: Date.now(),
+        trigger: "cron",
+        positions: [],
+        accountState: {
+            balance: 10_000,
+            equity: 10_000,
+            buyingPower: 10_000,
+            marginUsed: 0,
+            marginAvailable: 10_000,
+            openPnl: 0,
+            dayPnl: 0,
+        },
+        policy: {
+            dryRun: true,
+            llm: {
+                provider: "codex",
+                model: "codex-test",
+                authMode: "chatgpt",
+            },
+        },
+        context: "test",
+    }
+}
+
+function createFakeMcpServer() {
+    return {
+        url: "http://127.0.0.1:1/mcp",
+        token: "test-token",
+        toolNames: ["fake_tool"],
+        close: vi.fn(async () => undefined),
+    }
+}
+
+function createFakeToolEngine(
+    readFatalFault: () => ToolExecutionFatalFault | undefined
+): ToolExecutionEngine {
+    return {
+        getOutcome: () => ({
+            opportunityCoverage: {
+                researched: 0,
+                qualified: 0,
+                rejectedByModel: 0,
+                rejectedByRisk: 0,
+                submitted: 0,
+                filled: 0,
+                closed: 0,
+                realizedPnl: 0,
+            },
+            degradedResearch: () => ({
+                active: false,
+                reasons: [],
+                toolFailureCount: 0,
+                retryCount: 0,
+                decisionUnderDegradedContext: false,
+            }),
+            fatalFault: readFatalFault(),
+        }),
+    } as unknown as ToolExecutionEngine
+}

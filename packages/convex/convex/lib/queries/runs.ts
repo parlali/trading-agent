@@ -1,20 +1,50 @@
 import { query } from "../../_generated/server"
 import { v } from "convex/values"
 import { requireUser, requireServiceToken, requireUserOrServiceToken } from "../authGuards"
+import {
+    assertWithinRunEvidenceRowLimit,
+    MAX_RUN_EVIDENCE_ROWS,
+} from "./evidenceBounds"
+
+const DEFAULT_RUN_HISTORY_LIMIT = 20
+const MAX_RUN_HISTORY_LIMIT = 500
 
 export const getRunHistory = query({
     args: {
+        serviceToken: v.optional(v.string()),
         strategyId: v.id("strategies"),
         limit: v.optional(v.number()),
     },
     handler: async (ctx, args) => {
-        await requireUser(ctx)
-        const limit = args.limit ?? 20
+        await requireUserOrServiceToken(ctx, args.serviceToken)
+        const limit = resolveRunHistoryLimit(args.limit)
         return await ctx.db
             .query("strategy_runs")
             .withIndex("by_strategy", (q) => q.eq("strategyId", args.strategyId))
             .order("desc")
             .take(limit)
+    },
+})
+
+function resolveRunHistoryLimit(value: number | undefined): number {
+    if (value === undefined) {
+        return DEFAULT_RUN_HISTORY_LIMIT
+    }
+    if (!Number.isInteger(value) || value < 1) {
+        throw new Error("getRunHistory limit must be a positive integer")
+    }
+
+    return Math.min(value, MAX_RUN_HISTORY_LIMIT)
+}
+
+export const getRunById = query({
+    args: {
+        serviceToken: v.optional(v.string()),
+        runId: v.id("strategy_runs"),
+    },
+    handler: async (ctx, args) => {
+        await requireUserOrServiceToken(ctx, args.serviceToken)
+        return await ctx.db.get(args.runId)
     },
 })
 
@@ -58,13 +88,18 @@ export const getActiveRun = query({
 })
 
 export const getAgentLogs = query({
-    args: { runId: v.id("strategy_runs") },
+    args: {
+        serviceToken: v.optional(v.string()),
+        runId: v.id("strategy_runs"),
+    },
     handler: async (ctx, args) => {
-        await requireUser(ctx)
-        return await ctx.db
+        await requireUserOrServiceToken(ctx, args.serviceToken)
+        const rows = await ctx.db
             .query("agent_logs")
             .withIndex("by_run_sequence", (q) => q.eq("runId", args.runId))
-            .collect()
+            .take(MAX_RUN_EVIDENCE_ROWS + 1)
+
+        return assertWithinRunEvidenceRowLimit(rows, `agent logs for run ${args.runId}`)
     },
 })
 

@@ -7,9 +7,9 @@ import {
     getExecutionErrorDetail,
     type ExecutionPipeline,
 } from "@valiq-trading/core"
-import type { ToolDefinition } from "../tool-registry"
+import type { ToolBinding } from "../tool-registry"
 import {
-    createToolDefinition,
+    createToolBinding,
     okxAdjustmentParamsSchema,
 } from "../tool-contracts"
 import { createRejectedExecutionToolResult } from "./execution-response"
@@ -27,8 +27,8 @@ export function createOKXProposeAdjustmentTool(
         dryRun?: boolean
         requireTakeProfit?: boolean
     }
-): ToolDefinition {
-    return createToolDefinition({
+): ToolBinding {
+    return createToolBinding({
         name: "propose_adjustment",
         venue: "okx-swap",
         handler: async (params) => {

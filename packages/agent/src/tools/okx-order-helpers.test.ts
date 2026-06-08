@@ -4,7 +4,10 @@ import { prepareOKXOrder } from "./okx-order-helpers"
 
 const policy: OKXPolicy = {
     dryRun: false,
-    model: "gpt-5.4",
+    llm: {
+        provider: "openrouter",
+        model: "gpt-5.4",
+    },
     safety: {
         maxDrawdownDay: undefined,
         maxDrawdownWeek: undefined,

@@ -62,6 +62,15 @@ export interface RunDiagnostics {
     completionTokens?: number
     reasoningTokens?: number
     llmCost?: number
+    llmProvider?: "openrouter" | "codex"
+    llmModel?: string
+    llmAuthMode?: string
+    llmBillingMode?: string
+    llmResponseIds?: string[]
+    codexThreadId?: string
+    codexTurnIds?: string[]
+    llmRateLimitSnapshotBefore?: unknown
+    llmRateLimitSnapshotAfter?: unknown
     openRouterResponseIds?: string[]
     opportunityResearched?: number
     opportunityQualified?: number
@@ -87,6 +96,31 @@ export interface StoredRun extends RunDiagnostics {
     error?: string
     callbackRequestedMinutes?: number
     callbackFiresAt?: number
+}
+
+export interface AgentLogRow {
+    _id: Id<"agent_logs">
+    _creationTime: number
+    runId: Id<"strategy_runs">
+    strategyId: Id<"strategies">
+    sequence: number
+    role: "system" | "user" | "assistant" | "tool"
+    content: string
+    toolName?: string
+    toolInput?: string
+    toolOutput?: string
+    timestamp: number
+}
+
+export interface TradeEventRow {
+    _id: Id<"trade_events">
+    _creationTime: number
+    runId: Id<"strategy_runs">
+    strategyId: Id<"strategies">
+    app?: App
+    eventType: "intent" | "validation" | "submission" | "fill_update" | "filled" | "rejected" | "cancelled"
+    payload: string
+    timestamp: number
 }
 
 export interface KillSwitchState {
@@ -387,6 +421,10 @@ export interface TradingBackendClient extends TradeEventLogger, AgentMessageLogg
     getStrategyConfigs(app: App): Promise<StoredStrategy[]>
     getStrategyById(id: Id<"strategies">): Promise<StoredStrategy | null>
     getActiveRun(strategyId: Id<"strategies">): Promise<StoredRun | null>
+    getRunHistory(strategyId: Id<"strategies">, limit?: number): Promise<StoredRun[]>
+    getRunById(runId: Id<"strategy_runs">): Promise<StoredRun | null>
+    getAgentLogs(runId: Id<"strategy_runs">): Promise<AgentLogRow[]>
+    getTradeEvents(runId: Id<"strategy_runs">): Promise<TradeEventRow[]>
     getLastCompletedRunSummary(strategyId: Id<"strategies">): Promise<LastCompletedRunSummary | null>
     recoverRunningRuns(): Promise<number>
     recoverStaleRunningRuns(olderThanMs?: number): Promise<number>
@@ -450,8 +488,10 @@ export interface TradingBackendClient extends TradeEventLogger, AgentMessageLogg
     getStrategyOwnershipScope(strategyId: Id<"strategies">): Promise<StrategyOwnershipScopeRow>
     getAllOwnedInstrumentsByApp(app: Exclude<App, "backend">): Promise<Array<{ instrument: string, strategyId: string }>>
     getLatestPositions(strategyId: Id<"strategies">): Promise<Position[]>
+    getPositionsForRun(strategyId: Id<"strategies">, runId: Id<"strategy_runs">): Promise<Position[]>
     getAllStrategies(): Promise<StoredStrategy[]>
     addStrategy(config: StrategyConfig): Promise<Id<"strategies">>
+    updateStrategy(id: Id<"strategies">, config: StrategyConfig): Promise<Id<"strategies">>
     disableStrategy(id: Id<"strategies">): Promise<void>
     deleteStrategy(id: Id<"strategies">): Promise<DeleteStrategyResult>
     deleteStrategyBatch(id: Id<"strategies">, batchSize?: number): Promise<DeleteStrategyBatchResult>

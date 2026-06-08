@@ -2,6 +2,9 @@ import { describe, expect, it, vi } from "vitest"
 import {
     assertFullResetAuditClean,
     finalizeFullResetCleanup,
+    resolveArg,
+    resolveFlag,
+    resolvePositiveIntegerArg,
 } from "./strategy-cli.ts"
 import type { TradingBackendClient } from "@valiq-trading/convex"
 
@@ -28,6 +31,77 @@ function createResetCounts(overrides: Record<string, number | boolean> = {}) {
         ...overrides,
     }
 }
+
+describe("script argument parsing", () => {
+    it("supports equals arguments, space-separated arguments, and boolean flags", () => {
+        const originalArgv = process.argv
+        process.argv = [
+            "bun",
+            "script.ts",
+            "--model=codex-test",
+            "--strategy",
+            "strategy-123",
+            "--dry-run-only",
+        ]
+
+        try {
+            expect(resolveArg("model")).toBe("codex-test")
+            expect(resolveArg("strategy")).toBe("strategy-123")
+            expect(resolveArg("dry-run-only")).toBeUndefined()
+            expect(resolveFlag("dry-run-only")).toBe(true)
+        } finally {
+            process.argv = originalArgv
+        }
+    })
+
+    it("resolves bounded positive integer arguments", () => {
+        const originalArgv = process.argv
+        process.argv = [
+            "bun",
+            "script.ts",
+            "--timeout-ms=120000",
+        ]
+
+        try {
+            expect(resolvePositiveIntegerArg("timeout-ms", 30000, {
+                min: 1000,
+                max: 600000,
+            })).toBe(120000)
+            expect(resolvePositiveIntegerArg("missing", 3, {
+                min: 1,
+                max: 50,
+            })).toBe(3)
+        } finally {
+            process.argv = originalArgv
+        }
+    })
+
+    it("rejects non-integer, below-minimum, and above-maximum numeric arguments", () => {
+        const originalArgv = process.argv
+
+        try {
+            process.argv = ["bun", "script.ts", "--timeout-ms=abc"]
+            expect(() => resolvePositiveIntegerArg("timeout-ms", 120000, {
+                min: 1000,
+                max: 600000,
+            })).toThrow("--timeout-ms must be a positive integer between 1000 and 600000")
+
+            process.argv = ["bun", "script.ts", "--timeout-ms=0"]
+            expect(() => resolvePositiveIntegerArg("timeout-ms", 120000, {
+                min: 1000,
+                max: 600000,
+            })).toThrow("--timeout-ms must be a positive integer between 1000 and 600000")
+
+            process.argv = ["bun", "script.ts", "--timeout-ms=900000"]
+            expect(() => resolvePositiveIntegerArg("timeout-ms", 120000, {
+                min: 1000,
+                max: 600000,
+            })).toThrow("--timeout-ms must be a positive integer between 1000 and 600000")
+        } finally {
+            process.argv = originalArgv
+        }
+    })
+})
 
 describe("finalizeFullResetCleanup", () => {
     it("combines orphan cleanup, app-state cleanup, and final audit", async () => {

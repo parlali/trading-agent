@@ -1,7 +1,7 @@
 import type { OKXVenueAdapter } from "@valiq-trading/okx"
 import type { ExecutionPipeline, OKXPolicy } from "@valiq-trading/core"
-import type { ToolDefinition } from "../tool-registry"
-import { createToolDefinition } from "../tool-contracts"
+import type { ToolBinding } from "../tool-registry"
+import { createToolBinding } from "../tool-contracts"
 import {
     prepareOKXOrder,
     type OKXOrderParams,
@@ -13,8 +13,8 @@ export function createOKXProposeOrderTool(
     venue: OKXVenueAdapter,
     policy: OKXPolicy,
     options?: ExecutionSafetyToolCallbacks
-): ToolDefinition {
-    return createToolDefinition({
+): ToolBinding {
+    return createToolBinding({
         name: "propose_order",
         venue: "okx-swap",
         handler: async (params) => {

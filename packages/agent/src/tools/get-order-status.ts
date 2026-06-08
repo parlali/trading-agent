@@ -6,15 +6,15 @@ import {
     getExecutionErrorDetail,
     type ExecutionPipeline,
 } from "@valiq-trading/core"
-import type { ToolDefinition } from "../tool-registry"
+import type { ToolBinding } from "../tool-registry"
 import {
-    createToolDefinition,
+    createToolBinding,
     orderIdParamsSchema,
 } from "../tool-contracts"
 import { toExecutionToolResult } from "./execution-response"
 
-export function createGetOrderStatusTool(pipeline: ExecutionPipeline): ToolDefinition {
-    return createToolDefinition({
+export function createGetOrderStatusTool(pipeline: ExecutionPipeline): ToolBinding {
+    return createToolBinding({
         name: "get_order_status",
         handler: async (params) => {
             const validated = params as z.infer<typeof orderIdParamsSchema>

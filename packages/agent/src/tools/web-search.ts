@@ -1,7 +1,7 @@
 import { z } from "zod"
-import type { ToolDefinition } from "../tool-registry"
+import type { ToolBinding } from "../tool-registry"
 import {
-    createToolDefinition,
+    createToolBinding,
     webSearchParamsSchema,
 } from "../tool-contracts"
 
@@ -15,8 +15,8 @@ export interface WebSearchProvider {
     search(query: string, maxResults?: number): Promise<SearchResult[]>
 }
 
-export function createWebSearchTool(provider: WebSearchProvider): ToolDefinition {
-    return createToolDefinition({
+export function createWebSearchTool(provider: WebSearchProvider): ToolBinding {
+    return createToolBinding({
         name: "web_search",
         venue: "polymarket",
         handler: async (params) => {

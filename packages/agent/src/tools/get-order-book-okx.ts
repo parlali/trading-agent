@@ -1,15 +1,15 @@
 import { z } from "zod"
 import type { OKXVenueAdapter } from "@valiq-trading/okx"
-import type { ToolDefinition } from "../tool-registry"
+import type { ToolBinding } from "../tool-registry"
 import {
-    createToolDefinition,
+    createToolBinding,
     okxOrderBookParamsSchema,
 } from "../tool-contracts"
 
 export function createOKXGetOrderBookTool(
     venue: OKXVenueAdapter
-): ToolDefinition {
-    return createToolDefinition({
+): ToolBinding {
+    return createToolBinding({
         name: "get_order_book",
         venue: "okx-swap",
         handler: async (params) => {

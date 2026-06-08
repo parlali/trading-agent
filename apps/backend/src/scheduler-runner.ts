@@ -5,6 +5,7 @@ import {
 } from "@valiq-trading/agent"
 import { createConvexOrderPersistenceAdapter } from "@valiq-trading/convex"
 import type {
+    RunDiagnostics,
     RunTrigger,
     StoredStrategy,
 } from "@valiq-trading/convex"
@@ -23,11 +24,13 @@ import {
     isDryRunAccountLedgerPosition,
     resolveDryRunAccountState,
     resolveStrategyAccountState,
+    resolveStrategyLlmConfig,
     withTimeout,
     type AccountState,
     type Position,
     type RunSystemContextDigest,
     type Scheduler,
+    type StrategyLlmConfig,
     type StrategyRiskState,
     type WorkingOrder,
 } from "@valiq-trading/core"
@@ -36,12 +39,14 @@ import { buildToolPool } from "./scheduler-tool-pool"
 import {
     buildPromptBlockedIdentifiers,
     mergeRuntimeContextLines,
-    readPolicyReasoningConfig,
 } from "./scheduler-context"
+import { createAgentProviderConfig } from "./scheduler-provider-config"
+import { assertStrategyLlmProviderCanRun } from "./scheduler-provider-gates"
 import {
     backend,
     convexUrl,
     backendServiceToken,
+    codexProviderEnabled,
     logger,
     healthState,
 } from "./state"
@@ -100,6 +105,7 @@ export async function runStrategy(
         return
     }
 
+    const llmConfig = resolveStrategyLlmConfig(policy)
     const venue = plugin.createVenueAdapter(policy, strategySecrets)
     const isDryRun = Boolean(policy.dryRun)
     const storedPositionsPromise = isDryRun
@@ -353,6 +359,11 @@ export async function runStrategy(
         activePipeline.setRiskValidators(buildRiskValidators(runRiskState))
         activePipeline.setStrategyRealizedPnl(runRiskState.day.realizedPnl)
 
+        assertStrategyLlmProviderCanRun(llmConfig, policy, strategySecrets, {
+            codexProviderEnabled,
+            env: process.env,
+        })
+
         const extraTools = plugin.getExtraTools({
             secrets: strategySecrets,
             runLogger,
@@ -378,10 +389,6 @@ export async function runStrategy(
         }
 
         await withTimeout(async () => {
-            if (!strategySecrets.OPENROUTER_API_KEY) {
-                throw new Error("Cannot run strategy: OPENROUTER_API_KEY is not set in Convex environment variables")
-            }
-
             const isDryRun = Boolean(policy.dryRun)
             const {
                 pendingOrders,
@@ -460,11 +467,7 @@ export async function runStrategy(
                     },
                 },
                 {
-                    llm: {
-                        apiKey: strategySecrets.OPENROUTER_API_KEY,
-                        model: policy.model as string,
-                        reasoning: readPolicyReasoningConfig(policy),
-                    },
+                    provider: createAgentProviderConfig(llmConfig, strategySecrets),
                     tools,
                     logger: runLogger,
                     agentLogger: backend,
@@ -566,9 +569,7 @@ export async function runStrategy(
                 "failed",
                 undefined,
                 message,
-                runSystemContextDigest
-                    ? { systemContextDigest: runSystemContextDigest }
-                    : undefined
+                buildFailureRunDiagnostics(llmConfig, runSystemContextDigest)
             ),
             backend.createAlert({
                 strategyId: strategy._id,
@@ -633,4 +634,30 @@ export async function runStrategy(
     } finally {
         pipeline?.stopAllTracking()
     }
+}
+
+function buildFailureRunDiagnostics(
+    llmConfig: StrategyLlmConfig,
+    systemContextDigest?: RunSystemContextDigest
+): RunDiagnostics {
+    const diagnostics: RunDiagnostics = {
+        llmProvider: llmConfig.provider,
+        llmModel: llmConfig.model,
+        llmResponseIds: [],
+    }
+
+    if (llmConfig.provider === "openrouter") {
+        diagnostics.llmBillingMode = "openrouter"
+        diagnostics.openRouterResponseIds = []
+    } else {
+        diagnostics.llmAuthMode = llmConfig.authMode
+        diagnostics.llmBillingMode = llmConfig.authMode === "api-key" ? "platform-api" : "codex-subscription"
+        diagnostics.codexTurnIds = []
+    }
+
+    if (systemContextDigest) {
+        diagnostics.systemContextDigest = systemContextDigest
+    }
+
+    return diagnostics
 }

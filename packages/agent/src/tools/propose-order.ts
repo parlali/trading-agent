@@ -3,10 +3,10 @@ import {
     type ExecutionPipeline,
     type OrderIntent,
 } from "@valiq-trading/core"
-import type { ToolDefinition } from "../tool-registry"
+import type { ToolBinding } from "../tool-registry"
 import {
     alpacaOrderParamsSchema,
-    createToolDefinition,
+    createToolBinding,
     genericOrderParamsSchema,
 } from "../tool-contracts"
 import { executeToolIntent } from "./execution-response"
@@ -18,11 +18,11 @@ interface CreateProposeOrderToolOptions {
 export function createProposeOrderTool(
     pipeline: ExecutionPipeline,
     options: CreateProposeOrderToolOptions = {}
-): ToolDefinition {
+): ToolBinding {
     const isAlpacaOptions = options.mode === "alpaca-options"
     const orderParamsSchema = isAlpacaOptions ? alpacaOrderParamsSchema : genericOrderParamsSchema
 
-    return createToolDefinition({
+    return createToolBinding({
         name: "propose_order",
         venue: isAlpacaOptions ? "alpaca-options" : "polymarket",
         handler: async (params) => {

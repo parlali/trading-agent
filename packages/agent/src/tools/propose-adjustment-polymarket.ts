@@ -1,8 +1,8 @@
 import { z } from "zod"
 import type { ExecutionPipeline, OrderIntent } from "@valiq-trading/core"
-import type { ToolDefinition } from "../tool-registry"
+import type { ToolBinding } from "../tool-registry"
 import {
-    createToolDefinition,
+    createToolBinding,
     genericAdjustmentParamsSchema,
 } from "../tool-contracts"
 import { executeToolIntent } from "./execution-response"
@@ -12,8 +12,8 @@ import { normalizePolymarketTokenId } from "./polymarket-market-handles"
 export function createPolymarketProposeAdjustmentTool(
     pipeline: ExecutionPipeline,
     venue: PolymarketPriceProvider
-): ToolDefinition {
-    return createToolDefinition({
+): ToolBinding {
+    return createToolBinding({
         name: "propose_adjustment",
         venue: "polymarket",
         handler: async (params) => {

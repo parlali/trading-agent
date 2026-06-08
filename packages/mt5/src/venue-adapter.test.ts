@@ -68,7 +68,7 @@ describe("MT5VenueAdapter", () => {
                 adapter.getWorkingOrders(),
             ])
 
-            await vi.waitFor(() => {
+            await waitForExpectation(() => {
                 expect(connectCalls).toBe(1)
             })
 
@@ -114,9 +114,7 @@ describe("MT5VenueAdapter", () => {
             expect(accountCalls).toBe(2)
         }
 
-        vi.useFakeTimers()
-
-        try {
+        {
             const client = createClient()
             let healthConnected = false
             let connectCalls = 0
@@ -140,14 +138,10 @@ describe("MT5VenueAdapter", () => {
             client.getAccount = async () => createAccountInfo()
 
             const adapter = new MT5VenueAdapter(client, credentials)
-            const read = adapter.getAccountState()
-            await vi.advanceTimersByTimeAsync(1_000)
-            const state = await read
+            const state = await adapter.getAccountState()
 
             expect(state.equity).toBe(1000)
             expect(connectCalls).toBe(2)
-        } finally {
-            vi.useRealTimers()
         }
     })
 
@@ -796,6 +790,23 @@ function createPosition(ticket: number, symbol: string, openPrice: number): MT5P
         openTime: 0,
         identifier: ticket,
     }
+}
+
+async function waitForExpectation(assertion: () => void): Promise<void> {
+    const startedAt = Date.now()
+    let lastError: unknown
+
+    while (Date.now() - startedAt < 1000) {
+        try {
+            assertion()
+            return
+        } catch (error) {
+            lastError = error
+            await new Promise((resolve) => setTimeout(resolve, 10))
+        }
+    }
+
+    throw lastError instanceof Error ? lastError : new Error(String(lastError))
 }
 
 function createOrderResult(overrides: Partial<MT5OrderResult>): MT5OrderResult {

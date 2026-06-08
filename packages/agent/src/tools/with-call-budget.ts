@@ -1,9 +1,9 @@
-import type { ToolDefinition } from "../tool-registry"
+import type { ToolBinding } from "../tool-registry"
 
 export function withCallBudget(
-    tool: ToolDefinition,
+    tool: ToolBinding,
     maxCalls: number
-): ToolDefinition {
+): ToolBinding {
     let callCount = 0
 
     return {

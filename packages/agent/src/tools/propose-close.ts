@@ -2,10 +2,10 @@ import { z } from "zod"
 import type { ExecutionPipeline, Position } from "@valiq-trading/core"
 import type { MT5VenueAdapter } from "@valiq-trading/mt5"
 import type { OKXVenueAdapter } from "@valiq-trading/okx"
-import type { ToolDefinition } from "../tool-registry"
+import type { ToolBinding } from "../tool-registry"
 import {
     closeParamsSchema,
-    createToolDefinition,
+    createToolBinding,
 } from "../tool-contracts"
 import { toExecutionToolResult } from "./execution-response"
 import {
@@ -28,8 +28,8 @@ interface CreateProposeCloseToolOptions {
 export function createProposeCloseTool(
     pipeline: ExecutionPipeline,
     options: CreateProposeCloseToolOptions = {}
-): ToolDefinition {
-    return createToolDefinition({
+): ToolBinding {
+    return createToolBinding({
         name: "propose_close",
         venue: "alpaca-options",
         handler: async (params) => {
@@ -59,13 +59,13 @@ export function createProposeCloseTool(
 export function createPolymarketProposeCloseTool(
     pipeline: ExecutionPipeline,
     venue: PolymarketPriceProvider
-): ToolDefinition {
+): ToolBinding {
     const base = createProposeCloseTool(pipeline, {
         resolveEstimatedPrice: async ({ instrument, closeSide }) =>
             await resolvePolymarketEstimatedPrice(venue, instrument, closeSide),
     })
 
-    return createToolDefinition({
+    return createToolBinding({
         name: "propose_close",
         venue: "polymarket",
         handler: async (params) => {
@@ -81,8 +81,8 @@ export function createPolymarketProposeCloseTool(
 export function createMT5ProposeCloseTool(
     pipeline: ExecutionPipeline,
     venue: MT5VenueAdapter
-): ToolDefinition {
-    return createToolDefinition({
+): ToolBinding {
+    return createToolBinding({
         name: "propose_close",
         venue: "mt5",
         handler: createProposeCloseTool(pipeline, {
@@ -101,8 +101,8 @@ export function createMT5ProposeCloseTool(
 export function createOKXProposeCloseTool(
     pipeline: ExecutionPipeline,
     venue: OKXVenueAdapter
-): ToolDefinition {
-    return createToolDefinition({
+): ToolBinding {
+    return createToolBinding({
         name: "propose_close",
         venue: "okx-swap",
         handler: createProposeCloseTool(pipeline, {

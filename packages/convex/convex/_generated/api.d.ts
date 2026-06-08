@@ -44,6 +44,7 @@ import type * as lib_mutations_systemReset from "../lib/mutations/systemReset.js
 import type * as lib_orderIdentityLookup from "../lib/orderIdentityLookup.js";
 import type * as lib_providerPositions from "../lib/providerPositions.js";
 import type * as lib_queries_dashboard from "../lib/queries/dashboard.js";
+import type * as lib_queries_evidenceBounds from "../lib/queries/evidenceBounds.js";
 import type * as lib_queries_orders from "../lib/queries/orders.js";
 import type * as lib_queries_portfolio from "../lib/queries/portfolio.js";
 import type * as lib_queries_positions from "../lib/queries/positions.js";
@@ -100,6 +101,7 @@ declare const fullApi: ApiFromModules<{
   "lib/orderIdentityLookup": typeof lib_orderIdentityLookup;
   "lib/providerPositions": typeof lib_providerPositions;
   "lib/queries/dashboard": typeof lib_queries_dashboard;
+  "lib/queries/evidenceBounds": typeof lib_queries_evidenceBounds;
   "lib/queries/orders": typeof lib_queries_orders;
   "lib/queries/portfolio": typeof lib_queries_portfolio;
   "lib/queries/positions": typeof lib_queries_positions;

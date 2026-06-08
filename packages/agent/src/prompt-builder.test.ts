@@ -29,7 +29,10 @@ function createContext(): StrategyRunContext {
         },
         policy: {
             dryRun: true,
-            model: "gpt-5.4",
+            llm: {
+                provider: "openrouter",
+                model: "gpt-5.4",
+            },
             safety: {
                 account: {
                     allocationPercent: 100,

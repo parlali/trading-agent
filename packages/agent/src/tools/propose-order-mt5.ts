@@ -1,7 +1,7 @@
 import type { ExecutionPipeline, MT5Policy } from "@valiq-trading/core"
 import type { MT5VenueAdapter } from "@valiq-trading/mt5"
-import type { ToolDefinition } from "../tool-registry"
-import { createToolDefinition } from "../tool-contracts"
+import type { ToolBinding } from "../tool-registry"
+import { createToolBinding } from "../tool-contracts"
 import {
     prepareMT5Order,
     type MT5OrderParams,
@@ -11,8 +11,8 @@ export function createMT5ProposeOrderTool(
     pipeline: ExecutionPipeline,
     venue: MT5VenueAdapter,
     policy: MT5Policy
-): ToolDefinition {
-    return createToolDefinition({
+): ToolBinding {
+    return createToolBinding({
         name: "propose_order",
         venue: "mt5",
         handler: async (params) => {

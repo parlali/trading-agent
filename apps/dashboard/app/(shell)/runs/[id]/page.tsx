@@ -16,7 +16,7 @@ import { StatusDot } from "@/components/status-dot"
 import { StatusBadge } from "@/components/status-badge"
 import { EmptyState } from "@/components/empty-state"
 import { formatTimestamp } from "@/lib/format"
-import { ArrowLeft, ArrowRightLeft, Loader2, MessageSquare, Square, Trash2 } from "lucide-react"
+import { ArrowLeft, ArrowRightLeft, BrainCircuit, Loader2, MessageSquare, Square, Trash2 } from "lucide-react"
 import { MarkdownContent } from "@/components/markdown-content"
 import {
     Dialog,
@@ -32,6 +32,16 @@ interface ExecutionErrorSummary {
     source?: string
     code?: string
     message: string
+}
+
+interface LlmDiagnosticsDisplay {
+    fields: Array<{
+        label: string
+        value: string
+    }>
+    responseIds: string[]
+    rateLimitSnapshotBefore?: unknown
+    rateLimitSnapshotAfter?: unknown
 }
 
 export default function RunDetailPage({
@@ -56,6 +66,7 @@ export default function RunDetailPage({
     const strategy = run
         ? overview?.strategies.find((s) => String(s._id) === String(run.strategyId))
         : null
+    const llmDiagnostics = run ? buildLlmDiagnostics(run as Record<string, unknown>) : null
 
     async function handleStop() {
         setStopping(true)
@@ -201,6 +212,53 @@ export default function RunDetailPage({
                 </Card>
             ) : null}
 
+            {llmDiagnostics ? (
+                <Card>
+                    <CardHeader className="pb-2">
+                        <CardTitle className="text-base flex items-center gap-2">
+                            <BrainCircuit className="h-4 w-4" />
+                            Model Provider
+                        </CardTitle>
+                    </CardHeader>
+                    <CardContent className="space-y-3 text-sm">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                            {llmDiagnostics.fields.map((field) => (
+                                <div
+                                    key={field.label}
+                                    className="rounded-md border border-border-subtle p-3 min-w-0"
+                                >
+                                    <p className="text-xs text-muted-foreground">{field.label}</p>
+                                    <p className="mt-1 font-mono text-xs break-words">{field.value}</p>
+                                </div>
+                            ))}
+                        </div>
+                        {llmDiagnostics.responseIds.length > 0 ? (
+                            <details>
+                                <summary className="text-xs text-muted-foreground cursor-pointer">
+                                    Response IDs ({llmDiagnostics.responseIds.length})
+                                </summary>
+                                <pre className="text-xs font-mono mt-1 bg-muted/50 rounded p-2 overflow-auto max-h-[140px] break-words whitespace-pre-wrap">
+                                    {JSON.stringify(llmDiagnostics.responseIds, null, 2)}
+                                </pre>
+                            </details>
+                        ) : null}
+                        {llmDiagnostics.rateLimitSnapshotBefore || llmDiagnostics.rateLimitSnapshotAfter ? (
+                            <details>
+                                <summary className="text-xs text-muted-foreground cursor-pointer">
+                                    Rate Limits
+                                </summary>
+                                <pre className="text-xs font-mono mt-1 bg-muted/50 rounded p-2 overflow-auto max-h-[180px] break-words whitespace-pre-wrap">
+                                    {JSON.stringify({
+                                        before: llmDiagnostics.rateLimitSnapshotBefore,
+                                        after: llmDiagnostics.rateLimitSnapshotAfter,
+                                    }, null, 2)}
+                                </pre>
+                            </details>
+                        ) : null}
+                    </CardContent>
+                </Card>
+            ) : null}
+
             <Card>
                 <CardHeader>
                     <CardTitle className="text-base flex items-center gap-2">
@@ -287,7 +345,11 @@ export default function RunDetailPage({
                         <div className="space-y-2">
                             {tradeEvents.map((event) => {
                                 let payload: Record<string, unknown> | null = null
-                                try { payload = JSON.parse(event.payload) } catch { /* ignore */ }
+                                try {
+                                    payload = JSON.parse(event.payload)
+                                } catch {
+                                    payload = null
+                                }
                                 const executionError = extractExecutionError(payload)
                                 return (
                                     <div
@@ -366,6 +428,73 @@ export default function RunDetailPage({
             </Dialog>
         </div>
     )
+}
+
+function buildLlmDiagnostics(run: Record<string, unknown>): LlmDiagnosticsDisplay | null {
+    const provider = readString(run.llmProvider) ?? (readStringArray(run.openRouterResponseIds).length > 0 ? "openrouter" : undefined)
+    const model = readString(run.llmModel)
+    const responseIds = readStringArray(run.llmResponseIds)
+    const legacyOpenRouterResponseIds = readStringArray(run.openRouterResponseIds)
+    const displayedResponseIds = responseIds.length > 0 ? responseIds : legacyOpenRouterResponseIds
+    const fields: LlmDiagnosticsDisplay["fields"] = []
+
+    addDiagnosticField(fields, "Provider", provider)
+    addDiagnosticField(fields, "Model", model)
+    addDiagnosticField(fields, "Auth", readString(run.llmAuthMode))
+    addDiagnosticField(fields, "Billing", readString(run.llmBillingMode))
+    addDiagnosticField(fields, "Prompt Tokens", readNumberLabel(run.promptTokens))
+    addDiagnosticField(fields, "Completion Tokens", readNumberLabel(run.completionTokens))
+    addDiagnosticField(fields, "Reasoning Tokens", readNumberLabel(run.reasoningTokens))
+    addDiagnosticField(fields, "Cost", readCostLabel(run.llmCost))
+    addDiagnosticField(fields, "Codex Thread", readString(run.codexThreadId))
+    addDiagnosticField(fields, "Codex Turns", readStringArray(run.codexTurnIds).join(", "))
+
+    if (fields.length === 0 && displayedResponseIds.length === 0) {
+        return null
+    }
+
+    return {
+        fields,
+        responseIds: displayedResponseIds,
+        rateLimitSnapshotBefore: run.llmRateLimitSnapshotBefore,
+        rateLimitSnapshotAfter: run.llmRateLimitSnapshotAfter,
+    }
+}
+
+function addDiagnosticField(
+    fields: LlmDiagnosticsDisplay["fields"],
+    label: string,
+    value: string | undefined
+): void {
+    if (!value) {
+        return
+    }
+
+    fields.push({ label, value })
+}
+
+function readString(value: unknown): string | undefined {
+    return typeof value === "string" && value.trim().length > 0
+        ? value
+        : undefined
+}
+
+function readStringArray(value: unknown): string[] {
+    return Array.isArray(value)
+        ? value.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
+        : []
+}
+
+function readNumberLabel(value: unknown): string | undefined {
+    return typeof value === "number" && Number.isFinite(value)
+        ? String(value)
+        : undefined
+}
+
+function readCostLabel(value: unknown): string | undefined {
+    return typeof value === "number" && Number.isFinite(value) && value > 0
+        ? `$${value.toFixed(6)}`
+        : undefined
 }
 
 function extractExecutionError(payload: Record<string, unknown> | null): ExecutionErrorSummary | null {

@@ -19,6 +19,11 @@ type StrategySafetyDefaults = {
     pendingEntryTtlMinutes: number | undefined
 }
 
+const DEFAULT_OPENROUTER_LLM = {
+    provider: "openrouter" as const,
+    model: "",
+}
+
 type StrategySafetyDefaultOverrides = Partial<Omit<
     StrategySafetyDefaults,
     "sessionFlat" | "expectedExternalInstruments"
@@ -54,18 +59,47 @@ function createStrategySafetyDefaults(overrides: StrategySafetyDefaultOverrides 
 function createBasePolicyDefaults(overrides?: StrategySafetyDefaultOverrides) {
     return {
         dryRun: true,
-        model: "",
+        llm: {
+            ...DEFAULT_OPENROUTER_LLM,
+        },
         safety: createStrategySafetyDefaults(overrides),
     }
 }
 
+export const openRouterReasoningConfigSchema = z.object({
+    effort: z.enum(["low", "medium", "high"]).default("medium"),
+    exclude: z.boolean().default(true),
+})
+
+export const openRouterLlmProviderSchema = z.object({
+    provider: z.literal("openrouter"),
+    model: z.string().trim().min(1, "OpenRouter model id is required"),
+    reasoning: openRouterReasoningConfigSchema.optional(),
+    baseUrl: z.string().trim().min(1).optional(),
+})
+
+export const codexLlmProviderSchema = z.object({
+    provider: z.literal("codex"),
+    model: z.string().trim().min(1, "Codex model id is required"),
+    effort: z.enum(["none", "minimal", "low", "medium", "high", "xhigh"]).optional(),
+    summary: z.enum(["auto", "concise", "detailed", "none"]).optional(),
+    serviceTier: z.string().trim().min(1).optional(),
+    authMode: z.enum(["chatgpt", "access-token", "api-key"]),
+    codexBin: z.string().trim().min(1).optional(),
+})
+
+export const llmProviderSchema = z.discriminatedUnion("provider", [
+    openRouterLlmProviderSchema,
+    codexLlmProviderSchema,
+])
+
+export type OpenRouterLlmProviderConfig = z.infer<typeof openRouterLlmProviderSchema>
+export type CodexLlmProviderConfig = z.infer<typeof codexLlmProviderSchema>
+export type StrategyLlmConfig = z.infer<typeof llmProviderSchema>
+
 export const baseStrategyPolicySchema = z.object({
     dryRun: z.boolean().default(false),
-    model: z.string().trim().min(1, "OpenRouter model id is required"),
-    reasoning: z.object({
-        effort: z.enum(["low", "medium", "high"]).default("medium"),
-        exclude: z.boolean().default(true),
-    }).optional(),
+    llm: llmProviderSchema,
     safety: z.object({
         maxDrawdownDay: z.number().positive().max(100).optional(),
         maxDrawdownWeek: z.number().positive().max(100).optional(),
@@ -88,6 +122,63 @@ export const baseStrategyPolicySchema = z.object({
 }).passthrough()
 
 export type BaseStrategyPolicy = z.infer<typeof baseStrategyPolicySchema>
+
+export function resolveStrategyLlmConfig(policy: Record<string, unknown>): StrategyLlmConfig {
+    assertNoLegacyLlmPolicyFields(policy)
+    return llmProviderSchema.parse(policy.llm)
+}
+
+export function migrateLegacyStrategyLlmPolicy(policy: Record<string, unknown>): Record<string, unknown> {
+    if ("llm" in policy) {
+        assertNoLegacyLlmPolicyFields(policy)
+        return {
+            ...policy,
+            llm: llmProviderSchema.parse(policy.llm),
+        }
+    }
+
+    const model = policy.model
+    if (typeof model !== "string" || model.trim().length === 0) {
+        throw new Error("Cannot migrate strategy policy without a non-empty legacy model")
+    }
+
+    const reasoning = readOpenRouterReasoningPolicy(policy.reasoning)
+    const { model: _model, reasoning: _reasoning, ...rest } = policy
+
+    return {
+        ...rest,
+        llm: openRouterLlmProviderSchema.parse({
+            provider: "openrouter",
+            model,
+            reasoning,
+        }),
+    }
+}
+
+function assertNoLegacyLlmPolicyFields(policy: Record<string, unknown>): void {
+    const legacyFields = []
+    if ("model" in policy) {
+        legacyFields.push("policy.model")
+    }
+    if ("reasoning" in policy) {
+        legacyFields.push("policy.reasoning")
+    }
+
+    if (legacyFields.length > 0) {
+        const suffix = "llm" in policy
+            ? "mixed legacy and canonical LLM policy is ambiguous"
+            : "legacy LLM policy must be migrated to policy.llm"
+        throw new Error(`${legacyFields.join(", ")} found: ${suffix}`)
+    }
+}
+
+function readOpenRouterReasoningPolicy(value: unknown): z.infer<typeof openRouterReasoningConfigSchema> | undefined {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+        return undefined
+    }
+
+    return openRouterReasoningConfigSchema.parse(value)
+}
 
 export interface ConfiguredStrategySafetyPolicy {
     maxDrawdownDay?: number
@@ -242,6 +333,7 @@ export function validateStrategyConfig(raw: unknown): StrategyConfig {
 
     const policySchema = policySchemas[config.app]
     if (policySchema) {
+        assertNoLegacyLlmPolicyFields(config.policy)
         return {
             ...config,
             policy: policySchema.parse(config.policy) as Record<string, unknown>,
@@ -353,5 +445,9 @@ export function validatePolicy(app: string, rawPolicy: unknown): Record<string, 
     if (!schema) {
         throw new Error(`No policy schema registered for app: ${app}`)
     }
+    if (!rawPolicy || typeof rawPolicy !== "object" || Array.isArray(rawPolicy)) {
+        throw new Error("Strategy policy must be an object")
+    }
+    assertNoLegacyLlmPolicyFields(rawPolicy as Record<string, unknown>)
     return schema.parse(rawPolicy) as Record<string, unknown>
 }

@@ -11,7 +11,8 @@ import {
     type DeleteAllStrategiesResult,
 } from "@valiq-trading/convex"
 import { parseStrategyMarkdownDocument } from "@valiq-trading/core"
-import type { App, OrderPersistenceAdapter, StrategyConfig } from "@valiq-trading/core"
+import { resolveStrategyLlmConfig } from "@valiq-trading/core"
+import type { App, OrderPersistenceAdapter, StrategyConfig, StrategyLlmConfig } from "@valiq-trading/core"
 
 const FULL_RESET_CLEAR_BATCH_SIZE = 20
 const FULL_RESET_CLEAR_MAX_BATCHES = 10000
@@ -21,11 +22,22 @@ export function resolveArg(name: string): string | undefined {
     const prefix = `--${name}=`
     const entry = process.argv.find((value) => value.startsWith(prefix))
 
-    if (!entry) {
+    if (entry) {
+        return entry.slice(prefix.length).trim() || undefined
+    }
+
+    const index = process.argv.findIndex((value) => value === `--${name}`)
+    const next = index >= 0 ? process.argv[index + 1] : undefined
+
+    if (!next || next.startsWith("--")) {
         return undefined
     }
 
-    return entry.slice(prefix.length).trim() || undefined
+    return next.trim() || undefined
+}
+
+export function resolveFlag(name: string): boolean {
+    return process.argv.includes(`--${name}`)
 }
 
 export function requireArg(name: string): string {
@@ -33,6 +45,31 @@ export function requireArg(name: string): string {
 
     if (!value) {
         throw new Error(`--${name}=<value> is required`)
+    }
+
+    return value
+}
+
+export function resolvePositiveIntegerArg(
+    name: string,
+    defaultValue: number,
+    options: {
+        min?: number
+        max?: number
+    } = {}
+): number {
+    const raw = resolveArg(name)
+    const value = raw === undefined
+        ? defaultValue
+        : Number(raw)
+    const min = options.min ?? 1
+    const max = options.max
+
+    if (!Number.isInteger(value) || value < min || (max !== undefined && value > max)) {
+        const range = max === undefined
+            ? `at least ${min}`
+            : `between ${min} and ${max}`
+        throw new Error(`--${name} must be a positive integer ${range}`)
     }
 
     return value
@@ -89,13 +126,20 @@ export async function loadStrategiesFromDocument(): Promise<StrategyConfig[]> {
 export function getStrategyModel(strategy: {
     policy: Record<string, unknown>
 }): string {
-    const model = strategy.policy.model
+    return getStrategyLlmConfig(strategy).model
+}
 
-    if (typeof model !== "string" || model.trim().length === 0) {
-        throw new Error("Strategy policy.model must be a non-empty string")
-    }
+export function getStrategyLlmConfig(strategy: {
+    policy: Record<string, unknown>
+}): StrategyLlmConfig {
+    return resolveStrategyLlmConfig(strategy.policy)
+}
 
-    return model.trim()
+export function getStrategyLlmSummary(strategy: {
+    policy: Record<string, unknown>
+}): string {
+    const llm = getStrategyLlmConfig(strategy)
+    return `${llm.provider}:${llm.model}`
 }
 
 export function findStrategyByName(

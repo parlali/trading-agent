@@ -44,6 +44,7 @@ export const logger = createLogger({ app: APP_NAME })
 export const convexUrl = requireEnv("CONVEX_URL")
 export const backendServiceToken = requireEnv("BACKEND_SERVICE_TOKEN")
 export const healthPort = Number(Bun.env.HEALTH_PORT ?? 3100)
+export const codexProviderEnabled = Bun.env.ENABLE_CODEX_PROVIDER === "true"
 export const backend = createTradingBackendClient({
     url: convexUrl,
     machineAuth: {

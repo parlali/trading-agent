@@ -1,7 +1,7 @@
 import {
     createClient,
     finalizeFullResetCleanup,
-    getStrategyModel,
+    getStrategyLlmSummary,
     loadStrategiesFromDocument,
     printDeleteCounts,
     runScript,
@@ -36,7 +36,7 @@ runScript(async () => {
 
     for (const strategy of strategies) {
         await client.addStrategy(strategy)
-        console.log(`  + ${strategy.name} (${strategy.app}, model=${getStrategyModel(strategy)})`)
+        console.log(`  + ${strategy.name} (${strategy.app}, llm=${getStrategyLlmSummary(strategy)})`)
     }
 
     console.log(`Imported ${strategies.length} strategies`)

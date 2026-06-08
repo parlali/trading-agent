@@ -14,7 +14,10 @@ const account: AccountState = {
 
 const basePolicy = {
     dryRun: true,
-    model: "gpt",
+    llm: {
+        provider: "openrouter",
+        model: "gpt",
+    },
     maxBet: {
         mode: "fixed",
         value: 5,

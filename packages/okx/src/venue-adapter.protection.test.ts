@@ -180,11 +180,12 @@ describe("OKXVenueAdapter protection orders", () => {
             })
 
             const request = client.placeAlgoOrder.mock.calls[0]?.[0]
+            const childId = request.algoClOrdId
             expect(request).toMatchObject({
                 ordType: entry.expectedOrderType,
                 algoClOrdId: expect.stringMatching(new RegExp(`^vok${entry.expectedRole}01[a-z2-7]{10}$`)),
             })
-            childIds.push(request.algoClOrdId)
+            childIds.push(childId)
         }
 
         expect(childIds[0]).not.toBe(childIds[1])

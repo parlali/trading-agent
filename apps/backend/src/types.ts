@@ -1,4 +1,4 @@
-import type { ToolDefinition } from "@valiq-trading/agent"
+import type { ToolBinding } from "@valiq-trading/agent"
 import type { AccountState, Logger, Position, RiskValidator, VenueAdapter, VenueApp, WorkingOrder } from "@valiq-trading/core"
 import type { App } from "@valiq-trading/core"
 import type { AuditedSessionFlatResult } from "./session-flat"
@@ -21,7 +21,7 @@ export interface VenuePlugin {
 
     getRiskValidators(): readonly RiskValidator[]
 
-    getExtraTools(config: ExtraToolsConfig): ToolDefinition[]
+    getExtraTools(config: ExtraToolsConfig): ToolBinding[]
 
     preRunHooks?(config: PreRunHookConfig): Promise<PreRunHookResult>
 
