@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 import {
     migrateLegacyStrategyLlmPolicy,
+    POLYMARKET_POLICY_DEFAULTS,
     readConfiguredStrategySafetyPolicy,
     resolveStrategyLlmConfig,
     resolveRuntimeStrategySafetyPolicy,
@@ -106,5 +107,14 @@ describe("strategy LLM policy", () => {
             },
             maxLossPerPlay: 500,
         })).toThrow("mixed legacy and canonical")
+    })
+
+    it("creates default policies with schema-valid OpenRouter model ids", () => {
+        expect(validatePolicy("polymarket", POLYMARKET_POLICY_DEFAULTS)).toMatchObject({
+            llm: {
+                provider: "openrouter",
+                model: "openai/gpt-4.1-mini",
+            },
+        })
     })
 })

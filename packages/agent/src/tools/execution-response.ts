@@ -11,6 +11,7 @@ import {
     type Position,
     type ValidationResult,
 } from "@valiq-trading/core"
+import { assertToolNotAborted } from "../tool-registry"
 
 export interface RejectedExecutionToolResult {
     orderId: string
@@ -93,13 +94,16 @@ export async function executeToolIntent(
         includeTrackedOrder?: boolean
         account?: AccountState
         positions?: Position[]
+        signal?: AbortSignal
     } = {}
 ): Promise<Record<string, unknown>> {
+    assertToolNotAborted(options.signal)
     const [positions, account] = await Promise.all([
         options.positions ? Promise.resolve(options.positions) : pipeline.getPositions(),
         options.account ? Promise.resolve(options.account) : pipeline.getAccountState(),
     ])
 
+    assertToolNotAborted(options.signal)
     const { result, validation, handle } = await pipeline.executeIntent(
         intent,
         account,
@@ -107,6 +111,7 @@ export async function executeToolIntent(
         lifecycleContext
     )
 
+    assertToolNotAborted(options.signal)
     return toExecutionToolResult(result, {
         trackedOrder: options.includeTrackedOrder ? handle?.snapshot : undefined,
         validation,

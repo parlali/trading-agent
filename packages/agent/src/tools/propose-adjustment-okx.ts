@@ -19,6 +19,7 @@ import {
     flattenOKXPositionAfterProtectionFailure,
     type OKXProtectionFailureCategory,
 } from "./okx-order-helpers"
+import { assertToolNotAborted } from "../tool-registry"
 
 export function createOKXProposeAdjustmentTool(
     pipeline: ExecutionPipeline,
@@ -31,13 +32,14 @@ export function createOKXProposeAdjustmentTool(
     return createToolBinding({
         name: "propose_adjustment",
         venue: "okx-swap",
-        handler: async (params) => {
+        handler: async (params, context) => {
             const validated = params as z.infer<typeof okxAdjustmentParamsSchema>
 
             if (validated.stopLoss === undefined && validated.takeProfit === undefined) {
                 return createRejectedExecutionToolResult("Provide stopLoss, takeProfit, or both")
             }
 
+            assertToolNotAborted(context?.signal)
             const positions = await pipeline.getPositions()
             const position = positions.find((entry) => entry.instrument.toUpperCase() === validated.instrument.toUpperCase())
             if (!position) {
@@ -117,6 +119,7 @@ export function createOKXProposeAdjustmentTool(
                 protectionIntent,
                 "modify"
             )
+            assertToolNotAborted(context?.signal)
             const protectionUpdate = await updateProtectionOrdersWithRetry({
                 venue,
                 instrument,
@@ -155,6 +158,7 @@ export function createOKXProposeAdjustmentTool(
 
             let refreshedPositions: Awaited<ReturnType<OKXVenueAdapter["getPositions"]>>
             try {
+                assertToolNotAborted(context?.signal)
                 refreshedPositions = await venue.getPositions()
             } catch (error) {
                 const errorDetail = getExecutionErrorDetail(error)
@@ -223,6 +227,7 @@ export function createOKXProposeAdjustmentTool(
                 return createProtectionRejectedResult(failure.error, failure.category, failure.flattened)
             }
 
+            assertToolNotAborted(context?.signal)
             await options?.onExecutionSafetyRecovered?.({
                 instrument,
                 resolutionNote: "Protection update verified from provider truth",

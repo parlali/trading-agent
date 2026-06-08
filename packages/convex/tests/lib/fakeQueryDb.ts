@@ -7,6 +7,11 @@ type RegisteredFunctionForTest = {
     _handler: (ctx: never, args: never) => Promise<unknown>
 }
 
+type FakeIndexQuery = {
+    eq: (field: string, value: unknown) => FakeIndexQuery
+    lt: (field: string, value: unknown) => FakeIndexQuery
+}
+
 class FakeDb {
     constructor(private readonly rows: Record<string, FakeRow[]>) {}
 
@@ -16,15 +21,19 @@ class FakeDb {
 }
 
 class FakeQuery {
-    private filters: Array<{ field: string; value: unknown }> = []
+    private filters: Array<{ field: string; operator: "eq" | "lt"; value: unknown }> = []
     private orderDirection: "asc" | "desc" = "asc"
 
     constructor(private readonly rows: FakeRow[]) {}
 
-    withIndex(_name: string, filter?: (q: { eq: (field: string, value: unknown) => unknown }) => unknown) {
-        const queryFilter: { eq: (field: string, value: unknown) => unknown } = {
+    withIndex(_name: string, filter?: (q: FakeIndexQuery) => unknown) {
+        const queryFilter: FakeIndexQuery = {
             eq: (field, value) => {
-                this.filters.push({ field, value })
+                this.filters.push({ field, operator: "eq", value })
+                return queryFilter
+            },
+            lt: (field, value) => {
+                this.filters.push({ field, operator: "lt", value })
                 return queryFilter
             },
         }
@@ -47,7 +56,14 @@ class FakeQuery {
 
     private applyFilters() {
         const filtered = this.rows.filter((row) =>
-            this.filters.every((filter) => row[filter.field] === filter.value)
+            this.filters.every((filter) => {
+                if (filter.operator === "eq") {
+                    return row[filter.field] === filter.value
+                }
+                return typeof row[filter.field] === "number" &&
+                    typeof filter.value === "number" &&
+                    row[filter.field] < filter.value
+            })
         )
 
         return this.orderDirection === "desc"
@@ -61,25 +77,16 @@ export async function callRegisteredQuery(
     rows: Record<string, FakeRow[]>,
     args: Record<string, unknown>
 ): Promise<unknown> {
-    const originalToken = process.env.BACKEND_SERVICE_TOKEN
-    process.env.BACKEND_SERVICE_TOKEN = "test-token"
     const ctx = {
         auth: {
             getUserIdentity: async () => null,
         },
+        backendServiceToken: "test-token",
         db: new FakeDb(rows),
     }
 
-    try {
-        return await (registered as RegisteredFunctionForTest)._handler(ctx as never, {
-            serviceToken: "test-token",
-            ...args,
-        } as never)
-    } finally {
-        if (originalToken === undefined) {
-            delete process.env.BACKEND_SERVICE_TOKEN
-        } else {
-            process.env.BACKEND_SERVICE_TOKEN = originalToken
-        }
-    }
+    return await (registered as RegisteredFunctionForTest)._handler(ctx as never, {
+        serviceToken: "test-token",
+        ...args,
+    } as never)
 }

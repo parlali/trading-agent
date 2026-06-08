@@ -95,8 +95,23 @@ function mapPositionRows(rows: PositionDocRow[]): Position[] {
         unrealizedPnl: row.unrealizedPnl,
         stopLoss: row.stopLoss,
         takeProfit: row.takeProfit,
-        metadata: row.metadata ? JSON.parse(row.metadata) as Record<string, unknown> : undefined,
+        metadata: parsePositionMetadata(row.metadata),
     }))
+}
+
+function parsePositionMetadata(metadata?: string): Record<string, unknown> | undefined {
+    if (!metadata) {
+        return undefined
+    }
+
+    try {
+        const parsed = JSON.parse(metadata)
+        return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+            ? parsed as Record<string, unknown>
+            : undefined
+    } catch {
+        return undefined
+    }
 }
 
 export const createTradingBackendClient = (config: string | TradingBackendClientConfig): TradingBackendClient => {
@@ -150,13 +165,14 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
                 } as never) as StoredRun | null
             )
         },
-        async getRunHistory(strategyId: Id<"strategies">, limit?: number): Promise<StoredRun[]> {
+        async getRunHistory(strategyId: Id<"strategies">, limit?: number, beforeStartedAt?: number): Promise<StoredRun[]> {
             return await runWithTimeout(
                 "Convex query getRunHistory",
                 async () => await client.query(api.queries.getRunHistory, {
                     ...requireMachineAuth(),
                     strategyId,
                     limit,
+                    beforeStartedAt,
                 } as never) as StoredRun[]
             )
         },

@@ -42,6 +42,7 @@ describe("script argument parsing", () => {
             "--strategy",
             "strategy-123",
             "--dry-run-only",
+            "--refresh-provider-sync=true",
         ]
 
         try {
@@ -49,6 +50,7 @@ describe("script argument parsing", () => {
             expect(resolveArg("strategy")).toBe("strategy-123")
             expect(resolveArg("dry-run-only")).toBeUndefined()
             expect(resolveFlag("dry-run-only")).toBe(true)
+            expect(resolveFlag("refresh-provider-sync")).toBe(true)
         } finally {
             process.argv = originalArgv
         }

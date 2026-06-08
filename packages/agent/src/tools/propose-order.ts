@@ -25,7 +25,7 @@ export function createProposeOrderTool(
     return createToolBinding({
         name: "propose_order",
         venue: isAlpacaOptions ? "alpaca-options" : "polymarket",
-        handler: async (params) => {
+        handler: async (params, context) => {
             const validated = params as z.infer<typeof orderParamsSchema>
             const intent: OrderIntent = {
                 instrument: validated.instrument,
@@ -39,7 +39,10 @@ export function createProposeOrderTool(
                 metadata: validated.metadata,
             }
 
-            return await executeToolIntent(pipeline, intent, { action: "entry" }, { includeTrackedOrder: true })
+            return await executeToolIntent(pipeline, intent, { action: "entry" }, {
+                includeTrackedOrder: true,
+                signal: context?.signal,
+            })
         },
     })
 }

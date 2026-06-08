@@ -180,6 +180,10 @@ describe("OKXVenueAdapter protection orders", () => {
             })
 
             const request = client.placeAlgoOrder.mock.calls[0]?.[0]
+            expect(request).toBeDefined()
+            if (!request) {
+                throw new Error("Expected OKX protection order request")
+            }
             const childId = request.algoClOrdId
             expect(request).toMatchObject({
                 ordType: entry.expectedOrderType,

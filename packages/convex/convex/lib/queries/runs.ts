@@ -14,13 +14,19 @@ export const getRunHistory = query({
         serviceToken: v.optional(v.string()),
         strategyId: v.id("strategies"),
         limit: v.optional(v.number()),
+        beforeStartedAt: v.optional(v.number()),
     },
     handler: async (ctx, args) => {
         await requireUserOrServiceToken(ctx, args.serviceToken)
         const limit = resolveRunHistoryLimit(args.limit)
         return await ctx.db
             .query("strategy_runs")
-            .withIndex("by_strategy", (q) => q.eq("strategyId", args.strategyId))
+            .withIndex("by_strategy_started_at", (q) => {
+                const scoped = q.eq("strategyId", args.strategyId)
+                return args.beforeStartedAt === undefined
+                    ? scoped
+                    : scoped.lt("startedAt", args.beforeStartedAt)
+            })
             .order("desc")
             .take(limit)
     },

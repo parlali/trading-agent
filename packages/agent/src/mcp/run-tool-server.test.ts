@@ -3,7 +3,7 @@ import { z } from "zod"
 import { createLogger } from "@valiq-trading/core"
 import { ToolExecutionEngine } from "../tool-execution-engine"
 import { ToolRegistry } from "../tool-registry"
-import { startRunToolServer } from "./run-tool-server"
+import { formatMcpUrlHost, startRunToolServer } from "./run-tool-server"
 
 describe("startRunToolServer", () => {
     it("lists run-scoped tools from the active registry", async () => {
@@ -60,6 +60,38 @@ describe("startRunToolServer", () => {
         }
     })
 
+    it("returns protocol errors for malformed or oversized requests", async () => {
+        const harness = await createHarness()
+        try {
+            const malformed = await fetch(harness.url, {
+                method: "POST",
+                headers: {
+                    Authorization: `Bearer ${harness.token}`,
+                },
+                body: "{",
+            })
+            const malformedBody = await malformed.json() as { error?: { code?: number } }
+            const oversized = await fetch(harness.url, {
+                method: "POST",
+                headers: {
+                    Authorization: `Bearer ${harness.token}`,
+                },
+                body: "x".repeat(2 * 1024 * 1024 + 1),
+            })
+            const oversizedBody = await oversized.json() as { error?: { code?: number; message?: string } }
+
+            expect(malformed.status).toBe(400)
+            expect(malformedBody.error?.code).toBe(-32700)
+            expect(oversized.status).toBe(413)
+            expect(oversizedBody.error).toMatchObject({
+                code: -32600,
+                message: "Request body too large",
+            })
+        } finally {
+            await harness.close()
+        }
+    })
+
     it("executes a fake tool through the shared execution engine", async () => {
         const harness = await createHarness()
         try {
@@ -105,6 +137,11 @@ describe("startRunToolServer", () => {
                 method: "tools/list",
             }),
         })).rejects.toThrow()
+    })
+
+    it("formats IPv6 MCP URL hosts with brackets", () => {
+        expect(formatMcpUrlHost("::1")).toBe("[::1]")
+        expect(formatMcpUrlHost("127.0.0.1")).toBe("127.0.0.1")
     })
 })
 

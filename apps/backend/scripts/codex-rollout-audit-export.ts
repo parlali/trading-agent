@@ -4,6 +4,7 @@ import { resolveStrategyLlmConfig } from "@valiq-trading/core"
 import type { StoredRun } from "@valiq-trading/convex"
 import {
     collectCodexRunAuditArtifact,
+    findStrategyRunHistoryMatches,
     refreshProviderSyncForAudit,
     resolveAuditOutputPath,
     resolveStrategySelection,
@@ -101,15 +102,16 @@ async function resolveScheduledCodexRuns(args: {
     strategy: Awaited<ReturnType<typeof resolveStrategySelection>>
     minScheduledRuns: number
 }): Promise<StoredRun[]> {
-    const runs = await args.client.getRunHistory(args.strategy._id, Math.max(100, args.minScheduledRuns * 10))
-
-    return runs
-        .filter((run) =>
+    return await findStrategyRunHistoryMatches({
+        client: args.client,
+        strategyId: args.strategy._id,
+        minMatches: args.minScheduledRuns,
+        initialLimit: Math.max(100, args.minScheduledRuns * 10),
+        matches: (run) =>
             run.status === "completed" &&
             run.trigger === "cron" &&
-            run.llmProvider === "codex"
-        )
-        .slice(0, args.minScheduledRuns)
+            run.llmProvider === "codex",
+    })
 }
 
 function resolveMinScheduledRuns(): number {

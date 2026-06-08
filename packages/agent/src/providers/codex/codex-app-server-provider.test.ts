@@ -7,6 +7,7 @@ import type { AgentProviderRunArgs } from "../types"
 import type { JsonRpcErrorPayload, JsonRpcId, JsonRpcMessage } from "./codex-json-rpc-client"
 import {
     CodexAppServerProvider,
+    buildCodexEnvironment,
     type CodexAppServerClient,
     type CodexAppServerClientFactoryArgs,
     type CodexAppServerProviderDependencies,
@@ -138,6 +139,96 @@ describe("CodexAppServerProvider", () => {
             sandbox: "read-only",
             environments: [],
         })
+    })
+
+    it("uses cached turn completion when Codex completes before wait registration", async () => {
+        const provider = createProvider({
+            createClient: (args) => new FakeCodexClient(args, async (fake) => {
+                fake.emitNotification({
+                    method: "item/agentMessage/delta",
+                    params: { delta: "Early complete" },
+                })
+                fake.emitNotification({
+                    method: "turn/completed",
+                    params: {
+                        threadId: "thread-1",
+                        turn: {
+                            id: "turn-1",
+                            status: "completed",
+                        },
+                    },
+                })
+            }, {
+                completeTurnBeforeResponse: true,
+            }),
+        })
+
+        const result = await provider.run(createRunArgs())
+
+        expect(result.summary).toBe("Early complete")
+        expect(result.error).toBeUndefined()
+    })
+
+    it("resets run-scoped mutable state between provider runs", async () => {
+        let run = 0
+        const provider = createProvider({
+            createClient: (args) => {
+                run++
+                return new FakeCodexClient(args, async (fake) => {
+                    fake.emitNotification({
+                        method: "item/agentMessage/delta",
+                        params: { delta: run === 1 ? "First" : "Second" },
+                    })
+                    fake.emitNotification({
+                        method: "turn/completed",
+                        params: {
+                            threadId: "thread-1",
+                            turn: {
+                                id: "turn-1",
+                                status: "completed",
+                            },
+                        },
+                    })
+                })
+            },
+        })
+
+        await expect(provider.run(createRunArgs())).resolves.toMatchObject({
+            summary: "First",
+        })
+        await expect(provider.run(createRunArgs())).resolves.toMatchObject({
+            summary: "Second",
+            error: undefined,
+        })
+    })
+
+    it("builds a bounded Codex subprocess environment with only selected credentials", () => {
+        const originalEnv = process.env
+        process.env = {
+            PATH: "/usr/bin",
+            HOME: "/home/test",
+            AWS_SECRET_ACCESS_KEY: "do-not-inherit",
+            CODEX_ACCESS_TOKEN: "ambient-token",
+        }
+
+        try {
+            const env = buildCodexEnvironment({
+                provider: "codex",
+                model: "codex-test",
+                authMode: "access-token",
+                codexAccessToken: "configured-token",
+            }, "mcp-token")
+
+            expect(env).toMatchObject({
+                PATH: "/usr/bin",
+                HOME: "/home/test",
+                VALIQ_CODEX_MCP_TOKEN: "mcp-token",
+                CODEX_ACCESS_TOKEN: "configured-token",
+            })
+            expect(env.AWS_SECRET_ACCESS_KEY).toBeUndefined()
+        } finally {
+            process.env = originalEnv
+        }
     })
 
     it("fails closed when Codex starts a non-run MCP server", async () => {
@@ -296,7 +387,10 @@ class FakeCodexClient implements CodexAppServerClient {
 
     constructor(
         private readonly args: CodexAppServerClientFactoryArgs,
-        private readonly completeTurn: (client: FakeCodexClient) => Promise<void> | void
+        private readonly completeTurn: (client: FakeCodexClient) => Promise<void> | void,
+        private readonly options: {
+            completeTurnBeforeResponse?: boolean
+        } = {}
     ) {}
 
     async initialize(): Promise<unknown> {
@@ -325,9 +419,13 @@ class FakeCodexClient implements CodexAppServerClient {
             return { thread: { id: "thread-1" } }
         }
         if (method === "turn/start") {
-            setTimeout(() => {
-                void this.completeTurn(this)
-            }, 0)
+            if (this.options.completeTurnBeforeResponse) {
+                await this.completeTurn(this)
+            } else {
+                setTimeout(() => {
+                    void this.completeTurn(this)
+                }, 0)
+            }
             return { turn: { id: "turn-1" } }
         }
         if (method === "turn/interrupt") {

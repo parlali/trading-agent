@@ -37,7 +37,10 @@ export function resolveArg(name: string): string | undefined {
 }
 
 export function resolveFlag(name: string): boolean {
-    return process.argv.includes(`--${name}`)
+    const flag = `--${name}`
+    return process.argv.some((value) =>
+        value === flag || value.startsWith(`${flag}=`)
+    )
 }
 
 export function requireArg(name: string): string {

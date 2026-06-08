@@ -6,13 +6,16 @@ import {
     orderIdWithReasonParamsSchema,
 } from "../tool-contracts"
 import { toExecutionToolResult } from "./execution-response"
+import { assertToolNotAborted } from "../tool-registry"
 
 export function createCancelOrderTool(pipeline: ExecutionPipeline): ToolBinding {
     return createToolBinding({
         name: "cancel_order",
-        handler: async (params) => {
+        handler: async (params, context) => {
             const validated = params as z.infer<typeof orderIdWithReasonParamsSchema>
+            assertToolNotAborted(context?.signal)
             const result = await pipeline.cancelOrder(validated.orderId, validated.reason)
+            assertToolNotAborted(context?.signal)
             const trackedOrder = await pipeline.getOrderSnapshot(validated.orderId)
 
             return toExecutionToolResult(result, { trackedOrder })

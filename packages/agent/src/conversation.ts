@@ -1,5 +1,7 @@
 import type { ChatMessage, ToolCall } from "./llm-client"
 
+const MAX_TOOL_RESULT_CHARS = 12_000
+
 export class ConversationManager {
     private messages: ChatMessage[] = []
     private sequence = 0
@@ -24,9 +26,10 @@ export class ConversationManager {
     }
 
     addToolResult(toolCallId: string, name: string, content: string): void {
+        const normalized = normalizeToolResultContent(content)
         this.messages.push({
             role: "tool",
-            content,
+            content: normalized,
             tool_call_id: toolCallId,
             name,
         })
@@ -54,4 +57,10 @@ export class ConversationManager {
     getMessageCount(): number {
         return this.messages.length
     }
+}
+
+function normalizeToolResultContent(content: string): string {
+    return content.length > MAX_TOOL_RESULT_CHARS
+        ? `${content.slice(0, MAX_TOOL_RESULT_CHARS)}\n...[truncated from ${content.length} chars]`
+        : content
 }

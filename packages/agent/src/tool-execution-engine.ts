@@ -1,6 +1,6 @@
 import { readFiniteNumber, type AgentMessageLogger, type Logger, type StrategyRunContext } from "@valiq-trading/core"
 import type { ToolCall } from "./llm-client"
-import type { ToolBinding, ToolRegistry } from "./tool-registry"
+import { assertToolNotAborted, type ToolBinding, type ToolRegistry } from "./tool-registry"
 
 export interface OpportunityCoverageMetrics {
     researched: number
@@ -65,6 +65,10 @@ interface OpenRouterToolExecutionCallbacks {
     onUserMessage: (content: string) => Promise<void> | void
 }
 
+interface OpenRouterToolExecutionOptions {
+    signal?: AbortSignal
+}
+
 type ValidToolCall = {
     toolCallId: string
     toolName: string
@@ -117,7 +121,8 @@ export class ToolExecutionEngine {
 
     async executeOpenRouterBatch(
         toolCalls: ToolCall[],
-        callbacks: OpenRouterToolExecutionCallbacks
+        callbacks: OpenRouterToolExecutionCallbacks,
+        options: OpenRouterToolExecutionOptions = {}
     ): Promise<void> {
         const valid: ValidToolCall[] = []
 
@@ -170,8 +175,8 @@ export class ToolExecutionEngine {
 
         const toolTimeoutMs = this.resolveToolTimeoutMs()
         const results = executeSequentially
-            ? await this.executeToolsSequentially(valid, toolTimeoutMs)
-            : await this.executeToolsInParallel(valid, toolTimeoutMs)
+            ? await this.executeToolsSequentially(valid, toolTimeoutMs, options.signal)
+            : await this.executeToolsInParallel(valid, toolTimeoutMs, options.signal)
 
         for (let i = 0; i < valid.length; i++) {
             const entry = valid[i]!
@@ -408,23 +413,30 @@ export class ToolExecutionEngine {
 
     private resolveToolTimeoutMs(): number {
         const remainingMs = this.config.runTimeoutMs - (Date.now() - this.config.runStartedAt)
-        return Math.max(Math.min(remainingMs, this.maxToolTimeoutMs), this.minToolTimeoutMs)
+        if (remainingMs <= 0) {
+            return 0
+        }
+        const upperBound = Math.min(remainingMs, this.maxToolTimeoutMs)
+        const lowerBound = Math.min(this.minToolTimeoutMs, this.maxToolTimeoutMs)
+        return Math.max(upperBound, lowerBound)
     }
 
     private async executeToolsInParallel(
         valid: ValidToolCall[],
-        toolTimeoutMs: number
+        toolTimeoutMs: number,
+        signal?: AbortSignal
     ): Promise<PromiseSettledResult<unknown>[]> {
         return await Promise.allSettled(
             valid.map(({ toolBinding, parsedArgs }) =>
-                executeToolWithTimeout(toolBinding, parsedArgs, toolTimeoutMs)
+                executeToolWithTimeout(toolBinding, parsedArgs, toolTimeoutMs, signal)
             )
         )
     }
 
     private async executeToolsSequentially(
         valid: ValidToolCall[],
-        toolTimeoutMs: number
+        toolTimeoutMs: number,
+        signal?: AbortSignal
     ): Promise<PromiseSettledResult<unknown>[]> {
         const results: PromiseSettledResult<unknown>[] = []
 
@@ -432,7 +444,7 @@ export class ToolExecutionEngine {
             try {
                 results.push({
                     status: "fulfilled",
-                    value: await executeToolWithTimeout(toolBinding, parsedArgs, toolTimeoutMs),
+                    value: await executeToolWithTimeout(toolBinding, parsedArgs, toolTimeoutMs, signal),
                 })
             } catch (reason) {
                 results.push({
@@ -477,14 +489,51 @@ export class ToolExecutionEngine {
 async function executeToolWithTimeout(
     toolBinding: ToolBinding,
     parsedArgs: unknown,
-    toolTimeoutMs: number
+    toolTimeoutMs: number,
+    parentSignal?: AbortSignal
 ): Promise<unknown> {
-    return await Promise.race([
-        toolBinding.handler(parsedArgs),
-        new Promise<never>((_, reject) =>
-            setTimeout(() => reject(new Error(`Tool timed out after ${Math.round(toolTimeoutMs / 1000)}s`)), toolTimeoutMs)
-        ),
-    ])
+    if (toolTimeoutMs <= 0) {
+        throw new Error("Tool timed out before execution because the run timeout was exhausted")
+    }
+
+    const controller = new AbortController()
+    const signal = controller.signal
+    const abortFromParent = () => controller.abort(parentSignal?.reason)
+    if (parentSignal) {
+        assertToolNotAborted(parentSignal)
+        parentSignal.addEventListener("abort", abortFromParent, { once: true })
+    }
+
+    let timeoutId: ReturnType<typeof setTimeout> | undefined
+    let timedOut = false
+    try {
+        return await Promise.race([
+            toolBinding.handler(parsedArgs, { signal }),
+            new Promise<never>((_, reject) => {
+                timeoutId = setTimeout(() => {
+                    timedOut = true
+                    controller.abort()
+                    reject(new Error(`Tool timed out after ${Math.round(toolTimeoutMs / 1000)}s`))
+                }, toolTimeoutMs)
+                signal.addEventListener("abort", () => {
+                    if (!timedOut) {
+                        reject(createAbortError("Tool execution cancelled"))
+                    }
+                }, { once: true })
+            }),
+        ])
+    } finally {
+        if (timeoutId) {
+            clearTimeout(timeoutId)
+        }
+        parentSignal?.removeEventListener("abort", abortFromParent)
+    }
+}
+
+function createAbortError(message: string): Error {
+    const error = new Error(message)
+    error.name = "AbortError"
+    return error
 }
 
 function createOpportunityCoverageMetrics(): OpportunityCoverageMetrics {

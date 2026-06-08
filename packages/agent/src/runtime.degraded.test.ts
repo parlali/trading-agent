@@ -5,6 +5,7 @@ import { ToolRegistry } from "./tool-registry"
 import type { LLMResponse } from "./llm-client"
 import { createLogger } from "@valiq-trading/core"
 import { createPolymarketGetMarketPriceTool } from "./tools/get-market-price-polymarket"
+import { OpenRouterChatClient } from "./providers/openrouter/openrouter-chat-client"
 
 const baseUsage = {
     promptTokens: 10,
@@ -47,8 +48,7 @@ describe("executeAgentRun degraded research", () => {
             }
         })
 
-        const llm = await import("./llm-client")
-        vi.spyOn(llm.LLMClient.prototype, "chat").mockImplementation(chat)
+        vi.spyOn(OpenRouterChatClient.prototype, "chat").mockImplementation(chat)
 
         const venue = {
             getMarketPrice: vi.fn(),
@@ -127,8 +127,7 @@ describe("executeAgentRun degraded research", () => {
             }
         })
 
-        const llm = await import("./llm-client")
-        vi.spyOn(llm.LLMClient.prototype, "chat").mockImplementation(chat)
+        vi.spyOn(OpenRouterChatClient.prototype, "chat").mockImplementation(chat)
 
         const tools = new ToolRegistry()
         tools.register({

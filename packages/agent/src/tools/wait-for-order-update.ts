@@ -5,18 +5,21 @@ import {
     createToolBinding,
     waitForOrderUpdateParamsSchema,
 } from "../tool-contracts"
+import { assertToolNotAborted } from "../tool-registry"
 
 export function createWaitForOrderUpdateTool(pipeline: ExecutionPipeline): ToolBinding {
     return createToolBinding({
         name: "wait_for_order_update",
-        handler: async (params) => {
+        handler: async (params, context) => {
             const validated = params as z.infer<typeof waitForOrderUpdateParamsSchema>
+            assertToolNotAborted(context?.signal)
             const snapshot = await pipeline.waitForOrderUpdate(
                 validated.orderId,
                 () => ({ decision: "wait" }),
                 { timeoutMs: validated.timeoutMs }
             )
 
+            assertToolNotAborted(context?.signal)
             return {
                 orderId: snapshot.orderId,
                 action: snapshot.action,

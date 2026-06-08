@@ -1,6 +1,6 @@
 import { query } from "../../_generated/server"
 import { v } from "convex/values"
-import { requireUser, requireServiceToken } from "../authGuards"
+import { requireUser, requireServiceTokenForContext } from "../authGuards"
 import { getLatestPositionsForStrategy } from "../instrumentClaims"
 import { isDryRunLedgerMetadata } from "../dryRunLedger"
 
@@ -19,7 +19,7 @@ export const getOpenPositions = query({
 export const getStrategyPositions = query({
     args: { serviceToken: v.string(), strategyId: v.id("strategies") },
     handler: async (ctx, args) => {
-        requireServiceToken(args.serviceToken)
+        requireServiceTokenForContext(args.serviceToken, ctx)
         return await getLatestPositionsForStrategy(ctx, args.strategyId)
     },
 })
@@ -32,7 +32,7 @@ export const getStrategyPositionsForRun = query({
         maxSyncs: v.optional(v.number()),
     },
     handler: async (ctx, args) => {
-        requireServiceToken(args.serviceToken)
+        requireServiceTokenForContext(args.serviceToken, ctx)
         const maxSyncs = resolvePositionSyncScanLimit(args.maxSyncs)
         const syncs = await ctx.db
             .query("position_syncs")

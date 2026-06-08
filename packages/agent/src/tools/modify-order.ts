@@ -7,6 +7,7 @@ import {
     defaultModifyOrderParamsSchema,
 } from "../tool-contracts"
 import { toExecutionToolResult } from "./execution-response"
+import { assertToolNotAborted } from "../tool-registry"
 
 interface CreateModifyOrderToolOptions {
     mode?: "default" | "alpaca-options"
@@ -24,7 +25,7 @@ export function createModifyOrderTool(
     return createToolBinding({
         name: "modify_order",
         venue: isAlpacaOptions ? "alpaca-options" : "polymarket",
-        handler: async (params) => {
+        handler: async (params, context) => {
             const validated = params as z.infer<typeof paramsSchema>
             const changes: Partial<OrderIntent> = {}
 
@@ -34,7 +35,9 @@ export function createModifyOrderTool(
             }
             if (validated.quantity !== undefined) changes.quantity = validated.quantity
 
+            assertToolNotAborted(context?.signal)
             const result = await pipeline.modifyOrder(validated.orderId, changes, validated.reason)
+            assertToolNotAborted(context?.signal)
             const trackedOrder = await pipeline.getOrderSnapshot(validated.orderId)
 
             return toExecutionToolResult(result, { trackedOrder })

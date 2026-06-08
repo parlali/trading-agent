@@ -98,12 +98,17 @@ export class OpenRouterChatClient {
         messages: ChatMessage[],
         tools?: OpenRouterTool[],
         logger?: Logger,
-        maxRetries = 3
+        maxRetries = 3,
+        signal?: AbortSignal
     ): Promise<OpenRouterChatResponse> {
         return retryWithBackoff(
-            () => this.doChat(messages, tools, logger),
+            () => this.doChat(messages, tools, logger, signal),
             maxRetries,
-            2000
+            2000,
+            {
+                signal,
+                shouldRetry: (error) => !isAbortError(error),
+            }
         )
     }
 
@@ -117,10 +122,16 @@ export class OpenRouterChatClient {
     private async doChat(
         messages: ChatMessage[],
         tools?: OpenRouterTool[],
-        logger?: Logger
+        logger?: Logger,
+        externalSignal?: AbortSignal
     ): Promise<OpenRouterChatResponse> {
+        throwIfSignalAborted(externalSignal)
         this.controller = new AbortController()
         const signal = this.controller.signal
+        const abortFromExternal = () => {
+            this.controller?.abort()
+        }
+        externalSignal?.addEventListener("abort", abortFromExternal, { once: true })
 
         const requestTimer = setTimeout(() => {
             this.controller?.abort()
@@ -161,19 +172,24 @@ export class OpenRouterChatClient {
                 throw new Error(`OpenRouter API error: ${response.status} ${response.statusText} - ${errorText}`)
             }
 
-            return await this.processStream(response, logger)
+            return await this.processStream(response, logger, externalSignal)
         } catch (error) {
-            if (error instanceof Error && error.name === "AbortError") {
-                throw new Error("LLM request timed out or was cancelled")
+            if (isAbortError(error) || externalSignal?.aborted) {
+                throw createOpenRouterAbortError()
             }
             throw error
         } finally {
             clearTimeout(requestTimer)
+            externalSignal?.removeEventListener("abort", abortFromExternal)
             this.controller = null
         }
     }
 
-    private async processStream(response: Response, logger?: Logger): Promise<OpenRouterChatResponse> {
+    private async processStream(
+        response: Response,
+        logger?: Logger,
+        signal?: AbortSignal
+    ): Promise<OpenRouterChatResponse> {
         const reader = response.body?.getReader()
         if (!reader) {
             throw new Error("No readable stream from OpenRouter response")
@@ -192,17 +208,73 @@ export class OpenRouterChatClient {
         }
         let finishReason = ""
 
+        const handleLine = (line: string): void => {
+            const trimmed = line.trim()
+            if (trimmed === "" || trimmed === "data: [DONE]") return
+            if (!trimmed.startsWith("data: ")) return
+
+            const jsonStr = trimmed.slice(6).trim()
+
+            let chunk: StreamChunk
+            try {
+                chunk = JSON.parse(jsonStr)
+            } catch {
+                logger?.warn("Failed to parse SSE chunk", { raw: jsonStr })
+                return
+            }
+
+            if (chunk.usage) {
+                this.extractUsage(chunk.usage, usage)
+            }
+
+            if (typeof chunk.id === "string" && chunk.id.length > 0 && !usage.responseIds.includes(chunk.id)) {
+                usage.responseIds.push(chunk.id)
+            }
+
+            const choice = chunk.choices?.[0]
+            if (choice?.finish_reason) {
+                finishReason = choice.finish_reason
+            }
+            if (!choice?.delta) return
+
+            if (choice.delta.content) {
+                content += choice.delta.content
+            }
+
+            if (choice.delta.tool_calls) {
+                for (const tc of choice.delta.tool_calls) {
+                    if (tc.id) {
+                        if (!toolCallBuffer[tc.id]) {
+                            toolCallBuffer[tc.id] = { id: tc.id, name: "", arguments: "" }
+                        }
+                        const entry = toolCallBuffer[tc.id]
+                        if (entry && tc.function?.name) {
+                            entry.name += tc.function.name
+                        }
+                        if (entry && tc.function?.arguments) {
+                            entry.arguments += tc.function.arguments
+                        }
+                    } else {
+                        const ids = Object.keys(toolCallBuffer)
+                        const lastId = ids[ids.length - 1]
+                        const lastEntry = lastId ? toolCallBuffer[lastId] : undefined
+                        if (lastEntry) {
+                            if (tc.function?.name) {
+                                lastEntry.name += tc.function.name
+                            }
+                            if (tc.function?.arguments) {
+                                lastEntry.arguments += tc.function.arguments
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         try {
             while (true) {
-                const readResult = await Promise.race([
-                    reader.read(),
-                    new Promise<never>((_, reject) =>
-                        setTimeout(
-                            () => reject(new Error("Stream stalled: no data received within timeout")),
-                            this.streamStallTimeoutMs
-                        )
-                    ),
-                ])
+                throwIfSignalAborted(signal)
+                const readResult = await readStreamChunkWithTimeout(reader, this.streamStallTimeoutMs)
                 const { done, value } = readResult
                 if (done) break
 
@@ -211,68 +283,11 @@ export class OpenRouterChatClient {
                 buffer = lines.pop() || ""
 
                 for (const line of lines) {
-                    const trimmed = line.trim()
-                    if (trimmed === "" || trimmed === "data: [DONE]") continue
-                    if (!trimmed.startsWith("data: ")) continue
-
-                    const jsonStr = trimmed.slice(6).trim()
-
-                    let chunk: StreamChunk
-                    try {
-                        chunk = JSON.parse(jsonStr)
-                    } catch {
-                        logger?.warn("Failed to parse SSE chunk", { raw: jsonStr })
-                        continue
-                    }
-
-                    if (chunk.usage) {
-                        this.extractUsage(chunk.usage, usage)
-                    }
-
-                    if (typeof chunk.id === "string" && chunk.id.length > 0 && !usage.responseIds.includes(chunk.id)) {
-                        usage.responseIds.push(chunk.id)
-                    }
-
-                    const choice = chunk.choices?.[0]
-                    if (!choice?.delta) continue
-
-                    if (choice.delta.content) {
-                        content += choice.delta.content
-                    }
-
-                    if (choice.delta.tool_calls) {
-                        for (const tc of choice.delta.tool_calls) {
-                            if (tc.id) {
-                                if (!toolCallBuffer[tc.id]) {
-                                    toolCallBuffer[tc.id] = { id: tc.id, name: "", arguments: "" }
-                                }
-                                const entry = toolCallBuffer[tc.id]
-                                if (entry && tc.function?.name) {
-                                    entry.name += tc.function.name
-                                }
-                                if (entry && tc.function?.arguments) {
-                                    entry.arguments += tc.function.arguments
-                                }
-                            } else {
-                                const ids = Object.keys(toolCallBuffer)
-                                const lastId = ids[ids.length - 1]
-                                const lastEntry = lastId ? toolCallBuffer[lastId] : undefined
-                                if (lastEntry) {
-                                    if (tc.function?.name) {
-                                        lastEntry.name += tc.function.name
-                                    }
-                                    if (tc.function?.arguments) {
-                                        lastEntry.arguments += tc.function.arguments
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    if (choice.finish_reason) {
-                        finishReason = choice.finish_reason
-                    }
+                    handleLine(line)
                 }
+            }
+            if (buffer.trim().length > 0) {
+                handleLine(buffer)
             }
         } finally {
             reader.releaseLock()
@@ -306,6 +321,43 @@ export class OpenRouterChatClient {
         if (reasoningTokens > target.reasoningTokens) target.reasoningTokens = reasoningTokens
         if (cost > target.cost) target.cost = cost
     }
+}
+
+function readStreamChunkWithTimeout(
+    reader: ReadableStreamDefaultReader<Uint8Array>,
+    timeoutMs: number
+): Promise<ReadableStreamReadResult<Uint8Array>> {
+    let timeoutId: ReturnType<typeof setTimeout> | undefined
+
+    return Promise.race([
+        reader.read(),
+        new Promise<never>((_, reject) => {
+            timeoutId = setTimeout(
+                () => reject(new Error("Stream stalled: no data received within timeout")),
+                timeoutMs
+            )
+        }),
+    ]).finally(() => {
+        if (timeoutId) {
+            clearTimeout(timeoutId)
+        }
+    })
+}
+
+function throwIfSignalAborted(signal?: AbortSignal): void {
+    if (signal?.aborted) {
+        throw createOpenRouterAbortError()
+    }
+}
+
+function isAbortError(error: unknown): boolean {
+    return error instanceof Error && error.name === "AbortError"
+}
+
+function createOpenRouterAbortError(): Error {
+    const error = new Error("LLM request timed out or was cancelled")
+    error.name = "AbortError"
+    return error
 }
 
 export type LLMClientConfig = OpenRouterChatClientConfig

@@ -1,6 +1,7 @@
-import { mkdtemp, rm } from "node:fs/promises"
+import { mkdtemp, readFile, rm } from "node:fs/promises"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
+import { spawnSync } from "node:child_process"
 import { describe, expect, it } from "vitest"
 import {
     CODEX_APP_SERVER_APPROVAL_REQUEST_METHODS,
@@ -9,42 +10,32 @@ import {
     CODEX_APP_SERVER_REQUEST_METHODS,
 } from "./codex-app-server-protocol"
 
-declare const Bun: {
-    spawnSync(args: string[], options?: {
-        stdout?: "pipe"
-        stderr?: "pipe"
-    }): {
-        stdout: Uint8Array
-        stderr: Uint8Array
-        exitCode: number
-    }
-    file(path: string): {
-        json(): Promise<unknown>
-    }
+function hasCodexCli(): boolean {
+    return spawnSync("codex", ["--version"], {
+        stdio: "ignore",
+    }).status === 0
 }
 
 describe("Codex app-server protocol compatibility", () => {
-    it("keeps the locally used method names present in generated Codex schemas", async () => {
+    it.skipIf(!hasCodexCli())("keeps the locally used method names present in generated Codex schemas", async () => {
         const directory = await mkdtemp(join(tmpdir(), "valiq-codex-schema-"))
 
         try {
-            const result = Bun.spawnSync([
-                "codex",
+            const result = spawnSync("codex", [
                 "app-server",
                 "generate-json-schema",
                 "--out",
                 directory,
             ], {
-                stdout: "pipe",
-                stderr: "pipe",
+                encoding: "utf8",
             })
-            const stderr = new TextDecoder().decode(result.stderr)
-            const stdout = new TextDecoder().decode(result.stdout)
+            const stderr = result.stderr
+            const stdout = result.stdout
 
             expect(`${stdout}${stderr}`).not.toContain("CODEX_ACCESS_TOKEN")
-            expect(result.exitCode, stderr || stdout).toBe(0)
+            expect(result.status, stderr || stdout).toBe(0)
 
-            const schema = await Bun.file(join(directory, "codex_app_server_protocol.schemas.json")).json()
+            const schema = JSON.parse(await readFile(join(directory, "codex_app_server_protocol.schemas.json"), "utf8")) as unknown
             const methods = collectMethodEnums(schema)
             const requiredMethods = [
                 ...CODEX_APP_SERVER_REQUEST_METHODS,

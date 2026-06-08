@@ -7,6 +7,7 @@ import {
     closeParamsSchema,
     createToolBinding,
 } from "../tool-contracts"
+import { assertToolNotAborted } from "../tool-registry"
 import { toExecutionToolResult } from "./execution-response"
 import {
     resolveEstimatedPrice as resolvePolymarketEstimatedPrice,
@@ -19,6 +20,7 @@ interface ClosePriceResolverContext {
     reason: string
     closeSide: "buy" | "sell"
     position: Position | undefined
+    signal?: AbortSignal
 }
 
 interface CreateProposeCloseToolOptions {
@@ -32,25 +34,30 @@ export function createProposeCloseTool(
     return createToolBinding({
         name: "propose_close",
         venue: "alpaca-options",
-        handler: async (params) => {
+        handler: async (params, context) => {
             const validated = params as z.infer<typeof closeParamsSchema>
+            assertToolNotAborted(context?.signal)
             const positions = await pipeline.getPositions()
             const position = positions.find((item) => item.instrument === validated.instrument)
             const closeSide = position?.side === "short" ? "buy" : "sell"
+            assertToolNotAborted(context?.signal)
             const estimatedPrice = position
                 ? await options.resolveEstimatedPrice?.({
                     instrument: validated.instrument,
                     reason: validated.reason,
                     closeSide,
                     position,
+                    signal: context?.signal,
                 })
                 : undefined
+            assertToolNotAborted(context?.signal)
             const { result, validation } = await pipeline.closePosition(
                 validated.instrument,
                 validated.reason,
                 { estimatedPrice }
             )
 
+            assertToolNotAborted(context?.signal)
             return toExecutionToolResult(result, { validation })
         },
     })
@@ -68,12 +75,12 @@ export function createPolymarketProposeCloseTool(
     return createToolBinding({
         name: "propose_close",
         venue: "polymarket",
-        handler: async (params) => {
+        handler: async (params, context) => {
             const validated = params as z.infer<typeof closeParamsSchema>
             return await base.handler({
                 ...validated,
                 instrument: normalizePolymarketTokenId(validated.instrument),
-            })
+            }, context)
         },
     })
 }
@@ -86,7 +93,8 @@ export function createMT5ProposeCloseTool(
         name: "propose_close",
         venue: "mt5",
         handler: createProposeCloseTool(pipeline, {
-            resolveEstimatedPrice: async ({ instrument, closeSide }) => {
+            resolveEstimatedPrice: async ({ instrument, closeSide, signal }) => {
+                assertToolNotAborted(signal)
                 const symbolInfo = await venue.getSymbolInfo(instrument)
                 if (!symbolInfo) {
                     return undefined
@@ -106,7 +114,8 @@ export function createOKXProposeCloseTool(
         name: "propose_close",
         venue: "okx-swap",
         handler: createProposeCloseTool(pipeline, {
-            resolveEstimatedPrice: async ({ instrument }) => {
+            resolveEstimatedPrice: async ({ instrument, signal }) => {
+                assertToolNotAborted(signal)
                 return await venue.getCurrentMarkPrice(instrument)
             },
         }).handler,

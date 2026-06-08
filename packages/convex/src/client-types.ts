@@ -421,7 +421,7 @@ export interface TradingBackendClient extends TradeEventLogger, AgentMessageLogg
     getStrategyConfigs(app: App): Promise<StoredStrategy[]>
     getStrategyById(id: Id<"strategies">): Promise<StoredStrategy | null>
     getActiveRun(strategyId: Id<"strategies">): Promise<StoredRun | null>
-    getRunHistory(strategyId: Id<"strategies">, limit?: number): Promise<StoredRun[]>
+    getRunHistory(strategyId: Id<"strategies">, limit?: number, beforeStartedAt?: number): Promise<StoredRun[]>
     getRunById(runId: Id<"strategy_runs">): Promise<StoredRun | null>
     getAgentLogs(runId: Id<"strategy_runs">): Promise<AgentLogRow[]>
     getTradeEvents(runId: Id<"strategy_runs">): Promise<TradeEventRow[]>

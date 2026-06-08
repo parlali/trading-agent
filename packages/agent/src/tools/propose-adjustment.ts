@@ -11,7 +11,7 @@ export function createProposeAdjustmentTool(pipeline: ExecutionPipeline): ToolBi
     return createToolBinding({
         name: "propose_adjustment",
         venue: "alpaca-options",
-        handler: async (params) => {
+        handler: async (params, context) => {
             const validated = params as z.infer<typeof genericAdjustmentParamsSchema>
             const intent: OrderIntent = {
                 instrument: validated.instrument,
@@ -27,7 +27,9 @@ export function createProposeAdjustmentTool(pipeline: ExecutionPipeline): ToolBi
                 },
             }
 
-            return await executeToolIntent(pipeline, intent, { action: "adjustment" })
+            return await executeToolIntent(pipeline, intent, { action: "adjustment" }, {
+                signal: context?.signal,
+            })
         },
     })
 }

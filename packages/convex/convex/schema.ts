@@ -94,6 +94,7 @@ export default defineSchema({
         systemContextDigest: v.optional(runSystemContextDigestV),
     })
         .index("by_strategy", ["strategyId"])
+        .index("by_strategy_started_at", ["strategyId", "startedAt"])
         .index("by_strategy_status", ["strategyId", "status"])
         .index("by_status_started_at", ["status", "startedAt"]),
 

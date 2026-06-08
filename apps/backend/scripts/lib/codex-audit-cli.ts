@@ -14,6 +14,9 @@ import {
 import { resolveArg } from "./strategy-cli"
 
 const codexAuditCliDir = dirname(fileURLToPath(import.meta.url))
+const DEFAULT_AUDIT_RUN_HISTORY_PAGE_SIZE = 100
+const MAX_AUDIT_RUN_HISTORY_PAGE_SIZE = 500
+const MAX_AUDIT_RUN_HISTORY_PAGES = 50
 
 export async function collectCodexRunAuditArtifact(args: {
     client: TradingBackendClient
@@ -111,17 +114,59 @@ export async function resolveLatestCompletedCodexRun(
     client: TradingBackendClient,
     strategy: StoredStrategy
 ): Promise<StoredRun> {
-    const runs = await client.getRunHistory(strategy._id, 50)
-    const run = runs.find((candidate) =>
-        candidate.status === "completed" &&
-        candidate.llmProvider === "codex"
-    )
+    const [run] = await findStrategyRunHistoryMatches({
+        client,
+        strategyId: strategy._id,
+        minMatches: 1,
+        matches: (candidate) =>
+            candidate.status === "completed" &&
+            candidate.llmProvider === "codex",
+    })
 
     if (!run) {
         throw new Error(`No completed Codex run found for strategy ${strategy.name} (${strategy._id})`)
     }
 
     return run
+}
+
+export async function findStrategyRunHistoryMatches(args: {
+    client: TradingBackendClient
+    strategyId: Id<"strategies">
+    minMatches: number
+    initialLimit?: number
+    matches: (run: StoredRun) => boolean
+}): Promise<StoredRun[]> {
+    let beforeStartedAt: number | undefined
+    const pageSize = Math.min(
+        MAX_AUDIT_RUN_HISTORY_PAGE_SIZE,
+        Math.max(DEFAULT_AUDIT_RUN_HISTORY_PAGE_SIZE, args.initialLimit ?? DEFAULT_AUDIT_RUN_HISTORY_PAGE_SIZE)
+    )
+    const matches: StoredRun[] = []
+
+    for (let page = 0; page < MAX_AUDIT_RUN_HISTORY_PAGES; page++) {
+        const runs = await args.client.getRunHistory(args.strategyId, pageSize, beforeStartedAt)
+        for (const run of runs) {
+            if (args.matches(run)) {
+                matches.push(run)
+                if (matches.length >= args.minMatches) {
+                    return matches
+                }
+            }
+        }
+
+        if (runs.length < pageSize) {
+            return matches
+        }
+
+        const lastRun = runs[runs.length - 1]
+        if (!lastRun) {
+            return matches
+        }
+        beforeStartedAt = lastRun.startedAt
+    }
+
+    return matches
 }
 
 export function resolveAuditOutputPath(args: {

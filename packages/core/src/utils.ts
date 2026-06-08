@@ -176,19 +176,60 @@ export async function fetchWithTimeout(
 export async function retryWithBackoff<T>(
     fn: () => Promise<T>,
     maxRetries = 3,
-    baseDelay = 1000
+    baseDelay = 1000,
+    options: {
+        shouldRetry?: (error: unknown, attempt: number) => boolean
+        signal?: AbortSignal
+    } = {}
 ): Promise<T> {
     let lastError: unknown
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
         try {
+            throwIfSignalAborted(options.signal)
             return await fn()
         } catch (error) {
             lastError = error
-            if (attempt < maxRetries) {
-                const delay = baseDelay * Math.pow(2, attempt)
-                await new Promise((resolve) => setTimeout(resolve, delay))
+            const shouldRetry =
+                attempt < maxRetries &&
+                !options.signal?.aborted &&
+                (options.shouldRetry?.(error, attempt) ?? true)
+            if (!shouldRetry) {
+                throw error
             }
+            const delay = baseDelay * Math.pow(2, attempt)
+            await waitForRetryDelay(delay, options.signal)
         }
     }
     throw lastError
+}
+
+function waitForRetryDelay(delayMs: number, signal?: AbortSignal): Promise<void> {
+    if (!signal) {
+        return new Promise((resolve) => setTimeout(resolve, delayMs))
+    }
+    throwIfSignalAborted(signal)
+
+    return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+            signal.removeEventListener("abort", onAbort)
+            resolve()
+        }, delayMs)
+        const onAbort = () => {
+            clearTimeout(timer)
+            reject(createAbortError())
+        }
+        signal.addEventListener("abort", onAbort, { once: true })
+    })
+}
+
+function throwIfSignalAborted(signal?: AbortSignal): void {
+    if (signal?.aborted) {
+        throw createAbortError()
+    }
+}
+
+function createAbortError(): Error {
+    const error = new Error("Operation cancelled")
+    error.name = "AbortError"
+    return error
 }

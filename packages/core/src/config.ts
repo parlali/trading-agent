@@ -21,7 +21,7 @@ type StrategySafetyDefaults = {
 
 const DEFAULT_OPENROUTER_LLM = {
     provider: "openrouter" as const,
-    model: "",
+    model: "openai/gpt-4.1-mini",
 }
 
 type StrategySafetyDefaultOverrides = Partial<Omit<

@@ -54,6 +54,24 @@ describe("Codex audit CLI helpers", () => {
         await expect(resolveLatestCompletedCodexRun(client, strategy)).resolves.toBe(latestCodexRun)
     })
 
+    it("pages run history until a completed Codex run is found", async () => {
+        const strategy = createStrategy("strategy-1", "Codex Dry Run")
+        const latestCodexRun = createRun("run-codex-latest", "completed", "codex", 800)
+        const client = {
+            getRunHistory: vi.fn()
+                .mockResolvedValueOnce(Array.from({ length: 100 }, (_, index) =>
+                    createRun(`run-openrouter-${index}`, "completed", "openrouter", 1000 - index)
+                ))
+                .mockResolvedValueOnce([
+                    latestCodexRun,
+                ]),
+        } as unknown as TradingBackendClient
+
+        await expect(resolveLatestCompletedCodexRun(client, strategy)).resolves.toBe(latestCodexRun)
+        expect(client.getRunHistory).toHaveBeenNthCalledWith(1, strategy._id, 100, undefined)
+        expect(client.getRunHistory).toHaveBeenNthCalledWith(2, strategy._id, 100, 901)
+    })
+
     it("rejects run-id selection when explicit strategy args do not match", async () => {
         const originalArgv = process.argv
         const strategy = createStrategy("strategy-1", "Codex Dry Run")
@@ -271,7 +289,8 @@ function createStrategy(
 function createRun(
     id: string,
     status: StoredRun["status"],
-    provider: "openrouter" | "codex"
+    provider: "openrouter" | "codex",
+    startedAt = 1
 ): StoredRun {
     return {
         _id: id as Id<"strategy_runs">,
@@ -280,8 +299,8 @@ function createRun(
         app: "polymarket",
         status,
         trigger: "cron",
-        startedAt: 1,
-        endedAt: 2,
+        startedAt,
+        endedAt: startedAt + 1,
         summary: "complete",
         llmProvider: provider,
         llmModel: provider === "codex" ? "gpt-5.4" : "openai/gpt-5.4",

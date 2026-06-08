@@ -9,6 +9,7 @@ export interface JsonRpcErrorPayload {
 }
 
 export interface JsonRpcMessage {
+    jsonrpc?: "2.0"
     id?: JsonRpcId
     method?: string
     params?: unknown
@@ -172,7 +173,10 @@ export class CodexJsonRpcClient {
     }
 
     private async write(message: JsonRpcMessage): Promise<void> {
-        await this.config.transport.writeLine(JSON.stringify(message))
+        await this.config.transport.writeLine(JSON.stringify({
+            jsonrpc: "2.0",
+            ...message,
+        }))
     }
 
     private handleMessage(message: JsonRpcMessage): void {
@@ -198,10 +202,33 @@ export class CodexJsonRpcClient {
         }
 
         if (message.id !== undefined && message.method) {
-            void Promise.resolve(this.config.onServerRequest?.(message, this)).catch((error) => {
+            if (!this.config.onServerRequest) {
+                void this.reject(message.id, {
+                    code: -32601,
+                    message: "server request handler missing",
+                }).catch((error) => {
+                    this.config.logger?.error("Codex app-server server-request rejection failed", {
+                        method: message.method,
+                        error: error instanceof Error ? error.message : String(error),
+                    })
+                })
+                return
+            }
+
+            void Promise.resolve(this.config.onServerRequest(message, this)).catch((error) => {
+                const messageText = error instanceof Error ? error.message : String(error)
                 this.config.logger?.error("Codex app-server server-request handler failed", {
                     method: message.method,
-                    error: error instanceof Error ? error.message : String(error),
+                    error: messageText,
+                })
+                void this.reject(message.id!, {
+                    code: -32000,
+                    message: messageText,
+                }).catch((rejectError) => {
+                    this.config.logger?.error("Codex app-server server-request error response failed", {
+                        method: message.method,
+                        error: rejectError instanceof Error ? rejectError.message : String(rejectError),
+                    })
                 })
             })
             return

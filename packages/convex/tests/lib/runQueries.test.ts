@@ -21,6 +21,16 @@ describe("run queries", () => {
         expect(result[499]?._id).toBe("run-100")
     })
 
+    it("pages getRunHistory before a startedAt cursor", async () => {
+        const result = await callGetRunHistory({
+            strategyId: "strategy-1",
+            limit: 2,
+            beforeStartedAt: 4,
+        }) as FakeRow[]
+
+        expect(result.map((row) => row._id)).toEqual(["run-3", "run-2"])
+    })
+
     it("rejects invalid getRunHistory limits", async () => {
         await expect(callGetRunHistory({
             strategyId: "strategy-1",
@@ -77,6 +87,7 @@ describe("run queries", () => {
 async function callGetRunHistory(args: {
     strategyId: string
     limit?: number
+    beforeStartedAt?: number
 }): Promise<unknown> {
     return await callRegisteredQuery(getRunHistory, {
         strategy_runs: Array.from({ length: 600 }, (_, index) => ({

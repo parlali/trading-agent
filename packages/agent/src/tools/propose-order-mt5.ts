@@ -6,6 +6,7 @@ import {
     prepareMT5Order,
     type MT5OrderParams,
 } from "./mt5-order-helpers"
+import { assertToolNotAborted } from "../tool-registry"
 
 export function createMT5ProposeOrderTool(
     pipeline: ExecutionPipeline,
@@ -15,8 +16,9 @@ export function createMT5ProposeOrderTool(
     return createToolBinding({
         name: "propose_order",
         venue: "mt5",
-        handler: async (params) => {
+        handler: async (params, context) => {
             const validated = params as MT5OrderParams
+            assertToolNotAborted(context?.signal)
             return await prepareMT5Order(validated, pipeline, venue, policy, "entry")
         },
     })

@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto"
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http"
+import { isIP } from "node:net"
 import type { Logger } from "@valiq-trading/core"
 import { projectToolsForMcp } from "../tool-projections/mcp"
 import type { ToolExecutionEngine } from "../tool-execution-engine"
@@ -81,7 +82,7 @@ export async function startRunToolServer(config: RunToolServerConfig): Promise<R
         throw new Error("Run MCP server did not bind to a TCP port")
     }
 
-    const url = `http://${host}:${address.port}/mcp`
+    const url = `http://${formatMcpUrlHost(host)}:${address.port}/mcp`
     config.logger.info("Run MCP server ready", {
         url,
         toolCount: projectedTools.length,
@@ -128,12 +129,41 @@ async function handleRequest(args: {
         return
     }
 
-    const body = await readRequestBody(request)
-    const parsed = JSON.parse(body) as JsonRpcRequest | JsonRpcRequest[]
+    let parsed: JsonRpcRequest | JsonRpcRequest[]
+    try {
+        const body = await readRequestBody(request)
+        const candidate = JSON.parse(body) as unknown
+        if (!isJsonRpcRequest(candidate) && !Array.isArray(candidate)) {
+            writeJson(response, 400, jsonRpcError(null, -32600, "Invalid JSON-RPC request"))
+            return
+        }
+        if (Array.isArray(candidate) && candidate.length === 0) {
+            writeJson(response, 400, jsonRpcError(null, -32600, "Invalid JSON-RPC request"))
+            return
+        }
+        parsed = candidate as JsonRpcRequest | JsonRpcRequest[]
+    } catch (error) {
+        args.logger.error("Run MCP server rejected invalid request", {
+            error: error instanceof Error ? error.message : String(error),
+        })
+        if (error instanceof RequestBodyTooLargeError) {
+            writeJson(response, 413, jsonRpcError(null, -32600, "Request body too large"))
+            return
+        }
+        if (error instanceof SyntaxError) {
+            writeJson(response, 400, jsonRpcError(null, -32700, "Parse error"))
+            return
+        }
+        throw error
+    }
     const requests = Array.isArray(parsed) ? parsed : [parsed]
     const responses: JsonRpcResponse[] = []
 
     for (const requestPayload of requests) {
+        if (!isJsonRpcRequest(requestPayload)) {
+            responses.push(jsonRpcError(null, -32600, "Invalid JSON-RPC request"))
+            continue
+        }
         const responsePayload = await handleJsonRpcRequest({
             request: requestPayload,
             projectedTools: args.projectedTools,
@@ -279,7 +309,7 @@ async function readRequestBody(request: IncomingMessage): Promise<string> {
         const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
         total += buffer.length
         if (total > MAX_REQUEST_BODY_BYTES) {
-            throw new Error("MCP request body exceeded size limit")
+            throw new RequestBodyTooLargeError("MCP request body exceeded size limit")
         }
         chunks.push(buffer)
     }
@@ -314,3 +344,13 @@ function readRecord(value: unknown): Record<string, unknown> | undefined {
         ? value as Record<string, unknown>
         : undefined
 }
+
+function isJsonRpcRequest(value: unknown): value is JsonRpcRequest {
+    return Boolean(readRecord(value))
+}
+
+export function formatMcpUrlHost(host: string): string {
+    return isIP(host) === 6 ? `[${host}]` : host
+}
+
+class RequestBodyTooLargeError extends Error {}

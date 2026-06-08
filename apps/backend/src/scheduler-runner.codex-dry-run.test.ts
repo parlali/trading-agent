@@ -1,4 +1,3 @@
-import { mock } from "bun:test"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import type { AgentRunResult } from "@valiq-trading/agent"
 import type { StoredStrategy } from "@valiq-trading/convex"
@@ -8,7 +7,12 @@ import type { VenuePlugin } from "./types"
 describe("scheduler runner Codex dry-run side effects", () => {
     afterEach(() => {
         vi.restoreAllMocks()
-        mock.restore()
+        vi.resetModules()
+        vi.doUnmock("@valiq-trading/agent")
+        vi.doUnmock("./scheduler-tool-pool")
+        vi.doUnmock("@valiq-trading/convex")
+        vi.doUnmock("./state")
+        vi.doUnmock("./provider-sync")
     })
 
     it("runs post-run hooks and syncs dry-run positions after a successful Codex dry-run", async () => {
@@ -33,22 +37,22 @@ describe("scheduler runner Codex dry-run side effects", () => {
             driftDetected: false,
         }))
 
-        mock.module("@valiq-trading/agent", () => ({
+        vi.doMock("@valiq-trading/agent", () => ({
             ToolRegistry: FakeToolRegistry,
             executeAgentRun,
             withCallBudget: (tool: unknown) => tool,
         }))
-        mock.module("./scheduler-tool-pool", () => ({
+        vi.doMock("./scheduler-tool-pool", () => ({
             buildToolPool: () => ({
                 forVenue: () => [],
             }),
         }))
-        mock.module("@valiq-trading/convex", () => ({
+        vi.doMock("@valiq-trading/convex", () => ({
             createConvexOrderPersistenceAdapter: () => ({
                 listActiveOrders: vi.fn(async () => []),
             }),
         }))
-        mock.module("./state", () => ({
+        vi.doMock("./state", () => ({
             backend,
             convexUrl: "http://convex.test",
             backendServiceToken: "backend-token",
@@ -63,7 +67,7 @@ describe("scheduler runner Codex dry-run side effects", () => {
             killSwitchCheckers: {},
             logger: createLoggerMock(),
         }))
-        mock.module("./provider-sync", () => ({
+        vi.doMock("./provider-sync", () => ({
             reconcileProviderPortfolio,
             recordProviderSyncFailure: vi.fn(async () => undefined),
         }))

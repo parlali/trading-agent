@@ -62,8 +62,12 @@ describe("ToolExecutionEngine", () => {
             "call-1"
         )
 
-        expect(openRouterHandler).toHaveBeenCalledWith({ value: "same-input" })
-        expect(mcpHandler).toHaveBeenCalledWith({ value: "same-input" })
+        expect(openRouterHandler).toHaveBeenCalledWith({ value: "same-input" }, expect.objectContaining({
+            signal: expect.any(AbortSignal),
+        }))
+        expect(mcpHandler).toHaveBeenCalledWith({ value: "same-input" }, expect.objectContaining({
+            signal: expect.any(AbortSignal),
+        }))
         expect(openRouterResults).toEqual([{
             toolCallId: "call-1",
             toolName: "fake_tool",
@@ -219,6 +223,38 @@ describe("ToolExecutionEngine", () => {
         expect(result.fatal).toBe(false)
     })
 
+    it("does not invoke handlers once the overall run timeout is exhausted", async () => {
+        const handler = vi.fn(async () => ({ shouldNotRun: true }))
+        const engine = createEngine(handler, {
+            runStartedAt: Date.now() - 10_000,
+            runTimeoutMs: 1,
+        })
+
+        const result = await engine.executeMcpCall("fake_tool", { value: "late" }, "call-late")
+
+        expect(handler).not.toHaveBeenCalled()
+        expect(result.content).toContain("run timeout was exhausted")
+        expect(result.isError).toBe(true)
+    })
+
+    it("aborts timed-out handlers through the tool signal", async () => {
+        let observedSignal: AbortSignal | undefined
+        const engine = createEngine(async (_params, context) => {
+            observedSignal = context?.signal
+            return await new Promise(() => {
+                context?.signal?.addEventListener("abort", () => undefined, { once: true })
+            })
+        }, {
+            maxToolTimeoutMs: 1,
+            minToolTimeoutMs: 1,
+        })
+
+        const result = await engine.executeMcpCall("fake_tool", { value: "slow" }, "call-abort")
+
+        expect(observedSignal?.aborted).toBe(true)
+        expect(result.content).toContain("Tool timed out after")
+    })
+
     it("serializes MT5 OpenRouter tool batches", async () => {
         const events: string[] = []
         const engine = createEngine(async (params: unknown) => {
@@ -263,11 +299,13 @@ describe("ToolExecutionEngine", () => {
 })
 
 function createEngine(
-    handler: (params: unknown) => Promise<unknown>,
+    handler: (params: unknown, context?: { signal?: AbortSignal }) => Promise<unknown>,
     options: {
         app?: "polymarket" | "mt5"
         maxToolTimeoutMs?: number
         minToolTimeoutMs?: number
+        runStartedAt?: number
+        runTimeoutMs?: number
     } = {}
 ): ToolExecutionEngine {
     const tools = new ToolRegistry()
@@ -294,8 +332,8 @@ function createEngine(
         tools,
         context: createContext(options.app ?? "polymarket"),
         logger: createLogger({ minLevel: "fatal" }),
-        runStartedAt: Date.now(),
-        runTimeoutMs: 60_000,
+        runStartedAt: options.runStartedAt ?? Date.now(),
+        runTimeoutMs: options.runTimeoutMs ?? 60_000,
         maxToolTimeoutMs: options.maxToolTimeoutMs,
         minToolTimeoutMs: options.minToolTimeoutMs,
         maxRepeatedToolErrors: 3,

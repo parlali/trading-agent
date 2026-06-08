@@ -51,6 +51,7 @@ describe("CodexJsonRpcClient", () => {
 
         const initialized = client.initialize()
         expect(transport.writes[0]).toMatchObject({
+            jsonrpc: "2.0",
             id: 1,
             method: "initialize",
             params: {
@@ -63,6 +64,7 @@ describe("CodexJsonRpcClient", () => {
 
         await expect(initialized).resolves.toEqual({ ok: true })
         expect(transport.writes).toContainEqual({
+            jsonrpc: "2.0",
             method: "initialized",
             params: {},
         })
@@ -79,8 +81,8 @@ describe("CodexJsonRpcClient", () => {
         const second = client.request("second", { index: 2 })
 
         expect(transport.writes).toMatchObject([
-            { id: 1, method: "first", params: { index: 1 } },
-            { id: 2, method: "second", params: { index: 2 } },
+            { jsonrpc: "2.0", id: 1, method: "first", params: { index: 1 } },
+            { jsonrpc: "2.0", id: 2, method: "second", params: { index: 2 } },
         ])
 
         transport.emit({ id: 2, result: { value: "second-result" } })
@@ -110,8 +112,62 @@ describe("CodexJsonRpcClient", () => {
 
         expect(client).toBeInstanceOf(CodexJsonRpcClient)
         expect(transport.writes).toContainEqual({
+            jsonrpc: "2.0",
             id: "approval-1",
             result: { decision: "decline" },
+        })
+    })
+
+    it("rejects server requests when no handler is registered", async () => {
+        const transport = new FakeTransport()
+        new CodexJsonRpcClient({
+            transport,
+            requestTimeoutMs: 1000,
+        })
+
+        transport.emit({
+            id: "server-request-1",
+            method: "unknown/request",
+            params: {},
+        })
+
+        await new Promise((resolve) => setTimeout(resolve, 0))
+
+        expect(transport.writes).toContainEqual({
+            jsonrpc: "2.0",
+            id: "server-request-1",
+            error: {
+                code: -32601,
+                message: "server request handler missing",
+            },
+        })
+    })
+
+    it("sends JSON-RPC errors when server request handlers throw", async () => {
+        const transport = new FakeTransport()
+        new CodexJsonRpcClient({
+            transport,
+            requestTimeoutMs: 1000,
+            onServerRequest: async () => {
+                throw new Error("approval path failed")
+            },
+        })
+
+        transport.emit({
+            id: "server-request-2",
+            method: "item/permissions/requestApproval",
+            params: {},
+        })
+
+        await new Promise((resolve) => setTimeout(resolve, 0))
+
+        expect(transport.writes).toContainEqual({
+            jsonrpc: "2.0",
+            id: "server-request-2",
+            error: {
+                code: -32000,
+                message: "approval path failed",
+            },
         })
     })
 

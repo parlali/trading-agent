@@ -108,6 +108,7 @@ export class CodexAppServerProvider implements AgentModelProvider {
     private currentThreadId: string | undefined
     private currentTurnId: string | undefined
     private pendingCompletion: PendingTurnCompletion | undefined
+    private completedTurns = new Map<string, CodexTurnCompletion>()
     private assistantContent = ""
     private latestUsage: LLMUsage = createEmptyUsage()
     private rateLimitSnapshotAfterNotification: unknown
@@ -120,6 +121,7 @@ export class CodexAppServerProvider implements AgentModelProvider {
     ) {}
 
     async run(args: AgentProviderRunArgs): Promise<AgentProviderRunResult> {
+        this.resetRunState()
         const diagnostics = createBaseDiagnostics(this.config)
         let rateLimitSnapshotBefore: unknown
         let rateLimitSnapshotAfter: unknown
@@ -348,6 +350,13 @@ export class CodexAppServerProvider implements AgentModelProvider {
     }
 
     private waitForTurnCompletion(threadId: string, turnId: string): Promise<CodexTurnCompletion> {
+        const key = turnCompletionKey(threadId, turnId)
+        const completed = this.completedTurns.get(key)
+        if (completed) {
+            this.completedTurns.delete(key)
+            return Promise.resolve(completed)
+        }
+
         return new Promise((resolve, reject) => {
             const timer = setTimeout(() => {
                 this.pendingCompletion = undefined
@@ -417,26 +426,33 @@ export class CodexAppServerProvider implements AgentModelProvider {
     }
 
     private resolvePendingTurnCompletion(message: JsonRpcMessage): void {
-        const pending = this.pendingCompletion
-        if (!pending) {
-            return
-        }
-
         const params = readRecord(message.params)
         const threadId = typeof params?.threadId === "string" ? params.threadId : ""
         const turn = readRecord(params?.turn) as CodexTurn | undefined
         const turnId = typeof turn?.id === "string" ? turn.id : ""
+        if (!threadId || !turnId) {
+            return
+        }
+
+        const completion = {
+            threadId,
+            turn: turn ?? {},
+        }
+        const pending = this.pendingCompletion
+        if (!pending) {
+            this.completedTurns.set(turnCompletionKey(threadId, turnId), completion)
+            return
+        }
 
         if (threadId !== pending.threadId || turnId !== pending.turnId) {
+            this.completedTurns.set(turnCompletionKey(threadId, turnId), completion)
             return
         }
 
         clearTimeout(pending.timer)
         this.pendingCompletion = undefined
-        pending.resolve({
-            threadId,
-            turn: turn ?? {},
-        })
+        this.completedTurns.delete(turnCompletionKey(threadId, turnId))
+        pending.resolve(completion)
     }
 
     private async handleServerRequest(
@@ -539,6 +555,24 @@ export class CodexAppServerProvider implements AgentModelProvider {
             })
             this.runDirectoryToRemove = undefined
         }
+        this.completedTurns.clear()
+    }
+
+    private resetRunState(): void {
+        const pending = this.pendingCompletion
+        if (pending) {
+            clearTimeout(pending.timer)
+            pending.reject(new Error("Codex provider run state reset before turn completion"))
+        }
+        this.currentThreadId = undefined
+        this.currentTurnId = undefined
+        this.pendingCompletion = undefined
+        this.completedTurns.clear()
+        this.assistantContent = ""
+        this.latestUsage = createEmptyUsage()
+        this.rateLimitSnapshotAfterNotification = undefined
+        this.forbiddenCapabilityError = undefined
+        this.cancellationRequested = false
     }
 }
 
@@ -630,15 +664,50 @@ function buildCodexThreadConfig(mcpServer: RunToolServer): Record<string, unknow
     }
 }
 
-function buildCodexEnvironment(
+export function buildCodexEnvironment(
     config: CodexAppServerProviderConfig,
     mcpToken: string
 ): Record<string, string | undefined> {
-    const env: Record<string, string | undefined> = {
-        ...process.env,
-        [MCP_TOKEN_ENV_VAR]: mcpToken,
-    }
+    const env = pickCodexEnvironment(process.env, [
+        "PATH",
+        "HOME",
+        "USER",
+        "LOGNAME",
+        "SHELL",
+        "TMPDIR",
+        "TEMP",
+        "TMP",
+        "XDG_CONFIG_HOME",
+        "XDG_CACHE_HOME",
+        "CODEX_HOME",
+        "SSL_CERT_FILE",
+        "SSL_CERT_DIR",
+        "HTTPS_PROXY",
+        "HTTP_PROXY",
+        "NO_PROXY",
+    ])
 
+    return withCodexCredentials({
+        ...env,
+        [MCP_TOKEN_ENV_VAR]: mcpToken,
+    }, config)
+}
+
+function pickCodexEnvironment(
+    env: Record<string, string | undefined>,
+    names: string[]
+): Record<string, string | undefined> {
+    return Object.fromEntries(
+        names
+            .map((name) => [name, env[name]] as const)
+            .filter((entry): entry is readonly [string, string] => entry[1] !== undefined)
+    )
+}
+
+function withCodexCredentials(
+    env: Record<string, string | undefined>,
+    config: CodexAppServerProviderConfig
+): Record<string, string | undefined> {
     if (config.authMode === "access-token") {
         const accessToken = config.codexAccessToken ?? process.env.CODEX_ACCESS_TOKEN
         if (!accessToken) {
@@ -826,6 +895,10 @@ function createBaseDiagnostics(config: CodexAppServerProviderConfig): AgentProvi
         billingMode: resolveBillingMode(config.authMode),
         responseIds: [],
     }
+}
+
+function turnCompletionKey(threadId: string, turnId: string): string {
+    return `${threadId}:${turnId}`
 }
 
 function tomlString(value: string): string {

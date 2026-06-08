@@ -8,6 +8,7 @@ import {
 import { executeToolIntent } from "./execution-response"
 import { resolveEstimatedPrice, type PolymarketPriceProvider } from "./polymarket-order-helpers"
 import { normalizePolymarketTokenId } from "./polymarket-market-handles"
+import { assertToolNotAborted } from "../tool-registry"
 
 export function createPolymarketProposeAdjustmentTool(
     pipeline: ExecutionPipeline,
@@ -16,18 +17,21 @@ export function createPolymarketProposeAdjustmentTool(
     return createToolBinding({
         name: "propose_adjustment",
         venue: "polymarket",
-        handler: async (params) => {
+        handler: async (params, context) => {
             const validated = params as z.infer<typeof genericAdjustmentParamsSchema>
             const instrument = normalizePolymarketTokenId(validated.instrument)
+            assertToolNotAborted(context?.signal)
             const positions = await pipeline.getPositions()
             const existingPosition = positions.find((position) => position.instrument === instrument)
 
+            assertToolNotAborted(context?.signal)
             const estimatedPrice = await resolveEstimatedPrice(
                 venue,
                 instrument,
                 validated.side,
                 validated.limitPrice
             )
+            assertToolNotAborted(context?.signal)
 
             const intent: OrderIntent = {
                 instrument,
@@ -46,7 +50,10 @@ export function createPolymarketProposeAdjustmentTool(
                 },
             }
 
-            return await executeToolIntent(pipeline, intent, { action: "adjustment" }, { positions })
+            return await executeToolIntent(pipeline, intent, { action: "adjustment" }, {
+                positions,
+                signal: context?.signal,
+            })
         },
     })
 }

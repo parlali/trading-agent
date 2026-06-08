@@ -92,6 +92,58 @@ describe("OpenRouterChatClient", () => {
             responseIds: ["or-response-1"],
         })
     })
+
+    it("processes finish-only terminal chunks without a trailing newline", async () => {
+        const stream = createRawSseStream([
+            `data: ${JSON.stringify({
+                id: "or-response-final",
+                choices: [{
+                    delta: {
+                        content: "Done",
+                    },
+                }],
+            })}`,
+            `data: ${JSON.stringify({
+                id: "or-response-final",
+                choices: [{
+                    finish_reason: "stop",
+                }],
+                usage: {
+                    prompt_tokens: 3,
+                    completion_tokens: 2,
+                    reasoning_tokens: 1,
+                    cost: 0.001,
+                },
+            })}`,
+        ].join("\n"))
+        const fetchMock = vi.fn(async () => new Response(stream, {
+            status: 200,
+            statusText: "OK",
+        }))
+        globalThis.fetch = fetchMock as unknown as typeof fetch
+
+        const client = new OpenRouterChatClient({
+            apiKey: "test-key",
+            model: "test-model",
+            baseUrl: "https://openrouter.test",
+            requestTimeoutMs: 10_000,
+            streamStallTimeoutMs: 10_000,
+        })
+        const response = await client.chat([{
+            role: "user",
+            content: "run",
+        }], undefined, undefined, 1)
+
+        expect(response.content).toBe("Done")
+        expect(response.finishReason).toBe("stop")
+        expect(response.usage).toMatchObject({
+            promptTokens: 3,
+            completionTokens: 2,
+            reasoningTokens: 1,
+            cost: 0.001,
+            responseIds: ["or-response-final"],
+        })
+    })
 })
 
 function createSseStream(chunks: Array<Record<string, unknown>>): ReadableStream<Uint8Array> {
@@ -99,6 +151,17 @@ function createSseStream(chunks: Array<Record<string, unknown>>): ReadableStream
     const body = chunks
         .map((chunk) => `data: ${JSON.stringify(chunk)}\n`)
         .join("\n") + "\ndata: [DONE]\n"
+
+    return new ReadableStream({
+        start(controller) {
+            controller.enqueue(encoder.encode(body))
+            controller.close()
+        },
+    })
+}
+
+function createRawSseStream(body: string): ReadableStream<Uint8Array> {
+    const encoder = new TextEncoder()
 
     return new ReadableStream({
         start(controller) {
