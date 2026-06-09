@@ -1,9 +1,7 @@
 import { NextResponse } from "next/server"
 import {
-    buildDashboardCodexCallbackUrl,
     proxyCodexOAuthRequest,
     readAction,
-    readJsonRecord,
     requireDashboardUser,
 } from "@/lib/codex-oauth-server"
 
@@ -29,15 +27,7 @@ async function handleCodexOAuthRequest(request: Request): Promise<Response> {
             return NextResponse.json({ error: "Method not allowed" }, { status: 405 })
         }
 
-        const payload = request.method === "POST" ? await readJsonRecord(request) : null
-        const backendPayload = action === "start"
-            ? {
-                ...(payload ?? {}),
-                redirectUri: buildDashboardCodexCallbackUrl(request),
-            }
-            : payload
-
-        return await proxyCodexOAuthRequest(action, backendPayload)
+        return await proxyCodexOAuthRequest(action)
     } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
         return NextResponse.json({ error: message }, { status: 400 })

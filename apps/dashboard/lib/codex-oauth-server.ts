@@ -1,8 +1,7 @@
-import { NextResponse } from "next/server"
 import { ConvexHttpClient } from "convex/browser"
 import { api } from "@valiq-trading/convex"
 
-export type CodexOAuthAction = "status" | "start" | "submit" | "cancel"
+export type CodexOAuthAction = "status" | "start"
 
 export async function requireDashboardUser(request: Request): Promise<void> {
     const token = readBearerToken(request.headers.get("authorization"))
@@ -21,8 +20,7 @@ export async function requireDashboardUser(request: Request): Promise<void> {
 }
 
 export async function proxyCodexOAuthRequest(
-    action: CodexOAuthAction,
-    payload: Record<string, unknown> | null
+    action: CodexOAuthAction
 ): Promise<Response> {
     const serviceToken = process.env.BACKEND_SERVICE_TOKEN?.trim()
     if (!serviceToken) {
@@ -35,9 +33,7 @@ export async function proxyCodexOAuthRequest(
         headers: {
             "authorization": `Bearer ${serviceToken}`,
             "accept": "application/json",
-            ...(payload ? { "content-type": "application/json" } : {}),
         },
-        body: payload ? JSON.stringify(payload) : undefined,
         cache: "no-store",
     })
     const contentType = response.headers.get("content-type") ?? "application/json"
@@ -52,51 +48,12 @@ export async function proxyCodexOAuthRequest(
     })
 }
 
-export function buildDashboardCodexCallbackUrl(request: Request): string {
-    return new URL("/api/codex-oauth/callback", readDashboardOrigin(request)).toString()
-}
-
-export function readDashboardOrigin(request: Request): string {
-    const forwardedHost = readFirstHeaderValue(request.headers.get("x-forwarded-host"))
-    const host = forwardedHost ?? readFirstHeaderValue(request.headers.get("host"))
-    if (host) {
-        const forwardedProto = readFirstHeaderValue(request.headers.get("x-forwarded-proto"))
-            ?? new URL(request.url).protocol.replace(":", "")
-        const headerOrigin = parseOrigin(`${forwardedProto}://${host}`)
-        if (headerOrigin) {
-            return headerOrigin
-        }
-    }
-
-    const origin = parseOrigin(readFirstHeaderValue(request.headers.get("origin")))
-    if (origin) {
-        return origin
-    }
-
-    return new URL(request.url).origin
-}
-
 export function readAction(value: string | null): CodexOAuthAction {
-    if (value === "status" || value === "start" || value === "submit" || value === "cancel") {
+    if (value === "status" || value === "start") {
         return value
     }
 
     throw new Error("Invalid Codex OAuth action")
-}
-
-export async function readJsonRecord(request: Request): Promise<Record<string, unknown>> {
-    try {
-        const value = await request.json() as unknown
-        return readRecord(value)
-    } catch {
-        return {}
-    }
-}
-
-export function redirectToIntegrations(request: Request, status: "complete" | "failed"): Response {
-    const target = new URL("/integrations", readDashboardOrigin(request))
-    target.searchParams.set("codex_oauth", status)
-    return NextResponse.redirect(target)
 }
 
 function readBackendUrl(): string {
@@ -112,12 +69,6 @@ function readBackendUrl(): string {
     return "http://localhost:3100"
 }
 
-function readRecord(value: unknown): Record<string, unknown> {
-    return value && typeof value === "object" && !Array.isArray(value)
-        ? value as Record<string, unknown>
-        : {}
-}
-
 function readBearerToken(header: string | null): string | null {
     const prefix = "Bearer "
     if (!header?.startsWith(prefix)) {
@@ -126,26 +77,4 @@ function readBearerToken(header: string | null): string | null {
 
     const token = header.slice(prefix.length).trim()
     return token || null
-}
-
-function readFirstHeaderValue(value: string | null): string | null {
-    const first = value?.split(",")[0]?.trim()
-    return first || null
-}
-
-function parseOrigin(value: string | null): string | null {
-    if (!value) {
-        return null
-    }
-
-    try {
-        const parsed = new URL(value)
-        if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-            return null
-        }
-
-        return parsed.origin
-    } catch {
-        return null
-    }
 }

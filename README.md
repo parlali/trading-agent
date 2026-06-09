@@ -106,7 +106,7 @@ Codex strategies must use canonical policy shape:
 }
 ```
 
-Scheduled Codex strategies must use `authMode = "chatgpt"`. Open Dashboard > Integrations > Codex ChatGPT Login, click Sign in with ChatGPT, and complete the OpenAI login. The dashboard starts the flow with its runtime callback URL and the backend writes a Codex CLI-compatible `auth.json` under `CODEX_HOME`; if the hosted callback is not accepted by the OAuth client, paste the full localhost redirect URL back into the dashboard fallback field. Scheduled Codex app-server runs read that same login.
+Scheduled Codex strategies must use `authMode = "chatgpt"`. Open Dashboard > Integrations > Codex ChatGPT Login to verify whether the backend has an active Codex CLI-compatible `auth.json` under `CODEX_HOME`. The dashboard refuses to start a hosted login flow unless the OAuth client supports the dashboard callback URL. Scheduled Codex app-server runs read that same login.
 
 Persist `CODEX_HOME` for backend containers. The backend image defaults to `/var/lib/valiq/codex`; mount that directory to durable storage so restarts keep the ChatGPT login. Do not store ChatGPT OAuth cache files, access tokens, or API keys in Convex strategy config or logs.
 

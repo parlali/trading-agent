@@ -1,70 +1,62 @@
 import { mkdtempSync, rmSync } from "node:fs"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
-import { afterEach, describe, expect, it, vi } from "vitest"
-import { inspectCodexChatGptAuthStatusSync } from "./codex-auth"
-import { CodexOAuthController, extractAuthorizationCode, resolveOAuthRedirectUri } from "./codex-oauth"
+import { describe, expect, it, vi } from "vitest"
+import { createCodexOAuthControlHandler } from "./codex-oauth"
 
-const ACCOUNT_ID_CLAIM = "https://api.openai.com/auth.chatgpt_account_id"
-
-describe("Codex OAuth flow", () => {
-    afterEach(() => {
-        vi.unstubAllGlobals()
-    })
-
-    it("requires a full redirect URL with matching state", () => {
-        expect(extractAuthorizationCode("http://localhost:1455/auth/callback?code=abc&state=state-1", "state-1")).toBe("abc")
-        expect(() => extractAuthorizationCode("abc", "state-1")).toThrow("full ChatGPT redirect URL")
-        expect(() => extractAuthorizationCode("http://localhost:1455/auth/callback?code=abc&state=other", "state-1")).toThrow("state did not match")
-    })
-
-    it("validates hosted OAuth redirect URIs", () => {
-        expect(resolveOAuthRedirectUri("https://dashboard.example.com/api/codex-oauth/callback")).toBe("https://dashboard.example.com/api/codex-oauth/callback")
-        expect(resolveOAuthRedirectUri("http://localhost:1455/auth/callback")).toBe("http://localhost:1455/auth/callback")
-        expect(() => resolveOAuthRedirectUri("http://dashboard.example.com/api/codex-oauth/callback")).toThrow("must use https")
-    })
-
-    it("exchanges the redirect URL with the session redirect URI and writes Codex auth.json", async () => {
+describe("Codex OAuth control handler", () => {
+    it("reports missing ChatGPT login status", async () => {
         const codexHome = createTempCodexHome()
-        const fetchMock = vi.fn(async () => new Response(JSON.stringify({
-            id_token: fakeJwt({ [ACCOUNT_ID_CLAIM]: "account-1" }),
-            access_token: fakeJwt({}),
-            refresh_token: "refresh-token",
-        }), {
-            status: 200,
-            headers: {
-                "content-type": "application/json",
-            },
-        }))
-        vi.stubGlobal("fetch", fetchMock)
 
         try {
-            const controller = new CodexOAuthController({
+            const handler = createCodexOAuthControlHandler({
+                serviceToken: "service-token",
                 env: { CODEX_HOME: codexHome },
             })
-            const redirectUri = "https://dashboard.example.com/api/codex-oauth/callback"
-            const started = controller.start({ redirectUri })
-            const authorizationUrl = new URL(started.authUrl!)
-            const state = authorizationUrl.searchParams.get("state")
+            const response = await handler(new Request("http://backend/codex/oauth/status", {
+                headers: {
+                    authorization: "Bearer service-token",
+                },
+            }))
+            const body = await response!.json() as Record<string, unknown>
 
-            expect(started.status).toBe("awaiting_redirect")
-            expect(authorizationUrl.searchParams.get("redirect_uri")).toBe(redirectUri)
-            expect(state).toBeTruthy()
+            expect(response!.status).toBe(200)
+            expect(body.status).toBe("idle")
+            expect(body.ready).toBe(false)
+            expect(body.message).toBe("Codex ChatGPT login is missing")
+        } finally {
+            rmSync(codexHome, { recursive: true, force: true })
+        }
+    })
 
-            const completed = await controller.submit(`${redirectUri}?code=code-1&state=${state}`)
-            const authStatus = inspectCodexChatGptAuthStatusSync({ CODEX_HOME: codexHome })
-            const fetchCall = fetchMock.mock.calls[0] as unknown[] | undefined
-            const fetchInit = fetchCall?.[1] as RequestInit | undefined
-            const fetchBody = fetchInit?.body
+    it("rejects dashboard start instead of returning a non-completable OAuth URL", async () => {
+        const codexHome = createTempCodexHome()
+        const logger = {
+            info: vi.fn(),
+            warn: vi.fn(),
+            error: vi.fn(),
+        }
+        const handler = createCodexOAuthControlHandler({
+            serviceToken: "service-token",
+            env: { CODEX_HOME: codexHome },
+            logger,
+        })
 
-            expect(completed.status).toBe("complete")
-            expect(completed.ready).toBe(true)
-            expect(completed.authUrl).toBeNull()
-            expect(authStatus.ready).toBe(true)
-            expect(authStatus.accountId).toBe("account-1")
-            expect(fetchMock).toHaveBeenCalledTimes(1)
-            expect(fetchBody).toBeInstanceOf(URLSearchParams)
-            expect((fetchBody as URLSearchParams).get("redirect_uri")).toBe(redirectUri)
+        try {
+            const response = await handler(new Request("http://backend/codex/oauth/start", {
+                method: "POST",
+                headers: {
+                    authorization: "Bearer service-token",
+                },
+            }))
+            const body = await response!.json() as Record<string, unknown>
+
+            expect(response!.status).toBe(400)
+            expect(String(body.error)).toContain("dashboard login cannot start")
+            expect(String(body.error)).toContain("Refusing to start a non-completable login flow")
+            expect(logger.warn).toHaveBeenCalledWith("Codex OAuth control request failed", expect.objectContaining({
+                path: "/codex/oauth/start",
+            }))
         } finally {
             rmSync(codexHome, { recursive: true, force: true })
         }
@@ -73,12 +65,4 @@ describe("Codex OAuth flow", () => {
 
 function createTempCodexHome(): string {
     return mkdtempSync(join(tmpdir(), "valiq-codex-oauth-"))
-}
-
-function fakeJwt(payload: Record<string, unknown>): string {
-    return [
-        Buffer.from(JSON.stringify({ alg: "none", typ: "JWT" })).toString("base64url"),
-        Buffer.from(JSON.stringify(payload)).toString("base64url"),
-        "signature",
-    ].join(".")
 }
