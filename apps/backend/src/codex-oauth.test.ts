@@ -1,7 +1,9 @@
+import { EventEmitter } from "node:events"
 import { mkdtempSync, rmSync } from "node:fs"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
 import { describe, expect, it, vi } from "vitest"
+import { writeCodexChatGptAuthFileSync } from "./codex-auth"
 import { createCodexOAuthControlHandler } from "./codex-oauth"
 
 describe("Codex OAuth control handler", () => {
@@ -23,14 +25,17 @@ describe("Codex OAuth control handler", () => {
             expect(response!.status).toBe(200)
             expect(body.status).toBe("idle")
             expect(body.ready).toBe(false)
+            expect(body.deviceVerificationUrl).toBeNull()
+            expect(body.userCode).toBeNull()
             expect(body.message).toBe("Codex ChatGPT login is missing")
         } finally {
             rmSync(codexHome, { recursive: true, force: true })
         }
     })
 
-    it("rejects dashboard start instead of returning a non-completable OAuth URL", async () => {
+    it("starts the Codex device-code login flow", async () => {
         const codexHome = createTempCodexHome()
+        const deviceLogin = new FakeCodexDeviceLoginProcess()
         const logger = {
             info: vi.fn(),
             warn: vi.fn(),
@@ -40,23 +45,112 @@ describe("Codex OAuth control handler", () => {
             serviceToken: "service-token",
             env: { CODEX_HOME: codexHome },
             logger,
+            spawnDeviceLogin: vi.fn(() => deviceLogin),
         })
 
         try {
-            const response = await handler(new Request("http://backend/codex/oauth/start", {
+            const pendingResponse = handler(new Request("http://backend/codex/oauth/start", {
                 method: "POST",
+                headers: {
+                    authorization: "Bearer service-token",
+                },
+            }))
+            deviceLogin.writeStdout([
+                "Follow these steps to sign in with ChatGPT using device code authorization:",
+                "https://auth.openai.com/codex/device",
+                "TEST-12345",
+            ].join("\n"))
+            const response = await pendingResponse
+            const body = await response!.json() as Record<string, unknown>
+
+            expect(response!.status).toBe(200)
+            expect(body.status).toBe("awaiting_device")
+            expect(body.ready).toBe(false)
+            expect(body.deviceVerificationUrl).toBe("https://auth.openai.com/codex/device")
+            expect(body.userCode).toBe("TEST-12345")
+            expect(body.message).toBe("Open the Codex device login link and enter the one-time code")
+            expect(logger.info).toHaveBeenCalledWith("Codex device-code login started", {
+                codexHome,
+            })
+            expect(logger.warn).not.toHaveBeenCalled()
+        } finally {
+            deviceLogin.kill("SIGTERM")
+            rmSync(codexHome, { recursive: true, force: true })
+        }
+    })
+
+    it("reports ready after Codex writes ChatGPT auth.json", async () => {
+        const codexHome = createTempCodexHome()
+        const deviceLogin = new FakeCodexDeviceLoginProcess()
+        const handler = createCodexOAuthControlHandler({
+            serviceToken: "service-token",
+            env: { CODEX_HOME: codexHome },
+            spawnDeviceLogin: vi.fn(() => deviceLogin),
+        })
+
+        try {
+            const pendingResponse = handler(new Request("http://backend/codex/oauth/start", {
+                method: "POST",
+                headers: {
+                    authorization: "Bearer service-token",
+                },
+            }))
+            deviceLogin.writeStdout("https://auth.openai.com/codex/device\nTEST-12345\n")
+            await pendingResponse
+
+            writeCodexChatGptAuthFileSync({
+                env: { CODEX_HOME: codexHome },
+                tokens: {
+                    idToken: fakeJwt({}),
+                    accessToken: fakeJwt({}),
+                    refreshToken: "refresh-token",
+                    accountId: "account-1",
+                },
+            })
+
+            const response = await handler(new Request("http://backend/codex/oauth/status", {
                 headers: {
                     authorization: "Bearer service-token",
                 },
             }))
             const body = await response!.json() as Record<string, unknown>
 
-            expect(response!.status).toBe(400)
-            expect(String(body.error)).toContain("dashboard login cannot start")
-            expect(String(body.error)).toContain("Refusing to start a non-completable login flow")
-            expect(logger.warn).toHaveBeenCalledWith("Codex OAuth control request failed", expect.objectContaining({
-                path: "/codex/oauth/start",
+            expect(response!.status).toBe(200)
+            expect(body.status).toBe("complete")
+            expect(body.ready).toBe(true)
+            expect(body.accountId).toBe("account-1")
+            expect(body.message).toBe("Codex ChatGPT login is active")
+            expect(deviceLogin.kill).toHaveBeenCalledWith("SIGTERM")
+        } finally {
+            rmSync(codexHome, { recursive: true, force: true })
+        }
+    })
+
+    it("fails closed when Codex device auth falls back to localhost callback login", async () => {
+        const codexHome = createTempCodexHome()
+        const deviceLogin = new FakeCodexDeviceLoginProcess()
+        const handler = createCodexOAuthControlHandler({
+            serviceToken: "service-token",
+            env: { CODEX_HOME: codexHome },
+            spawnDeviceLogin: vi.fn(() => deviceLogin),
+        })
+
+        try {
+            const pendingResponse = handler(new Request("http://backend/codex/oauth/start", {
+                method: "POST",
+                headers: {
+                    authorization: "Bearer service-token",
+                },
             }))
+            deviceLogin.writeStdout("Open http://localhost:1455/auth/callback after signing in")
+            const response = await pendingResponse
+            const body = await response!.json() as Record<string, unknown>
+
+            expect(response!.status).toBe(200)
+            expect(body.status).toBe("failed")
+            expect(body.ready).toBe(false)
+            expect(body.message).toBe("Codex device-code login is unavailable; browser/localhost callback login is disabled")
+            expect(deviceLogin.kill).toHaveBeenCalledWith("SIGTERM")
         } finally {
             rmSync(codexHome, { recursive: true, force: true })
         }
@@ -65,4 +159,26 @@ describe("Codex OAuth control handler", () => {
 
 function createTempCodexHome(): string {
     return mkdtempSync(join(tmpdir(), "valiq-codex-oauth-"))
+}
+
+class FakeCodexDeviceLoginProcess extends EventEmitter {
+    readonly stdout = new EventEmitter()
+    readonly stderr = new EventEmitter()
+    readonly kill = vi.fn((_signal?: NodeJS.Signals) => true)
+
+    writeStdout(value: string): void {
+        this.stdout.emit("data", value)
+    }
+
+    writeStderr(value: string): void {
+        this.stderr.emit("data", value)
+    }
+}
+
+function fakeJwt(payload: Record<string, unknown>): string {
+    return [
+        Buffer.from(JSON.stringify({ alg: "none", typ: "JWT" })).toString("base64url"),
+        Buffer.from(JSON.stringify(payload)).toString("base64url"),
+        "signature",
+    ].join(".")
 }
