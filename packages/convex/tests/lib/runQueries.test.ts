@@ -31,8 +31,8 @@ describe("run queries", () => {
         expect(result.map((row) => row._id)).toEqual(["run-3", "run-2"])
     })
 
-    it("includes all runs tied at the page boundary timestamp", async () => {
-        const result = await callRegisteredQuery(getRunHistory, {
+    it("pages runs tied at the timestamp boundary with a composite cursor", async () => {
+        const rows = {
             strategy_runs: [
                 {
                     _id: "run-1",
@@ -59,12 +59,27 @@ describe("run queries", () => {
                     _creationTime: 4,
                 },
             ],
-        }, {
+        }
+        const first = await callRegisteredQuery(getRunHistory, rows, {
             strategyId: "strategy-1",
             limit: 1,
         }) as FakeRow[]
+        const second = await callRegisteredQuery(getRunHistory, rows, {
+            strategyId: "strategy-1",
+            limit: 1,
+            beforeStartedAt: 3,
+            beforeCreationTime: 4,
+        }) as FakeRow[]
+        const third = await callRegisteredQuery(getRunHistory, rows, {
+            strategyId: "strategy-1",
+            limit: 1,
+            beforeStartedAt: 3,
+            beforeCreationTime: 3,
+        }) as FakeRow[]
 
-        expect(result.map((row) => row._id)).toEqual(["run-3b", "run-3a"])
+        expect(first.map((row) => row._id)).toEqual(["run-3b"])
+        expect(second.map((row) => row._id)).toEqual(["run-3a"])
+        expect(third.map((row) => row._id)).toEqual(["run-2"])
     })
 
     it("rejects invalid getRunHistory limits", async () => {
@@ -124,6 +139,7 @@ async function callGetRunHistory(args: {
     strategyId: string
     limit?: number
     beforeStartedAt?: number
+    beforeCreationTime?: number
 }): Promise<unknown> {
     return await callRegisteredQuery(getRunHistory, {
         strategy_runs: Array.from({ length: 600 }, (_, index) => ({

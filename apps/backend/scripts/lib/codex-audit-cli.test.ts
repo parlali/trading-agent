@@ -81,8 +81,8 @@ describe("Codex audit CLI helpers", () => {
         } as unknown as TradingBackendClient
 
         await expect(resolveLatestCompletedCodexRun(client, strategy)).resolves.toBe(latestCodexRun)
-        expect(client.getRunHistory).toHaveBeenNthCalledWith(1, strategy._id, 100, undefined)
-        expect(client.getRunHistory).toHaveBeenNthCalledWith(2, strategy._id, 100, 901)
+        expect(client.getRunHistory).toHaveBeenNthCalledWith(1, strategy._id, 100, undefined, undefined)
+        expect(client.getRunHistory).toHaveBeenNthCalledWith(2, strategy._id, 100, 901, 1)
     })
 
     it("rejects run-id selection when explicit strategy args do not match", async () => {

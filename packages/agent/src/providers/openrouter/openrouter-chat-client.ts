@@ -285,6 +285,7 @@ export class OpenRouterChatClient {
                     handleLine(line)
                 }
             }
+            buffer += decoder.decode()
             if (buffer.trim().length > 0) {
                 handleLine(buffer)
             }

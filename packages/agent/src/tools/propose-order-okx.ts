@@ -24,7 +24,7 @@ export function createOKXProposeOrderTool(
             return await prepareOKXOrder(validated, pipeline, venue, policy, "entry", {
                 recordFault: options?.onExecutionSafetyFault,
                 resolveFaults: options?.onExecutionSafetyRecovered,
-            })
+            }, context?.signal)
         },
     })
 }

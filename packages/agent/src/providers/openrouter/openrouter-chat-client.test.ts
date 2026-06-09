@@ -274,6 +274,38 @@ describe("OpenRouterChatClient", () => {
             responseIds: ["or-response-final"],
         })
     })
+
+    it("flushes trailing UTF-8 bytes before parsing the final buffered event", async () => {
+        const accent = String.fromCharCode(0xe9)
+        const body = `data: ${JSON.stringify({
+            id: "or-response-utf8",
+            choices: [{
+                delta: {
+                    content: `caf${accent}`,
+                },
+                finish_reason: "stop",
+            }],
+        })}`
+        globalThis.fetch = vi.fn(async () => new Response(createSplitUtf8Stream(body), {
+            status: 200,
+            statusText: "OK",
+        })) as unknown as typeof fetch
+
+        const client = new OpenRouterChatClient({
+            apiKey: "test-key",
+            model: "test-model",
+            baseUrl: "https://openrouter.test",
+            requestTimeoutMs: 10_000,
+            streamStallTimeoutMs: 10_000,
+        })
+        const response = await client.chat([{
+            role: "user",
+            content: "run",
+        }], undefined, undefined, 1)
+
+        expect(response.content).toBe(`caf${accent}`)
+        expect(response.finishReason).toBe("stop")
+    })
 })
 
 function createSseStream(chunks: Array<Record<string, unknown>>): ReadableStream<Uint8Array> {
@@ -296,6 +328,19 @@ function createRawSseStream(body: string): ReadableStream<Uint8Array> {
     return new ReadableStream({
         start(controller) {
             controller.enqueue(encoder.encode(body))
+            controller.close()
+        },
+    })
+}
+
+function createSplitUtf8Stream(body: string): ReadableStream<Uint8Array> {
+    const bytes = new TextEncoder().encode(body)
+    const splitAt = bytes.findIndex((byte) => byte === 0xc3) + 1
+
+    return new ReadableStream({
+        start(controller) {
+            controller.enqueue(bytes.slice(0, splitAt))
+            controller.enqueue(bytes.slice(splitAt))
             controller.close()
         },
     })

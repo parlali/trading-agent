@@ -15,42 +15,46 @@ export const getRunHistory = query({
         strategyId: v.id("strategies"),
         limit: v.optional(v.number()),
         beforeStartedAt: v.optional(v.number()),
+        beforeCreationTime: v.optional(v.number()),
     },
     handler: async (ctx, args) => {
         await requireUserOrServiceToken(ctx, args.serviceToken)
         const limit = resolveRunHistoryLimit(args.limit)
-        const runs = await ctx.db
-            .query("strategy_runs")
-            .withIndex("by_strategy_started_at", (q) => {
-                const scoped = q.eq("strategyId", args.strategyId)
-                return args.beforeStartedAt === undefined
-                    ? scoped
-                    : scoped.lt("startedAt", args.beforeStartedAt)
-            })
-            .order("desc")
-            .take(limit)
-
-        if (runs.length < limit) {
-            return runs
+        if (args.beforeStartedAt === undefined) {
+            return sortRunHistory(await ctx.db
+                .query("strategy_runs")
+                .withIndex("by_strategy_started_at", (q) => q.eq("strategyId", args.strategyId))
+                .order("desc")
+                .take(limit))
         }
 
-        const boundaryStartedAt = runs[runs.length - 1]?.startedAt
-        if (boundaryStartedAt === undefined) {
-            return runs
+        const sameTimestampRuns = args.beforeCreationTime === undefined
+            ? []
+            : await ctx.db
+                .query("strategy_runs")
+                .withIndex("by_strategy_started_at", (q) =>
+                    q.eq("strategyId", args.strategyId).eq("startedAt", args.beforeStartedAt!)
+                )
+                .filter((q) => q.lt(q.field("_creationTime"), args.beforeCreationTime!))
+                .order("desc")
+                .take(limit)
+        const remainingLimit = limit - sameTimestampRuns.length
+        if (remainingLimit <= 0) {
+            return sortRunHistory(sameTimestampRuns).slice(0, limit)
         }
 
-        const runIds = new Set(runs.map((run) => run._id))
-        const boundaryRuns = await ctx.db
+        const olderRuns = await ctx.db
             .query("strategy_runs")
             .withIndex("by_strategy_started_at", (q) =>
-                q.eq("strategyId", args.strategyId).eq("startedAt", boundaryStartedAt)
+                q.eq("strategyId", args.strategyId).lt("startedAt", args.beforeStartedAt!)
             )
-            .collect()
+            .order("desc")
+            .take(remainingLimit)
 
         return sortRunHistory([
-            ...runs,
-            ...boundaryRuns.filter((run) => !runIds.has(run._id)),
-        ])
+            ...sameTimestampRuns,
+            ...olderRuns,
+        ]).slice(0, limit)
     },
 })
 

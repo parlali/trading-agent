@@ -165,7 +165,12 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
                 } as never) as StoredRun | null
             )
         },
-        async getRunHistory(strategyId: Id<"strategies">, limit?: number, beforeStartedAt?: number): Promise<StoredRun[]> {
+        async getRunHistory(
+            strategyId: Id<"strategies">,
+            limit?: number,
+            beforeStartedAt?: number,
+            beforeCreationTime?: number
+        ): Promise<StoredRun[]> {
             return await runWithTimeout(
                 "Convex query getRunHistory",
                 async () => await client.query(api.queries.getRunHistory, {
@@ -173,6 +178,7 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
                     strategyId,
                     limit,
                     beforeStartedAt,
+                    beforeCreationTime,
                 } as never) as StoredRun[]
             )
         },

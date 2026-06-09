@@ -14,6 +14,7 @@ import {
 } from "@valiq-trading/core"
 import { computeImpliedRR, computeTakeProfitFromRR } from "@valiq-trading/mt5"
 import { createRejectedExecutionToolResult } from "./execution-response"
+import { assertToolNotAborted } from "../tool-registry"
 
 const OKX_ESTIMATED_ONE_WAY_FEE_RATE = 0.0025
 
@@ -113,8 +114,11 @@ export async function prepareOKXOrder(
     venue: OKXVenueAdapter,
     policy: OKXPolicy,
     action: "entry" | "adjustment",
-    callbacks?: OKXExecutionSafetyCallbacks
+    callbacks?: OKXExecutionSafetyCallbacks,
+    signal?: AbortSignal
 ): Promise<OKXOrderResult> {
+    assertToolNotAborted(signal)
+
     const hasTp = params.takeProfit !== undefined
     const hasRr = params.riskRewardRatio !== undefined
 
@@ -136,7 +140,9 @@ export async function prepareOKXOrder(
     }
 
     const instrument = params.instrument.toUpperCase()
+    assertToolNotAborted(signal)
     const markPrice = await venue.getCurrentMarkPrice(instrument)
+    assertToolNotAborted(signal)
     const entryPrice = params.orderType === "limit"
         ? params.limitPrice ?? 0
         : markPrice
@@ -168,12 +174,14 @@ export async function prepareOKXOrder(
         impliedRR = rrResult
     }
 
+    assertToolNotAborted(signal)
     const [account, positions, workingOrders, fundingRate] = await Promise.all([
         pipeline.getAccountState(),
         pipeline.getPositions(),
         venue.getWorkingOrders(),
         venue.getCurrentFundingRate(instrument).catch(() => undefined),
     ])
+    assertToolNotAborted(signal)
 
     if (action === "entry") {
         const liveExposureBlock = resolveLiveEntryExposureBlock(instrument, positions, workingOrders)
@@ -202,15 +210,19 @@ export async function prepareOKXOrder(
     }
 
     const sizing = await venue.normalizeQuantity(instrument, rawQuantity)
+    assertToolNotAborted(signal)
     if (sizing.baseQuantity <= 0) {
         return rejected(`Computed quantity ${rawQuantity} falls below minimum contract size for ${instrument}`)
     }
 
     const normalizedStopLoss = await venue.normalizePrice(instrument, params.stopLoss)
+    assertToolNotAborted(signal)
     const normalizedTakeProfit = await venue.normalizePrice(instrument, takeProfit)
+    assertToolNotAborted(signal)
     const normalizedLimitPrice = params.limitPrice !== undefined
         ? await venue.normalizePrice(instrument, params.limitPrice)
         : undefined
+    assertToolNotAborted(signal)
 
     const estimatedRoundTripFees = sizing.baseQuantity * entryPrice * OKX_ESTIMATED_ONE_WAY_FEE_RATE * 2
     const actualRiskAmount = sizing.baseQuantity * Math.abs(entryPrice - normalizedStopLoss) + estimatedRoundTripFees
@@ -245,6 +257,7 @@ export async function prepareOKXOrder(
         positions,
         { action }
     )
+    assertToolNotAborted(signal)
 
     const protectionOrders = action === "entry" && validation.allowed
         ? await ensureProtectionOrders({
@@ -259,6 +272,7 @@ export async function prepareOKXOrder(
             status: result.status,
             requireTakeProfit: policy.requireTakeProfit,
             callbacks,
+            signal,
         })
         : undefined
 
@@ -367,8 +381,11 @@ async function verifyProtectionFromProviderTruth(config: {
     venue: OKXVenueAdapter
     instrument: string
     requireTakeProfit: boolean
+    signal?: AbortSignal
 }): Promise<{ ok: boolean; reason?: string; protectionOrderIds: string[] }> {
+    assertToolNotAborted(config.signal)
     const positions = await config.venue.getPositions()
+    assertToolNotAborted(config.signal)
     const position = positions.find((entry) => entry.instrument === config.instrument)
     if (!position) {
         return {
@@ -381,6 +398,7 @@ async function verifyProtectionFromProviderTruth(config: {
     const workingOrders = config.venue.getWorkingOrders
         ? await config.venue.getWorkingOrders()
         : []
+    assertToolNotAborted(config.signal)
     const protectionOrderIds = workingOrders
         .filter((order) =>
             order.instrument === config.instrument &&
@@ -422,6 +440,7 @@ async function ensureProtectionOrders(config: {
     status: string
     requireTakeProfit: boolean
     callbacks?: OKXExecutionSafetyCallbacks
+    signal?: AbortSignal
 }): Promise<{
     cancelledOrderIds: string[]
     createdOrderIds: string[]
@@ -429,6 +448,8 @@ async function ensureProtectionOrders(config: {
     flattened?: boolean
     error?: string
 }> {
+    assertToolNotAborted(config.signal)
+
     if (config.dryRun) {
         return {
             cancelledOrderIds: [],
@@ -463,10 +484,12 @@ async function ensureProtectionOrders(config: {
                 venue: config.venue,
                 instrument: config.instrument,
                 requireTakeProfit: config.requireTakeProfit,
+                signal: config.signal,
             })
         } catch (error) {
             const message = `Protection verification failed: provider truth read failed for ${config.instrument}: ${error instanceof Error ? error.message : String(error)}`
             const protectionContext = await createOKXProtectionOperationContext(config)
+            assertToolNotAborted(config.signal)
             const fault = await flattenOKXPositionAfterProtectionFailure({
                 pipeline: config.pipeline,
                 instrument: config.instrument,
@@ -486,6 +509,7 @@ async function ensureProtectionOrders(config: {
                 submitAttemptId: protectionContext.identity.submitAttemptId,
                 submitAttemptSequence: protectionContext.identity.submitAttemptSequence,
                 venue: "okx-swap",
+                signal: config.signal,
             })
 
             return {
@@ -512,30 +536,34 @@ async function ensureProtectionOrders(config: {
         lastCategory = classifyOKXProtectionFailure(verification.reason ?? "unknown")
 
         if (attempt < 2) {
-            await delay((attempt + 1) * 500)
+            await delay((attempt + 1) * 500, config.signal)
         }
     }
 
     const protectionContext = await createOKXProtectionOperationContext(config)
+    assertToolNotAborted(config.signal)
 
     for (let attempt = 0; attempt < 3; attempt++) {
         try {
+            assertToolNotAborted(config.signal)
             const updated = await config.venue.updateProtectionOrders({
                 instrument: config.instrument,
                 stopLoss: config.stopLoss,
                 takeProfit: config.takeProfit,
                 identity: protectionContext.identity,
             })
+            assertToolNotAborted(config.signal)
             const verification = await verifyProtectionFromProviderTruth({
                 venue: config.venue,
                 instrument: config.instrument,
                 requireTakeProfit: config.requireTakeProfit,
+                signal: config.signal,
             })
             if (!verification.ok) {
                 lastError = verification.reason
                 lastCategory = classifyOKXProtectionFailure(verification.reason ?? "unknown")
                 if (attempt < 2) {
-                    await delay((attempt + 1) * 500)
+                    await delay((attempt + 1) * 500, config.signal)
                     continue
                 }
                 break
@@ -558,10 +586,11 @@ async function ensureProtectionOrders(config: {
                 break
             }
 
-            await delay((attempt + 1) * 500)
+            await delay((attempt + 1) * 500, config.signal)
         }
     }
 
+    assertToolNotAborted(config.signal)
     const fault = await flattenOKXPositionAfterProtectionFailure({
         pipeline: config.pipeline,
         instrument: config.instrument,
@@ -581,6 +610,7 @@ async function ensureProtectionOrders(config: {
         submitAttemptId: protectionContext.identity.submitAttemptId,
         submitAttemptSequence: protectionContext.identity.submitAttemptSequence,
         venue: "okx-swap",
+        signal: config.signal,
     })
 
     return {
@@ -599,7 +629,9 @@ async function createOKXProtectionOperationContext(config: {
     quantity: number
     stopLoss: number
     takeProfit: number
+    signal?: AbortSignal
 }): Promise<SubmitOrderContext> {
+    assertToolNotAborted(config.signal)
     const protectionIntent: OrderIntent = {
         instrument: config.instrument,
         side: config.side === "buy" ? "sell" : "buy",
@@ -616,10 +648,12 @@ async function createOKXProtectionOperationContext(config: {
         },
     }
 
-    return await config.pipeline.createExecutionOperationContext(
+    const context = await config.pipeline.createExecutionOperationContext(
         protectionIntent,
         "modify"
     )
+    assertToolNotAborted(config.signal)
+    return context
 }
 
 export async function flattenOKXPositionAfterProtectionFailure(config: {
@@ -638,6 +672,7 @@ export async function flattenOKXPositionAfterProtectionFailure(config: {
     submitAttemptSequence?: number
     venue?: string
     recoveryProbeEvidence?: Record<string, unknown>
+    signal?: AbortSignal
 }): Promise<{
     category: OKXProtectionFailureCategory
     flattened: boolean
@@ -647,6 +682,7 @@ export async function flattenOKXPositionAfterProtectionFailure(config: {
     const faultMessage = config.protectionError
 
     try {
+        assertToolNotAborted(config.signal)
         const flattenResult = await config.pipeline.closePosition(
             config.instrument,
             config.flattenReason,
@@ -658,12 +694,14 @@ export async function flattenOKXPositionAfterProtectionFailure(config: {
                 },
             }
         )
+        assertToolNotAborted(config.signal)
         if (flattenResult.result.status !== "filled") {
             throw new Error(flattenResult.result.error ?? `Flatten did not prove flat position: ${flattenResult.result.status}`)
         }
     } catch (flattenError) {
         const flattenMessage = flattenError instanceof Error ? flattenError.message : String(flattenError)
         const combinedMessage = `${faultMessage}; flatten_failed=${flattenMessage}`
+        assertToolNotAborted(config.signal)
         await config.callbacks?.recordFault?.({
             instrument: config.instrument,
             category: faultCategory,
@@ -690,6 +728,7 @@ export async function flattenOKXPositionAfterProtectionFailure(config: {
         }
     }
 
+    assertToolNotAborted(config.signal)
     await config.callbacks?.recordFault?.({
         instrument: config.instrument,
         category: faultCategory,
@@ -715,6 +754,24 @@ export async function flattenOKXPositionAfterProtectionFailure(config: {
     }
 }
 
-function delay(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms))
+function delay(ms: number, signal?: AbortSignal): Promise<void> {
+    assertToolNotAborted(signal)
+
+    return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+            signal?.removeEventListener("abort", onAbort)
+            resolve()
+        }, ms)
+        const onAbort = () => {
+            clearTimeout(timer)
+            reject(createAbortError("Tool execution cancelled"))
+        }
+        signal?.addEventListener("abort", onAbort, { once: true })
+    })
+}
+
+function createAbortError(message: string): Error {
+    const error = new Error(message)
+    error.name = "AbortError"
+    return error
 }

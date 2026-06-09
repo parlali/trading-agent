@@ -68,7 +68,28 @@ export function requireServiceToken(serviceToken: string, ctx?: ServiceTokenAuth
 }
 
 export function requireServiceTokenForContext(serviceToken: string, ctx: unknown): void {
-    requireServiceToken(serviceToken, readServiceTokenAuthContext(ctx))
+    const authContext = readServiceTokenAuthContext(ctx)
+    if (!authContext?.backendServiceToken?.trim()) {
+        throw new Error("Machine-only action requires backend service token context")
+    }
+
+    requireServiceToken(serviceToken, authContext)
+}
+
+export function requireServiceTokenFromEnv(serviceToken: string): void {
+    requireServiceTokenForContext(serviceToken, {
+        backendServiceToken: readBackendServiceToken(),
+    })
+}
+
+export function requireServiceTokenForQueryContext(serviceToken: string, ctx: unknown): void {
+    const authContext = readServiceTokenAuthContext(ctx)
+    if (authContext?.backendServiceToken?.trim()) {
+        requireServiceTokenForContext(serviceToken, authContext)
+        return
+    }
+
+    requireServiceTokenFromEnv(serviceToken)
 }
 
 export async function requireUserOrServiceToken(
@@ -76,7 +97,7 @@ export async function requireUserOrServiceToken(
     serviceToken?: string
 ): Promise<void> {
     if (serviceToken) {
-        requireServiceTokenForContext(serviceToken, ctx)
+        requireServiceTokenForQueryContext(serviceToken, ctx)
         return
     }
 

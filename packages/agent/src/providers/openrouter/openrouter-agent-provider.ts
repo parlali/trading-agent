@@ -49,6 +49,28 @@ export class OpenRouterAgentProvider implements AgentModelProvider {
         const runController = new AbortController()
         this.activeRunController = runController
         let killSwitchFailure: string | undefined
+        let runTimeoutError: string | undefined
+
+        const buildRunTimeoutError = (): string => {
+            const elapsed = Date.now() - runStartedAt
+            return `Run timed out after ${Math.round(elapsed / 1000)}s (limit: ${Math.round(runTimeoutMs / 1000)}s)`
+        }
+
+        const stopForRunTimeout = () => {
+            if (!runTimeoutError) {
+                runTimeoutError = buildRunTimeoutError()
+                logger.error("Agent run timed out", {
+                    runId: context.runId,
+                    elapsedMs: Date.now() - runStartedAt,
+                    timeoutMs: runTimeoutMs,
+                    iterations: iteration,
+                })
+            }
+            runController.abort()
+            this.client.cancel()
+        }
+
+        const runTimeoutTimer = setTimeout(stopForRunTimeout, Math.max(0, runTimeoutMs - (Date.now() - runStartedAt)))
 
         const stopForKillSwitch = () => {
             if (!killSwitchActivated) {
@@ -84,6 +106,17 @@ export class OpenRouterAgentProvider implements AgentModelProvider {
             })
 
         const stoppedRunResult = () => {
+            if (runTimeoutError) {
+                return this.result({
+                    summary:
+                        conversation.getLastAssistantContent() ??
+                        "Agent run timed out before producing a summary.",
+                    error: runTimeoutError,
+                    iterations: iteration,
+                    usage: aggregatedUsage,
+                })
+            }
+
             if (killSwitchFailure) {
                 return this.result({
                     summary:
@@ -110,23 +143,9 @@ export class OpenRouterAgentProvider implements AgentModelProvider {
         try {
             while (iteration < maxIterations) {
                 const elapsed = Date.now() - runStartedAt
-                if (elapsed > runTimeoutMs) {
-                    logger.error("Agent run timed out", {
-                        runId: context.runId,
-                        elapsedMs: elapsed,
-                        timeoutMs: runTimeoutMs,
-                        iterations: iteration,
-                    })
-                    this.cancel()
-                    const lastContent = conversation.getLastAssistantContent()
-                    return this.result({
-                        summary:
-                            lastContent ??
-                            "Agent run timed out before producing a summary.",
-                        error: `Run timed out after ${Math.round(elapsed / 1000)}s (limit: ${Math.round(runTimeoutMs / 1000)}s)`,
-                        iterations: iteration,
-                        usage: aggregatedUsage,
-                    })
+                if (elapsed >= runTimeoutMs) {
+                    stopForRunTimeout()
+                    return stoppedRunResult()
                 }
 
                 if (args.killSwitchChecker) {
@@ -350,6 +369,7 @@ export class OpenRouterAgentProvider implements AgentModelProvider {
                 usage: aggregatedUsage,
             })
         } finally {
+            clearTimeout(runTimeoutTimer)
             if (this.activeRunController === runController) {
                 this.activeRunController = undefined
             }
@@ -369,7 +389,11 @@ export class OpenRouterAgentProvider implements AgentModelProvider {
         signal: AbortSignal,
     ): Promise<T> {
         if (!args.killSwitchChecker) {
-            return await operation()
+            const result = await operation()
+            if (signal.aborted) {
+                throw createAbortError("Agent run cancelled")
+            }
+            return result
         }
 
         let stopped = false

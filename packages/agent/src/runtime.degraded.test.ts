@@ -308,7 +308,50 @@ describe("executeAgentRun degraded research", () => {
         expect(result.error).toContain("Kill switch check failed: control plane unavailable")
         expect(chat).not.toHaveBeenCalled()
     })
+
+    it("aborts in-flight OpenRouter chat when the run deadline expires", async () => {
+        let observedSignal: AbortSignal | undefined
+        vi.spyOn(OpenRouterChatClient.prototype, "chat").mockImplementation(async (
+            _messages,
+            _tools,
+            _logger,
+            _maxRetries,
+            signal
+        ) => {
+            observedSignal = signal
+            if (signal?.aborted) {
+                throw createAbortError("aborted")
+            }
+            return await new Promise<LLMResponse>((_resolve, reject) => {
+                signal?.addEventListener("abort", () => reject(createAbortError("aborted")), { once: true })
+            })
+        })
+        const tools = new ToolRegistry()
+
+        const result = await executeAgentRun(
+            createRuntimeContext("Deadline should interrupt provider work", "run-timeout-in-flight"),
+            {
+                provider: {
+                    provider: "openrouter",
+                    apiKey: "test",
+                    model: "test-model",
+                },
+                tools,
+                logger: createLogger({ minLevel: "fatal" }),
+                runTimeoutMs: 10,
+            }
+        )
+
+        expect(result.error).toContain("Run timed out")
+        expect(observedSignal?.aborted).toBe(true)
+    })
 })
+
+function createAbortError(message: string): Error {
+    const error = new Error(message)
+    error.name = "AbortError"
+    return error
+}
 
 function createRuntimeContext(context: string, runId: string): StrategyRunContext {
     return {

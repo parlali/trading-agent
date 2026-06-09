@@ -12,6 +12,11 @@ type FakeIndexQuery = {
     lt: (field: string, value: unknown) => FakeIndexQuery
 }
 
+type FakeFilterBuilder = {
+    field: (field: string) => { field: string }
+    lt: (field: { field: string }, value: unknown) => boolean
+}
+
 class FakeDb {
     constructor(private readonly rows: Record<string, FakeRow[]>) {}
 
@@ -43,6 +48,18 @@ class FakeQuery {
 
     order(direction: "asc" | "desc") {
         this.orderDirection = direction
+        return this
+    }
+
+    filter(predicate: (q: FakeFilterBuilder) => unknown) {
+        const builder: FakeFilterBuilder = {
+            field: (field) => ({ field }),
+            lt: (field, value) => {
+                this.filters.push({ field: field.field, operator: "lt", value })
+                return true
+            },
+        }
+        predicate(builder)
         return this
     }
 

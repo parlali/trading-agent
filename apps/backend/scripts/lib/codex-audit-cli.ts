@@ -143,7 +143,10 @@ export async function findStrategyRunHistoryMatches(args: {
     stopAfterPage?: (runs: StoredRun[]) => boolean
     pageLimitError?: string
 }): Promise<StoredRun[]> {
-    let beforeStartedAt: number | undefined
+    let beforeCursor: {
+        startedAt: number
+        creationTime: number
+    } | undefined
     const pageSize = Math.min(
         MAX_AUDIT_RUN_HISTORY_PAGE_SIZE,
         Math.max(DEFAULT_AUDIT_RUN_HISTORY_PAGE_SIZE, args.initialLimit ?? DEFAULT_AUDIT_RUN_HISTORY_PAGE_SIZE)
@@ -151,7 +154,12 @@ export async function findStrategyRunHistoryMatches(args: {
     const matches: StoredRun[] = []
 
     for (let page = 0; page < MAX_AUDIT_RUN_HISTORY_PAGES; page++) {
-        const runs = await args.client.getRunHistory(args.strategyId, pageSize, beforeStartedAt)
+        const runs = await args.client.getRunHistory(
+            args.strategyId,
+            pageSize,
+            beforeCursor?.startedAt,
+            beforeCursor?.creationTime
+        )
         for (const run of runs) {
             if (args.matches(run)) {
                 matches.push(run)
@@ -172,7 +180,10 @@ export async function findStrategyRunHistoryMatches(args: {
         if (!lastRun) {
             return matches
         }
-        beforeStartedAt = lastRun.startedAt
+        beforeCursor = {
+            startedAt: lastRun.startedAt,
+            creationTime: lastRun._creationTime,
+        }
     }
 
     if (args.pageLimitError) {
