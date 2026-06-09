@@ -107,6 +107,7 @@ export default defineSchema({
         toolName: v.optional(v.string()),
         toolInput: v.optional(v.string()),
         toolOutput: v.optional(v.string()),
+        toolCalls: v.optional(v.string()),
         timestamp: v.number(),
     })
         .index("by_run", ["runId"])

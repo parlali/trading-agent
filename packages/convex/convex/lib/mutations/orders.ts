@@ -277,6 +277,7 @@ export const logAgentMessage = mutation({
         toolName: v.optional(v.string()),
         toolInput: v.optional(v.string()),
         toolOutput: v.optional(v.string()),
+        toolCalls: v.optional(v.string()),
     },
     handler: async (ctx, args) => {
         requireServiceToken(args.serviceToken)
@@ -289,6 +290,7 @@ export const logAgentMessage = mutation({
             toolName: args.toolName,
             toolInput: args.toolInput,
             toolOutput: args.toolOutput,
+            toolCalls: args.toolCalls,
             timestamp: Date.now(),
         })
     },

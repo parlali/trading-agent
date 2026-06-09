@@ -443,6 +443,7 @@ async function readTextLines(
             }
         }
 
+        buffer += decoder.decode()
         if (buffer.trim().length > 0) {
             onLine(buffer)
         }

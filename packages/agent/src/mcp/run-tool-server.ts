@@ -12,6 +12,7 @@ export interface RunToolServerConfig {
     logger: Logger
     host?: string
     token?: string
+    signal?: AbortSignal
     onFatalFault?: () => Promise<void> | void
 }
 
@@ -40,6 +41,10 @@ interface JsonRpcResponse {
     }
 }
 
+type McpFatalState = {
+    active: boolean
+}
+
 const DEFAULT_HOST = "127.0.0.1"
 const MAX_REQUEST_BODY_BYTES = 2 * 1024 * 1024
 
@@ -48,6 +53,9 @@ export async function startRunToolServer(config: RunToolServerConfig): Promise<R
     const token = config.token ?? randomBytes(32).toString("base64url")
     const projectedTools = projectToolsForMcp(config.tools.getAll())
     const toolNames = projectedTools.map((tool) => tool.name)
+    const fatalState: McpFatalState = {
+        active: false,
+    }
 
     const server = createServer(async (request, response) => {
         try {
@@ -59,6 +67,8 @@ export async function startRunToolServer(config: RunToolServerConfig): Promise<R
                 toolEngine: config.toolEngine,
                 logger: config.logger,
                 onFatalFault: config.onFatalFault,
+                fatalState,
+                signal: config.signal,
             })
         } catch (error) {
             config.logger.error("Run MCP server request failed", {
@@ -116,6 +126,8 @@ async function handleRequest(args: {
     toolEngine: ToolExecutionEngine
     logger: Logger
     onFatalFault?: () => Promise<void> | void
+    fatalState: McpFatalState
+    signal?: AbortSignal
 }): Promise<void> {
     const { request, response } = args
 
@@ -170,9 +182,14 @@ async function handleRequest(args: {
             toolEngine: args.toolEngine,
             logger: args.logger,
             onFatalFault: args.onFatalFault,
+            fatalState: args.fatalState,
+            signal: args.signal,
         })
         if (responsePayload) {
             responses.push(responsePayload)
+        }
+        if (args.fatalState.active) {
+            break
         }
     }
 
@@ -191,6 +208,8 @@ async function handleJsonRpcRequest(args: {
     toolEngine: ToolExecutionEngine
     logger: Logger
     onFatalFault?: () => Promise<void> | void
+    fatalState: McpFatalState
+    signal?: AbortSignal
 }): Promise<JsonRpcResponse | undefined> {
     const { request } = args
     const id = request.id ?? null
@@ -232,6 +251,10 @@ async function handleJsonRpcRequest(args: {
     }
 
     if (request.method === "tools/call") {
+        if (args.fatalState.active) {
+            return jsonRpcError(id, -32000, "Run MCP server stopped after fatal tool fault")
+        }
+
         const params = readRecord(request.params)
         const name = typeof params?.name === "string" ? params.name : ""
         if (!name) {
@@ -241,7 +264,10 @@ async function handleJsonRpcRequest(args: {
         const result = await args.toolEngine.executeMcpCall(
             name,
             params?.arguments ?? {},
-            String(id)
+            String(id),
+            {
+                signal: args.signal,
+            }
         )
         args.logger.info("Run MCP server completed tool call", {
             toolName: name,
@@ -250,7 +276,8 @@ async function handleJsonRpcRequest(args: {
         })
 
         if (result.fatal) {
-            void Promise.resolve(args.onFatalFault?.()).catch((error) => {
+            args.fatalState.active = true
+            await Promise.resolve(args.onFatalFault?.()).catch((error) => {
                 args.logger.error("Run MCP fatal-fault hook failed", {
                     error: error instanceof Error ? error.message : String(error),
                 })

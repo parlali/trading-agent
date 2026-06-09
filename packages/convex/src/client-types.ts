@@ -109,6 +109,7 @@ export interface AgentLogRow {
     toolName?: string
     toolInput?: string
     toolOutput?: string
+    toolCalls?: string
     timestamp: number
 }
 

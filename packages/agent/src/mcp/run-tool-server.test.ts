@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import { z } from "zod"
 import { createLogger } from "@valiq-trading/core"
 import { ToolExecutionEngine } from "../tool-execution-engine"
@@ -122,6 +122,104 @@ describe("startRunToolServer", () => {
         }
     })
 
+    it("stops a batch after a fatal tool fault", async () => {
+        const onFatalFault = vi.fn()
+        const harnessCalls: string[] = []
+        const harness = await createHarness({
+            category: "execution",
+            onFatalFault,
+            handler: async (params) => {
+                const value = params as { value: string }
+                harnessCalls.push(value.value)
+                if (value.value === "fatal") {
+                    throw new Error("provider credential missing")
+                }
+                return {
+                    echo: value.value,
+                }
+            },
+        })
+        try {
+            const response = await rpc(harness.url, harness.token, [
+                {
+                    jsonrpc: "2.0",
+                    id: "call-fatal",
+                    method: "tools/call",
+                    params: {
+                        name: "echo",
+                        arguments: {
+                            value: "fatal",
+                        },
+                    },
+                },
+                {
+                    jsonrpc: "2.0",
+                    id: "call-after-fatal",
+                    method: "tools/call",
+                    params: {
+                        name: "echo",
+                        arguments: {
+                            value: "after",
+                        },
+                    },
+                },
+            ]) as unknown as { result?: { isError?: boolean } }[]
+
+            expect(response).toHaveLength(1)
+            expect(response[0]?.result?.isError).toBe(true)
+            expect(harnessCalls).toEqual(["fatal"])
+            expect(onFatalFault).toHaveBeenCalledTimes(1)
+        } finally {
+            await harness.close()
+        }
+    })
+
+    it("rejects tool calls after a fatal tool fault", async () => {
+        const harness = await createHarness({
+            category: "execution",
+            handler: async (params) => {
+                const value = params as { value: string }
+                if (value.value === "fatal") {
+                    throw new Error("provider credential missing")
+                }
+                return {
+                    echo: value.value,
+                }
+            },
+        })
+        try {
+            await rpc(harness.url, harness.token, {
+                jsonrpc: "2.0",
+                id: "call-fatal",
+                method: "tools/call",
+                params: {
+                    name: "echo",
+                    arguments: {
+                        value: "fatal",
+                    },
+                },
+            })
+            const response = await rpc(harness.url, harness.token, {
+                jsonrpc: "2.0",
+                id: "call-after-fatal",
+                method: "tools/call",
+                params: {
+                    name: "echo",
+                    arguments: {
+                        value: "after",
+                    },
+                },
+            })
+
+            expect(response.error).toMatchObject({
+                code: -32000,
+                message: "Run MCP server stopped after fatal tool fault",
+            })
+        } finally {
+            await harness.close()
+        }
+    })
+
     it("does not accept tool calls after the run server closes", async () => {
         const harness = await createHarness()
         await harness.close()
@@ -145,7 +243,11 @@ describe("startRunToolServer", () => {
     })
 })
 
-async function createHarness(): Promise<{
+async function createHarness(options: {
+    category?: "research" | "execution"
+    handler?: (params: unknown) => Promise<unknown>
+    onFatalFault?: () => Promise<void> | void
+} = {}): Promise<{
     url: string
     token: string
     calls: Array<{ value: string }>
@@ -168,14 +270,14 @@ async function createHarness(): Promise<{
             },
             required: ["value"],
         },
-        category: "research",
-        handler: async (params) => {
+        category: options.category ?? "research",
+        handler: options.handler ?? (async (params) => {
             const value = params as { value: string }
             calls.push(value)
             return {
                 echo: value.value,
             }
-        },
+        }),
     })
     const toolEngine = new ToolExecutionEngine({
         tools,
@@ -188,6 +290,7 @@ async function createHarness(): Promise<{
         tools,
         toolEngine,
         logger: createLogger({ minLevel: "fatal" }),
+        onFatalFault: options.onFatalFault,
     })
 
     return {

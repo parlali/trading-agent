@@ -167,7 +167,10 @@ export function buildCodexRunAuditArtifact(input: CodexRunAuditInput): CodexRunA
         providerIdentityIsCodex: input.run.llmProvider === "codex" && llm.provider === "codex",
         evidenceRowsMatchRun: evidenceLinkage.mismatches.length === 0,
         dryRunStrategy: input.strategy.policy.dryRun === true,
-        completedRun: input.run.status === "completed" && input.run.error === undefined,
+        completedRun: input.run.status === "completed" &&
+            input.run.error === undefined &&
+            typeof input.run.endedAt === "number" &&
+            Number.isFinite(input.run.endedAt),
         toolLogsFromSharedEngine,
         noForbiddenToolRan: forbiddenToolNames.length === 0,
         canonicalRunToolsOnly: nonCanonicalToolNames.length === 0,
@@ -316,12 +319,23 @@ function buildProviderSyncAudit(args: {
     providerSync: PortfolioFreshnessRow | undefined
     run: StoredRun
 }): CodexRunAuditArtifact["evidence"]["providerSyncAudit"] {
-    const referenceTimestamp = args.run.endedAt ?? args.run.startedAt
-    const syncedAfterRun = typeof args.providerSync?.lastSyncedAt === "number" &&
+    const hasCompletedRunTimestamp = args.run.status === "completed" &&
+        typeof args.run.endedAt === "number" &&
+        Number.isFinite(args.run.endedAt)
+    const referenceTimestamp = hasCompletedRunTimestamp
+        ? args.run.endedAt!
+        : args.run.startedAt
+    const syncedAfterRun = hasCompletedRunTimestamp &&
+        typeof args.providerSync?.lastSyncedAt === "number" &&
         args.providerSync.lastSyncedAt >= referenceTimestamp
-    const verifiedAfterRun = typeof args.providerSync?.lastVerifiedAt === "number" &&
+    const verifiedAfterRun = hasCompletedRunTimestamp &&
+        typeof args.providerSync?.lastVerifiedAt === "number" &&
         args.providerSync.lastVerifiedAt >= referenceTimestamp
     const mismatches: string[] = []
+
+    if (!hasCompletedRunTimestamp) {
+        mismatches.push(`completed run endedAt is missing for run ${args.run._id}`)
+    }
 
     if (!args.providerSync) {
         mismatches.push("provider-sync state is missing")
@@ -338,10 +352,10 @@ function buildProviderSyncAudit(args: {
         if (args.providerSync.lastError) {
             mismatches.push(`provider-sync lastError is set: ${args.providerSync.lastError}`)
         }
-        if (!syncedAfterRun) {
+        if (hasCompletedRunTimestamp && !syncedAfterRun) {
             mismatches.push(`provider-sync lastSyncedAt ${args.providerSync.lastSyncedAt ?? "missing"} is before run reference ${referenceTimestamp}`)
         }
-        if (!verifiedAfterRun) {
+        if (hasCompletedRunTimestamp && !verifiedAfterRun) {
             mismatches.push(`provider-sync lastVerifiedAt ${args.providerSync.lastVerifiedAt ?? "missing"} is before run reference ${referenceTimestamp}`)
         }
     }

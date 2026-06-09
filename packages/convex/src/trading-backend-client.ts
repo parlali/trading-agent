@@ -283,7 +283,8 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
             content: string,
             toolName?: string,
             toolInput?: string,
-            toolOutput?: string
+            toolOutput?: string,
+            toolCalls?: string
         ): Promise<void> {
             if (role !== "system" && role !== "user" && role !== "assistant" && role !== "tool") {
                 throw new Error(`Unsupported agent log role: ${role}`)
@@ -301,6 +302,7 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
                     toolName,
                     toolInput,
                     toolOutput,
+                    toolCalls,
                 })
             )
         },

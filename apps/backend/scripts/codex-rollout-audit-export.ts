@@ -1,7 +1,7 @@
 import { mkdir, writeFile } from "node:fs/promises"
 import { dirname } from "node:path"
 import { resolveStrategyLlmConfig } from "@valiq-trading/core"
-import type { StoredRun } from "@valiq-trading/convex"
+import type { StoredRun, StoredStrategy } from "@valiq-trading/convex"
 import {
     collectCodexRunAuditArtifact,
     findStrategyRunHistoryMatches,
@@ -61,9 +61,18 @@ async function exportCodexRolloutAudit(): Promise<void> {
     const openRouterStrategies = allStrategies.filter((candidate) =>
         resolveStrategyLlmConfig(candidate.policy).provider === "openrouter"
     )
+    const rolloutStartedAt = scheduledRuns.length > 0
+        ? Math.min(...scheduledRuns.map((run) => run.startedAt))
+        : undefined
     const openRouterSamples = await Promise.all(openRouterStrategies.map(async (candidate) => ({
         strategy: candidate,
-        runs: await client.getRunHistory(candidate._id, 50),
+        runs: rolloutStartedAt === undefined
+            ? await client.getRunHistory(candidate._id, 500)
+            : await resolveOpenRouterRunsSince({
+                client,
+                strategy: candidate,
+                rolloutStartedAt,
+            }),
     })))
     const artifact = buildCodexRolloutAuditArtifact({
         exportedAt,
@@ -95,6 +104,23 @@ async function exportCodexRolloutAudit(): Promise<void> {
     if (artifact.failures.length > 0) {
         throw new Error(`Codex rollout audit failed ${artifact.failures.length} gate(s)`)
     }
+}
+
+async function resolveOpenRouterRunsSince(args: {
+    client: ReturnType<typeof createClient>
+    strategy: StoredStrategy
+    rolloutStartedAt: number
+}): Promise<StoredRun[]> {
+    return await findStrategyRunHistoryMatches({
+        client: args.client,
+        strategyId: args.strategy._id,
+        minMatches: Number.POSITIVE_INFINITY,
+        initialLimit: 500,
+        matches: (run) => run.startedAt >= args.rolloutStartedAt,
+        stopAfterPage: (runs) =>
+            runs.some((run) => run.startedAt < args.rolloutStartedAt),
+        pageLimitError: `OpenRouter rollout sample for ${args.strategy.name} (${args.strategy._id}) exceeded bounded history scan before reaching rollout start ${args.rolloutStartedAt}`,
+    })
 }
 
 async function resolveScheduledCodexRuns(args: {

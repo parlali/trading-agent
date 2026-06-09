@@ -310,6 +310,16 @@ export default function RunDetailPage({
                                             </pre>
                                         </details>
                                     ) : null}
+                                    {log.toolCalls ? (
+                                        <details className="mt-2">
+                                            <summary className="text-xs text-muted-foreground cursor-pointer">
+                                                Tool Calls
+                                            </summary>
+                                            <pre className="text-xs font-mono mt-1 bg-muted/50 rounded p-2 overflow-auto max-h-[200px] break-words whitespace-pre-wrap">
+                                                {log.toolCalls}
+                                            </pre>
+                                        </details>
+                                    ) : null}
                                     {log.toolOutput ? (
                                         <details className="mt-2">
                                             <summary className="text-xs text-muted-foreground cursor-pointer">

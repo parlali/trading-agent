@@ -1,5 +1,6 @@
-import { retryWithBackoff } from "@valiq-trading/core"
+import { readFiniteNumber, retryWithBackoff } from "@valiq-trading/core"
 import type { Logger } from "@valiq-trading/core"
+import { createEmptyUsage, type LLMUsage } from "../../llm-usage"
 
 export interface OpenRouterChatClientConfig {
     apiKey: string
@@ -41,14 +42,6 @@ export interface OpenRouterTool {
     }
 }
 
-export interface LLMUsage {
-    promptTokens: number
-    completionTokens: number
-    reasoningTokens: number
-    cost: number
-    responseIds: string[]
-}
-
 export interface OpenRouterChatResponse {
     content: string | null
     toolCalls: ToolCall[]
@@ -62,6 +55,7 @@ interface StreamChunk {
         delta?: {
             content?: string | null
             tool_calls?: Array<{
+                index?: number
                 id?: string
                 type?: string
                 function?: { name?: string; arguments?: string }
@@ -70,6 +64,13 @@ interface StreamChunk {
         finish_reason?: string | null
     }>
     usage?: Record<string, unknown>
+}
+
+type StreamedToolCallBuffer = {
+    index: number
+    id: string
+    name: string
+    arguments: string
 }
 
 const DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
@@ -107,7 +108,7 @@ export class OpenRouterChatClient {
             2000,
             {
                 signal,
-                shouldRetry: (error) => !isAbortError(error),
+                shouldRetry: (error) => !isAbortError(error) && !isStreamProtocolError(error),
             }
         )
     }
@@ -172,7 +173,7 @@ export class OpenRouterChatClient {
                 throw new Error(`OpenRouter API error: ${response.status} ${response.statusText} - ${errorText}`)
             }
 
-            return await this.processStream(response, logger, externalSignal)
+            return await this.processStream(response, logger, signal)
         } catch (error) {
             if (isAbortError(error) || externalSignal?.aborted) {
                 throw createOpenRouterAbortError()
@@ -198,14 +199,8 @@ export class OpenRouterChatClient {
         const decoder = new TextDecoder()
         let buffer = ""
         let content = ""
-        const toolCallBuffer: Record<string, { id: string; name: string; arguments: string }> = {}
-        const usage: LLMUsage = {
-            promptTokens: 0,
-            completionTokens: 0,
-            reasoningTokens: 0,
-            cost: 0,
-            responseIds: [],
-        }
+        const toolCallBuffer = new Map<number, StreamedToolCallBuffer>()
+        const usage = createEmptyUsage()
         let finishReason = ""
 
         const handleLine = (line: string): void => {
@@ -243,29 +238,33 @@ export class OpenRouterChatClient {
 
             if (choice.delta.tool_calls) {
                 for (const tc of choice.delta.tool_calls) {
+                    const index = tc.index
+                    if (typeof index !== "number" || !Number.isInteger(index) || index < 0) {
+                        throw createStreamProtocolError("OpenRouter stream tool call is missing a valid index")
+                    }
+
+                    let entry = toolCallBuffer.get(index)
+                    if (!entry) {
+                        entry = {
+                            index,
+                            id: "",
+                            name: "",
+                            arguments: "",
+                        }
+                        toolCallBuffer.set(index, entry)
+                    }
+
                     if (tc.id) {
-                        if (!toolCallBuffer[tc.id]) {
-                            toolCallBuffer[tc.id] = { id: tc.id, name: "", arguments: "" }
+                        if (entry.id && entry.id !== tc.id) {
+                            throw createStreamProtocolError(`OpenRouter stream changed tool call id for index ${index}`)
                         }
-                        const entry = toolCallBuffer[tc.id]
-                        if (entry && tc.function?.name) {
-                            entry.name += tc.function.name
-                        }
-                        if (entry && tc.function?.arguments) {
-                            entry.arguments += tc.function.arguments
-                        }
-                    } else {
-                        const ids = Object.keys(toolCallBuffer)
-                        const lastId = ids[ids.length - 1]
-                        const lastEntry = lastId ? toolCallBuffer[lastId] : undefined
-                        if (lastEntry) {
-                            if (tc.function?.name) {
-                                lastEntry.name += tc.function.name
-                            }
-                            if (tc.function?.arguments) {
-                                lastEntry.arguments += tc.function.arguments
-                            }
-                        }
+                        entry.id = tc.id
+                    }
+                    if (tc.function?.name) {
+                        entry.name += tc.function.name
+                    }
+                    if (tc.function?.arguments) {
+                        entry.arguments += tc.function.arguments
                     }
                 }
             }
@@ -274,7 +273,7 @@ export class OpenRouterChatClient {
         try {
             while (true) {
                 throwIfSignalAborted(signal)
-                const readResult = await readStreamChunkWithTimeout(reader, this.streamStallTimeoutMs)
+                const readResult = await readStreamChunkWithTimeout(reader, this.streamStallTimeoutMs, signal)
                 const { done, value } = readResult
                 if (done) break
 
@@ -293,14 +292,22 @@ export class OpenRouterChatClient {
             reader.releaseLock()
         }
 
-        const toolCalls: ToolCall[] = Object.values(toolCallBuffer).map((tc) => ({
-            id: tc.id,
-            type: "function" as const,
-            function: {
-                name: tc.name,
-                arguments: tc.arguments,
-            },
-        }))
+        const toolCalls: ToolCall[] = Array.from(toolCallBuffer.values())
+            .sort((left, right) => left.index - right.index)
+            .map((tc) => {
+                if (!tc.id || !tc.name) {
+                    throw createStreamProtocolError(`OpenRouter stream produced incomplete tool call at index ${tc.index}`)
+                }
+
+                return {
+                    id: tc.id,
+                    type: "function" as const,
+                    function: {
+                        name: tc.name,
+                        arguments: tc.arguments,
+                    },
+                }
+            })
 
         return {
             content: content || null,
@@ -311,10 +318,10 @@ export class OpenRouterChatClient {
     }
 
     private extractUsage(raw: Record<string, unknown>, target: LLMUsage): void {
-        const promptTokens = (raw.prompt_tokens ?? raw.promptTokens ?? 0) as number
-        const completionTokens = (raw.completion_tokens ?? raw.completionTokens ?? 0) as number
-        const reasoningTokens = (raw.reasoning_tokens ?? raw.reasoningTokens ?? 0) as number
-        const cost = (raw.cost ?? raw.total_cost ?? 0) as number
+        const promptTokens = readFiniteNumber(raw.prompt_tokens) ?? readFiniteNumber(raw.promptTokens) ?? 0
+        const completionTokens = readFiniteNumber(raw.completion_tokens) ?? readFiniteNumber(raw.completionTokens) ?? 0
+        const reasoningTokens = readFiniteNumber(raw.reasoning_tokens) ?? readFiniteNumber(raw.reasoningTokens) ?? 0
+        const cost = readFiniteNumber(raw.cost) ?? readFiniteNumber(raw.total_cost) ?? 0
 
         if (promptTokens > target.promptTokens) target.promptTokens = promptTokens
         if (completionTokens > target.completionTokens) target.completionTokens = completionTokens
@@ -325,22 +332,40 @@ export class OpenRouterChatClient {
 
 function readStreamChunkWithTimeout(
     reader: ReadableStreamDefaultReader<Uint8Array>,
-    timeoutMs: number
+    timeoutMs: number,
+    signal?: AbortSignal
 ): Promise<ReadableStreamReadResult<Uint8Array>> {
-    let timeoutId: ReturnType<typeof setTimeout> | undefined
+    throwIfSignalAborted(signal)
 
-    return Promise.race([
-        reader.read(),
-        new Promise<never>((_, reject) => {
-            timeoutId = setTimeout(
-                () => reject(new Error("Stream stalled: no data received within timeout")),
-                timeoutMs
-            )
-        }),
-    ]).finally(() => {
-        if (timeoutId) {
+    return new Promise((resolve, reject) => {
+        let settled = false
+        const settle = (callback: () => void) => {
+            if (settled) {
+                return
+            }
+            settled = true
             clearTimeout(timeoutId)
+            signal?.removeEventListener("abort", onAbort)
+            callback()
         }
+
+        const cancelReader = () => {
+            void reader.cancel().catch(() => undefined)
+        }
+        const onAbort = () => {
+            cancelReader()
+            settle(() => reject(createOpenRouterAbortError()))
+        }
+        const timeoutId = setTimeout(() => {
+            cancelReader()
+            settle(() => reject(new Error("Stream stalled: no data received within timeout")))
+        }, timeoutMs)
+
+        signal?.addEventListener("abort", onAbort, { once: true })
+        void reader.read().then(
+            (result) => settle(() => resolve(result)),
+            (error) => settle(() => reject(error))
+        )
     })
 }
 
@@ -354,9 +379,19 @@ function isAbortError(error: unknown): boolean {
     return error instanceof Error && error.name === "AbortError"
 }
 
+function isStreamProtocolError(error: unknown): boolean {
+    return error instanceof Error && error.name === "OpenRouterStreamProtocolError"
+}
+
 function createOpenRouterAbortError(): Error {
     const error = new Error("LLM request timed out or was cancelled")
     error.name = "AbortError"
+    return error
+}
+
+function createStreamProtocolError(message: string): Error {
+    const error = new Error(message)
+    error.name = "OpenRouterStreamProtocolError"
     return error
 }
 

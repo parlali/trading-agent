@@ -56,6 +56,26 @@ describe("script argument parsing", () => {
         }
     })
 
+    it("parses explicit boolean flag values", () => {
+        const originalArgv = process.argv
+
+        try {
+            process.argv = ["bun", "script.ts", "--refresh-provider-sync=false"]
+            expect(resolveFlag("refresh-provider-sync")).toBe(false)
+
+            process.argv = ["bun", "script.ts", "--refresh-provider-sync=0"]
+            expect(resolveFlag("refresh-provider-sync")).toBe(false)
+
+            process.argv = ["bun", "script.ts", "--refresh-provider-sync=1"]
+            expect(resolveFlag("refresh-provider-sync")).toBe(true)
+
+            process.argv = ["bun", "script.ts", "--refresh-provider-sync=maybe"]
+            expect(() => resolveFlag("refresh-provider-sync")).toThrow("--refresh-provider-sync must be a boolean flag value")
+        } finally {
+            process.argv = originalArgv
+        }
+    })
+
     it("resolves bounded positive integer arguments", () => {
         const originalArgv = process.argv
         process.argv = [

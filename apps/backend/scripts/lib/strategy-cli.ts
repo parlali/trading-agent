@@ -38,9 +38,25 @@ export function resolveArg(name: string): string | undefined {
 
 export function resolveFlag(name: string): boolean {
     const flag = `--${name}`
-    return process.argv.some((value) =>
-        value === flag || value.startsWith(`${flag}=`)
-    )
+    const prefix = `${flag}=`
+    const entry = process.argv.find((value) => value === flag || value.startsWith(prefix))
+
+    if (!entry) {
+        return false
+    }
+    if (entry === flag) {
+        return true
+    }
+
+    const value = entry.slice(prefix.length).trim().toLowerCase()
+    if (value === "true" || value === "1") {
+        return true
+    }
+    if (value === "false" || value === "0") {
+        return false
+    }
+
+    throw new Error(`--${name} must be a boolean flag value`)
 }
 
 export function requireArg(name: string): string {

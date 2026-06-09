@@ -106,6 +106,27 @@ describe("ToolExecutionEngine", () => {
         expect(mcpResult.content).toContain("...[truncated from 8001 chars]")
     })
 
+    it("does not fail MCP tool calls when transcript logging fails", async () => {
+        const agentLogger = {
+            log: vi.fn(async () => {
+                throw new Error("transcript unavailable")
+            }),
+        }
+        const engine = createEngine(async () => ({ accepted: true }), {
+            agentLogger,
+        })
+
+        const result = await engine.executeMcpCall(
+            "fake_tool",
+            { value: "valid" },
+            "call-logging"
+        )
+
+        expect(result.isError).toBe(false)
+        expect(result.content).toContain("accepted")
+        expect(agentLogger.log).toHaveBeenCalledTimes(1)
+    })
+
     it("returns validation errors before invoking the handler on both transports", async () => {
         const handler = vi.fn(async () => ({ shouldNotRun: true }))
         const openRouterEngine = createEngine(handler)
@@ -210,17 +231,20 @@ describe("ToolExecutionEngine", () => {
         })
     })
 
-    it("returns tool timeout errors without invoking fatal state on first failure", async () => {
+    it("fails closed on the first execution tool timeout", async () => {
         const engine = createEngine(async () => new Promise(() => undefined), {
             maxToolTimeoutMs: 1,
-            minToolTimeoutMs: 1,
         })
 
         const result = await engine.executeMcpCall("fake_tool", { value: "slow" }, "call-timeout")
 
         expect(result.content).toContain("Tool execution failed: Tool timed out after")
         expect(result.isError).toBe(true)
-        expect(result.fatal).toBe(false)
+        expect(result.fatal).toBe(true)
+        expect(engine.getOutcome().fatalFault).toMatchObject({
+            toolName: "fake_tool",
+            reason: "safety-critical fake_tool tool failure",
+        })
     })
 
     it("does not invoke handlers once the overall run timeout is exhausted", async () => {
@@ -246,7 +270,6 @@ describe("ToolExecutionEngine", () => {
             })
         }, {
             maxToolTimeoutMs: 1,
-            minToolTimeoutMs: 1,
         })
 
         const result = await engine.executeMcpCall("fake_tool", { value: "slow" }, "call-abort")
@@ -255,7 +278,7 @@ describe("ToolExecutionEngine", () => {
         expect(result.content).toContain("Tool timed out after")
     })
 
-    it("serializes MT5 OpenRouter tool batches", async () => {
+    it("serializes execution-capable OpenRouter tool batches", async () => {
         const events: string[] = []
         const engine = createEngine(async (params: unknown) => {
             const value = (params as { value: string }).value
@@ -263,8 +286,6 @@ describe("ToolExecutionEngine", () => {
             await Promise.resolve()
             events.push(`finish:${value}`)
             return { value }
-        }, {
-            app: "mt5",
         })
 
         await engine.executeOpenRouterBatch([
@@ -296,6 +317,45 @@ describe("ToolExecutionEngine", () => {
             "finish:second",
         ])
     })
+
+    it("stops remaining execution-capable tools after a fatal tool failure", async () => {
+        const handler = vi.fn(async () => {
+            throw new Error("provider credential missing")
+        })
+        const engine = createEngine(handler)
+        const openRouterResults: Array<{ content: string }> = []
+
+        await engine.executeOpenRouterBatch([
+            {
+                id: "call-first",
+                type: "function",
+                function: {
+                    name: "fake_tool",
+                    arguments: JSON.stringify({ value: "first" }),
+                },
+            },
+            {
+                id: "call-second",
+                type: "function",
+                function: {
+                    name: "fake_tool",
+                    arguments: JSON.stringify({ value: "second" }),
+                },
+            },
+        ], {
+            onToolResult: (result) => {
+                openRouterResults.push(result)
+            },
+            onUserMessage: () => undefined,
+        })
+
+        expect(handler).toHaveBeenCalledTimes(1)
+        expect(openRouterResults).toHaveLength(1)
+        expect(engine.getOutcome().fatalFault).toMatchObject({
+            toolName: "fake_tool",
+            reason: "safety-critical fake_tool tool failure",
+        })
+    })
 })
 
 function createEngine(
@@ -303,9 +363,20 @@ function createEngine(
     options: {
         app?: "polymarket" | "mt5"
         maxToolTimeoutMs?: number
-        minToolTimeoutMs?: number
         runStartedAt?: number
         runTimeoutMs?: number
+        agentLogger?: {
+            log: (
+                runId: string,
+                strategyId: string,
+                sequence: number,
+                role: string,
+                content: string,
+                toolName?: string,
+                toolInput?: string,
+                toolOutput?: string
+            ) => Promise<void>
+        }
     } = {}
 ): ToolExecutionEngine {
     const tools = new ToolRegistry()
@@ -332,10 +403,10 @@ function createEngine(
         tools,
         context: createContext(options.app ?? "polymarket"),
         logger: createLogger({ minLevel: "fatal" }),
+        agentLogger: options.agentLogger,
         runStartedAt: options.runStartedAt ?? Date.now(),
         runTimeoutMs: options.runTimeoutMs ?? 60_000,
         maxToolTimeoutMs: options.maxToolTimeoutMs,
-        minToolTimeoutMs: options.minToolTimeoutMs,
         maxRepeatedToolErrors: 3,
     })
 }

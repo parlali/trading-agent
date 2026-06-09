@@ -1,5 +1,7 @@
 import { readFiniteNumber, type AgentMessageLogger, type Logger, type StrategyRunContext } from "@valiq-trading/core"
+import { safeLogAgentMessage } from "./agent-transcript"
 import type { ToolCall } from "./llm-client"
+import { normalizeModelToolResultContent } from "./tool-result-content"
 import { assertToolNotAborted, type ToolBinding, type ToolRegistry } from "./tool-registry"
 
 export interface OpportunityCoverageMetrics {
@@ -56,7 +58,6 @@ export interface ToolExecutionEngineConfig {
     runStartedAt: number
     runTimeoutMs: number
     maxToolTimeoutMs?: number
-    minToolTimeoutMs?: number
     maxRepeatedToolErrors?: number
 }
 
@@ -69,6 +70,10 @@ interface OpenRouterToolExecutionOptions {
     signal?: AbortSignal
 }
 
+interface ToolExecutionOptions {
+    signal?: AbortSignal
+}
+
 type ValidToolCall = {
     toolCallId: string
     toolName: string
@@ -78,10 +83,7 @@ type ValidToolCall = {
 }
 
 const DEFAULT_TOOL_TIMEOUT_MS = 120_000
-const DEFAULT_MIN_TOOL_TIMEOUT_MS = 5000
 const DEFAULT_MAX_REPEATED_TOOL_ERRORS = 3
-const MAX_TOOL_RESULT_LENGTH = 8000
-
 const RESEARCH_TOOL_NAMES = new Set([
     "query_valiq_research",
     "query_valiq_data",
@@ -105,7 +107,6 @@ export class ToolExecutionEngine {
     private readonly repeatedToolErrors = new Map<string, number>()
     private readonly maxRepeatedToolErrors: number
     private readonly maxToolTimeoutMs: number
-    private readonly minToolTimeoutMs: number
     private readonly opportunityCoverage: OpportunityCoverageMetrics = createOpportunityCoverageMetrics()
     private readonly degradedResearchReasons = new Set<string>()
     private degradedResearchToolFailureCount = 0
@@ -116,7 +117,6 @@ export class ToolExecutionEngine {
     constructor(private readonly config: ToolExecutionEngineConfig) {
         this.maxRepeatedToolErrors = config.maxRepeatedToolErrors ?? DEFAULT_MAX_REPEATED_TOOL_ERRORS
         this.maxToolTimeoutMs = config.maxToolTimeoutMs ?? DEFAULT_TOOL_TIMEOUT_MS
-        this.minToolTimeoutMs = config.minToolTimeoutMs ?? DEFAULT_MIN_TOOL_TIMEOUT_MS
     }
 
     async executeOpenRouterBatch(
@@ -166,32 +166,29 @@ export class ToolExecutionEngine {
             return
         }
 
-        const executeSequentially = this.config.context.app === "mt5"
-        this.config.logger.info(executeSequentially ? "Executing MT5 tools sequentially" : "Executing tools in parallel", {
+        const executeSequentially = valid.some((entry) => requiresSerializedExecution(entry.toolBinding))
+        this.config.logger.info(executeSequentially ? "Executing tools sequentially" : "Executing tools in parallel", {
             tools: valid.map((entry) => entry.toolName),
             count: valid.length,
             runId: this.config.context.runId,
         })
 
-        const toolTimeoutMs = this.resolveToolTimeoutMs()
-        const results = executeSequentially
-            ? await this.executeToolsSequentially(valid, toolTimeoutMs, options.signal)
-            : await this.executeToolsInParallel(valid, toolTimeoutMs, options.signal)
+        if (executeSequentially) {
+            for (const entry of valid) {
+                const result = await this.executeTool(entry, options.signal)
+                await this.emitOpenRouterToolResult(entry, result, callbacks)
+
+                if (this.fatalFault || options.signal?.aborted) {
+                    return
+                }
+            }
+            return
+        }
+
+        const results = await this.executeToolsInParallel(valid, options.signal)
 
         for (let i = 0; i < valid.length; i++) {
-            const entry = valid[i]!
-            const result = results[i]!
-            const content = this.resolveExecutionResultContent(entry, result)
-            const modelContent = truncateToolResult(content)
-
-            recordOpportunityCoverage(entry.toolName, content, this.opportunityCoverage)
-
-            await callbacks.onToolResult({
-                toolCallId: entry.toolCallId,
-                toolName: entry.toolName,
-                content: modelContent,
-                rawInput: entry.rawInput,
-            })
+            await this.emitOpenRouterToolResult(valid[i]!, results[i]!, callbacks)
 
             if (this.fatalFault) {
                 return
@@ -202,7 +199,8 @@ export class ToolExecutionEngine {
     async executeMcpCall(
         toolName: string,
         args: unknown,
-        callId: string
+        callId: string,
+        options: ToolExecutionOptions = {}
     ): Promise<McpToolExecutionResult> {
         const rawInput = typeof args === "string"
             ? args
@@ -232,20 +230,7 @@ export class ToolExecutionEngine {
             toolBinding: validation.toolBinding,
             parsedArgs: validation.parsedArgs,
         }
-        const toolTimeoutMs = this.resolveToolTimeoutMs()
-
-        let result: PromiseSettledResult<unknown>
-        try {
-            result = {
-                status: "fulfilled",
-                value: await executeToolWithTimeout(entry.toolBinding, entry.parsedArgs, toolTimeoutMs),
-            }
-        } catch (reason) {
-            result = {
-                status: "rejected",
-                reason,
-            }
-        }
+        const result = await this.executeTool(entry, options.signal)
 
         const content = this.resolveExecutionResultContent(entry, result)
         const modelContent = truncateToolResult(content)
@@ -416,45 +401,53 @@ export class ToolExecutionEngine {
         if (remainingMs <= 0) {
             return 0
         }
-        const upperBound = Math.min(remainingMs, this.maxToolTimeoutMs)
-        const lowerBound = Math.min(this.minToolTimeoutMs, this.maxToolTimeoutMs)
-        return Math.max(upperBound, lowerBound)
+        return Math.min(remainingMs, this.maxToolTimeoutMs)
     }
 
     private async executeToolsInParallel(
         valid: ValidToolCall[],
-        toolTimeoutMs: number,
         signal?: AbortSignal
     ): Promise<PromiseSettledResult<unknown>[]> {
         return await Promise.allSettled(
             valid.map(({ toolBinding, parsedArgs }) =>
-                executeToolWithTimeout(toolBinding, parsedArgs, toolTimeoutMs, signal)
+                executeToolWithTimeout(toolBinding, parsedArgs, this.resolveToolTimeoutMs(), signal)
             )
         )
     }
 
-    private async executeToolsSequentially(
-        valid: ValidToolCall[],
-        toolTimeoutMs: number,
+    private async executeTool(
+        entry: ValidToolCall,
         signal?: AbortSignal
-    ): Promise<PromiseSettledResult<unknown>[]> {
-        const results: PromiseSettledResult<unknown>[] = []
-
-        for (const { toolBinding, parsedArgs } of valid) {
-            try {
-                results.push({
-                    status: "fulfilled",
-                    value: await executeToolWithTimeout(toolBinding, parsedArgs, toolTimeoutMs, signal),
-                })
-            } catch (reason) {
-                results.push({
-                    status: "rejected",
-                    reason,
-                })
+    ): Promise<PromiseSettledResult<unknown>> {
+        try {
+            return {
+                status: "fulfilled",
+                value: await executeToolWithTimeout(entry.toolBinding, entry.parsedArgs, this.resolveToolTimeoutMs(), signal),
+            }
+        } catch (reason) {
+            return {
+                status: "rejected",
+                reason,
             }
         }
+    }
 
-        return results
+    private async emitOpenRouterToolResult(
+        entry: ValidToolCall,
+        result: PromiseSettledResult<unknown>,
+        callbacks: OpenRouterToolExecutionCallbacks
+    ): Promise<void> {
+        const content = this.resolveExecutionResultContent(entry, result)
+        const modelContent = truncateToolResult(content)
+
+        recordOpportunityCoverage(entry.toolName, content, this.opportunityCoverage)
+
+        await callbacks.onToolResult({
+            toolCallId: entry.toolCallId,
+            toolName: entry.toolName,
+            content: modelContent,
+            rawInput: entry.rawInput,
+        })
     }
 
     private async logMcpToolResult(
@@ -463,16 +456,18 @@ export class ToolExecutionEngine {
         rawInput: string
     ): Promise<void> {
         this.mcpLogSequence++
-        await this.config.agentLogger?.log(
-            this.config.context.runId,
-            this.config.context.strategyId,
-            this.mcpLogSequence,
-            "tool",
+        await safeLogAgentMessage({
+            agentLogger: this.config.agentLogger,
+            logger: this.config.logger,
+            runId: this.config.context.runId,
+            strategyId: this.config.context.strategyId,
+            sequence: this.mcpLogSequence,
+            role: "tool",
             content,
             toolName,
-            rawInput,
-            content
-        )
+            toolInput: rawInput,
+            toolOutput: content,
+        })
     }
 
     private buildDegradedResearch(decisionTaken: boolean): DegradedResearchOutcome {
@@ -579,19 +574,25 @@ function normalizeToolErrorSignature(errorResult: string): string {
 }
 
 function truncateToolResult(content: string): string {
-    return content.length > MAX_TOOL_RESULT_LENGTH
-        ? content.slice(0, MAX_TOOL_RESULT_LENGTH) + `\n...[truncated from ${content.length} chars]`
-        : content
+    return normalizeModelToolResultContent(content)
 }
 
 function isImmediateFailClosedToolError(
     toolBinding: ToolBinding,
     errorMessage: string
 ): boolean {
-    if (!/(credential|api key|auth|provider identity)/i.test(errorMessage)) {
+    if (!/(credential|api key|auth|provider identity|timed out|timeout|cancelled|canceled|aborted)/i.test(errorMessage)) {
         return false
     }
 
+    return isSafetyCriticalToolBoundary(toolBinding)
+}
+
+function requiresSerializedExecution(toolBinding: ToolBinding): boolean {
+    return isSafetyCriticalToolBoundary(toolBinding)
+}
+
+function isSafetyCriticalToolBoundary(toolBinding: ToolBinding): boolean {
     return toolBinding.category === "execution" ||
         toolBinding.category === "account" ||
         toolBinding.contractBoundary === "venue-owned"

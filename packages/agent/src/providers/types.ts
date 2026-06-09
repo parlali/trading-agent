@@ -1,6 +1,6 @@
 import type { AgentMessageLogger, Logger, StrategyRunContext } from "@valiq-trading/core"
 import type { ConversationManager } from "../conversation"
-import type { LLMUsage } from "../llm-client"
+import type { LLMUsage } from "../llm-usage"
 import type { ToolExecutionEngine } from "../tool-execution-engine"
 import type { ToolRegistry } from "../tool-registry"
 

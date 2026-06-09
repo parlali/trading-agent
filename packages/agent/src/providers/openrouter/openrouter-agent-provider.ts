@@ -1,4 +1,6 @@
 import { projectToolsForOpenRouter } from "../../tool-projections/openrouter"
+import { safeLogAgentMessage, serializeToolCallsForTranscript } from "../../agent-transcript"
+import { addUsage, createEmptyUsage, type LLMUsage } from "../../llm-usage"
 import type {
     AgentModelProvider,
     AgentProviderRunArgs,
@@ -6,7 +8,6 @@ import type {
 } from "../types"
 import {
     OpenRouterChatClient,
-    type LLMUsage,
     type OpenRouterChatClientConfig,
 } from "./openrouter-chat-client"
 
@@ -47,6 +48,7 @@ export class OpenRouterAgentProvider implements AgentModelProvider {
         let killSwitchActivated = false
         const runController = new AbortController()
         this.activeRunController = runController
+        let killSwitchFailure: string | undefined
 
         const stopForKillSwitch = () => {
             if (!killSwitchActivated) {
@@ -60,6 +62,17 @@ export class OpenRouterAgentProvider implements AgentModelProvider {
             this.client.cancel()
         }
 
+        const stopForKillSwitchFailure = (error: unknown) => {
+            killSwitchFailure = error instanceof Error ? error.message : String(error)
+            logger.error("Kill switch check failed, stopping agent", {
+                runId: context.runId,
+                iteration,
+                error: killSwitchFailure,
+            })
+            runController.abort()
+            this.client.cancel()
+        }
+
         const killSwitchResult = () =>
             this.result({
                 summary:
@@ -69,6 +82,30 @@ export class OpenRouterAgentProvider implements AgentModelProvider {
                 iterations: iteration,
                 usage: aggregatedUsage,
             })
+
+        const stoppedRunResult = () => {
+            if (killSwitchFailure) {
+                return this.result({
+                    summary:
+                        conversation.getLastAssistantContent() ??
+                        "Agent stopped: kill switch check failed.",
+                    error: `Kill switch check failed: ${killSwitchFailure}`,
+                    iterations: iteration,
+                    usage: aggregatedUsage,
+                })
+            }
+
+            return killSwitchActivated
+                ? killSwitchResult()
+                : this.result({
+                      summary:
+                          conversation.getLastAssistantContent() ??
+                          "Agent run was cancelled.",
+                      error: "Agent run cancelled",
+                      iterations: iteration,
+                      usage: aggregatedUsage,
+                  })
+        }
 
         try {
             while (iteration < maxIterations) {
@@ -100,16 +137,8 @@ export class OpenRouterAgentProvider implements AgentModelProvider {
                             return killSwitchResult()
                         }
                     } catch (error) {
-                        logger.warn(
-                            "Kill switch check failed, continuing run",
-                            {
-                                runId: context.runId,
-                                error:
-                                    error instanceof Error
-                                        ? error.message
-                                        : String(error),
-                            },
-                        )
+                        stopForKillSwitchFailure(error)
+                        return stoppedRunResult()
                     }
                 }
 
@@ -135,21 +164,13 @@ export class OpenRouterAgentProvider implements AgentModelProvider {
                             ),
                         args,
                         stopForKillSwitch,
+                        stopForKillSwitchFailure,
                         runController.signal,
                     )
                     consecutiveErrors = 0
                 } catch (error) {
                     if (runController.signal.aborted) {
-                        return killSwitchActivated
-                            ? killSwitchResult()
-                            : this.result({
-                                  summary:
-                                      conversation.getLastAssistantContent() ??
-                                      "Agent run was cancelled.",
-                                  error: "Agent run cancelled",
-                                  iterations: iteration,
-                                  usage: aggregatedUsage,
-                              })
+                        return stoppedRunResult()
                     }
                     consecutiveErrors++
                     const errorMsg =
@@ -184,15 +205,16 @@ export class OpenRouterAgentProvider implements AgentModelProvider {
                         response.toolCalls,
                     )
 
-                    await this.logAgentMessage(
-                        context.runId,
-                        context.strategyId,
-                        conversation.getSequence(),
-                        "assistant",
-                        response.content ?? "",
+                    await safeLogAgentMessage({
                         agentLogger,
                         logger,
-                    )
+                        runId: context.runId,
+                        strategyId: context.strategyId,
+                        sequence: conversation.getSequence(),
+                        role: "assistant",
+                        content: response.content ?? "",
+                        toolCalls: serializeToolCallsForTranscript(response.toolCalls),
+                    })
 
                     try {
                         await this.runWithKillSwitchPolling(
@@ -206,26 +228,30 @@ export class OpenRouterAgentProvider implements AgentModelProvider {
                                                 result.toolName,
                                                 result.content,
                                             )
-                                            await agentLogger?.log(
-                                                context.runId,
-                                                context.strategyId,
-                                                conversation.getSequence(),
-                                                "tool",
-                                                result.content,
-                                                result.toolName,
-                                                result.rawInput,
-                                                result.content,
-                                            )
+                                            await safeLogAgentMessage({
+                                                agentLogger,
+                                                logger,
+                                                runId: context.runId,
+                                                strategyId: context.strategyId,
+                                                sequence: conversation.getSequence(),
+                                                role: "tool",
+                                                content: result.content,
+                                                toolName: result.toolName,
+                                                toolInput: result.rawInput,
+                                                toolOutput: result.content,
+                                            })
                                         },
                                         onUserMessage: async (content) => {
                                             conversation.addUserMessage(content)
-                                            await agentLogger?.log(
-                                                context.runId,
-                                                context.strategyId,
-                                                conversation.getSequence(),
-                                                "user",
+                                            await safeLogAgentMessage({
+                                                agentLogger,
+                                                logger,
+                                                runId: context.runId,
+                                                strategyId: context.strategyId,
+                                                sequence: conversation.getSequence(),
+                                                role: "user",
                                                 content,
-                                            )
+                                            })
                                         },
                                     },
                                     {
@@ -234,20 +260,12 @@ export class OpenRouterAgentProvider implements AgentModelProvider {
                                 ),
                             args,
                             stopForKillSwitch,
+                            stopForKillSwitchFailure,
                             runController.signal,
                         )
                     } catch (error) {
                         if (runController.signal.aborted) {
-                            return killSwitchActivated
-                                ? killSwitchResult()
-                                : this.result({
-                                      summary:
-                                          conversation.getLastAssistantContent() ??
-                                          "Agent run was cancelled.",
-                                      error: "Agent run cancelled",
-                                      iterations: iteration,
-                                      usage: aggregatedUsage,
-                                  })
+                            return stoppedRunResult()
                         }
                         throw error
                     }
@@ -266,15 +284,16 @@ export class OpenRouterAgentProvider implements AgentModelProvider {
                 }
 
                 if (response.content) {
-                    await this.logAgentMessage(
-                        context.runId,
-                        context.strategyId,
-                        conversation.getSequence(),
-                        "assistant",
-                        response.content,
+                    conversation.addAssistantMessage(response.content)
+                    await safeLogAgentMessage({
                         agentLogger,
                         logger,
-                    )
+                        runId: context.runId,
+                        strategyId: context.strategyId,
+                        sequence: conversation.getSequence(),
+                        role: "assistant",
+                        content: response.content,
+                    })
 
                     logger.info("Agent run complete", {
                         iterations: iteration,
@@ -293,27 +312,27 @@ export class OpenRouterAgentProvider implements AgentModelProvider {
                     iteration,
                 })
                 conversation.addAssistantMessage("")
-                await this.logAgentMessage(
-                    context.runId,
-                    context.strategyId,
-                    conversation.getSequence(),
-                    "assistant",
-                    "",
+                await safeLogAgentMessage({
                     agentLogger,
                     logger,
-                )
+                    runId: context.runId,
+                    strategyId: context.strategyId,
+                    sequence: conversation.getSequence(),
+                    role: "assistant",
+                    content: "",
+                })
                 conversation.addUserMessage(
                     "Your last response was empty. Please continue your analysis or provide a summary.",
                 )
-                await this.logAgentMessage(
-                    context.runId,
-                    context.strategyId,
-                    conversation.getSequence(),
-                    "user",
-                    "Your last response was empty. Please continue your analysis or provide a summary.",
+                await safeLogAgentMessage({
                     agentLogger,
                     logger,
-                )
+                    runId: context.runId,
+                    strategyId: context.strategyId,
+                    sequence: conversation.getSequence(),
+                    role: "user",
+                    content: "Your last response was empty. Please continue your analysis or provide a summary.",
+                })
             }
 
             logger.warn("Agent hit max iterations", {
@@ -346,6 +365,7 @@ export class OpenRouterAgentProvider implements AgentModelProvider {
         operation: () => Promise<T>,
         args: AgentProviderRunArgs,
         stopForKillSwitch: () => void,
+        stopForKillSwitchFailure: (error: unknown) => void,
         signal: AbortSignal,
     ): Promise<T> {
         if (!args.killSwitchChecker) {
@@ -369,16 +389,8 @@ export class OpenRouterAgentProvider implements AgentModelProvider {
                         return
                     }
                 } catch (error) {
-                    args.logger.warn(
-                        "Kill switch check failed during in-flight operation",
-                        {
-                            runId: args.context.runId,
-                            error:
-                                error instanceof Error
-                                    ? error.message
-                                    : String(error),
-                        },
-                    )
+                    stopForKillSwitchFailure(error)
+                    return
                 }
             }
         }
@@ -386,31 +398,15 @@ export class OpenRouterAgentProvider implements AgentModelProvider {
         const pollingController = new AbortController()
         const pollPromise = poll(pollingController.signal)
         try {
-            return await operation()
+            const result = await operation()
+            if (signal.aborted) {
+                throw createAbortError("Agent run cancelled")
+            }
+            return result
         } finally {
             stopped = true
             pollingController.abort()
             await pollPromise
-        }
-    }
-
-    private async logAgentMessage(
-        runId: string,
-        strategyId: string,
-        sequence: number,
-        role: "assistant" | "user",
-        content: string,
-        agentLogger: AgentProviderRunArgs["agentLogger"],
-        logger: AgentProviderRunArgs["logger"],
-    ): Promise<void> {
-        try {
-            await agentLogger?.log(runId, strategyId, sequence, role, content)
-        } catch (error) {
-            logger.error("Agent transcript write failed", {
-                runId,
-                role,
-                error: error instanceof Error ? error.message : String(error),
-            })
         }
     }
 
@@ -432,28 +428,6 @@ export class OpenRouterAgentProvider implements AgentModelProvider {
     }
 }
 
-function createEmptyUsage(): LLMUsage {
-    return {
-        promptTokens: 0,
-        completionTokens: 0,
-        reasoningTokens: 0,
-        cost: 0,
-        responseIds: [],
-    }
-}
-
-function addUsage(target: LLMUsage, usage: LLMUsage): void {
-    target.promptTokens += usage.promptTokens
-    target.completionTokens += usage.completionTokens
-    target.reasoningTokens += usage.reasoningTokens
-    target.cost += usage.cost
-    for (const responseId of usage.responseIds) {
-        if (!target.responseIds.includes(responseId)) {
-            target.responseIds.push(responseId)
-        }
-    }
-}
-
 function delay(delayMs: number, signal: AbortSignal): Promise<void> {
     if (signal.aborted) {
         return Promise.reject(new Error("cancelled"))
@@ -470,4 +444,10 @@ function delay(delayMs: number, signal: AbortSignal): Promise<void> {
         }
         signal.addEventListener("abort", onAbort, { once: true })
     })
+}
+
+function createAbortError(message: string): Error {
+    const error = new Error(message)
+    error.name = "AbortError"
+    return error
 }

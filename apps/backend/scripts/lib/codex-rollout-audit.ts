@@ -288,8 +288,8 @@ function buildOpenRouterIsolation(args: {
         }
 
         for (const run of relevantRuns) {
-            if (run.llmProvider === "codex") {
-                mismatches.push(`OpenRouter strategy ${sample.strategy.name} has Codex run ${run._id}`)
+            if (run.llmProvider !== "openrouter") {
+                mismatches.push(`OpenRouter strategy ${sample.strategy.name} run ${run._id} has provider ${run.llmProvider ?? "missing"}`)
             }
             if (run.codexThreadId || (run.codexTurnIds ?? []).length > 0) {
                 mismatches.push(`OpenRouter strategy ${sample.strategy.name} run ${run._id} has Codex diagnostics`)

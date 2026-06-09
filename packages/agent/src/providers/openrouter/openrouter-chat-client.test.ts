@@ -24,6 +24,7 @@ describe("OpenRouterChatClient", () => {
                     delta: {
                         content: "summary",
                         tool_calls: [{
+                            index: 0,
                             id: "call-1",
                             type: "function",
                             function: {
@@ -39,6 +40,7 @@ describe("OpenRouterChatClient", () => {
                 choices: [{
                     delta: {
                         tool_calls: [{
+                            index: 0,
                             function: {
                                 name: "tool",
                                 arguments: ":\"ok\"}",
@@ -91,6 +93,134 @@ describe("OpenRouterChatClient", () => {
             cost: 0.0123,
             responseIds: ["or-response-1"],
         })
+    })
+
+    it("keeps interleaved streamed tool calls separated by index", async () => {
+        const stream = createSseStream([
+            {
+                id: "or-response-tools",
+                choices: [{
+                    delta: {
+                        tool_calls: [
+                            {
+                                index: 0,
+                                id: "call-first",
+                                type: "function",
+                                function: {
+                                    name: "first_",
+                                    arguments: "{\"side\"",
+                                },
+                            },
+                            {
+                                index: 1,
+                                id: "call-second",
+                                type: "function",
+                                function: {
+                                    name: "second_",
+                                    arguments: "{\"side\"",
+                                },
+                            },
+                        ],
+                    },
+                }],
+            },
+            {
+                id: "or-response-tools",
+                choices: [{
+                    delta: {
+                        tool_calls: [
+                            {
+                                index: 1,
+                                function: {
+                                    name: "tool",
+                                    arguments: ":\"sell\"}",
+                                },
+                            },
+                            {
+                                index: 0,
+                                function: {
+                                    name: "tool",
+                                    arguments: ":\"buy\"}",
+                                },
+                            },
+                        ],
+                    },
+                    finish_reason: "tool_calls",
+                }],
+            },
+        ])
+        globalThis.fetch = vi.fn(async () => new Response(stream, {
+            status: 200,
+            statusText: "OK",
+        })) as unknown as typeof fetch
+
+        const client = new OpenRouterChatClient({
+            apiKey: "test-key",
+            model: "test-model",
+            baseUrl: "https://openrouter.test",
+            requestTimeoutMs: 10_000,
+            streamStallTimeoutMs: 10_000,
+        })
+        const response = await client.chat([{
+            role: "user",
+            content: "run",
+        }], undefined, undefined, 1)
+
+        expect(response.toolCalls).toEqual([
+            {
+                id: "call-first",
+                type: "function",
+                function: {
+                    name: "first_tool",
+                    arguments: "{\"side\":\"buy\"}",
+                },
+            },
+            {
+                id: "call-second",
+                type: "function",
+                function: {
+                    name: "second_tool",
+                    arguments: "{\"side\":\"sell\"}",
+                },
+            },
+        ])
+    })
+
+    it("fails closed on streamed tool calls without an index", async () => {
+        const stream = createSseStream([
+            {
+                id: "or-response-malformed",
+                choices: [{
+                    delta: {
+                        tool_calls: [{
+                            id: "call-missing-index",
+                            type: "function",
+                            function: {
+                                name: "unsafe_tool",
+                                arguments: "{}",
+                            },
+                        }],
+                    },
+                }],
+            },
+        ])
+        globalThis.fetch = vi.fn(async () => new Response(stream, {
+            status: 200,
+            statusText: "OK",
+        })) as unknown as typeof fetch
+
+        const client = new OpenRouterChatClient({
+            apiKey: "test-key",
+            model: "test-model",
+            baseUrl: "https://openrouter.test",
+            requestTimeoutMs: 10_000,
+            streamStallTimeoutMs: 10_000,
+        })
+
+        await expect(client.chat([{
+            role: "user",
+            content: "run",
+        }], undefined, undefined, 1)).rejects.toThrow("missing a valid index")
     })
 
     it("processes finish-only terminal chunks without a trailing newline", async () => {

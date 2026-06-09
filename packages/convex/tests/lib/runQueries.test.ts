@@ -31,6 +31,42 @@ describe("run queries", () => {
         expect(result.map((row) => row._id)).toEqual(["run-3", "run-2"])
     })
 
+    it("includes all runs tied at the page boundary timestamp", async () => {
+        const result = await callRegisteredQuery(getRunHistory, {
+            strategy_runs: [
+                {
+                    _id: "run-1",
+                    strategyId: "strategy-1",
+                    startedAt: 1,
+                    _creationTime: 1,
+                },
+                {
+                    _id: "run-2",
+                    strategyId: "strategy-1",
+                    startedAt: 2,
+                    _creationTime: 2,
+                },
+                {
+                    _id: "run-3a",
+                    strategyId: "strategy-1",
+                    startedAt: 3,
+                    _creationTime: 3,
+                },
+                {
+                    _id: "run-3b",
+                    strategyId: "strategy-1",
+                    startedAt: 3,
+                    _creationTime: 4,
+                },
+            ],
+        }, {
+            strategyId: "strategy-1",
+            limit: 1,
+        }) as FakeRow[]
+
+        expect(result.map((row) => row._id)).toEqual(["run-3b", "run-3a"])
+    })
+
     it("rejects invalid getRunHistory limits", async () => {
         await expect(callGetRunHistory({
             strategyId: "strategy-1",

@@ -6,10 +6,10 @@ export type {
     ChatMessage,
     LLMClientConfig,
     LLMResponse,
-    LLMUsage,
     OpenRouterChatClientConfig,
     OpenRouterChatResponse,
     OpenRouterReasoningConfig,
     OpenRouterTool,
     ToolCall,
 } from "./providers/openrouter/openrouter-chat-client"
+export type { LLMUsage } from "./llm-usage"

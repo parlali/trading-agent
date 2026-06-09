@@ -19,7 +19,7 @@ export const getRunHistory = query({
     handler: async (ctx, args) => {
         await requireUserOrServiceToken(ctx, args.serviceToken)
         const limit = resolveRunHistoryLimit(args.limit)
-        return await ctx.db
+        const runs = await ctx.db
             .query("strategy_runs")
             .withIndex("by_strategy_started_at", (q) => {
                 const scoped = q.eq("strategyId", args.strategyId)
@@ -29,8 +29,41 @@ export const getRunHistory = query({
             })
             .order("desc")
             .take(limit)
+
+        if (runs.length < limit) {
+            return runs
+        }
+
+        const boundaryStartedAt = runs[runs.length - 1]?.startedAt
+        if (boundaryStartedAt === undefined) {
+            return runs
+        }
+
+        const runIds = new Set(runs.map((run) => run._id))
+        const boundaryRuns = await ctx.db
+            .query("strategy_runs")
+            .withIndex("by_strategy_started_at", (q) =>
+                q.eq("strategyId", args.strategyId).eq("startedAt", boundaryStartedAt)
+            )
+            .collect()
+
+        return sortRunHistory([
+            ...runs,
+            ...boundaryRuns.filter((run) => !runIds.has(run._id)),
+        ])
     },
 })
+
+function sortRunHistory<T extends { startedAt: number; _creationTime?: number }>(runs: T[]): T[] {
+    return [...runs].sort((left, right) => {
+        const startedAt = right.startedAt - left.startedAt
+        if (startedAt !== 0) {
+            return startedAt
+        }
+
+        return (right._creationTime ?? 0) - (left._creationTime ?? 0)
+    })
+}
 
 function resolveRunHistoryLimit(value: number | undefined): number {
     if (value === undefined) {

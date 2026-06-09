@@ -284,6 +284,39 @@ describe("buildCodexRunAuditArtifact", () => {
             expect.stringContaining("lastVerifiedAt 1 is before run reference 2"),
         ]))
     })
+
+    it("fails closed when a completed run is missing endedAt", () => {
+        const artifact = buildCodexRunAuditArtifact({
+            exportedAt: "2026-06-08T12:00:00.000Z",
+            strategy: createStrategy(),
+            run: {
+                ...createRun(),
+                endedAt: undefined,
+            },
+            agentLogs: [
+                createAgentLog({
+                    role: "tool",
+                    toolName: "get_account",
+                    toolInput: "{}",
+                    toolOutput: "{\"balance\":1000}",
+                }),
+            ],
+            tradeEvents: [createTradeEvent()],
+            positions: [
+                createPosition("TOKEN-YES"),
+                createLedgerPosition("run-1"),
+            ],
+            portfolioFreshness: [createFreshness()],
+        })
+
+        expect(artifact.gates.completedRun).toBe(false)
+        expect(artifact.gates.providerSyncHealthy).toBe(false)
+        expect(artifact.evidence.providerSyncAudit.mismatches).toContain("completed run endedAt is missing for run run-1")
+        expect(artifact.failures).toEqual(expect.arrayContaining([
+            expect.stringContaining("Run did not complete cleanly"),
+            expect.stringContaining("completed run endedAt is missing"),
+        ]))
+    })
 })
 
 function createStrategy(): StoredStrategy {

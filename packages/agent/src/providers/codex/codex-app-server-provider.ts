@@ -1,11 +1,23 @@
 import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { safeLogAgentMessage } from "../../agent-transcript"
+import { createEmptyUsage, type LLMUsage } from "../../llm-usage"
 import { startRunToolServer, type RunToolServer } from "../../mcp/run-tool-server"
 import type { ConversationManager } from "../../conversation"
 import type { ToolExecutionFatalFault } from "../../tool-execution-engine"
-import type { LLMUsage } from "../openrouter/openrouter-chat-client"
 import type { AgentModelProvider, AgentProviderDiagnostics, AgentProviderRunArgs, AgentProviderRunResult } from "../types"
+import {
+    CODEX_RUN_MCP_SERVER_NAME,
+    DEFAULT_REQUEST_TIMEOUT_MS,
+    DEFAULT_TURN_TIMEOUT_MS,
+    buildCodexAppServerArgs,
+    buildCodexEnvironment,
+    buildCodexThreadConfig,
+    resolveBillingMode,
+    type CodexAppServerProviderConfig,
+    type CodexAuthMode,
+} from "./codex-app-server-config"
 import {
     CodexJsonRpcClient,
     type JsonRpcErrorPayload,
@@ -20,25 +32,13 @@ import type {
     CodexTurnCompletion,
 } from "./codex-app-server-protocol"
 
-export type CodexAuthMode = "chatgpt" | "access-token" | "api-key"
-export type CodexReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh"
-export type CodexReasoningSummary = "auto" | "concise" | "detailed" | "none"
-
-export interface CodexAppServerProviderConfig {
-    provider: "codex"
-    model: string
-    effort?: CodexReasoningEffort
-    summary?: CodexReasoningSummary
-    serviceTier?: string
-    authMode: CodexAuthMode
-    codexBin?: string
-    codexAccessToken?: string
-    openAiApiKey?: string
-    requestTimeoutMs?: number
-    turnTimeoutMs?: number
-    runDirectory?: string
-    appServerArgs?: string[]
-}
+export { buildCodexEnvironment } from "./codex-app-server-config"
+export type {
+    CodexAppServerProviderConfig,
+    CodexAuthMode,
+    CodexReasoningEffort,
+    CodexReasoningSummary,
+} from "./codex-app-server-config"
 
 export interface CodexAppServerClient {
     initialize(): Promise<unknown>
@@ -70,46 +70,20 @@ export interface CodexAppServerProviderDependencies {
     createClient?: (args: CodexAppServerClientFactoryArgs) => CodexAppServerClient
 }
 
-const DEFAULT_REQUEST_TIMEOUT_MS = 60_000
-const DEFAULT_TURN_TIMEOUT_MS = 10 * 60 * 1000
-const MCP_TOKEN_ENV_VAR = "VALIQ_CODEX_MCP_TOKEN"
-const MCP_SERVER_NAME = "valiq_run"
-const DISABLED_CODEX_FEATURE_NAMES = [
-    "apps",
-    "browser_use",
-    "browser_use_external",
-    "computer_use",
-    "image_generation",
-    "multi_agent",
-    "plugins",
-    "shell_tool",
-    "unified_exec",
-    "web_search",
-    "web_search_cached",
-    "web_search_request",
-    "workspace_dependencies",
-] as const
-const DISABLED_INHERITED_MCP_SERVER_NAMES = [
-    "openaiDeveloperDocs",
-] as const
-const DISABLED_INHERITED_PLUGIN_NAMES = [
-    "browser@openai-bundled",
-    "documents@openai-primary-runtime",
-    "github@openai-curated",
-    "presentations@openai-primary-runtime",
-    "spreadsheets@openai-primary-runtime",
-] as const
+const KILL_SWITCH_POLL_MS = 1000
 
 export class CodexAppServerProvider implements AgentModelProvider {
     readonly provider = "codex" as const
     private client: CodexAppServerClient | undefined
     private mcpServer: RunToolServer | undefined
     private runDirectoryToRemove: string | undefined
+    private runAbortController: AbortController | undefined
     private currentThreadId: string | undefined
     private currentTurnId: string | undefined
     private pendingCompletion: PendingTurnCompletion | undefined
     private completedTurns = new Map<string, CodexTurnCompletion>()
     private assistantContent = ""
+    private assistantSummaryPersisted = false
     private latestUsage: LLMUsage = createEmptyUsage()
     private rateLimitSnapshotAfterNotification: unknown
     private forbiddenCapabilityError: string | undefined
@@ -122,6 +96,7 @@ export class CodexAppServerProvider implements AgentModelProvider {
 
     async run(args: AgentProviderRunArgs): Promise<AgentProviderRunResult> {
         this.resetRunState()
+        this.runAbortController = new AbortController()
         const diagnostics = createBaseDiagnostics(this.config)
         let rateLimitSnapshotBefore: unknown
         let rateLimitSnapshotAfter: unknown
@@ -134,8 +109,12 @@ export class CodexAppServerProvider implements AgentModelProvider {
                 tools: args.tools,
                 toolEngine: args.toolEngine,
                 logger: args.logger,
+                signal: this.runAbortController.signal,
                 onFatalFault: async () => {
-                    await this.interruptCurrentTurn(args, "shared tool execution reported a fatal fault")
+                    const reason = resolveFatalFaultError(args.context.runId, args.toolEngine.getOutcome().fatalFault) ??
+                        "shared tool execution reported a fatal fault"
+                    this.failCurrentRun(reason)
+                    await this.interruptCurrentTurn(args, reason)
                 },
             })
 
@@ -177,7 +156,7 @@ export class CodexAppServerProvider implements AgentModelProvider {
             iterations = 1
             const turnId = await this.startTurn(this.currentThreadId, userMessage, runDirectory)
             diagnostics.codexTurnIds = [turnId]
-            const completion = await this.waitForTurnCompletion(this.currentThreadId, turnId)
+            const completion = await this.waitForTurnCompletionWithRunControl(args, this.currentThreadId, turnId)
 
             rateLimitSnapshotAfter = await this.readRateLimits()
             diagnostics.rateLimitSnapshotAfter = rateLimitSnapshotAfter
@@ -191,16 +170,7 @@ export class CodexAppServerProvider implements AgentModelProvider {
                 completionError ??
                 undefined
 
-            if (summary.length > 0) {
-                args.conversation.addAssistantMessage(summary)
-                await args.agentLogger?.log(
-                    args.context.runId,
-                    args.context.strategyId,
-                    args.conversation.getSequence(),
-                    "assistant",
-                    summary
-                )
-            }
+            await this.persistAssistantSummary(args, summary)
 
             args.logger.info("Codex app-server run complete", {
                 runId: args.context.runId,
@@ -229,8 +199,11 @@ export class CodexAppServerProvider implements AgentModelProvider {
                 error: message,
             })
 
+            const summary = this.assistantContent.trim()
+            await this.persistAssistantSummary(args, summary)
+
             return {
-                summary: this.assistantContent.trim(),
+                summary,
                 error: message,
                 iterations,
                 usage: this.latestUsage,
@@ -250,6 +223,7 @@ export class CodexAppServerProvider implements AgentModelProvider {
 
     cancel(): void {
         this.cancellationRequested = true
+        this.runAbortController?.abort()
         if (this.currentThreadId && this.currentTurnId && this.client) {
             void this.client.request("turn/interrupt", {
                 threadId: this.currentThreadId,
@@ -373,6 +347,79 @@ export class CodexAppServerProvider implements AgentModelProvider {
         })
     }
 
+    private async waitForTurnCompletionWithRunControl(
+        args: AgentProviderRunArgs,
+        threadId: string,
+        turnId: string
+    ): Promise<CodexTurnCompletion> {
+        const remainingMs = args.runTimeoutMs - (Date.now() - args.runStartedAt)
+        if (remainingMs <= 0) {
+            const reason = `Run timed out before Codex turn completion (limit: ${Math.round(args.runTimeoutMs / 1000)}s)`
+            this.failCurrentRun(reason)
+            await this.interruptCurrentTurn(args, reason)
+            throw new Error(reason)
+        }
+
+        const pollController = new AbortController()
+        const killSwitchPromise = args.killSwitchChecker
+            ? this.pollKillSwitch(args, pollController.signal)
+            : undefined
+        let timeoutId: ReturnType<typeof setTimeout> | undefined
+        const timeoutPromise = new Promise<never>((_, reject) => {
+            timeoutId = setTimeout(() => {
+                const reason = `Run timed out during Codex turn after ${Math.round(args.runTimeoutMs / 1000)}s`
+                this.failCurrentRun(reason)
+                void this.interruptCurrentTurn(args, reason)
+                reject(new Error(reason))
+            }, remainingMs)
+        })
+
+        try {
+            return await Promise.race([
+                this.waitForTurnCompletion(threadId, turnId),
+                timeoutPromise,
+                ...(killSwitchPromise ? [killSwitchPromise] : []),
+            ])
+        } finally {
+            if (timeoutId) {
+                clearTimeout(timeoutId)
+            }
+            pollController.abort()
+            await killSwitchPromise?.catch(() => undefined)
+        }
+    }
+
+    private async pollKillSwitch(
+        args: AgentProviderRunArgs,
+        signal: AbortSignal
+    ): Promise<never> {
+        while (!signal.aborted) {
+            await delay(KILL_SWITCH_POLL_MS, signal)
+            if (signal.aborted) {
+                break
+            }
+
+            try {
+                if (await args.killSwitchChecker?.()) {
+                    const reason = "Kill switch activated during Codex run"
+                    this.failCurrentRun(reason)
+                    await this.interruptCurrentTurn(args, reason)
+                    throw new Error(reason)
+                }
+            } catch (error) {
+                const message = error instanceof Error ? error.message : String(error)
+                const reason = message === "Kill switch activated during Codex run"
+                    ? message
+                    : `Kill switch check failed: ${message}`
+                this.failCurrentRun(reason)
+                await this.interruptCurrentTurn(args, reason)
+                throw new Error(reason)
+            }
+        }
+
+        throw createAbortError("Codex kill-switch polling stopped")
+    }
+
     private handleNotification(message: JsonRpcMessage, args: AgentProviderRunArgs): void {
         if (message.method === "item/agentMessage/delta") {
             const params = readRecord(message.params)
@@ -399,9 +446,9 @@ export class CodexAppServerProvider implements AgentModelProvider {
 
         if (message.method === "mcpServer/startupStatus/updated") {
             const startup = readMcpStartupStatus(message.params)
-            if (startup.name && startup.name !== MCP_SERVER_NAME && startup.status !== "disabled") {
+            if (startup.name && startup.name !== CODEX_RUN_MCP_SERVER_NAME && startup.status !== "disabled") {
                 const reason = `Codex started non-run MCP server ${startup.name} with status ${startup.status ?? "unknown"}`
-                this.forbiddenCapabilityError = reason
+                this.failCurrentRun(reason)
                 args.logger.error("Codex started non-run MCP server", {
                     runId: args.context.runId,
                     name: startup.name,
@@ -467,7 +514,7 @@ export class CodexAppServerProvider implements AgentModelProvider {
         }
 
         const reason = `Codex attempted forbidden capability through ${method}`
-        this.forbiddenCapabilityError = reason
+        this.failCurrentRun(reason)
         args.logger.error("Codex requested forbidden capability", {
             runId: args.context.runId,
             method,
@@ -490,6 +537,23 @@ export class CodexAppServerProvider implements AgentModelProvider {
         }
 
         await this.interruptCurrentTurn(args, reason)
+    }
+
+    private failCurrentRun(reason: string): void {
+        this.forbiddenCapabilityError = reason
+        this.runAbortController?.abort()
+        this.rejectPendingTurnCompletion(new Error(reason))
+    }
+
+    private rejectPendingTurnCompletion(error: Error): void {
+        const pending = this.pendingCompletion
+        if (!pending) {
+            return
+        }
+
+        clearTimeout(pending.timer)
+        this.pendingCompletion = undefined
+        pending.reject(error)
     }
 
     private async interruptCurrentTurn(args: AgentProviderRunArgs, reason: string): Promise<void> {
@@ -515,6 +579,24 @@ export class CodexAppServerProvider implements AgentModelProvider {
         })
     }
 
+    private async persistAssistantSummary(args: AgentProviderRunArgs, summary: string): Promise<void> {
+        if (summary.length === 0 || this.assistantSummaryPersisted) {
+            return
+        }
+
+        args.conversation.addAssistantMessage(summary)
+        this.assistantSummaryPersisted = true
+        await safeLogAgentMessage({
+            agentLogger: args.agentLogger,
+            logger: args.logger,
+            runId: args.context.runId,
+            strategyId: args.context.strategyId,
+            sequence: args.conversation.getSequence(),
+            role: "assistant",
+            content: summary,
+        })
+    }
+
     private requireClient(): CodexAppServerClient {
         if (!this.client) {
             throw new Error("Codex app-server client is not started")
@@ -532,6 +614,8 @@ export class CodexAppServerProvider implements AgentModelProvider {
 
         this.client?.close()
         this.client = undefined
+        this.runAbortController?.abort()
+        this.runAbortController = undefined
 
         if (this.mcpServer) {
             await this.mcpServer.close().catch((error) => {
@@ -566,165 +650,17 @@ export class CodexAppServerProvider implements AgentModelProvider {
         }
         this.currentThreadId = undefined
         this.currentTurnId = undefined
+        this.runAbortController?.abort()
+        this.runAbortController = undefined
         this.pendingCompletion = undefined
         this.completedTurns.clear()
         this.assistantContent = ""
+        this.assistantSummaryPersisted = false
         this.latestUsage = createEmptyUsage()
         this.rateLimitSnapshotAfterNotification = undefined
         this.forbiddenCapabilityError = undefined
         this.cancellationRequested = false
     }
-}
-
-function buildCodexAppServerArgs(
-    config: CodexAppServerProviderConfig,
-    mcpServer: RunToolServer
-): string[] {
-    const overrides = buildCodexConfigOverrides(config, mcpServer)
-    return [
-        "app-server",
-        "--strict-config",
-        ...(config.appServerArgs ?? []),
-        ...overrides.flatMap(([key, value]) => ["-c", `${key}=${value}`]),
-    ]
-}
-
-function buildCodexConfigOverrides(
-    config: CodexAppServerProviderConfig,
-    mcpServer: RunToolServer
-): Array<[string, string]> {
-    const overrides: Array<[string, string]> = [
-        ["web_search", tomlString("disabled")],
-        ["approval_policy", tomlString("never")],
-        ["approvals_reviewer", tomlString("user")],
-        ["sandbox_mode", tomlString("read-only")],
-        ["allow_login_shell", "false"],
-        ...DISABLED_CODEX_FEATURE_NAMES.map((name) =>
-            [`features.${name}`, "false"] as [string, string]
-        ),
-        ...DISABLED_INHERITED_PLUGIN_NAMES.map((name) =>
-            [`plugins.${tomlQuotedPathSegment(name)}.enabled`, "false"] as [string, string]
-        ),
-        ...DISABLED_INHERITED_MCP_SERVER_NAMES.map((name) =>
-            [`mcp_servers.${name}.enabled`, "false"] as [string, string]
-        ),
-        [`mcp_servers.${MCP_SERVER_NAME}.enabled`, "true"],
-        [`mcp_servers.${MCP_SERVER_NAME}.required`, "true"],
-        [`mcp_servers.${MCP_SERVER_NAME}.url`, tomlString(mcpServer.url)],
-        [`mcp_servers.${MCP_SERVER_NAME}.bearer_token_env_var`, tomlString(MCP_TOKEN_ENV_VAR)],
-        [`mcp_servers.${MCP_SERVER_NAME}.enabled_tools`, tomlStringArray(mcpServer.toolNames)],
-        [`mcp_servers.${MCP_SERVER_NAME}.default_tools_approval_mode`, tomlString("approve")],
-        [`mcp_servers.${MCP_SERVER_NAME}.tool_timeout_sec`, "120.0"],
-    ]
-
-    if (config.effort) {
-        overrides.push(["model_reasoning_effort", tomlString(config.effort)])
-    }
-    if (config.summary) {
-        overrides.push(["model_reasoning_summary", tomlString(config.summary)])
-    }
-    if (config.serviceTier) {
-        overrides.push(["service_tier", tomlString(config.serviceTier)])
-    }
-
-    return overrides
-}
-
-function buildCodexThreadConfig(mcpServer: RunToolServer): Record<string, unknown> {
-    return {
-        web_search: "disabled",
-        approval_policy: "never",
-        approvals_reviewer: "user",
-        sandbox_mode: "read-only",
-        allow_login_shell: false,
-        features: Object.fromEntries(DISABLED_CODEX_FEATURE_NAMES.map((name) => [name, false])),
-        plugins: Object.fromEntries(DISABLED_INHERITED_PLUGIN_NAMES.map((name) => [
-            name,
-            {
-                enabled: false,
-            },
-        ])),
-        mcp_servers: {
-            ...Object.fromEntries(DISABLED_INHERITED_MCP_SERVER_NAMES.map((name) => [
-                name,
-                {
-                    enabled: false,
-                },
-            ])),
-            [MCP_SERVER_NAME]: {
-                enabled: true,
-                required: true,
-                url: mcpServer.url,
-                bearer_token_env_var: MCP_TOKEN_ENV_VAR,
-                enabled_tools: mcpServer.toolNames,
-                default_tools_approval_mode: "approve",
-                tool_timeout_sec: 120,
-            },
-        },
-    }
-}
-
-export function buildCodexEnvironment(
-    config: CodexAppServerProviderConfig,
-    mcpToken: string
-): Record<string, string | undefined> {
-    const env = pickCodexEnvironment(process.env, [
-        "PATH",
-        "HOME",
-        "USER",
-        "LOGNAME",
-        "SHELL",
-        "TMPDIR",
-        "TEMP",
-        "TMP",
-        "XDG_CONFIG_HOME",
-        "XDG_CACHE_HOME",
-        "CODEX_HOME",
-        "SSL_CERT_FILE",
-        "SSL_CERT_DIR",
-        "HTTPS_PROXY",
-        "HTTP_PROXY",
-        "NO_PROXY",
-    ])
-
-    return withCodexCredentials({
-        ...env,
-        [MCP_TOKEN_ENV_VAR]: mcpToken,
-    }, config)
-}
-
-function pickCodexEnvironment(
-    env: Record<string, string | undefined>,
-    names: string[]
-): Record<string, string | undefined> {
-    return Object.fromEntries(
-        names
-            .map((name) => [name, env[name]] as const)
-            .filter((entry): entry is readonly [string, string] => entry[1] !== undefined)
-    )
-}
-
-function withCodexCredentials(
-    env: Record<string, string | undefined>,
-    config: CodexAppServerProviderConfig
-): Record<string, string | undefined> {
-    if (config.authMode === "access-token") {
-        const accessToken = config.codexAccessToken ?? process.env.CODEX_ACCESS_TOKEN
-        if (!accessToken) {
-            throw new Error("Cannot run Codex provider: CODEX_ACCESS_TOKEN is required for access-token auth")
-        }
-        env.CODEX_ACCESS_TOKEN = accessToken
-    }
-
-    if (config.authMode === "api-key") {
-        const apiKey = config.openAiApiKey ?? process.env.OPENAI_API_KEY
-        if (!apiKey) {
-            throw new Error("Cannot run Codex provider: OPENAI_API_KEY is required for api-key auth")
-        }
-        env.OPENAI_API_KEY = apiKey
-    }
-
-    return env
 }
 
 function assertCodexAuthMode(expected: CodexAuthMode, status: CodexAuthStatus): void {
@@ -780,21 +716,10 @@ function normalizeCodexAuthStatus(
             requiresOpenaiAuth: accountRead.requiresOpenaiAuth,
         }
     }
-    if (expected === "access-token" && accountRead.requiresOpenaiAuth === false) {
-        return {
-            authMethod: "agentIdentity",
-            requiresOpenaiAuth: false,
-        }
-    }
-
     return {
         authMethod: null,
         requiresOpenaiAuth: accountRead.requiresOpenaiAuth,
     }
-}
-
-function resolveBillingMode(authMode: CodexAuthMode): string {
-    return authMode === "api-key" ? "platform-api" : "codex-subscription"
 }
 
 function readCodexPromptParts(conversation: ConversationManager): {
@@ -877,16 +802,6 @@ function convertCodexUsage(usage: CodexTokenUsageNotification | undefined): LLMU
     }
 }
 
-function createEmptyUsage(): LLMUsage {
-    return {
-        promptTokens: 0,
-        completionTokens: 0,
-        reasoningTokens: 0,
-        cost: 0,
-        responseIds: [],
-    }
-}
-
 function createBaseDiagnostics(config: CodexAppServerProviderConfig): AgentProviderDiagnostics {
     return {
         provider: "codex" as const,
@@ -901,18 +816,6 @@ function turnCompletionKey(threadId: string, turnId: string): string {
     return `${threadId}:${turnId}`
 }
 
-function tomlString(value: string): string {
-    return JSON.stringify(value)
-}
-
-function tomlStringArray(values: string[]): string {
-    return `[${values.map((value) => tomlString(value)).join(", ")}]`
-}
-
-function tomlQuotedPathSegment(value: string): string {
-    return `"${value.replaceAll("\\", "\\\\").replaceAll("\"", "\\\"")}"`
-}
-
 function readRecord(value: unknown): Record<string, unknown> | undefined {
     return value && typeof value === "object" && !Array.isArray(value)
         ? value as Record<string, unknown>
@@ -921,4 +824,28 @@ function readRecord(value: unknown): Record<string, unknown> | undefined {
 
 function readNumber(value: unknown): number {
     return typeof value === "number" && Number.isFinite(value) ? value : 0
+}
+
+function delay(delayMs: number, signal: AbortSignal): Promise<void> {
+    if (signal.aborted) {
+        return Promise.reject(createAbortError("Codex polling stopped"))
+    }
+
+    return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+            signal.removeEventListener("abort", onAbort)
+            resolve()
+        }, delayMs)
+        const onAbort = () => {
+            clearTimeout(timer)
+            reject(createAbortError("Codex polling stopped"))
+        }
+        signal.addEventListener("abort", onAbort, { once: true })
+    })
+}
+
+function createAbortError(message: string): Error {
+    const error = new Error(message)
+    error.name = "AbortError"
+    return error
 }

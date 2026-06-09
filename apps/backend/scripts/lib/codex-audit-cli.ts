@@ -98,9 +98,13 @@ export async function resolveStrategySelection(
 
     if (args.strategyName) {
         const strategies = await client.getAllStrategies()
-        const strategy = strategies.find((candidate) =>
+        const matches = strategies.filter((candidate) =>
             candidate.name.toLowerCase() === args.strategyName?.toLowerCase()
         )
+        if (matches.length > 1) {
+            throw new Error(`Strategy name is ambiguous: ${args.strategyName} matched ${matches.map((strategy) => `${strategy.name} (${strategy._id})`).join(", ")}`)
+        }
+        const [strategy] = matches
         if (!strategy) {
             throw new Error(`Strategy not found: ${args.strategyName}`)
         }
@@ -136,6 +140,8 @@ export async function findStrategyRunHistoryMatches(args: {
     minMatches: number
     initialLimit?: number
     matches: (run: StoredRun) => boolean
+    stopAfterPage?: (runs: StoredRun[]) => boolean
+    pageLimitError?: string
 }): Promise<StoredRun[]> {
     let beforeStartedAt: number | undefined
     const pageSize = Math.min(
@@ -158,12 +164,19 @@ export async function findStrategyRunHistoryMatches(args: {
         if (runs.length < pageSize) {
             return matches
         }
+        if (args.stopAfterPage?.(runs)) {
+            return matches
+        }
 
         const lastRun = runs[runs.length - 1]
         if (!lastRun) {
             return matches
         }
         beforeStartedAt = lastRun.startedAt
+    }
+
+    if (args.pageLimitError) {
+        throw new Error(args.pageLimitError)
     }
 
     return matches

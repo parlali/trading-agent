@@ -10,6 +10,7 @@ import {
     buildCodexEnvironment,
     type CodexAppServerClient,
     type CodexAppServerClientFactoryArgs,
+    type CodexAppServerProviderConfig,
     type CodexAppServerProviderDependencies,
 } from "./codex-app-server-provider"
 
@@ -202,6 +203,39 @@ describe("CodexAppServerProvider", () => {
         })
     })
 
+    it("persists assistant transcript when post-turn provider reads fail", async () => {
+        const provider = createProvider({
+            createClient: (args) => new FakeCodexClient(args, async (fake) => {
+                fake.emitNotification({
+                    method: "item/agentMessage/delta",
+                    params: { delta: "Need manual review" },
+                })
+                fake.emitNotification({
+                    method: "turn/completed",
+                    params: {
+                        threadId: "thread-1",
+                        turn: {
+                            id: "turn-1",
+                            status: "completed",
+                        },
+                    },
+                })
+            }, {
+                rateLimitAfterError: new Error("rate limits unavailable"),
+            }),
+        })
+        const runArgs = createRunArgs()
+
+        const result = await provider.run(runArgs)
+
+        expect(result.summary).toBe("Need manual review")
+        expect(result.error).toBe("rate limits unavailable")
+        const agentLogger = runArgs.agentLogger as { log: ReturnType<typeof vi.fn> }
+        const assistantLog = agentLogger.log.mock.calls.find((call) => call[3] === "assistant")
+        expect(assistantLog?.[2]).toBe(3)
+        expect(assistantLog?.[4]).toBe("Need manual review")
+    })
+
     it("builds a bounded Codex subprocess environment with only selected credentials", () => {
         const originalEnv = process.env
         process.env = {
@@ -229,6 +263,24 @@ describe("CodexAppServerProvider", () => {
         } finally {
             process.env = originalEnv
         }
+    })
+
+    it("does not infer access-token identity from requiresOpenaiAuth alone", async () => {
+        const provider = createProvider({
+            config: {
+                authMode: "access-token",
+                codexAccessToken: "test-token",
+            },
+            createClient: (args) => new FakeCodexClient(args, () => undefined, {
+                accountRead: {
+                    requiresOpenaiAuth: false,
+                },
+            }),
+        })
+
+        const result = await provider.run(createRunArgs())
+
+        expect(result.error).toContain("Codex auth mode mismatch: expected access-token, app-server reported missing")
     })
 
     it("fails closed when Codex starts a non-run MCP server", async () => {
@@ -390,6 +442,8 @@ class FakeCodexClient implements CodexAppServerClient {
         private readonly completeTurn: (client: FakeCodexClient) => Promise<void> | void,
         private readonly options: {
             completeTurnBeforeResponse?: boolean
+            accountRead?: unknown
+            rateLimitAfterError?: Error
         } = {}
     ) {}
 
@@ -402,7 +456,7 @@ class FakeCodexClient implements CodexAppServerClient {
         this.requests.push({ method, params })
 
         if (method === "account/read") {
-            return {
+            return this.options.accountRead ?? {
                 account: {
                     type: "chatgpt",
                 },
@@ -411,6 +465,9 @@ class FakeCodexClient implements CodexAppServerClient {
         }
         if (method === "account/rateLimits/read") {
             this.rateLimitReads++
+            if (this.rateLimitReads > 1 && this.options.rateLimitAfterError) {
+                throw this.options.rateLimitAfterError
+            }
             return this.rateLimitReads === 1
                 ? { rateLimits: { before: true } }
                 : { rateLimits: { after: true } }
@@ -455,8 +512,11 @@ class FakeCodexClient implements CodexAppServerClient {
 }
 
 function createProvider(
-    dependencies: Partial<CodexAppServerProviderDependencies>
+    dependencies: Partial<CodexAppServerProviderDependencies> & {
+        config?: Partial<CodexAppServerProviderConfig>
+    }
 ): CodexAppServerProvider {
+    const { config, ...providerDependencies } = dependencies
     return new CodexAppServerProvider({
         provider: "codex",
         model: "codex-test",
@@ -464,9 +524,10 @@ function createProvider(
         runDirectory: "/tmp/valiq-codex-provider-test",
         turnTimeoutMs: 1000,
         requestTimeoutMs: 1000,
+        ...config,
     }, {
         startRunToolServer: async () => createFakeMcpServer(),
-        ...dependencies,
+        ...providerDependencies,
     })
 }
 

@@ -40,6 +40,19 @@ describe("Codex audit CLI helpers", () => {
         expect(client.getAllStrategies).toHaveBeenCalledOnce()
     })
 
+    it("rejects ambiguous strategy names", async () => {
+        const client = {
+            getAllStrategies: vi.fn().mockResolvedValue([
+                createStrategy("strategy-1", "Codex Dry Run"),
+                createStrategy("strategy-2", "codex dry run"),
+            ]),
+        } as unknown as TradingBackendClient
+
+        await expect(resolveStrategySelection(client, {
+            strategyName: "Codex Dry Run",
+        })).rejects.toThrow("Strategy name is ambiguous")
+    })
+
     it("selects the latest completed Codex run from history", async () => {
         const strategy = createStrategy("strategy-1", "Codex Dry Run")
         const latestCodexRun = createRun("run-codex-latest", "completed", "codex")

@@ -96,6 +96,46 @@ describe("buildCodexRolloutAuditArtifact", () => {
         ]))
     })
 
+    it("fails closed when OpenRouter samples have missing provider identity", () => {
+        const codexStrategy = createStrategy({
+            id: "strategy-codex",
+            provider: "codex",
+            dryRun: true,
+            enabled: true,
+        })
+        const openRouterStrategy = createStrategy({
+            id: "strategy-openrouter",
+            provider: "openrouter",
+            dryRun: false,
+            enabled: true,
+        })
+        const artifact = buildCodexRolloutAuditArtifact({
+            exportedAt: "2026-06-08T12:00:00.000Z",
+            targetStrategy: codexStrategy,
+            allStrategies: [
+                codexStrategy,
+                openRouterStrategy,
+            ],
+            runAudits: [
+                createRunAudit("run-1", 1000),
+                createRunAudit("run-2", 2000),
+                createRunAudit("run-3", 3000),
+            ],
+            openRouterSamples: [{
+                strategy: openRouterStrategy,
+                runs: [{
+                    ...createOpenRouterRun("openrouter-run-missing-provider", 1500),
+                    llmProvider: undefined,
+                }],
+            }],
+        })
+
+        expect(artifact.gates.openRouterProviderIsolation).toBe(false)
+        expect(artifact.failures).toEqual(expect.arrayContaining([
+            expect.stringContaining("has provider missing"),
+        ]))
+    })
+
     it("fails closed when rollout evidence is incomplete or provider isolation is broken", () => {
         const codexStrategy = createStrategy({
             id: "strategy-codex",

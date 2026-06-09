@@ -1,5 +1,5 @@
 import type { AgentMessageLogger, Logger, StrategyRunContext } from "@valiq-trading/core"
-import type { LLMUsage } from "./llm-client"
+import type { LLMUsage } from "./llm-usage"
 import { ConversationManager } from "./conversation"
 import { buildSystemPrompt } from "./prompt-builder"
 import { ToolExecutionEngine, type DegradedResearchOutcome, type OpportunityCoverageMetrics } from "./tool-execution-engine"
@@ -7,6 +7,7 @@ import type { ToolRegistry } from "./tool-registry"
 import { OpenRouterAgentProvider, type OpenRouterAgentProviderConfig } from "./providers/openrouter/openrouter-agent-provider"
 import { CodexAppServerProvider, type CodexAppServerProviderConfig } from "./providers/codex/codex-app-server-provider"
 import type { AgentModelProvider, AgentProviderDiagnostics } from "./providers/types"
+import { safeLogAgentMessage } from "./agent-transcript"
 
 export type AgentRuntimeModelProviderConfig = OpenRouterAgentProviderConfig | CodexAppServerProviderConfig
 
@@ -55,26 +56,33 @@ export async function executeAgentRun(
 
     const systemPrompt = buildSystemPrompt(context, tools.getDescriptions())
     conversation.addSystemMessage(systemPrompt)
-
-    void agentLogger?.log(
-        context.runId,
-        context.strategyId,
-        conversation.getSequence(),
-        "system",
-        systemPrompt
-    )
+    const systemSequence = conversation.getSequence()
 
     const userMessage = "Your positions and account state are already in the system prompt. Begin with the research steps defined in your strategy context, then decide on actions."
 
     conversation.addUserMessage(userMessage)
+    const userSequence = conversation.getSequence()
 
-    void agentLogger?.log(
-        context.runId,
-        context.strategyId,
-        conversation.getSequence(),
-        "user",
-        userMessage
-    )
+    await Promise.all([
+        safeLogAgentMessage({
+            agentLogger,
+            logger,
+            runId: context.runId,
+            strategyId: context.strategyId,
+            sequence: systemSequence,
+            role: "system",
+            content: systemPrompt,
+        }),
+        safeLogAgentMessage({
+            agentLogger,
+            logger,
+            runId: context.runId,
+            strategyId: context.strategyId,
+            sequence: userSequence,
+            role: "user",
+            content: userMessage,
+        }),
+    ])
 
     const toolEngine = new ToolExecutionEngine({
         tools,
