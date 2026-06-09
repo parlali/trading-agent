@@ -40,9 +40,6 @@ const DISABLED_CODEX_FEATURE_NAMES = [
     "web_search_request",
     "workspace_dependencies",
 ] as const
-const DISABLED_INHERITED_MCP_SERVER_NAMES = [
-    "openaiDeveloperDocs",
-] as const
 const DISABLED_INHERITED_PLUGIN_NAMES = [
     "browser@openai-bundled",
     "documents@openai-primary-runtime",
@@ -79,12 +76,6 @@ export function buildCodexThreadConfig(mcpServer: RunToolServer): Record<string,
             },
         ])),
         mcp_servers: {
-            ...Object.fromEntries(DISABLED_INHERITED_MCP_SERVER_NAMES.map((name) => [
-                name,
-                {
-                    enabled: false,
-                },
-            ])),
             [CODEX_RUN_MCP_SERVER_NAME]: {
                 enabled: true,
                 required: true,
@@ -146,9 +137,6 @@ function buildCodexConfigOverrides(
         ),
         ...DISABLED_INHERITED_PLUGIN_NAMES.map((name) =>
             [`plugins.${tomlQuotedPathSegment(name)}.enabled`, "false"] as [string, string]
-        ),
-        ...DISABLED_INHERITED_MCP_SERVER_NAMES.map((name) =>
-            [`mcp_servers.${name}.enabled`, "false"] as [string, string]
         ),
         [`mcp_servers.${CODEX_RUN_MCP_SERVER_NAME}.enabled`, "true"],
         [`mcp_servers.${CODEX_RUN_MCP_SERVER_NAME}.required`, "true"],

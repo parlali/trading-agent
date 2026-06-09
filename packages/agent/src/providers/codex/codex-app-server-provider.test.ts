@@ -122,9 +122,6 @@ describe("CodexAppServerProvider", () => {
                     },
                 },
                 mcp_servers: {
-                    openaiDeveloperDocs: {
-                        enabled: false,
-                    },
                     valiq_run: {
                         enabled: true,
                         required: true,
