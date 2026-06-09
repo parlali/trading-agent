@@ -9,7 +9,6 @@ import { StatusDot } from "@/components/status-dot"
 import { StatusBadge } from "@/components/status-badge"
 import { PageSkeleton } from "@/components/page-skeleton"
 import { EmptyState } from "@/components/empty-state"
-import { CodexOAuthPanel } from "@/components/codex-oauth-panel"
 import { formatRelativeTime } from "@/lib/format"
 import { isHeartbeatStale } from "@/lib/heartbeat"
 import { Heart } from "lucide-react"
@@ -23,20 +22,16 @@ export default function HealthPage() {
 
     if (health.length === 0) {
         return (
-            <div className="space-y-3">
-                <CodexOAuthPanel />
-                <EmptyState
-                    icon={Heart}
-                    title="No heartbeats"
-                    description="No apps have reported health status yet"
-                />
-            </div>
+            <EmptyState
+                icon={Heart}
+                title="No heartbeats"
+                description="No apps have reported health status yet"
+            />
         )
     }
 
     return (
         <div className="space-y-3">
-            <CodexOAuthPanel />
             {health.map((hb) => {
                 const isStale = isHeartbeatStale(hb.lastHeartbeat)
                 const effectiveStatus = isStale ? "unhealthy" : hb.status

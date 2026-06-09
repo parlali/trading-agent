@@ -2,7 +2,12 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, chmodSync } from "n
 import { homedir } from "node:os"
 import { dirname, join } from "node:path"
 
-const CHATGPT_ACCOUNT_ID_CLAIM = "https://api.openai.com/auth.chatgpt_account_id"
+const CHATGPT_ACCOUNT_ID_CLAIMS = [
+    "https://api.openai.com/auth.chatgpt_account_id",
+    "chatgpt_account_id",
+    "account_id",
+    "accountId",
+] as const
 
 export interface CodexChatGptAuthStatus {
     ready: boolean
@@ -118,9 +123,27 @@ export function writeCodexChatGptAuthFileSync(args: {
     return inspectCodexChatGptAuthStatusSync(env)
 }
 
-export function extractCodexChatGptAccountId(accessToken: string): string | null {
-    const payload = decodeJwtPayload(accessToken)
-    return readString(payload[CHATGPT_ACCOUNT_ID_CLAIM]) || null
+export function extractCodexChatGptAccountId(...tokens: (string | null | undefined)[]): string | null {
+    for (const token of tokens) {
+        if (!token) {
+            continue
+        }
+
+        const accountId = readFirstString(decodeJwtPayload(token), CHATGPT_ACCOUNT_ID_CLAIMS)
+        if (accountId) {
+            return accountId
+        }
+    }
+
+    return null
+}
+
+export function resolveCodexChatGptAccountId(
+    tokenResponse: Record<string, unknown>,
+    ...tokens: (string | null | undefined)[]
+): string | null {
+    return readFirstString(tokenResponse, CHATGPT_ACCOUNT_ID_CLAIMS)
+        ?? extractCodexChatGptAccountId(...tokens)
 }
 
 function decodeJwtPayload(token: string): Record<string, unknown> {
@@ -157,4 +180,15 @@ function readRecord(value: unknown): Record<string, unknown> {
 
 function readString(value: unknown): string | null {
     return typeof value === "string" && value.trim() ? value : null
+}
+
+function readFirstString(record: Record<string, unknown>, keys: readonly string[]): string | null {
+    for (const key of keys) {
+        const value = readString(record[key])
+        if (value) {
+            return value
+        }
+    }
+
+    return null
 }

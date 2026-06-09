@@ -6,18 +6,27 @@ import { usePathname, useRouter } from "next/navigation"
 import { useTheme } from "next-themes"
 import { useAuthActions } from "@convex-dev/auth/react"
 import {
+    Bell,
     Calendar,
+    ChartLine,
     Gauge,
+    HeartPulse,
+    History,
     LayoutDashboard,
+    ListChecks,
     LogOut,
     Moon,
     Monitor,
     Plug,
-    Power,
     Settings2,
+    ShieldCheck,
     Sun,
+    TableProperties,
+    WalletCards,
+    type LucideIcon,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { ACTIVE_VENUE_APPS, VENUE_META } from "@/lib/constants"
 import {
     Sidebar,
     SidebarContent,
@@ -34,19 +43,38 @@ import {
 
 const mainItems = [
     { label: "Overview", href: "/", icon: LayoutDashboard },
-    { label: "Test", href: "/test", icon: Plug },
     { label: "Strategies", href: "/strategies", icon: Settings2 },
     { label: "Schedule", href: "/schedule", icon: Calendar },
+    { label: "Runs", href: "/runs", icon: History },
+    { label: "Integrations", href: "/integrations", icon: Plug },
+    { label: "Test", href: "/test", icon: ListChecks },
 ]
 
+const portfolioItems = [
+    { label: "Positions", href: "/positions", icon: WalletCards },
+    { label: "Trades", href: "/trades", icon: TableProperties },
+    { label: "Equity", href: "/equity", icon: ChartLine },
+]
+
+const venueItems = ACTIVE_VENUE_APPS.map((app) => {
+    const meta = VENUE_META[app]
+    return {
+        label: meta.shortLabel,
+        href: `/venues/${app}`,
+        icon: meta.icon,
+    }
+})
+
 const systemItems = [
-    { label: "Kill Switches", href: "/system/kill-switches", icon: Power },
+    { label: "Health", href: "/system/health", icon: HeartPulse },
+    { label: "Alerts", href: "/system/alerts", icon: Bell },
+    { label: "Kill Switches", href: "/system/kill-switches", icon: ShieldCheck },
 ]
 
 type NavItem = {
     label: string
     href: string
-    icon: typeof LayoutDashboard
+    icon: LucideIcon
 }
 
 function NavItemRow({ item, pathname }: { item: NavItem, pathname: string }) {
@@ -123,9 +151,30 @@ export function AppSidebar() {
             </SidebarHeader>
             <SidebarContent>
                 <SidebarGroup>
+                    <SidebarGroupLabel>Main</SidebarGroupLabel>
                     <SidebarGroupContent>
                         <SidebarMenu>
                             {mainItems.map((item) => (
+                                <NavItemRow key={item.label} item={item} pathname={pathname} />
+                            ))}
+                        </SidebarMenu>
+                    </SidebarGroupContent>
+                </SidebarGroup>
+                <SidebarGroup>
+                    <SidebarGroupLabel>Portfolio</SidebarGroupLabel>
+                    <SidebarGroupContent>
+                        <SidebarMenu>
+                            {portfolioItems.map((item) => (
+                                <NavItemRow key={item.label} item={item} pathname={pathname} />
+                            ))}
+                        </SidebarMenu>
+                    </SidebarGroupContent>
+                </SidebarGroup>
+                <SidebarGroup>
+                    <SidebarGroupLabel>Venues</SidebarGroupLabel>
+                    <SidebarGroupContent>
+                        <SidebarMenu>
+                            {venueItems.map((item) => (
                                 <NavItemRow key={item.label} item={item} pathname={pathname} />
                             ))}
                         </SidebarMenu>

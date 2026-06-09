@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest"
 import {
     extractCodexChatGptAccountId,
     inspectCodexChatGptAuthStatusSync,
+    resolveCodexChatGptAccountId,
     writeCodexChatGptAuthFileSync,
 } from "./codex-auth"
 
@@ -72,9 +73,21 @@ describe("Codex ChatGPT auth file", () => {
         }
     })
 
-    it("extracts the ChatGPT account id claim from access tokens", () => {
+    it("extracts the ChatGPT account id claim from OAuth tokens", () => {
         expect(extractCodexChatGptAccountId(fakeJwt({ [ACCOUNT_ID_CLAIM]: "account-1" }))).toBe("account-1")
+        expect(extractCodexChatGptAccountId(
+            fakeJwt({}),
+            fakeJwt({ chatgpt_account_id: "account-2" })
+        )).toBe("account-2")
         expect(extractCodexChatGptAccountId("not-a-jwt")).toBeNull()
+    })
+
+    it("resolves the ChatGPT account id from the token response before JWT fallback", () => {
+        expect(resolveCodexChatGptAccountId({
+            account_id: "account-response",
+        }, fakeJwt({ [ACCOUNT_ID_CLAIM]: "account-token" }))).toBe("account-response")
+
+        expect(resolveCodexChatGptAccountId({}, fakeJwt({ accountId: "account-token" }))).toBe("account-token")
     })
 })
 

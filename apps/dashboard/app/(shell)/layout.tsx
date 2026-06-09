@@ -12,6 +12,7 @@ const pageNames: Record<string, string> = {
     "/strategies": "Strategies",
     "/strategies/new": "New Strategy",
     "/schedule": "Schedule",
+    "/integrations": "Integrations",
     "/system/kill-switches": "Kill Switches",
     "/system/health": "System Health",
     "/system/alerts": "Alerts",
@@ -27,6 +28,7 @@ function getPageTitle(pathname: string): string {
     if (pathname.match(/^\/strategies\/[^/]+\/edit$/)) return "Edit Strategy"
     if (pathname.match(/^\/strategies\/[^/]+$/)) return "Strategy"
     if (pathname.match(/^\/runs\/[^/]+$/)) return "Run Detail"
+    if (pathname.match(/^\/venues\/[^/]+$/)) return "Venue"
 
     for (const [path, name] of Object.entries(pageNames)) {
         if (pathname.startsWith(path) && path !== "/") return name

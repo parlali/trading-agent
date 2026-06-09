@@ -1,7 +1,7 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto"
 import {
-    extractCodexChatGptAccountId,
     inspectCodexChatGptAuthStatusSync,
+    resolveCodexChatGptAccountId,
     writeCodexChatGptAuthFileSync,
     type CodexChatGptAuthStatus,
 } from "./codex-auth"
@@ -9,7 +9,7 @@ import {
 const CODEX_OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 const CODEX_OAUTH_AUTHORIZE_URL = "https://auth.openai.com/oauth/authorize"
 const CODEX_OAUTH_TOKEN_URL = "https://auth.openai.com/oauth/token"
-const CODEX_OAUTH_REDIRECT_URI = "http://localhost:1455/auth/callback"
+const DEFAULT_CODEX_OAUTH_REDIRECT_URI = "http://localhost:1455/auth/callback"
 const CODEX_OAUTH_SCOPE = "openid profile email offline_access"
 const CODEX_OAUTH_SESSION_TTL_MS = 15 * 60 * 1000
 
@@ -26,6 +26,7 @@ interface CodexOAuthSession {
     status: Extract<CodexOAuthFlowStatus, "awaiting_redirect" | "submitting">
     state: string
     codeVerifier: string
+    redirectUri: string
     authUrl: string
     startedAt: number
     updatedAt: number
@@ -81,7 +82,10 @@ export function createCodexOAuthControlHandler(config: {
             }
 
             if (request.method === "POST" && pathname === "/codex/oauth/start") {
-                return json(controller.start(), 200)
+                const payload = await readJsonRecord(request)
+                return json(controller.start({
+                    redirectUri: readString(payload.redirectUri),
+                }), 200)
             }
 
             if (request.method === "POST" && pathname === "/codex/oauth/cancel") {
@@ -133,7 +137,7 @@ export class CodexOAuthController {
                 completedAt: null,
                 message: this.activeSession.status === "submitting"
                     ? "Completing Codex ChatGPT login"
-                    : "Waiting for pasted ChatGPT redirect URL",
+                    : "Waiting for ChatGPT callback or pasted redirect URL",
             })
         }
 
@@ -172,20 +176,23 @@ export class CodexOAuthController {
         })
     }
 
-    start(): CodexOAuthSnapshot {
+    start(args: { redirectUri?: string | null } = {}): CodexOAuthSnapshot {
         const now = Date.now()
         const codeVerifier = base64Url(randomBytes(32))
         const codeChallenge = base64Url(createHash("sha256").update(codeVerifier).digest())
         const state = base64Url(randomBytes(24))
+        const redirectUri = resolveOAuthRedirectUri(args.redirectUri)
         const authUrl = buildAuthorizationUrl({
             state,
             codeChallenge,
+            redirectUri,
         })
 
         this.activeSession = {
             status: "awaiting_redirect",
             state,
             codeVerifier,
+            redirectUri,
             authUrl,
             startedAt: now,
             updatedAt: now,
@@ -231,11 +238,12 @@ export class CodexOAuthController {
             const tokenResponse = await exchangeAuthorizationCode({
                 code,
                 codeVerifier: session.codeVerifier,
+                redirectUri: session.redirectUri,
             })
             const accessToken = readRequiredString(tokenResponse.access_token, "access_token")
             const refreshToken = readRequiredString(tokenResponse.refresh_token, "refresh_token")
             const idToken = readRequiredString(tokenResponse.id_token, "id_token")
-            const accountId = extractCodexChatGptAccountId(accessToken)
+            const accountId = resolveCodexChatGptAccountId(tokenResponse, accessToken, idToken)
 
             if (!accountId) {
                 throw new Error("OpenAI OAuth token did not include a ChatGPT account id")
@@ -296,11 +304,12 @@ export class CodexOAuthController {
 export function buildAuthorizationUrl(args: {
     state: string
     codeChallenge: string
+    redirectUri?: string
 }): string {
     const params = new URLSearchParams({
         response_type: "code",
         client_id: CODEX_OAUTH_CLIENT_ID,
-        redirect_uri: CODEX_OAUTH_REDIRECT_URI,
+        redirect_uri: resolveOAuthRedirectUri(args.redirectUri),
         scope: CODEX_OAUTH_SCOPE,
         state: args.state,
         code_challenge: args.codeChallenge,
@@ -347,6 +356,7 @@ export function extractAuthorizationCode(redirectUrl: string, expectedState: str
 async function exchangeAuthorizationCode(args: {
     code: string
     codeVerifier: string
+    redirectUri: string
 }): Promise<Record<string, unknown>> {
     const response = await fetch(CODEX_OAUTH_TOKEN_URL, {
         method: "POST",
@@ -357,7 +367,7 @@ async function exchangeAuthorizationCode(args: {
         body: new URLSearchParams({
             grant_type: "authorization_code",
             client_id: CODEX_OAUTH_CLIENT_ID,
-            redirect_uri: CODEX_OAUTH_REDIRECT_URI,
+            redirect_uri: resolveOAuthRedirectUri(args.redirectUri),
             code: args.code,
             code_verifier: args.codeVerifier,
         }),
@@ -414,6 +424,34 @@ function readRequiredString(value: unknown, name: string): string {
     }
 
     throw new Error(`OpenAI OAuth token response did not include ${name}`)
+}
+
+function readString(value: unknown): string | null {
+    return typeof value === "string" && value.trim() ? value : null
+}
+
+export function resolveOAuthRedirectUri(value?: string | null): string {
+    const redirectUri = value?.trim() || DEFAULT_CODEX_OAUTH_REDIRECT_URI
+
+    let parsed: URL
+    try {
+        parsed = new URL(redirectUri)
+    } catch {
+        throw new Error("Codex OAuth redirect URI is invalid")
+    }
+
+    if (parsed.protocol === "https:") {
+        return parsed.toString()
+    }
+
+    const isLocalhost = parsed.protocol === "http:"
+        && (parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1")
+
+    if (isLocalhost) {
+        return parsed.toString()
+    }
+
+    throw new Error("Codex OAuth redirect URI must use https, except localhost")
 }
 
 function json(payload: unknown, status: number): Response {

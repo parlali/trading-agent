@@ -217,7 +217,7 @@ export function CodexOAuthPanel() {
                 {snapshot?.authUrl ? (
                     <div className="space-y-2">
                         <Label htmlFor="codex-redirect-url" className="text-sm">
-                            Redirect URL
+                            Fallback Redirect URL
                         </Label>
                         <div className="flex flex-col gap-2 sm:flex-row">
                             <Input
