@@ -17,8 +17,13 @@
         "strategies:reset": "bun scripts/strategies-reset.ts",
         "strategies:force-reset": "bun scripts/strategies-force-reset.ts",
         "strategies:reset-import": "bun scripts/reset-and-import-strategies.ts",
+        "strategies:migrate-llm-policy": "bun scripts/migrate-strategy-llm-policies.ts",
         "positions:unowned": "bun scripts/positions-unowned.ts",
-        "provider:identity-preflight": "bun scripts/provider-identity-preflight.ts"
+        "provider:identity-preflight": "bun scripts/provider-identity-preflight.ts",
+        "provider:codex-preflight": "bun scripts/codex-provider-preflight.ts",
+        "codex:preflight": "bun scripts/codex-provider-preflight.ts",
+        "codex:run-audit": "bun scripts/codex-run-audit-export.ts",
+        "codex:rollout-audit": "bun scripts/codex-rollout-audit-export.ts"
     },
     "dependencies": {
         "@valiq-trading/core": "workspace:*",
@@ -29,6 +34,7 @@
         "@valiq-trading/polymarket": "workspace:*",
         "@valiq-trading/mt5": "workspace:*",
         "@valiq-trading/okx": "workspace:*",
-        "viem": "^2.21.0"
+        "viem": "^2.21.0",
+        "zod": "^4.3.6"
     }
 }

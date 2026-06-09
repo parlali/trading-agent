@@ -1,14 +1,14 @@
 import { z } from "zod"
-import type { ToolDefinition } from "../tool-registry"
+import type { ToolBinding } from "../tool-registry"
 import {
-    createToolDefinition,
+    createToolBinding,
     webFetchParamsSchema,
 } from "../tool-contracts"
 
 const FETCH_TIMEOUT_MS = 15_000
 
-export function createWebFetchTool(): ToolDefinition {
-    return createToolDefinition({
+export function createWebFetchTool(): ToolBinding {
+    return createToolBinding({
         name: "web_fetch",
         venue: "polymarket",
         handler: async (params) => {

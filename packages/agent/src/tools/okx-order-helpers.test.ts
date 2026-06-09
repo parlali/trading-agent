@@ -4,7 +4,10 @@ import { prepareOKXOrder } from "./okx-order-helpers"
 
 const policy: OKXPolicy = {
     dryRun: false,
-    model: "gpt-5.4",
+    llm: {
+        provider: "openrouter",
+        model: "gpt-5.4",
+    },
     safety: {
         maxDrawdownDay: undefined,
         maxDrawdownWeek: undefined,
@@ -226,6 +229,40 @@ describe("prepareOKXOrder exposure guards", () => {
 
         expect(result.riskValidation.allowed).toBe(false)
         expect(result.error).toContain("live non-protection working order")
+        expect(pipeline.executeIntent).not.toHaveBeenCalled()
+    })
+
+    it("stops downstream execution when aborted during provider preparation", async () => {
+        const pipeline = createPipelineMock()
+        const venue = createVenueMock()
+        const controller = new AbortController()
+        venue.getCurrentMarkPrice.mockImplementation(async () => {
+            controller.abort()
+            return 100
+        })
+
+        await expect(prepareOKXOrder(
+            {
+                instrument: "BTC-USDT-SWAP",
+                side: "buy",
+                leverage: 2,
+                orderType: "limit",
+                limitPrice: 100,
+                timeInForce: "gtc",
+                stopLoss: 95,
+                takeProfit: 110,
+                reason: "test",
+            },
+            pipeline as never,
+            venue as never,
+            policy,
+            "entry",
+            undefined,
+            controller.signal
+        )).rejects.toMatchObject({
+            name: "AbortError",
+            message: "Tool execution cancelled",
+        })
         expect(pipeline.executeIntent).not.toHaveBeenCalled()
     })
 })

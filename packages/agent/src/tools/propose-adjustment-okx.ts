@@ -7,9 +7,9 @@ import {
     getExecutionErrorDetail,
     type ExecutionPipeline,
 } from "@valiq-trading/core"
-import type { ToolDefinition } from "../tool-registry"
+import type { ToolBinding } from "../tool-registry"
 import {
-    createToolDefinition,
+    createToolBinding,
     okxAdjustmentParamsSchema,
 } from "../tool-contracts"
 import { createRejectedExecutionToolResult } from "./execution-response"
@@ -19,6 +19,7 @@ import {
     flattenOKXPositionAfterProtectionFailure,
     type OKXProtectionFailureCategory,
 } from "./okx-order-helpers"
+import { assertToolNotAborted, createToolAbortError } from "../tool-registry"
 
 export function createOKXProposeAdjustmentTool(
     pipeline: ExecutionPipeline,
@@ -27,17 +28,18 @@ export function createOKXProposeAdjustmentTool(
         dryRun?: boolean
         requireTakeProfit?: boolean
     }
-): ToolDefinition {
-    return createToolDefinition({
+): ToolBinding {
+    return createToolBinding({
         name: "propose_adjustment",
         venue: "okx-swap",
-        handler: async (params) => {
+        handler: async (params, context) => {
             const validated = params as z.infer<typeof okxAdjustmentParamsSchema>
 
             if (validated.stopLoss === undefined && validated.takeProfit === undefined) {
                 return createRejectedExecutionToolResult("Provide stopLoss, takeProfit, or both")
             }
 
+            assertToolNotAborted(context?.signal)
             const positions = await pipeline.getPositions()
             const position = positions.find((entry) => entry.instrument.toUpperCase() === validated.instrument.toUpperCase())
             if (!position) {
@@ -117,12 +119,14 @@ export function createOKXProposeAdjustmentTool(
                 protectionIntent,
                 "modify"
             )
+            assertToolNotAborted(context?.signal)
             const protectionUpdate = await updateProtectionOrdersWithRetry({
                 venue,
                 instrument,
                 stopLoss: finalStopLoss,
                 takeProfit: finalTakeProfit,
                 identity: protectionContext.identity,
+                signal: context?.signal,
             })
 
             if (!protectionUpdate.ok) {
@@ -155,6 +159,7 @@ export function createOKXProposeAdjustmentTool(
 
             let refreshedPositions: Awaited<ReturnType<OKXVenueAdapter["getPositions"]>>
             try {
+                assertToolNotAborted(context?.signal)
                 refreshedPositions = await venue.getPositions()
             } catch (error) {
                 const errorDetail = getExecutionErrorDetail(error)
@@ -223,6 +228,7 @@ export function createOKXProposeAdjustmentTool(
                 return createProtectionRejectedResult(failure.error, failure.category, failure.flattened)
             }
 
+            assertToolNotAborted(context?.signal)
             await options?.onExecutionSafetyRecovered?.({
                 instrument,
                 resolutionNote: "Protection update verified from provider truth",
@@ -249,6 +255,7 @@ async function updateProtectionOrdersWithRetry(args: {
     stopLoss?: number
     takeProfit?: number
     identity: Parameters<OKXVenueAdapter["updateProtectionOrders"]>[0]["identity"]
+    signal?: AbortSignal
 }): Promise<
     | { ok: true; value: OKXProtectionUpdateResult }
     | {
@@ -265,17 +272,21 @@ async function updateProtectionOrdersWithRetry(args: {
     } | undefined
 
     for (let attempt = 0; attempt < 3; attempt++) {
+        assertToolNotAborted(args.signal)
         try {
+            const value = await args.venue.updateProtectionOrders({
+                instrument: args.instrument,
+                stopLoss: args.stopLoss,
+                takeProfit: args.takeProfit,
+                identity: args.identity,
+            })
+            assertToolNotAborted(args.signal)
             return {
                 ok: true,
-                value: await args.venue.updateProtectionOrders({
-                    instrument: args.instrument,
-                    stopLoss: args.stopLoss,
-                    takeProfit: args.takeProfit,
-                    identity: args.identity,
-                }),
+                value,
             }
         } catch (error) {
+            assertToolNotAborted(args.signal)
             const errorDetail = getExecutionErrorDetail(error)
             const message = errorDetail?.message ?? getErrorMessage(error)
             const category = classifyOKXProtectionFailure(message)
@@ -289,7 +300,7 @@ async function updateProtectionOrdersWithRetry(args: {
                 break
             }
 
-            await delay((attempt + 1) * 500)
+            await delay((attempt + 1) * 500, args.signal)
         }
     }
 
@@ -324,8 +335,20 @@ function createProtectionRejectedResult(
     }
 }
 
-function delay(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms))
+function delay(ms: number, signal?: AbortSignal): Promise<void> {
+    assertToolNotAborted(signal)
+
+    return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+            signal?.removeEventListener("abort", onAbort)
+            resolve()
+        }, ms)
+        const onAbort = () => {
+            clearTimeout(timer)
+            reject(createToolAbortError())
+        }
+        signal?.addEventListener("abort", onAbort, { once: true })
+    })
 }
 
 function priceMatches(actual: number | undefined, expected: number | undefined): boolean {

@@ -3,6 +3,10 @@ import type { Doc } from "../../_generated/dataModel"
 import { v } from "convex/values"
 import { requireUser, requireUserOrServiceToken } from "../authGuards"
 import { findOrderRowByIdentity } from "../orderIdentityLookup"
+import {
+    assertWithinRunEvidenceRowLimit,
+    MAX_RUN_EVIDENCE_ROWS,
+} from "./evidenceBounds"
 
 export const getOrderById = query({
     args: { serviceToken: v.optional(v.string()), orderId: v.string() },
@@ -46,13 +50,18 @@ export const getOrderTransitions = query({
 })
 
 export const getTradeEvents = query({
-    args: { runId: v.id("strategy_runs") },
+    args: {
+        serviceToken: v.optional(v.string()),
+        runId: v.id("strategy_runs"),
+    },
     handler: async (ctx, args) => {
-        await requireUser(ctx)
-        return await ctx.db
+        await requireUserOrServiceToken(ctx, args.serviceToken)
+        const rows = await ctx.db
             .query("trade_events")
             .withIndex("by_run", (q) => q.eq("runId", args.runId))
-            .collect()
+            .take(MAX_RUN_EVIDENCE_ROWS + 1)
+
+        return assertWithinRunEvidenceRowLimit(rows, `trade events for run ${args.runId}`)
     },
 })
 

@@ -1,5 +1,5 @@
 import type { VenueApp } from "@valiq-trading/core"
-import type { ToolDefinition } from "./tool-registry"
+import type { ToolBinding } from "./tool-registry"
 import { toolContractDefinitions } from "./tool-contract-catalog-data"
 import type {
     ResolvedToolContract,
@@ -63,43 +63,6 @@ export {
     webSearchParamsSchema,
 } from "./tool-contract-market-data-schemas"
 
-const OPENROUTER_UNSUPPORTED_TOP_LEVEL_JSON_SCHEMA_KEYS = [
-    "oneOf",
-    "anyOf",
-    "allOf",
-    "enum",
-    "not",
-] as const
-
-function validateOpenRouterToolJsonSchema(
-    schema: Record<string, unknown>,
-    label: string
-): void {
-    for (const key of OPENROUTER_UNSUPPORTED_TOP_LEVEL_JSON_SCHEMA_KEYS) {
-        if (key in schema) {
-            throw new Error(
-                `Tool schema ${label} uses unsupported top-level JSON Schema keyword ${key}`
-            )
-        }
-    }
-}
-
-function validateToolContractJsonSchemas(contract: ToolContractDefinition): void {
-    if (contract.defaultVariant) {
-        validateOpenRouterToolJsonSchema(
-            contract.defaultVariant.jsonSchema,
-            `${contract.name} default`
-        )
-    }
-
-    for (const [venue, variant] of Object.entries(contract.variants ?? {})) {
-        validateOpenRouterToolJsonSchema(
-            variant.jsonSchema,
-            `${contract.name} variant:${venue}`
-        )
-    }
-}
-
 const toolContracts = createToolContractCatalog(toolContractDefinitions)
 
 export function createToolContractCatalog(
@@ -126,8 +89,6 @@ export function createToolContractCatalog(
                 }
             }
         }
-
-        validateToolContractJsonSchemas(contract)
 
         catalog.set(contract.name, contract)
     }
@@ -182,11 +143,11 @@ export function listToolContracts(): ResolvedToolContract[] {
     return Array.from(toolContracts.keys()).map((name) => getToolContract(name))
 }
 
-export function createToolDefinition(config: {
+export function createToolBinding(config: {
     name: string
     venue?: VenueApp
-    handler: ToolDefinition["handler"]
-}): ToolDefinition {
+    handler: ToolBinding["handler"]
+}): ToolBinding {
     const contract = getToolContract(config.name, config.venue)
 
     return {

@@ -73,6 +73,15 @@ export default defineSchema({
         completionTokens: v.optional(v.number()),
         reasoningTokens: v.optional(v.number()),
         llmCost: v.optional(v.number()),
+        llmProvider: v.optional(v.union(v.literal("openrouter"), v.literal("codex"))),
+        llmModel: v.optional(v.string()),
+        llmAuthMode: v.optional(v.string()),
+        llmBillingMode: v.optional(v.string()),
+        llmResponseIds: v.optional(v.array(v.string())),
+        codexThreadId: v.optional(v.string()),
+        codexTurnIds: v.optional(v.array(v.string())),
+        llmRateLimitSnapshotBefore: v.optional(v.any()),
+        llmRateLimitSnapshotAfter: v.optional(v.any()),
         openRouterResponseIds: v.optional(v.array(v.string())),
         opportunityResearched: v.optional(v.number()),
         opportunityQualified: v.optional(v.number()),
@@ -85,6 +94,7 @@ export default defineSchema({
         systemContextDigest: v.optional(runSystemContextDigestV),
     })
         .index("by_strategy", ["strategyId"])
+        .index("by_strategy_started_at", ["strategyId", "startedAt"])
         .index("by_strategy_status", ["strategyId", "status"])
         .index("by_status_started_at", ["status", "startedAt"]),
 
@@ -97,6 +107,7 @@ export default defineSchema({
         toolName: v.optional(v.string()),
         toolInput: v.optional(v.string()),
         toolOutput: v.optional(v.string()),
+        toolCalls: v.optional(v.string()),
         timestamp: v.number(),
     })
         .index("by_run", ["runId"])

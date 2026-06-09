@@ -17,10 +17,15 @@ export {
     getStrategyOrderHistory,
 } from "./lib/queries/orders"
 
-export { getOpenPositions, getStrategyPositions } from "./lib/queries/positions"
+export {
+    getOpenPositions,
+    getStrategyPositions,
+    getStrategyPositionsForRun,
+} from "./lib/queries/positions"
 
 export {
     getRunHistory,
+    getRunById,
     getLastCompletedRunSummary,
     getActiveRun,
     getAgentLogs,

@@ -1,4 +1,5 @@
 import { createTradingBackendClient } from "@valiq-trading/convex"
+import { resolveStrategyLlmConfig } from "@valiq-trading/core"
 
 const CONVEX_URL = process.env.CONVEX_URL!
 const SERVICE_TOKEN = process.env.BACKEND_SERVICE_TOKEN!
@@ -44,11 +45,12 @@ async function main() {
     // Get the run count - each strategy's last completed run summary
     console.log("\n=== ALL STRATEGY SUMMARIES AND STATS ===")
     for (const s of strategies) {
-        const policy = s.policy as any
         try {
+            const policy = s.policy as Record<string, unknown>
+            const llm = resolveStrategyLlmConfig(policy)
             const lastRun = await client.getLastCompletedRunSummary(s._id)
             const activeRun = await client.getActiveRun(s._id)
-            console.log(`\n--- ${s.name} (${policy.model}) ---`)
+            console.log(`\n--- ${s.name} (${llm.provider}:${llm.model}) ---`)
             console.log(`  App: ${s.app} | DryRun: ${policy.dryRun ?? false} | Schedule: ${s.schedule}`)
             if (activeRun) {
                 console.log(`  ACTIVE RUN: since ${new Date(activeRun.startedAt).toISOString()} trigger=${activeRun.trigger}`)

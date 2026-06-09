@@ -14,7 +14,10 @@ const logger = createLogger({ minLevel: "fatal" })
 function createPolicy(app: "okx-swap" | "mt5") {
     return app === "okx-swap"
         ? {
-            model: "openai/gpt-5.5",
+            llm: {
+                provider: "openrouter",
+                model: "openai/gpt-5.5",
+            },
             allowedInstruments: ["BTC-USDT-SWAP"],
             maxLeverage: 3,
             maxRiskPercent: 1,
@@ -34,7 +37,10 @@ function createPolicy(app: "okx-swap" | "mt5") {
             dryRun: false,
         }
         : {
-            model: "openai/gpt-5.5",
+            llm: {
+                provider: "openrouter",
+                model: "openai/gpt-5.5",
+            },
             maxRiskPercent: 1,
             minRiskReward: 1,
             tradingHours: { start: "07:00", end: "21:00", timezone: "UTC" },

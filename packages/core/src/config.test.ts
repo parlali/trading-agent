@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest"
 import {
+    migrateLegacyStrategyLlmPolicy,
+    POLYMARKET_POLICY_DEFAULTS,
     readConfiguredStrategySafetyPolicy,
+    resolveStrategyLlmConfig,
     resolveRuntimeStrategySafetyPolicy,
+    validatePolicy,
 } from "./config.ts"
 
 describe("strategy safety policy resolution", () => {
@@ -30,4 +34,87 @@ describe("strategy safety policy resolution", () => {
         })).toThrow("positive account balance")
     })
 
+})
+
+describe("strategy LLM policy", () => {
+    it("resolves explicit OpenRouter and Codex provider configs", () => {
+        expect(resolveStrategyLlmConfig({
+            llm: {
+                provider: "openrouter",
+                model: "openai/gpt-5.4",
+                reasoning: {
+                    effort: "high",
+                    exclude: false,
+                },
+            },
+        })).toMatchObject({
+            provider: "openrouter",
+            model: "openai/gpt-5.4",
+            reasoning: {
+                effort: "high",
+                exclude: false,
+            },
+        })
+
+        expect(resolveStrategyLlmConfig({
+            llm: {
+                provider: "codex",
+                model: "gpt-5.4",
+                effort: "medium",
+                summary: "concise",
+                authMode: "chatgpt",
+            },
+        })).toMatchObject({
+            provider: "codex",
+            model: "gpt-5.4",
+            authMode: "chatgpt",
+        })
+    })
+
+    it("migrates legacy top-level model fields to canonical OpenRouter policy", () => {
+        const migrated = migrateLegacyStrategyLlmPolicy({
+            dryRun: true,
+            model: "openai/gpt-5.4",
+            reasoning: {
+                effort: "low",
+            },
+            maxLossPerPlay: 500,
+        })
+
+        expect(migrated).toMatchObject({
+            dryRun: true,
+            maxLossPerPlay: 500,
+            llm: {
+                provider: "openrouter",
+                model: "openai/gpt-5.4",
+                reasoning: {
+                    effort: "low",
+                    exclude: true,
+                },
+            },
+        })
+        expect("model" in migrated).toBe(false)
+        expect("reasoning" in migrated).toBe(false)
+    })
+
+    it("rejects ambiguous mixed legacy and canonical policy", () => {
+        expect(() => validatePolicy("alpaca-options", {
+            dryRun: true,
+            model: "openai/gpt-5.4",
+            llm: {
+                provider: "openrouter",
+                model: "openai/gpt-5.4",
+            },
+            maxLossPerPlay: 500,
+        })).toThrow("mixed legacy and canonical")
+    })
+
+    it("creates default policies with schema-valid OpenRouter model ids", () => {
+        expect(validatePolicy("polymarket", POLYMARKET_POLICY_DEFAULTS)).toMatchObject({
+            llm: {
+                provider: "openrouter",
+                model: "openai/gpt-4.1-mini",
+            },
+        })
+    })
 })

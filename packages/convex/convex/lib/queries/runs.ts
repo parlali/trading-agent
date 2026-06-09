@@ -1,20 +1,93 @@
 import { query } from "../../_generated/server"
 import { v } from "convex/values"
 import { requireUser, requireServiceToken, requireUserOrServiceToken } from "../authGuards"
+import {
+    assertWithinRunEvidenceRowLimit,
+    MAX_RUN_EVIDENCE_ROWS,
+} from "./evidenceBounds"
+
+const DEFAULT_RUN_HISTORY_LIMIT = 20
+const MAX_RUN_HISTORY_LIMIT = 500
 
 export const getRunHistory = query({
     args: {
+        serviceToken: v.optional(v.string()),
         strategyId: v.id("strategies"),
         limit: v.optional(v.number()),
+        beforeStartedAt: v.optional(v.number()),
+        beforeCreationTime: v.optional(v.number()),
     },
     handler: async (ctx, args) => {
-        await requireUser(ctx)
-        const limit = args.limit ?? 20
-        return await ctx.db
+        await requireUserOrServiceToken(ctx, args.serviceToken)
+        const limit = resolveRunHistoryLimit(args.limit)
+        if (args.beforeStartedAt === undefined) {
+            return sortRunHistory(await ctx.db
+                .query("strategy_runs")
+                .withIndex("by_strategy_started_at", (q) => q.eq("strategyId", args.strategyId))
+                .order("desc")
+                .take(limit))
+        }
+
+        const sameTimestampRuns = args.beforeCreationTime === undefined
+            ? []
+            : await ctx.db
+                .query("strategy_runs")
+                .withIndex("by_strategy_started_at", (q) =>
+                    q.eq("strategyId", args.strategyId).eq("startedAt", args.beforeStartedAt!)
+                )
+                .filter((q) => q.lt(q.field("_creationTime"), args.beforeCreationTime!))
+                .order("desc")
+                .take(limit)
+        const remainingLimit = limit - sameTimestampRuns.length
+        if (remainingLimit <= 0) {
+            return sortRunHistory(sameTimestampRuns).slice(0, limit)
+        }
+
+        const olderRuns = await ctx.db
             .query("strategy_runs")
-            .withIndex("by_strategy", (q) => q.eq("strategyId", args.strategyId))
+            .withIndex("by_strategy_started_at", (q) =>
+                q.eq("strategyId", args.strategyId).lt("startedAt", args.beforeStartedAt!)
+            )
             .order("desc")
-            .take(limit)
+            .take(remainingLimit)
+
+        return sortRunHistory([
+            ...sameTimestampRuns,
+            ...olderRuns,
+        ]).slice(0, limit)
+    },
+})
+
+function sortRunHistory<T extends { startedAt: number; _creationTime?: number }>(runs: T[]): T[] {
+    return [...runs].sort((left, right) => {
+        const startedAt = right.startedAt - left.startedAt
+        if (startedAt !== 0) {
+            return startedAt
+        }
+
+        return (right._creationTime ?? 0) - (left._creationTime ?? 0)
+    })
+}
+
+function resolveRunHistoryLimit(value: number | undefined): number {
+    if (value === undefined) {
+        return DEFAULT_RUN_HISTORY_LIMIT
+    }
+    if (!Number.isInteger(value) || value < 1) {
+        throw new Error("getRunHistory limit must be a positive integer")
+    }
+
+    return Math.min(value, MAX_RUN_HISTORY_LIMIT)
+}
+
+export const getRunById = query({
+    args: {
+        serviceToken: v.optional(v.string()),
+        runId: v.id("strategy_runs"),
+    },
+    handler: async (ctx, args) => {
+        await requireUserOrServiceToken(ctx, args.serviceToken)
+        return await ctx.db.get(args.runId)
     },
 })
 
@@ -58,13 +131,18 @@ export const getActiveRun = query({
 })
 
 export const getAgentLogs = query({
-    args: { runId: v.id("strategy_runs") },
+    args: {
+        serviceToken: v.optional(v.string()),
+        runId: v.id("strategy_runs"),
+    },
     handler: async (ctx, args) => {
-        await requireUser(ctx)
-        return await ctx.db
+        await requireUserOrServiceToken(ctx, args.serviceToken)
+        const rows = await ctx.db
             .query("agent_logs")
             .withIndex("by_run_sequence", (q) => q.eq("runId", args.runId))
-            .collect()
+            .take(MAX_RUN_EVIDENCE_ROWS + 1)
+
+        return assertWithinRunEvidenceRowLimit(rows, `agent logs for run ${args.runId}`)
     },
 })
 

@@ -1,4 +1,4 @@
-import type { ToolDefinition } from "@valiq-trading/agent"
+import type { ToolBinding } from "@valiq-trading/agent"
 import {
     createOAuthTokenProvider,
     createValiqBreakingNewsTool,
@@ -41,8 +41,8 @@ interface ValiqToolsOptions {
 export function createValiqTools(
     config: ExtraToolsConfig,
     options: ValiqToolsOptions
-): ToolDefinition[] {
-    const tools: ToolDefinition[] = []
+): ToolBinding[] {
+    const tools: ToolBinding[] = []
 
     if (options.research) {
         const researchTool = createResearchTool(config)
@@ -163,7 +163,7 @@ export async function executeSessionFlatIfNeeded(
     return true
 }
 
-function createResearchTool(config: ExtraToolsConfig): ToolDefinition | null {
+function createResearchTool(config: ExtraToolsConfig): ToolBinding | null {
     const valiqUrl = config.secrets.VALIQ_API_URL
     const authUrl = config.secrets.VALIQ_AUTH_URL
     const clientId = config.secrets.VALIQ_OAUTH_CLIENT_ID

@@ -1,5 +1,6 @@
 import type {
     Position,
+    OpenRouterLlmProviderConfig,
     WorkingOrder,
 } from "@valiq-trading/core"
 
@@ -14,18 +15,15 @@ export function mergeRuntimeContextLines(
     return [...(existing ?? []), ...additional]
 }
 
-export function readPolicyReasoningConfig(policy: Record<string, unknown>): { effort: "low" | "medium" | "high"; exclude: boolean } | undefined {
-    const reasoning = readRecord(policy.reasoning)
-    const effort = reasoning?.effort
-
-    if (effort !== "low" && effort !== "medium" && effort !== "high") {
-        return undefined
-    }
-
-    return {
-        effort,
-        exclude: reasoning?.exclude !== false,
-    }
+export function readOpenRouterReasoningConfig(
+    llm: OpenRouterLlmProviderConfig
+): { effort: "low" | "medium" | "high"; exclude: boolean } | undefined {
+    return llm.reasoning
+        ? {
+            effort: llm.reasoning.effort,
+            exclude: llm.reasoning.exclude !== false,
+        }
+        : undefined
 }
 
 export function buildPromptBlockedIdentifiers(args: {

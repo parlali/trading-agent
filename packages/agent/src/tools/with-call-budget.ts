@@ -1,21 +1,21 @@
-import type { ToolDefinition } from "../tool-registry"
+import type { ToolBinding } from "../tool-registry"
 
 export function withCallBudget(
-    tool: ToolDefinition,
+    tool: ToolBinding,
     maxCalls: number
-): ToolDefinition {
+): ToolBinding {
     let callCount = 0
 
     return {
         ...tool,
-        handler: async (params) => {
+        handler: async (params, context) => {
             callCount++
             if (callCount > maxCalls) {
                 return {
                     error: `Budget exhausted: ${tool.name} has been called ${maxCalls} times this run. Use the information you already have to make your decision.`,
                 }
             }
-            return tool.handler(params)
+            return tool.handler(params, context)
         },
     }
 }

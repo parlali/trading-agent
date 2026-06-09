@@ -86,7 +86,10 @@ function createStrategy(
     const policy = app === "okx-swap"
         ? {
             dryRun: false,
-            model: "openai/gpt-5.4",
+            llm: {
+                provider: "openrouter",
+                model: "openai/gpt-5.4",
+            },
             allowedInstruments: ["BTC-USDT-SWAP"],
             maxLeverage: 2,
             maxRiskPercent: 1,
@@ -114,12 +117,18 @@ function createStrategy(
         : app === "alpaca-options"
             ? {
                 dryRun: false,
-                model: "openai/gpt-5.4",
+                llm: {
+                    provider: "openrouter",
+                    model: "openai/gpt-5.4",
+                },
                 maxLossPerPlay: 150,
             }
         : {
             dryRun: false,
-            model: "openai/gpt-5.4",
+            llm: {
+                provider: "openrouter",
+                model: "openai/gpt-5.4",
+            },
             maxRiskPercent: 1,
             minRiskReward: 1,
             tradingHours: {

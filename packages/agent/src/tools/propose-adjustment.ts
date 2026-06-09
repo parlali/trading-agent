@@ -1,17 +1,17 @@
 import { z } from "zod"
 import type { ExecutionPipeline, OrderIntent } from "@valiq-trading/core"
-import type { ToolDefinition } from "../tool-registry"
+import type { ToolBinding } from "../tool-registry"
 import {
-    createToolDefinition,
+    createToolBinding,
     genericAdjustmentParamsSchema,
 } from "../tool-contracts"
 import { executeToolIntent } from "./execution-response"
 
-export function createProposeAdjustmentTool(pipeline: ExecutionPipeline): ToolDefinition {
-    return createToolDefinition({
+export function createProposeAdjustmentTool(pipeline: ExecutionPipeline): ToolBinding {
+    return createToolBinding({
         name: "propose_adjustment",
         venue: "alpaca-options",
-        handler: async (params) => {
+        handler: async (params, context) => {
             const validated = params as z.infer<typeof genericAdjustmentParamsSchema>
             const intent: OrderIntent = {
                 instrument: validated.instrument,
@@ -27,7 +27,9 @@ export function createProposeAdjustmentTool(pipeline: ExecutionPipeline): ToolDe
                 },
             }
 
-            return await executeToolIntent(pipeline, intent, { action: "adjustment" })
+            return await executeToolIntent(pipeline, intent, { action: "adjustment" }, {
+                signal: context?.signal,
+            })
         },
     })
 }

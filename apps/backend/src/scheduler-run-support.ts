@@ -69,6 +69,17 @@ export function buildRunDiagnostics(result: {
         cost: number
         responseIds: string[]
     }
+    providerDiagnostics?: {
+        provider: "openrouter" | "codex"
+        model: string
+        authMode?: string
+        billingMode?: string
+        responseIds: string[]
+        codexThreadId?: string
+        codexTurnIds?: string[]
+        rateLimitSnapshotBefore?: unknown
+        rateLimitSnapshotAfter?: unknown
+    }
     opportunityCoverage: {
         researched: number
         qualified: number
@@ -93,7 +104,24 @@ export function buildRunDiagnostics(result: {
     diagnostics.completionTokens = result.usage.completionTokens
     diagnostics.reasoningTokens = result.usage.reasoningTokens
     diagnostics.llmCost = result.usage.cost
-    diagnostics.openRouterResponseIds = result.usage.responseIds
+    if (result.providerDiagnostics) {
+        diagnostics.llmProvider = result.providerDiagnostics.provider
+        diagnostics.llmModel = result.providerDiagnostics.model
+        diagnostics.llmResponseIds = result.providerDiagnostics.responseIds
+        if (result.providerDiagnostics.authMode !== undefined) diagnostics.llmAuthMode = result.providerDiagnostics.authMode
+        if (result.providerDiagnostics.billingMode !== undefined) diagnostics.llmBillingMode = result.providerDiagnostics.billingMode
+        if (result.providerDiagnostics.codexThreadId !== undefined) diagnostics.codexThreadId = result.providerDiagnostics.codexThreadId
+        if (result.providerDiagnostics.codexTurnIds !== undefined) diagnostics.codexTurnIds = result.providerDiagnostics.codexTurnIds
+        if (result.providerDiagnostics.rateLimitSnapshotBefore !== undefined) {
+            diagnostics.llmRateLimitSnapshotBefore = result.providerDiagnostics.rateLimitSnapshotBefore
+        }
+        if (result.providerDiagnostics.rateLimitSnapshotAfter !== undefined) {
+            diagnostics.llmRateLimitSnapshotAfter = result.providerDiagnostics.rateLimitSnapshotAfter
+        }
+    }
+    if (result.providerDiagnostics?.provider === "openrouter" || !result.providerDiagnostics) {
+        diagnostics.openRouterResponseIds = result.providerDiagnostics?.responseIds ?? result.usage.responseIds
+    }
     diagnostics.opportunityResearched = result.opportunityCoverage.researched
     diagnostics.opportunityQualified = result.opportunityCoverage.qualified
     diagnostics.opportunityRejectedByModel = result.opportunityCoverage.rejectedByModel

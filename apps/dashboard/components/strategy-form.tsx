@@ -49,12 +49,68 @@ type StrategyFormProps = {
     initialData?: StrategyFormData & { id: Id<"strategies"> }
 }
 
+type LlmProvider = "openrouter" | "codex"
+
+type LlmPolicy = {
+    provider: LlmProvider
+    model?: string
+    reasoning?: {
+        effort?: "low" | "medium" | "high"
+        exclude?: boolean
+    }
+    effort?: "none" | "minimal" | "low" | "medium" | "high" | "xhigh"
+    summary?: "auto" | "concise" | "detailed" | "none"
+    serviceTier?: string
+    authMode?: "chatgpt" | "access-token" | "api-key"
+    codexBin?: string
+}
+
+const CODEX_PROVIDER_ENABLED = process.env.NEXT_PUBLIC_ENABLE_CODEX_PROVIDER === "true"
+
 function getDefaultPolicy(app: ActiveVenueApp): PolicyFields {
     return structuredClone(POLICY_DEFAULTS[app] ?? {})
 }
 
 function getDefaultContext(app: ActiveVenueApp): string {
     return STRATEGY_CONTEXT_DEFAULTS[app] ?? ""
+}
+
+function normalizePolicyForEdit(policy: PolicyFields): PolicyFields {
+    if (policy.llm && typeof policy.llm === "object") {
+        return policy
+    }
+
+    const legacyModel = typeof policy.model === "string" ? policy.model : ""
+    const legacyReasoning = policy.reasoning && typeof policy.reasoning === "object"
+        ? policy.reasoning as LlmPolicy["reasoning"]
+        : undefined
+    const { model, reasoning, ...rest } = policy
+
+    return {
+        ...rest,
+        llm: {
+            provider: "openrouter",
+            model: legacyModel,
+            reasoning: legacyReasoning,
+        },
+    }
+}
+
+function readLlmPolicy(policy: PolicyFields): LlmPolicy {
+    const llm = policy.llm && typeof policy.llm === "object"
+        ? policy.llm as LlmPolicy
+        : undefined
+
+    return {
+        provider: llm?.provider === "codex" ? "codex" : "openrouter",
+        model: llm?.model ?? "",
+        reasoning: llm?.reasoning,
+        effort: llm?.effort,
+        summary: llm?.summary,
+        serviceTier: llm?.serviceTier,
+        authMode: llm?.authMode,
+        codexBin: llm?.codexBin,
+    }
 }
 
 export function StrategyForm({ mode, initialData }: StrategyFormProps) {
@@ -67,7 +123,7 @@ export function StrategyForm({ mode, initialData }: StrategyFormProps) {
     const [enabled, setEnabled] = useState(initialData?.enabled ?? false)
     const [schedule, setSchedule] = useState(initialData?.schedule ?? "")
     const [policy, setPolicy] = useState<PolicyFields>(
-        initialData?.policy ?? getDefaultPolicy("alpaca-options")
+        initialData?.policy ? normalizePolicyForEdit(initialData.policy) : getDefaultPolicy("alpaca-options")
     )
     const [context, setContext] = useState(initialData?.context ?? getDefaultContext("alpaca-options"))
 
@@ -81,6 +137,31 @@ export function StrategyForm({ mode, initialData }: StrategyFormProps) {
 
     function handlePolicyFieldChange(fieldKey: string, value: unknown) {
         setPolicy((prev) => setNestedValue(prev, fieldKey, value))
+    }
+
+    function handleLlmProviderChange(provider: LlmProvider) {
+        setPolicy((prev) => {
+            const current = readLlmPolicy(prev)
+            return {
+                ...prev,
+                llm: provider === "openrouter"
+                    ? {
+                        provider,
+                        model: current.model ?? "",
+                        reasoning: current.reasoning ?? {
+                            effort: "medium",
+                            exclude: true,
+                        },
+                    }
+                    : {
+                        provider,
+                        model: current.model ?? "",
+                        effort: current.effort ?? "medium",
+                        summary: current.summary ?? "concise",
+                        authMode: current.authMode ?? "chatgpt",
+                    },
+            }
+        })
     }
 
     function cleanPolicy(raw: PolicyFields): PolicyFields {
@@ -110,24 +191,42 @@ export function StrategyForm({ mode, initialData }: StrategyFormProps) {
             return
         }
 
-        const model = typeof policy.model === "string" ? policy.model.trim() : ""
+        const llm = readLlmPolicy(policy)
+        const model = typeof llm.model === "string" ? llm.model.trim() : ""
         if (!model) {
-            toast.error("OpenRouter model id is required")
+            toast.error(`${llm.provider === "openrouter" ? "OpenRouter" : "Codex"} model id is required`)
+            return
+        }
+
+        if (llm.provider === "codex" && policy.dryRun !== true) {
+            toast.error("Codex strategies are dry-run only")
+            return
+        }
+
+        if (llm.provider === "codex" && !llm.authMode) {
+            toast.error("Codex auth mode is required")
             return
         }
 
         setSaving(true)
         try {
+            const cleanedPolicy = cleanPolicy({
+                ...policy,
+                llm: {
+                    ...llm,
+                    model,
+                },
+            })
+            delete cleanedPolicy.model
+            delete cleanedPolicy.reasoning
+
             const strategyId = await upsertStrategy({
                 id: mode === "edit" ? initialData?.id : undefined,
                 app,
                 name: name.trim(),
                 enabled,
                 schedule: schedule.trim(),
-                policy: cleanPolicy({
-                    ...policy,
-                    model,
-                }),
+                policy: cleanedPolicy,
                 context: context.trim(),
             })
 
@@ -141,6 +240,8 @@ export function StrategyForm({ mode, initialData }: StrategyFormProps) {
     }
 
     const maxBet = (policy.maxBet ?? { mode: "fixed", value: 100 }) as { mode: string; value: number }
+    const llm = readLlmPolicy(policy)
+    const showCodexOption = CODEX_PROVIDER_ENABLED || llm.provider === "codex"
 
     return (
         <form onSubmit={handleSubmit} className="space-y-6">
@@ -212,22 +313,129 @@ export function StrategyForm({ mode, initialData }: StrategyFormProps) {
                         className="flex items-center justify-between"
                     />
 
-                    <div className="space-y-1.5">
-                        <Label className="text-sm">
-                            OpenRouter Model ID<span className="text-signal-danger ml-0.5">*</span>
-                        </Label>
-                        <Input
-                            placeholder="anthropic/claude-sonnet-4.6"
-                            value={(policy.model as string) ?? ""}
-                            onChange={(e) => handlePolicyFieldChange(
-                                "model",
-                                e.target.value
-                            )}
-                            className="font-mono"
-                        />
-                        <p className="text-xs text-muted-foreground">
-                            Required OpenRouter model id for this strategy.
-                        </p>
+                    <div className="space-y-3 rounded-lg border p-3">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                            <div className="space-y-1.5">
+                                <Label className="text-sm">Model Provider</Label>
+                                <Select
+                                    value={llm.provider}
+                                    onValueChange={(value) => handleLlmProviderChange(value as LlmProvider)}
+                                >
+                                    <SelectTrigger className="w-full">
+                                        <SelectValue />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        <SelectItem value="openrouter">OpenRouter</SelectItem>
+                                        {showCodexOption ? (
+                                            <SelectItem value="codex">Codex</SelectItem>
+                                        ) : null}
+                                    </SelectContent>
+                                </Select>
+                            </div>
+
+                            <div className="space-y-1.5">
+                                <Label className="text-sm">
+                                    {llm.provider === "openrouter" ? "OpenRouter Model ID" : "Codex Model ID"}
+                                    <span className="text-signal-danger ml-0.5">*</span>
+                                </Label>
+                                <Input
+                                    placeholder={llm.provider === "openrouter" ? "anthropic/claude-sonnet-4.6" : "gpt-5.4"}
+                                    value={llm.model ?? ""}
+                                    onChange={(e) => handlePolicyFieldChange("llm.model", e.target.value)}
+                                    className="font-mono"
+                                />
+                            </div>
+                        </div>
+
+                        {llm.provider === "openrouter" ? (
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                <div className="space-y-1.5">
+                                    <Label className="text-sm">Reasoning Effort</Label>
+                                    <Select
+                                        value={llm.reasoning?.effort ?? "medium"}
+                                        onValueChange={(value) => handlePolicyFieldChange("llm.reasoning.effort", value)}
+                                    >
+                                        <SelectTrigger className="w-full">
+                                            <SelectValue />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            <SelectItem value="low">Low</SelectItem>
+                                            <SelectItem value="medium">Medium</SelectItem>
+                                            <SelectItem value="high">High</SelectItem>
+                                        </SelectContent>
+                                    </Select>
+                                </div>
+                                <SwitchPolicyField
+                                    label="Hide Reasoning"
+                                    fieldKey="llm.reasoning.exclude"
+                                    checked={llm.reasoning?.exclude !== false}
+                                    onChange={handlePolicyFieldChange}
+                                    className="flex items-center justify-between rounded-md border p-3"
+                                />
+                            </div>
+                        ) : (
+                            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                                <div className="space-y-1.5">
+                                    <Label className="text-sm">Effort</Label>
+                                    <Select
+                                        value={llm.effort ?? "medium"}
+                                        onValueChange={(value) => handlePolicyFieldChange("llm.effort", value)}
+                                    >
+                                        <SelectTrigger className="w-full">
+                                            <SelectValue />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            <SelectItem value="none">None</SelectItem>
+                                            <SelectItem value="minimal">Minimal</SelectItem>
+                                            <SelectItem value="low">Low</SelectItem>
+                                            <SelectItem value="medium">Medium</SelectItem>
+                                            <SelectItem value="high">High</SelectItem>
+                                            <SelectItem value="xhigh">X-High</SelectItem>
+                                        </SelectContent>
+                                    </Select>
+                                </div>
+                                <div className="space-y-1.5">
+                                    <Label className="text-sm">Summary</Label>
+                                    <Select
+                                        value={llm.summary ?? "concise"}
+                                        onValueChange={(value) => handlePolicyFieldChange("llm.summary", value)}
+                                    >
+                                        <SelectTrigger className="w-full">
+                                            <SelectValue />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            <SelectItem value="none">None</SelectItem>
+                                            <SelectItem value="auto">Auto</SelectItem>
+                                            <SelectItem value="concise">Concise</SelectItem>
+                                            <SelectItem value="detailed">Detailed</SelectItem>
+                                        </SelectContent>
+                                    </Select>
+                                </div>
+                                <div className="space-y-1.5">
+                                    <Label className="text-sm">Auth Mode</Label>
+                                    <Select
+                                        value={llm.authMode ?? "chatgpt"}
+                                        onValueChange={(value) => handlePolicyFieldChange("llm.authMode", value)}
+                                    >
+                                        <SelectTrigger className="w-full">
+                                            <SelectValue />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            <SelectItem value="chatgpt">ChatGPT Session</SelectItem>
+                                            <SelectItem value="access-token">Access Token</SelectItem>
+                                            <SelectItem value="api-key">API Key</SelectItem>
+                                        </SelectContent>
+                                    </Select>
+                                </div>
+                                <TextPolicyField
+                                    label="Codex Binary"
+                                    fieldKey="llm.codexBin"
+                                    value={llm.codexBin}
+                                    onChange={handlePolicyFieldChange}
+                                    placeholder="codex"
+                                />
+                            </div>
+                        )}
                     </div>
 
                     <div className="rounded-lg border p-3 space-y-3">

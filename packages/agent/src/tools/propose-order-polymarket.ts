@@ -1,23 +1,24 @@
 import { z } from "zod"
 import type { ExecutionPipeline, OrderIntent } from "@valiq-trading/core"
-import type { ToolDefinition } from "../tool-registry"
+import type { ToolBinding } from "../tool-registry"
 import {
-    createToolDefinition,
+    createToolBinding,
     polymarketOrderParamsSchema,
 } from "../tool-contracts"
 import { executeToolIntent } from "./execution-response"
 import { resolveEstimatedPrice, type PolymarketPriceProvider } from "./polymarket-order-helpers"
 import { PolymarketMarketHandleRegistry } from "./polymarket-market-handles"
+import { assertToolNotAborted } from "../tool-registry"
 
 export function createPolymarketProposeOrderTool(
     pipeline: ExecutionPipeline,
     venue: PolymarketPriceProvider,
     handles: PolymarketMarketHandleRegistry = new PolymarketMarketHandleRegistry()
-): ToolDefinition {
-    return createToolDefinition({
+): ToolBinding {
+    return createToolBinding({
         name: "propose_order",
         venue: "polymarket",
-        handler: async (params) => {
+        handler: async (params, context) => {
             const validated = params as z.infer<typeof polymarketOrderParamsSchema>
             const token = handles.resolveToken(validated)
             const identity = {
@@ -37,12 +38,14 @@ export function createPolymarketProposeOrderTool(
                 throw new Error("Polymarket propose_order requires canonical market identity from search_markets when tokenHandle is not provided")
             }
 
+            assertToolNotAborted(context?.signal)
             const estimatedPrice = await resolveEstimatedPrice(
                 venue,
                 identity.tokenId,
                 validated.side,
                 validated.limitPrice
             )
+            assertToolNotAborted(context?.signal)
 
             const intent: OrderIntent = {
                 instrument: identity.tokenId,
@@ -69,7 +72,10 @@ export function createPolymarketProposeOrderTool(
                 },
             }
 
-            return await executeToolIntent(pipeline, intent, { action: "entry" }, { includeTrackedOrder: true })
+            return await executeToolIntent(pipeline, intent, { action: "entry" }, {
+                includeTrackedOrder: true,
+                signal: context?.signal,
+            })
         },
     })
 }

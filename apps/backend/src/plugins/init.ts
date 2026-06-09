@@ -12,6 +12,7 @@ import {
     validateVenueEnvironments,
     type EnvironmentValidationDependencies,
 } from "../environment-validation"
+import { STRATEGY_LLM_PROVIDER_SECRET_KEYS } from "../scheduler-provider-gates"
 import { getRequiredVenueApps } from "../required-apps"
 import type { VenueApp } from "../types"
 import { writeHeartbeatSnapshot } from "../health-write"
@@ -21,7 +22,9 @@ export async function resolveAllSecrets(): Promise<void> {
 
     const allKeys = new Set<string>()
 
-    allKeys.add("OPENROUTER_API_KEY")
+    for (const key of STRATEGY_LLM_PROVIDER_SECRET_KEYS) {
+        allKeys.add(key)
+    }
 
     for (const plugin of Object.values(plugins)) {
         for (const key of plugin.resolveSecretKeys()) {
@@ -42,8 +45,8 @@ export async function resolveAllSecrets(): Promise<void> {
     }
 
     if (!secrets.OPENROUTER_API_KEY) {
-        logger.error(
-            "OPENROUTER_API_KEY is missing. Agent runs will fail until this is set in Convex environment variables."
+        logger.warn(
+            "OPENROUTER_API_KEY is missing. OpenRouter strategy runs will fail until this is set in Convex environment variables."
         )
     }
 }

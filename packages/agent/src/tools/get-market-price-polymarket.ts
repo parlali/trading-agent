@@ -1,8 +1,8 @@
 import { z } from "zod"
 import type { PolymarketVenueAdapter } from "@valiq-trading/polymarket"
-import type { ToolDefinition } from "../tool-registry"
+import type { ToolBinding } from "../tool-registry"
 import {
-    createToolDefinition,
+    createToolBinding,
     polymarketMarketPriceParamsSchema,
 } from "../tool-contracts"
 import { PolymarketMarketHandleRegistry } from "./polymarket-market-handles"
@@ -10,8 +10,8 @@ import { PolymarketMarketHandleRegistry } from "./polymarket-market-handles"
 export function createPolymarketGetMarketPriceTool(
     venue: PolymarketVenueAdapter,
     handles: PolymarketMarketHandleRegistry = new PolymarketMarketHandleRegistry()
-): ToolDefinition {
-    return createToolDefinition({
+): ToolBinding {
+    return createToolBinding({
         name: "get_market_price",
         venue: "polymarket",
         handler: async (params) => {

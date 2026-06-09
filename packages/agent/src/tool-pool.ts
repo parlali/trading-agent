@@ -1,15 +1,15 @@
 import type { Logger, VenueApp } from "@valiq-trading/core"
-import type { ToolCategory, ToolDefinition } from "./tool-registry"
+import type { ToolCategory, ToolBinding } from "./tool-registry"
 
 export interface ToolFactoryRegistration {
     name: string
     category: ToolCategory
     compatibleVenues: readonly VenueApp[]
-    create: () => ToolDefinition | ToolDefinition[] | null | undefined
+    create: () => ToolBinding | ToolBinding[] | null | undefined
 }
 
 export interface ToolRegistration {
-    tool: ToolDefinition
+    tool: ToolBinding
     category: ToolCategory
     compatibleVenues: readonly VenueApp[]
 }
@@ -57,8 +57,8 @@ export class ToolPool {
         this.entries.push(registration)
     }
 
-    forVenue(venue: VenueApp): ToolDefinition[] {
-        const tools: ToolDefinition[] = []
+    forVenue(venue: VenueApp): ToolBinding[] {
+        const tools: ToolBinding[] = []
         const seenNames = new Set<string>()
 
         for (const entry of this.entries) {
@@ -99,11 +99,11 @@ export class ToolPool {
     }
 
     private decorateTool(
-        tool: ToolDefinition,
+        tool: ToolBinding,
         category: ToolCategory,
         compatibleVenues: readonly VenueApp[],
         venue: VenueApp
-    ): ToolDefinition {
+    ): ToolBinding {
         if (tool.category && tool.category !== category) {
             this.options.logger?.warn("Tool category mismatch detected during registration", {
                 tool: tool.name,
@@ -130,8 +130,8 @@ export class ToolPool {
 }
 
 function toToolArray(
-    tool: ToolDefinition | ToolDefinition[] | null | undefined
-): ToolDefinition[] {
+    tool: ToolBinding | ToolBinding[] | null | undefined
+): ToolBinding[] {
     if (!tool) {
         return []
     }

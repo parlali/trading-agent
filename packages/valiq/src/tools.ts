@@ -1,5 +1,5 @@
 import { z } from "zod"
-import type { ToolDefinition } from "@valiq-trading/agent"
+import type { ToolBinding } from "@valiq-trading/agent"
 import type { ValiqDataAdapter } from "./data"
 import type { ValiqResearchAdapter } from "./research"
 import type { BreakingNewsParams } from "./types"
@@ -10,7 +10,7 @@ const researchParamsSchema = z.object({
 
 export function createValiqResearchTool(
     research: ValiqResearchAdapter
-): ToolDefinition {
+): ToolBinding {
     return {
         name: "query_valiq_research",
         description:
@@ -54,7 +54,7 @@ const breakingNewsParamsSchema = z.object({
 
 export function createValiqBreakingNewsTool(
     data: ValiqDataAdapter
-): ToolDefinition {
+): ToolBinding {
     return {
         name: "get_breaking_news",
         description:
@@ -124,7 +124,7 @@ const dataParamsSchema = z.object({
 
 export function createValiqDataTool(
     data: ValiqDataAdapter
-): ToolDefinition {
+): ToolBinding {
     return {
         name: "query_valiq_data",
         description:

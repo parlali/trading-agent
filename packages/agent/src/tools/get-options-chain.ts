@@ -1,15 +1,15 @@
 import { z } from "zod"
 import type { AlpacaOptionsVenueAdapter } from "@valiq-trading/alpaca-options"
-import type { ToolDefinition } from "../tool-registry"
+import type { ToolBinding } from "../tool-registry"
 import {
-    createToolDefinition,
+    createToolBinding,
     getOptionsChainParamsSchema,
 } from "../tool-contracts"
 
 export function createAlpacaGetOptionsChainTool(
     venue: AlpacaOptionsVenueAdapter
-): ToolDefinition {
-    return createToolDefinition({
+): ToolBinding {
+    return createToolBinding({
         name: "get_options_chain",
         venue: "alpaca-options",
         handler: async (params) => {

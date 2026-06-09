@@ -7,6 +7,7 @@ export interface AgentMessageLogger {
         content: string,
         toolName?: string,
         toolInput?: string,
-        toolOutput?: string
+        toolOutput?: string,
+        toolCalls?: string
     ): Promise<void>
 }

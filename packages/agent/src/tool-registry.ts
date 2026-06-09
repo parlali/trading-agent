@@ -11,7 +11,11 @@ export const TOOL_CATEGORIES = [
 
 export type ToolCategory = typeof TOOL_CATEGORIES[number]
 
-export interface ToolDefinition {
+export interface ToolHandlerContext {
+    signal?: AbortSignal
+}
+
+export interface ToolBinding {
     name: string
     description: string
     parameters: z.ZodType<unknown>
@@ -20,15 +24,15 @@ export interface ToolDefinition {
     errorSemantics?: string
     contractBoundary?: "shared" | "venue-owned"
     contractOwner?: string
-    handler: (params: unknown) => Promise<unknown>
+    handler: (params: unknown, context?: ToolHandlerContext) => Promise<unknown>
     category?: ToolCategory
     compatibleVenues?: readonly VenueApp[]
 }
 
 export class ToolRegistry {
-    private tools = new Map<string, ToolDefinition>()
+    private tools = new Map<string, ToolBinding>()
 
-    register(tool: ToolDefinition): void {
+    register(tool: ToolBinding): void {
         if (this.tools.has(tool.name)) {
             throw new Error(`Duplicate tool registration detected for ${tool.name}`)
         }
@@ -36,11 +40,11 @@ export class ToolRegistry {
         this.tools.set(tool.name, tool)
     }
 
-    get(name: string): ToolDefinition | undefined {
+    get(name: string): ToolBinding | undefined {
         return this.tools.get(name)
     }
 
-    getAll(): ToolDefinition[] {
+    getAll(): ToolBinding[] {
         return Array.from(this.tools.values())
     }
 
@@ -54,15 +58,16 @@ export class ToolRegistry {
             description: t.description,
         }))
     }
+}
 
-    toOpenRouterTools(): Array<{ type: "function"; function: { name: string; description: string; parameters: Record<string, unknown> } }> {
-        return this.getAll().map((t) => ({
-            type: "function" as const,
-            function: {
-                name: t.name,
-                description: t.description,
-                parameters: t.jsonSchema ?? { type: "object", properties: {} },
-            },
-        }))
+export function assertToolNotAborted(signal?: AbortSignal): void {
+    if (signal?.aborted) {
+        throw createToolAbortError()
     }
+}
+
+export function createToolAbortError(): Error {
+    const error = new Error("Tool execution cancelled")
+    error.name = "AbortError"
+    return error
 }

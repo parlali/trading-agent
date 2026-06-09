@@ -27,6 +27,7 @@ import type {
     DeleteOrphanedStrategyHistoryBatchResult,
     DeleteStrategyBatchResult,
     DeleteStrategyResult,
+    AgentLogRow,
     ExecutionSafetyFaultRow,
     FullResetAudit,
     KillSwitchState,
@@ -50,6 +51,7 @@ import type {
     StrategyOrderHistoryRow,
     StrategyOwnershipScopeRow,
     StrategyRiskStateRow,
+    TradeEventRow,
     TradingBackendClient,
     TradingBackendClientConfig,
 } from "./client-types"
@@ -66,6 +68,49 @@ function toProviderPositionInput(position: Position) {
         stopLoss: position.stopLoss,
         takeProfit: position.takeProfit,
         metadata: position.metadata ? JSON.stringify(position.metadata) : undefined,
+    }
+}
+
+type PositionDocRow = {
+    instrument: string
+    providerPositionId?: string
+    side: "long" | "short"
+    quantity: number
+    entryPrice: number
+    currentPrice?: number
+    unrealizedPnl?: number
+    stopLoss?: number
+    takeProfit?: number
+    metadata?: string
+}
+
+function mapPositionRows(rows: PositionDocRow[]): Position[] {
+    return rows.map((row) => ({
+        instrument: row.instrument,
+        providerPositionId: row.providerPositionId,
+        side: row.side,
+        quantity: row.quantity,
+        entryPrice: row.entryPrice,
+        currentPrice: row.currentPrice,
+        unrealizedPnl: row.unrealizedPnl,
+        stopLoss: row.stopLoss,
+        takeProfit: row.takeProfit,
+        metadata: parsePositionMetadata(row.metadata),
+    }))
+}
+
+function parsePositionMetadata(metadata?: string): Record<string, unknown> | undefined {
+    if (!metadata) {
+        return undefined
+    }
+
+    try {
+        const parsed = JSON.parse(metadata)
+        return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+            ? parsed as Record<string, unknown>
+            : undefined
+    } catch {
+        return undefined
     }
 }
 
@@ -118,6 +163,50 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
                     ...requireMachineAuth(),
                     strategyId,
                 } as never) as StoredRun | null
+            )
+        },
+        async getRunHistory(
+            strategyId: Id<"strategies">,
+            limit?: number,
+            beforeStartedAt?: number,
+            beforeCreationTime?: number
+        ): Promise<StoredRun[]> {
+            return await runWithTimeout(
+                "Convex query getRunHistory",
+                async () => await client.query(api.queries.getRunHistory, {
+                    ...requireMachineAuth(),
+                    strategyId,
+                    limit,
+                    beforeStartedAt,
+                    beforeCreationTime,
+                } as never) as StoredRun[]
+            )
+        },
+        async getRunById(runId: Id<"strategy_runs">): Promise<StoredRun | null> {
+            return await runWithTimeout(
+                "Convex query getRunById",
+                async () => await client.query(api.queries.getRunById, {
+                    ...requireMachineAuth(),
+                    runId,
+                } as never) as StoredRun | null
+            )
+        },
+        async getAgentLogs(runId: Id<"strategy_runs">): Promise<AgentLogRow[]> {
+            return await runWithTimeout(
+                "Convex query getAgentLogs",
+                async () => await client.query(api.queries.getAgentLogs, {
+                    ...requireMachineAuth(),
+                    runId,
+                } as never) as AgentLogRow[]
+            )
+        },
+        async getTradeEvents(runId: Id<"strategy_runs">): Promise<TradeEventRow[]> {
+            return await runWithTimeout(
+                "Convex query getTradeEvents",
+                async () => await client.query(api.queries.getTradeEvents, {
+                    ...requireMachineAuth(),
+                    runId,
+                } as never) as TradeEventRow[]
             )
         },
         async getLastCompletedRunSummary(strategyId: Id<"strategies">): Promise<LastCompletedRunSummary | null> {
@@ -200,7 +289,8 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
             content: string,
             toolName?: string,
             toolInput?: string,
-            toolOutput?: string
+            toolOutput?: string,
+            toolCalls?: string
         ): Promise<void> {
             if (role !== "system" && role !== "user" && role !== "assistant" && role !== "tool") {
                 throw new Error(`Unsupported agent log role: ${role}`)
@@ -218,6 +308,7 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
                     toolName,
                     toolInput,
                     toolOutput,
+                    toolCalls,
                 })
             )
         },
@@ -656,31 +747,20 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
                 async () => await client.query(api.queries.getStrategyPositions, {
                     ...requireMachineAuth(),
                     strategyId,
-                } as never) as Array<{
-                    instrument: string
-                    providerPositionId?: string
-                    side: "long" | "short"
-                    quantity: number
-                    entryPrice: number
-                    currentPrice?: number
-                    unrealizedPnl?: number
-                    stopLoss?: number
-                    takeProfit?: number
-                    metadata?: string
-                }>
+                } as never) as PositionDocRow[]
             )
-            return docs.map((doc) => ({
-                instrument: doc.instrument,
-                providerPositionId: doc.providerPositionId,
-                side: doc.side,
-                quantity: doc.quantity,
-                entryPrice: doc.entryPrice,
-                currentPrice: doc.currentPrice,
-                unrealizedPnl: doc.unrealizedPnl,
-                stopLoss: doc.stopLoss,
-                takeProfit: doc.takeProfit,
-                metadata: doc.metadata ? JSON.parse(doc.metadata) as Record<string, unknown> : undefined,
-            }))
+            return mapPositionRows(docs)
+        },
+        async getPositionsForRun(strategyId: Id<"strategies">, runId: Id<"strategy_runs">): Promise<Position[]> {
+            const docs = await runWithTimeout(
+                "Convex query getStrategyPositionsForRun",
+                async () => await client.query(api.queries.getStrategyPositionsForRun, {
+                    ...requireMachineAuth(),
+                    strategyId,
+                    runId,
+                } as never) as PositionDocRow[]
+            )
+            return mapPositionRows(docs)
         },
         async getAllStrategies(): Promise<StoredStrategy[]> {
             return await runWithTimeout(
@@ -693,6 +773,21 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
                 "Convex mutation upsertStrategy",
                 async () => await client.mutation(api.mutations.upsertStrategy, {
                     ...requireMachineAuth(),
+                    app: config.app,
+                    name: config.name,
+                    enabled: config.enabled,
+                    schedule: config.schedule,
+                    policy: config.policy,
+                    context: config.context,
+                } as never) as Id<"strategies">
+            )
+        },
+        async updateStrategy(id: Id<"strategies">, config: StrategyConfig): Promise<Id<"strategies">> {
+            return await runWithTimeout(
+                "Convex mutation upsertStrategy(update)",
+                async () => await client.mutation(api.mutations.upsertStrategy, {
+                    ...requireMachineAuth(),
+                    id,
                     app: config.app,
                     name: config.name,
                     enabled: config.enabled,

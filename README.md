@@ -89,6 +89,61 @@ Operator workflow:
 3. In Polymarket, copy the profile or proxy wallet address shown in the account UI and set that exact value as `POLYMARKET_FUNDER_ADDRESS`.
 4. Open Dashboard > Test > Polymarket and verify the `Runtime Config` step shows the expected signer and funder addresses, then verify `Authenticated Runtime Path` is green before enabling scheduled runs.
 
+### Codex Strategy Provider
+
+Codex provider support is disabled unless `ENABLE_CODEX_PROVIDER=true` is set in the backend runtime. Dashboard creation stays hidden unless `NEXT_PUBLIC_ENABLE_CODEX_PROVIDER=true` is set for the dashboard build.
+
+Codex strategies must use canonical policy shape:
+
+```json
+{
+    "dryRun": true,
+    "llm": {
+        "provider": "codex",
+        "model": "your-codex-model",
+        "authMode": "chatgpt"
+    }
+}
+```
+
+Supported `authMode` values are `chatgpt`, `access-token`, and `api-key`. For local ChatGPT session testing, run `codex login` on the same machine and use `authMode = "chatgpt"`. `access-token` requires `CODEX_ACCESS_TOKEN`; `api-key` requires `OPENAI_API_KEY`. ChatGPT and access-token modes use Codex subscription-backed billing, not Platform API key billing. Do not store ChatGPT OAuth cache files, access tokens, or API keys in Convex strategy config or logs.
+
+Run the same app-server and MCP path used by scheduled dry-run strategies before enabling any Codex strategy:
+
+```bash
+bun run codex:preflight -- --strategy <strategy-id> --dry-run-only
+```
+
+Stored-strategy preflight uses the scheduler provider gate and resolved Convex secrets. It requires `ENABLE_CODEX_PROVIDER=true` and will fail closed if the strategy is not dry-run, is not configured for Codex, or lacks the configured Codex auth credential.
+
+The Codex app-server path disables inherited apps, plugins, browser/computer/image/multi-agent/workspace tools, shell/unified exec, and web search for strategy runs. Preflight must show only the run-scoped `valiq_run` MCP server starting. If any non-run MCP server starts, the run is interrupted and fails closed.
+
+For a synthetic local smoke check that does not load a stored strategy, pass the model and auth mode directly:
+
+```bash
+bun run codex:preflight -- --model=your-codex-model --auth-mode=chatgpt
+```
+
+After a stored Codex dry-run completes, export the audit evidence before enabling rollout:
+
+```bash
+bun run codex:run-audit -- --strategy <strategy-id>
+```
+
+The command writes `private/audits/codex-run-audit-<run-id>.json` by default and fails closed if provider identity, run/evidence linkage, shared tool logs, canonical strategy tool names, forbidden Codex tool absence, dry-run ledger source run, canonical dry-run accounting state, or provider-sync health cannot be proven. Provider-sync evidence must be healthy, no-drift, and verified at or after the audited run ended. Use `--run-id <run-id>` to audit a specific run or `--out <path>` to choose the artifact path.
+
+To perform the required provider-sync check inside the audit export, pass `--refresh-provider-sync`. The exporter uses the only same-venue live strategy when exactly one exists; if multiple live strategies can refresh that venue, also pass `--provider-sync-strategy <live-strategy-id>`.
+
+After at least three scheduled Codex dry-runs complete, export rollout evidence before enabling dashboard creation:
+
+```bash
+bun run codex:rollout-audit -- --strategy <strategy-id>
+```
+
+The rollout audit writes `private/audits/codex-rollout-audit-<strategy-id>.json` by default and fails closed unless exactly one enabled Codex dry-run strategy is present, live Codex strategies remain blocked, three scheduled Codex run audits pass, summaries/tool logs/accounting diagnostics are comparable, and every enabled OpenRouter strategy has a post-rollout run sample with no Codex provider leakage. Use `--min-runs <count>` to require more scheduled runs, with `count` bounded from 1 to 50, `--refresh-provider-sync` to refresh provider truth before collecting the run audits, or `--out <path>` to choose the artifact path.
+
+Live Codex execution remains blocked. Do not enable live Codex runs until replay, export audit, and provider-sync evidence has been produced for the intended venue path.
+
 ## Development
 
 ```bash

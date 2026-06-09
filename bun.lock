@@ -24,6 +24,7 @@
         "@valiq-trading/polymarket": "workspace:*",
         "@valiq-trading/valiq": "workspace:*",
         "viem": "^2.21.0",
+        "zod": "^4.3.6",
       },
     },
     "apps/dashboard": {

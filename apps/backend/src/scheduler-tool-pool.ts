@@ -33,7 +33,7 @@ import {
     PolymarketMarketHandleRegistry,
     withCallBudget,
     type ToolCategory,
-    type ToolDefinition,
+    type ToolBinding,
 } from "@valiq-trading/agent"
 import type { Id } from "@valiq-trading/convex"
 import {
@@ -50,13 +50,7 @@ import { MT5VenueAdapter } from "@valiq-trading/mt5"
 import { PolymarketVenueAdapter } from "@valiq-trading/polymarket"
 import type { VenueApp } from "./types"
 import { backend, searchProvider } from "./state"
-
-const EXTRA_TOOL_CATEGORIES: Record<string, ToolCategory> = {
-    query_valiq_research: "research",
-    query_valiq_data: "research",
-    get_breaking_news: "research",
-    search_markets: "research",
-}
+import { SCHEDULER_EXTRA_TOOL_CATEGORIES } from "./scheduler-tool-catalog"
 
 interface BuildToolPoolConfig {
     app: VenueApp
@@ -64,17 +58,17 @@ interface BuildToolPoolConfig {
     venue: VenueAdapter
     pipeline: ExecutionPipeline
     policy: Record<string, unknown>
-    extraTools: ToolDefinition[]
+    extraTools: ToolBinding[]
     isCallback: boolean
     runLogger: Logger
 }
 
 function resolveExtraToolCategory(
-    tool: ToolDefinition,
+    tool: ToolBinding,
     runLogger: Logger,
     app: VenueApp
 ): ToolCategory {
-    const category = EXTRA_TOOL_CATEGORIES[tool.name]
+    const category = SCHEDULER_EXTRA_TOOL_CATEGORIES[tool.name as keyof typeof SCHEDULER_EXTRA_TOOL_CATEGORIES]
     if (category) {
         return category
     }
@@ -107,7 +101,7 @@ function registerCanonicalTool(
     registration: {
         name: string
         compatibleVenues: readonly VenueApp[]
-        create: () => ToolDefinition | ToolDefinition[] | null | undefined
+        create: () => ToolBinding | ToolBinding[] | null | undefined
     }
 ): void {
     toolPool.registerFactory({
