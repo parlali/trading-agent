@@ -1,15 +1,15 @@
 import { describe, expect, it } from "vitest"
+import { fileURLToPath } from "node:url"
 import type { StoredStrategy } from "@valiq-trading/convex"
 import { resolveStoredCodexPreflightConfig } from "./codex-preflight-config"
 
 describe("resolveStoredCodexPreflightConfig", () => {
-    it("accepts exactly dry-run Codex strategy preflight with enabled provider gate", () => {
+    it("accepts exactly dry-run Codex strategy preflight with active ChatGPT login", () => {
         const result = resolveStoredCodexPreflightConfig({
             strategy: createStrategy(),
             strategySecrets: createSecrets(),
             dryRunOnly: true,
-            codexProviderEnabled: true,
-            env: {},
+            env: createCodexAuthEnv(),
         })
 
         expect(result.llm.provider).toBe("codex")
@@ -22,8 +22,7 @@ describe("resolveStoredCodexPreflightConfig", () => {
             strategy: createStrategy(),
             strategySecrets: createSecrets(),
             dryRunOnly: false,
-            codexProviderEnabled: true,
-            env: {},
+            env: createCodexAuthEnv(),
         })).toThrow("--dry-run-only is required when --strategy is provided")
     })
 
@@ -41,8 +40,7 @@ describe("resolveStoredCodexPreflightConfig", () => {
             }),
             strategySecrets: createSecrets(),
             dryRunOnly: true,
-            codexProviderEnabled: true,
-            env: {},
+            env: createCodexAuthEnv(),
         })).toThrow("Codex preflight requires a dry-run strategy")
     })
 
@@ -61,22 +59,20 @@ describe("resolveStoredCodexPreflightConfig", () => {
                 OPENROUTER_API_KEY: "openrouter-key",
             }),
             dryRunOnly: true,
-            codexProviderEnabled: true,
-            env: {},
+            env: createCodexAuthEnv(),
         })).toThrow("Codex preflight requires a Codex strategy, got openrouter")
     })
 
-    it("fails closed when the Codex provider gate is disabled", () => {
+    it("fails closed when ChatGPT login is missing", () => {
         expect(() => resolveStoredCodexPreflightConfig({
             strategy: createStrategy(),
             strategySecrets: createSecrets(),
             dryRunOnly: true,
-            codexProviderEnabled: false,
-            env: {},
-        })).toThrow("ENABLE_CODEX_PROVIDER must be true")
+            env: createMissingCodexAuthEnv(),
+        })).toThrow("Codex ChatGPT login is required")
     })
 
-    it("fails closed for access-token auth without a credential", () => {
+    it("fails closed for Codex auth modes that are not ChatGPT login", () => {
         expect(() => resolveStoredCodexPreflightConfig({
             strategy: createStrategy({
                 policy: {
@@ -90,51 +86,8 @@ describe("resolveStoredCodexPreflightConfig", () => {
             }),
             strategySecrets: createSecrets(),
             dryRunOnly: true,
-            codexProviderEnabled: true,
             env: {},
-        })).toThrow("CODEX_ACCESS_TOKEN is required")
-    })
-
-    it("fails closed for api-key auth without a credential", () => {
-        expect(() => resolveStoredCodexPreflightConfig({
-            strategy: createStrategy({
-                policy: {
-                    dryRun: true,
-                    llm: {
-                        provider: "codex",
-                        model: "gpt-5.4",
-                        authMode: "api-key",
-                    },
-                },
-            }),
-            strategySecrets: createSecrets(),
-            dryRunOnly: true,
-            codexProviderEnabled: true,
-            env: {},
-        })).toThrow("OPENAI_API_KEY is required")
-    })
-
-    it("uses bounded explicit environment credentials for stored api-key preflight", () => {
-        const result = resolveStoredCodexPreflightConfig({
-            strategy: createStrategy({
-                policy: {
-                    dryRun: true,
-                    llm: {
-                        provider: "codex",
-                        model: "gpt-5.4",
-                        authMode: "api-key",
-                    },
-                },
-            }),
-            strategySecrets: createSecrets(),
-            dryRunOnly: true,
-            codexProviderEnabled: true,
-            env: {
-                OPENAI_API_KEY: "env-api-key",
-            },
-        })
-
-        expect(result.llm.authMode).toBe("api-key")
+        })).toThrow("Codex provider requires ChatGPT login auth")
     })
 })
 
@@ -159,11 +112,21 @@ function createStrategy(overrides: Partial<StoredStrategy> = {}): StoredStrategy
     }
 }
 
+function createCodexAuthEnv(): Record<string, string | undefined> {
+    return {
+        CODEX_HOME: fileURLToPath(new URL("./fixtures/codex-home", import.meta.url)),
+    }
+}
+
+function createMissingCodexAuthEnv(): Record<string, string | undefined> {
+    return {
+        CODEX_HOME: fileURLToPath(new URL("./fixtures/missing-codex-home", import.meta.url)),
+    }
+}
+
 function createSecrets(overrides: Record<string, string | null> = {}): Record<string, string | null> {
     return {
         OPENROUTER_API_KEY: null,
-        CODEX_ACCESS_TOKEN: null,
-        OPENAI_API_KEY: null,
         ...overrides,
     }
 }

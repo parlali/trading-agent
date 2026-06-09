@@ -50,6 +50,7 @@ export {
 export {
     getSystemState,
     getAppHealth,
+    assertDashboardUser,
     getManualRunRequests,
     getControlPlaneMetrics,
     getFullResetAudit,

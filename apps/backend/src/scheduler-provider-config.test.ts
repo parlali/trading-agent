@@ -30,12 +30,12 @@ describe("createAgentProviderConfig", () => {
         })
     })
 
-    it("prefers Convex Codex credentials and falls back to runtime env", () => {
+    it("does not pass Codex credentials through scheduled provider config", () => {
         expect(createAgentProviderConfig(
             {
                 provider: "codex",
                 model: "gpt-5.4",
-                authMode: "access-token",
+                authMode: "chatgpt",
             },
             {
                 CODEX_ACCESS_TOKEN: "convex-token",
@@ -47,8 +47,22 @@ describe("createAgentProviderConfig", () => {
             }
         )).toMatchObject({
             provider: "codex",
-            codexAccessToken: "convex-token",
-            openAiApiKey: "env-api-key",
+            authMode: "chatgpt",
         })
+        expect(createAgentProviderConfig(
+            {
+                provider: "codex",
+                model: "gpt-5.4",
+                authMode: "chatgpt",
+            },
+            {
+                CODEX_ACCESS_TOKEN: "convex-token",
+                OPENAI_API_KEY: null,
+            },
+            {
+                CODEX_ACCESS_TOKEN: "env-token",
+                OPENAI_API_KEY: "env-api-key",
+            }
+        )).not.toHaveProperty("codexAccessToken")
     })
 })

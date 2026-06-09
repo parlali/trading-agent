@@ -25,7 +25,5 @@ export function createAgentProviderConfig(
         serviceTier: llmConfig.serviceTier,
         authMode: llmConfig.authMode,
         codexBin: llmConfig.codexBin,
-        codexAccessToken: strategySecrets.CODEX_ACCESS_TOKEN ?? env.CODEX_ACCESS_TOKEN,
-        openAiApiKey: strategySecrets.OPENAI_API_KEY ?? env.OPENAI_API_KEY,
     }
 }

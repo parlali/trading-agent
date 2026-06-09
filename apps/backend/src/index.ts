@@ -3,6 +3,7 @@ import {
     APP_NAME,
     ALL_APPS,
     backend,
+    backendServiceToken,
     healthPort,
     healthState,
     logger,
@@ -13,6 +14,7 @@ import { startHeartbeat, stopHeartbeat } from "./heartbeat"
 import { startManualRunPolling, stopManualRunPolling } from "./manual-runs"
 import { performStartupSync, startPeriodicSync, stopPeriodicSync } from "./sync"
 import { writeHeartbeatSnapshot } from "./health-write"
+import { createCodexOAuthControlHandler } from "./codex-oauth"
 
 async function main(): Promise<void> {
     await resolveAllSecrets()
@@ -87,6 +89,10 @@ function startHealthServer(scheduler: Scheduler): void {
             lastRunStatus: healthState.lastRunStatus,
             lastRunSummary: healthState.lastRunSummary,
             lastRunError: healthState.lastRunError,
+        }),
+        handleRequest: createCodexOAuthControlHandler({
+            serviceToken: backendServiceToken,
+            logger,
         }),
     })
 }

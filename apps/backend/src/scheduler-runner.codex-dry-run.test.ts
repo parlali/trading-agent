@@ -47,6 +47,17 @@ describe("scheduler runner Codex dry-run side effects", () => {
                 forVenue: () => [],
             }),
         }))
+        vi.doMock("./codex-auth", () => ({
+            inspectCodexChatGptAuthStatusSync: () => ({
+                ready: true,
+                status: "ready",
+                codexHome: "/tmp/codex",
+                authFilePath: "/tmp/codex/auth.json",
+                accountId: "account-1",
+                lastRefresh: "2026-06-09T00:00:00.000Z",
+                message: "Codex ChatGPT login is active",
+            }),
+        }))
         vi.doMock("@valiq-trading/convex", () => ({
             createConvexOrderPersistenceAdapter: () => ({
                 listActiveOrders: vi.fn(async () => []),
@@ -56,7 +67,6 @@ describe("scheduler runner Codex dry-run side effects", () => {
             backend,
             convexUrl: "http://convex.test",
             backendServiceToken: "backend-token",
-            codexProviderEnabled: true,
             healthState: {
                 venues: {
                     polymarket: {

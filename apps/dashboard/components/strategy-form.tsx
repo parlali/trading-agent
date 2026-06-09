@@ -61,11 +61,9 @@ type LlmPolicy = {
     effort?: "none" | "minimal" | "low" | "medium" | "high" | "xhigh"
     summary?: "auto" | "concise" | "detailed" | "none"
     serviceTier?: string
-    authMode?: "chatgpt" | "access-token" | "api-key"
+    authMode?: "chatgpt"
     codexBin?: string
 }
-
-const CODEX_PROVIDER_ENABLED = process.env.NEXT_PUBLIC_ENABLE_CODEX_PROVIDER === "true"
 
 function getDefaultPolicy(app: ActiveVenueApp): PolicyFields {
     return structuredClone(POLICY_DEFAULTS[app] ?? {})
@@ -108,7 +106,7 @@ function readLlmPolicy(policy: PolicyFields): LlmPolicy {
         effort: llm?.effort,
         summary: llm?.summary,
         serviceTier: llm?.serviceTier,
-        authMode: llm?.authMode,
+        authMode: llm?.authMode === "chatgpt" ? "chatgpt" : undefined,
         codexBin: llm?.codexBin,
     }
 }
@@ -203,17 +201,18 @@ export function StrategyForm({ mode, initialData }: StrategyFormProps) {
             return
         }
 
-        if (llm.provider === "codex" && !llm.authMode) {
-            toast.error("Codex auth mode is required")
-            return
-        }
-
         setSaving(true)
         try {
+            const normalizedLlm: LlmPolicy = llm.provider === "codex"
+                ? {
+                    ...llm,
+                    authMode: "chatgpt",
+                }
+                : llm
             const cleanedPolicy = cleanPolicy({
                 ...policy,
                 llm: {
-                    ...llm,
+                    ...normalizedLlm,
                     model,
                 },
             })
@@ -241,7 +240,6 @@ export function StrategyForm({ mode, initialData }: StrategyFormProps) {
 
     const maxBet = (policy.maxBet ?? { mode: "fixed", value: 100 }) as { mode: string; value: number }
     const llm = readLlmPolicy(policy)
-    const showCodexOption = CODEX_PROVIDER_ENABLED || llm.provider === "codex"
 
     return (
         <form onSubmit={handleSubmit} className="space-y-6">
@@ -326,9 +324,7 @@ export function StrategyForm({ mode, initialData }: StrategyFormProps) {
                                     </SelectTrigger>
                                     <SelectContent>
                                         <SelectItem value="openrouter">OpenRouter</SelectItem>
-                                        {showCodexOption ? (
-                                            <SelectItem value="codex">Codex</SelectItem>
-                                        ) : null}
+                                        <SelectItem value="codex">Codex</SelectItem>
                                     </SelectContent>
                                 </Select>
                             </div>
@@ -339,7 +335,7 @@ export function StrategyForm({ mode, initialData }: StrategyFormProps) {
                                     <span className="text-signal-danger ml-0.5">*</span>
                                 </Label>
                                 <Input
-                                    placeholder={llm.provider === "openrouter" ? "anthropic/claude-sonnet-4.6" : "gpt-5.4"}
+                                    placeholder={llm.provider === "openrouter" ? "anthropic/claude-sonnet-4.6" : "gpt-5.5"}
                                     value={llm.model ?? ""}
                                     onChange={(e) => handlePolicyFieldChange("llm.model", e.target.value)}
                                     className="font-mono"
@@ -374,7 +370,7 @@ export function StrategyForm({ mode, initialData }: StrategyFormProps) {
                                 />
                             </div>
                         ) : (
-                            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
                                 <div className="space-y-1.5">
                                     <Label className="text-sm">Effort</Label>
                                     <Select
@@ -411,29 +407,6 @@ export function StrategyForm({ mode, initialData }: StrategyFormProps) {
                                         </SelectContent>
                                     </Select>
                                 </div>
-                                <div className="space-y-1.5">
-                                    <Label className="text-sm">Auth Mode</Label>
-                                    <Select
-                                        value={llm.authMode ?? "chatgpt"}
-                                        onValueChange={(value) => handlePolicyFieldChange("llm.authMode", value)}
-                                    >
-                                        <SelectTrigger className="w-full">
-                                            <SelectValue />
-                                        </SelectTrigger>
-                                        <SelectContent>
-                                            <SelectItem value="chatgpt">ChatGPT Session</SelectItem>
-                                            <SelectItem value="access-token">Access Token</SelectItem>
-                                            <SelectItem value="api-key">API Key</SelectItem>
-                                        </SelectContent>
-                                    </Select>
-                                </div>
-                                <TextPolicyField
-                                    label="Codex Binary"
-                                    fieldKey="llm.codexBin"
-                                    value={llm.codexBin}
-                                    onChange={handlePolicyFieldChange}
-                                    placeholder="codex"
-                                />
                             </div>
                         )}
                     </div>

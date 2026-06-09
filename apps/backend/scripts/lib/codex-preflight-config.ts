@@ -9,7 +9,6 @@ export function resolveStoredCodexPreflightConfig(args: {
     strategy: StoredStrategy
     strategySecrets: Record<string, string | null>
     dryRunOnly: boolean
-    codexProviderEnabled: boolean
     env: Record<string, string | undefined>
 }): {
     llm: CodexLlmProviderConfig
@@ -30,7 +29,6 @@ export function resolveStoredCodexPreflightConfig(args: {
     }
 
     assertStrategyLlmProviderCanRun(llm, args.strategy.policy, args.strategySecrets, {
-        codexProviderEnabled: args.codexProviderEnabled,
         env: args.env,
     })
 

@@ -46,7 +46,6 @@ import {
     backend,
     convexUrl,
     backendServiceToken,
-    codexProviderEnabled,
     logger,
     healthState,
 } from "./state"
@@ -360,7 +359,6 @@ export async function runStrategy(
         activePipeline.setStrategyRealizedPnl(runRiskState.day.realizedPnl)
 
         assertStrategyLlmProviderCanRun(llmConfig, policy, strategySecrets, {
-            codexProviderEnabled,
             env: process.env,
         })
 
@@ -651,7 +649,7 @@ function buildFailureRunDiagnostics(
         diagnostics.openRouterResponseIds = []
     } else {
         diagnostics.llmAuthMode = llmConfig.authMode
-        diagnostics.llmBillingMode = llmConfig.authMode === "api-key" ? "platform-api" : "codex-subscription"
+        diagnostics.llmBillingMode = "codex-subscription"
         diagnostics.codexTurnIds = []
     }
 

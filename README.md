@@ -91,7 +91,7 @@ Operator workflow:
 
 ### Codex Strategy Provider
 
-Codex provider support is disabled unless `ENABLE_CODEX_PROVIDER=true` is set in the backend runtime. Dashboard creation stays hidden unless `NEXT_PUBLIC_ENABLE_CODEX_PROVIDER=true` is set for the dashboard build.
+Codex strategies use the Codex app-server provider. OpenRouter strategies require `OPENROUTER_API_KEY`; Codex ChatGPT strategies require an active dashboard-managed ChatGPT login. Missing credentials fail closed before a scheduled strategy run starts.
 
 Codex strategies must use canonical policy shape:
 
@@ -106,7 +106,9 @@ Codex strategies must use canonical policy shape:
 }
 ```
 
-Supported `authMode` values are `chatgpt`, `access-token`, and `api-key`. For local ChatGPT session testing, run `codex login` on the same machine and use `authMode = "chatgpt"`. `access-token` requires `CODEX_ACCESS_TOKEN`; `api-key` requires `OPENAI_API_KEY`. ChatGPT and access-token modes use Codex subscription-backed billing, not Platform API key billing. Do not store ChatGPT OAuth cache files, access tokens, or API keys in Convex strategy config or logs.
+Scheduled Codex strategies must use `authMode = "chatgpt"`. Open Dashboard > System Health > Codex ChatGPT Login, click Sign in with ChatGPT, complete the OpenAI login, then paste the full localhost redirect URL back into the dashboard. The backend writes a Codex CLI-compatible `auth.json` under `CODEX_HOME` and scheduled Codex app-server runs read that same login.
+
+Persist `CODEX_HOME` for backend containers. The backend image defaults to `/var/lib/valiq/codex`; mount that directory to durable storage so restarts keep the ChatGPT login. Do not store ChatGPT OAuth cache files, access tokens, or API keys in Convex strategy config or logs.
 
 Run the same app-server and MCP path used by scheduled dry-run strategies before enabling any Codex strategy:
 
@@ -114,7 +116,7 @@ Run the same app-server and MCP path used by scheduled dry-run strategies before
 bun run codex:preflight -- --strategy <strategy-id> --dry-run-only
 ```
 
-Stored-strategy preflight uses the scheduler provider gate and resolved Convex secrets. It requires `ENABLE_CODEX_PROVIDER=true` and will fail closed if the strategy is not dry-run, is not configured for Codex, or lacks the configured Codex auth credential.
+Stored-strategy preflight uses the scheduler provider gate and resolved Convex secrets. It fails closed if the strategy is not dry-run, is not configured for Codex, or lacks the active Codex ChatGPT login.
 
 The Codex app-server path disables inherited apps, plugins, browser/computer/image/multi-agent/workspace tools, shell/unified exec, and web search for strategy runs. Preflight must show only the run-scoped `valiq_run` MCP server starting. If any non-run MCP server starts, the run is interrupted and fails closed.
 

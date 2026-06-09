@@ -10,7 +10,7 @@ describe("scheduler provider gates", () => {
             },
             { dryRun: true },
             createSecrets(),
-            { codexProviderEnabled: false, env: {} }
+            { env: {} }
         )).toThrow("OPENROUTER_API_KEY is not set")
     })
 
@@ -24,11 +24,11 @@ describe("scheduler provider gates", () => {
             createSecrets({
                 OPENROUTER_API_KEY: "openrouter-key",
             }),
-            { codexProviderEnabled: false, env: {} }
+            { env: {} }
         )).not.toThrow()
     })
 
-    it("allows Codex strategies without OPENROUTER_API_KEY when Codex is enabled", () => {
+    it("allows Codex ChatGPT strategies without OPENROUTER_API_KEY when login is active", () => {
         expect(() => assertStrategyLlmProviderCanRun(
             {
                 provider: "codex",
@@ -37,11 +37,30 @@ describe("scheduler provider gates", () => {
             },
             { dryRun: true },
             createSecrets(),
-            { codexProviderEnabled: true, env: {} }
+            {
+                env: {},
+                codexChatGptAuthStatus: createCodexAuthStatus(true),
+            }
         )).not.toThrow()
     })
 
-    it("fails closed for Codex access-token auth without a token", () => {
+    it("fails closed for Codex ChatGPT auth without an active login", () => {
+        expect(() => assertStrategyLlmProviderCanRun(
+            {
+                provider: "codex",
+                model: "codex-test",
+                authMode: "chatgpt",
+            },
+            { dryRun: true },
+            createSecrets(),
+            {
+                env: {},
+                codexChatGptAuthStatus: createCodexAuthStatus(false, "Codex ChatGPT login is missing"),
+            }
+        )).toThrow("Codex ChatGPT login is required")
+    })
+
+    it("fails closed for Codex auth modes that are not ChatGPT login", () => {
         expect(() => assertStrategyLlmProviderCanRun(
             {
                 provider: "codex",
@@ -50,8 +69,8 @@ describe("scheduler provider gates", () => {
             },
             { dryRun: true },
             createSecrets(),
-            { codexProviderEnabled: true, env: {} }
-        )).toThrow("CODEX_ACCESS_TOKEN is required")
+            { env: {} }
+        )).toThrow("Codex provider requires ChatGPT login auth")
     })
 
     it("rejects Codex live strategies while the dry-run gate is active", () => {
@@ -63,29 +82,26 @@ describe("scheduler provider gates", () => {
             },
             { dryRun: false },
             createSecrets(),
-            { codexProviderEnabled: true, env: {} }
+            { env: {} }
         )).toThrow("Codex provider is dry-run only")
-    })
-
-    it("fails closed when the Codex provider feature flag is disabled", () => {
-        expect(() => assertStrategyLlmProviderCanRun(
-            {
-                provider: "codex",
-                model: "codex-test",
-                authMode: "chatgpt",
-            },
-            { dryRun: true },
-            createSecrets(),
-            { codexProviderEnabled: false, env: {} }
-        )).toThrow("ENABLE_CODEX_PROVIDER must be true")
     })
 })
 
 function createSecrets(overrides: Record<string, string | null> = {}): Record<string, string | null> {
     return {
         OPENROUTER_API_KEY: null,
-        CODEX_ACCESS_TOKEN: null,
-        OPENAI_API_KEY: null,
         ...overrides,
+    }
+}
+
+function createCodexAuthStatus(ready: boolean, message = "Codex ChatGPT login is active") {
+    return {
+        ready,
+        status: ready ? "ready" as const : "missing" as const,
+        codexHome: "/tmp/codex",
+        authFilePath: "/tmp/codex/auth.json",
+        accountId: ready ? "account-1" : null,
+        lastRefresh: ready ? "2026-06-09T00:00:00.000Z" : null,
+        message,
     }
 }

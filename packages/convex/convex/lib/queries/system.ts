@@ -33,6 +33,16 @@ export const getAppHealth = query({
     },
 })
 
+export const assertDashboardUser = query({
+    args: {},
+    handler: async (ctx) => {
+        await requireUser(ctx)
+        return {
+            ok: true,
+        }
+    },
+})
+
 export const getManualRunRequests = query({
     args: {
         serviceToken: v.string(),

@@ -36,11 +36,17 @@ export function startHealthServer(config: {
     port: number
     appName: string
     getHealth: () => Record<string, unknown>
+    handleRequest?: (request: Request) => Response | Promise<Response | undefined> | undefined
 }): void {
     Bun.serve({
         port: config.port,
-        fetch(request) {
+        async fetch(request) {
             const { pathname } = new URL(request.url)
+            const handled = await config.handleRequest?.(request)
+
+            if (handled) {
+                return handled
+            }
 
             if (pathname !== "/health") {
                 return new Response("Not Found", { status: 404 })

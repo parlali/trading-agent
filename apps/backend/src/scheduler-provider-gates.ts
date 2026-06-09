@@ -1,9 +1,8 @@
 import type { StrategyLlmConfig } from "@valiq-trading/core"
+import { inspectCodexChatGptAuthStatusSync, type CodexChatGptAuthStatus } from "./codex-auth"
 
 export const STRATEGY_LLM_PROVIDER_SECRET_KEYS = [
     "OPENROUTER_API_KEY",
-    "CODEX_ACCESS_TOKEN",
-    "OPENAI_API_KEY",
 ] as const
 
 export function assertStrategyLlmProviderCanRun(
@@ -11,8 +10,8 @@ export function assertStrategyLlmProviderCanRun(
     policy: Record<string, unknown>,
     strategySecrets: Record<string, string | null>,
     options: {
-        codexProviderEnabled: boolean
         env?: Record<string, string | undefined>
+        codexChatGptAuthStatus?: CodexChatGptAuthStatus
     }
 ): void {
     if (llmConfig.provider === "openrouter") {
@@ -25,32 +24,27 @@ export function assertStrategyLlmProviderCanRun(
     assertCodexProviderCanRun(
         llmConfig,
         policy,
-        strategySecrets,
-        options.codexProviderEnabled,
-        options.env ?? process.env
+        options.env ?? process.env,
+        options.codexChatGptAuthStatus
     )
 }
 
 function assertCodexProviderCanRun(
     llmConfig: Extract<StrategyLlmConfig, { provider: "codex" }>,
     policy: Record<string, unknown>,
-    strategySecrets: Record<string, string | null>,
-    isCodexProviderEnabled: boolean,
-    env: Record<string, string | undefined>
+    env: Record<string, string | undefined>,
+    codexChatGptAuthStatus?: CodexChatGptAuthStatus
 ): void {
-    if (!isCodexProviderEnabled) {
-        throw new Error("Cannot run strategy: ENABLE_CODEX_PROVIDER must be true for Codex provider runs")
-    }
-
     if (policy.dryRun !== true) {
         throw new Error("Cannot run strategy: Codex provider is dry-run only until live-readiness gates pass")
     }
 
-    if (llmConfig.authMode === "access-token" && !strategySecrets.CODEX_ACCESS_TOKEN && !env.CODEX_ACCESS_TOKEN) {
-        throw new Error("Cannot run strategy: CODEX_ACCESS_TOKEN is required for Codex access-token auth")
+    if (llmConfig.authMode !== "chatgpt") {
+        throw new Error("Cannot run strategy: Codex provider requires ChatGPT login auth")
     }
 
-    if (llmConfig.authMode === "api-key" && !strategySecrets.OPENAI_API_KEY && !env.OPENAI_API_KEY) {
-        throw new Error("Cannot run strategy: OPENAI_API_KEY is required for Codex api-key auth")
+    const authStatus = codexChatGptAuthStatus ?? inspectCodexChatGptAuthStatusSync(env)
+    if (!authStatus.ready) {
+        throw new Error(`Cannot run strategy: Codex ChatGPT login is required. ${authStatus.message}`)
     }
 }

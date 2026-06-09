@@ -151,7 +151,6 @@ async function resolvePreflightLlmConfig(): Promise<{
             strategy,
             strategySecrets,
             dryRunOnly: resolveFlag("dry-run-only"),
-            codexProviderEnabled: Bun.env.ENABLE_CODEX_PROVIDER === "true",
             env: Bun.env,
         })
     }
@@ -230,9 +229,9 @@ function readCodexVersion(command: string): string {
 }
 
 function resolveAuthMode(value: string): CodexLlmProviderConfig["authMode"] {
-    if (value === "chatgpt" || value === "access-token" || value === "api-key") {
+    if (value === "chatgpt") {
         return value
     }
 
-    throw new Error("--auth-mode must be chatgpt, access-token, or api-key")
+    throw new Error("--auth-mode must be chatgpt")
 }
