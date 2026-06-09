@@ -45,6 +45,15 @@ export default defineSchema({
         .index("by_app", ["app"])
         .index("by_app_enabled", ["app", "enabled"]),
 
+    codex_chatgpt_auth: defineTable({
+        key: v.literal("chatgpt"),
+        authJson: v.string(),
+        accountId: v.string(),
+        lastRefresh: v.optional(v.string()),
+        createdAt: v.number(),
+        updatedAt: v.number(),
+    }).index("by_key", ["key"]),
+
     strategy_runs: defineTable({
         strategyId: v.id("strategies"),
         app: venueAppV,

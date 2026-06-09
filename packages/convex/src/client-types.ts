@@ -37,6 +37,19 @@ export interface TradingBackendClientConfig {
     timeoutMs?: number
 }
 
+export interface CodexChatGptAuthRecord {
+    authJson: string
+    accountId: string
+    lastRefresh?: string
+    updatedAt: number
+}
+
+export interface StoreCodexChatGptAuthArgs {
+    authJson: string
+    accountId: string
+    lastRefresh?: string | null
+}
+
 export interface StoredStrategy {
     _id: Id<"strategies">
     _creationTime: number
@@ -453,6 +466,8 @@ export interface TradingBackendClient extends TradeEventLogger, AgentMessageLogg
     resolveExecutionSafetyFaults(args: ResolveExecutionSafetyFaultsArgs): Promise<{ resolved: number }>
     recordProviderSyncFailure(app: Exclude<App, "backend">, error: string): Promise<void>
     resolveSecrets(keys: string[]): Promise<Record<string, string | null>>
+    getCodexChatGptAuth(): Promise<CodexChatGptAuthRecord | null>
+    storeCodexChatGptAuth(args: StoreCodexChatGptAuthArgs): Promise<void>
     reportHeartbeatLiveness(
         app: App,
         status: "healthy" | "degraded" | "unhealthy",

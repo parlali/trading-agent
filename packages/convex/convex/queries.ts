@@ -9,6 +9,10 @@ export {
 } from "./lib/queries/strategies"
 
 export {
+    getCodexChatGptAuth,
+} from "./lib/queries/codexAuth"
+
+export {
     getOrderById,
     getActiveOrders,
     getOrderTransitions,

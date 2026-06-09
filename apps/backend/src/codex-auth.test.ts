@@ -4,6 +4,8 @@ import { tmpdir } from "node:os"
 import { describe, expect, it } from "vitest"
 import {
     inspectCodexChatGptAuthStatusSync,
+    readCodexChatGptAuthFileSync,
+    restoreCodexChatGptAuthFileSync,
     writeCodexChatGptAuthFileSync,
 } from "./codex-auth"
 
@@ -45,8 +47,45 @@ describe("Codex ChatGPT auth file", () => {
             expect(authFile.auth_mode).toBe("chatgpt")
             expect(authFile.OPENAI_API_KEY).toBeNull()
             expect(authFile.last_refresh).toBe("2026-06-09T00:00:00.000Z")
+            expect(readCodexChatGptAuthFileSync({ CODEX_HOME: codexHome })).toMatchObject({
+                accountId: "account-1",
+                lastRefresh: "2026-06-09T00:00:00.000Z",
+            })
         } finally {
             rmSync(codexHome, { recursive: true, force: true })
+        }
+    })
+
+    it("restores a persisted Codex CLI-compatible ChatGPT auth file", () => {
+        const sourceCodexHome = createTempCodexHome()
+        const targetCodexHome = createTempCodexHome()
+
+        try {
+            writeCodexChatGptAuthFileSync({
+                env: { CODEX_HOME: sourceCodexHome },
+                refreshedAt: new Date("2026-06-09T00:00:00.000Z"),
+                tokens: {
+                    idToken: "id-token",
+                    accessToken: fakeJwt({ [ACCOUNT_ID_CLAIM]: "account-1" }),
+                    refreshToken: "refresh-token",
+                    accountId: "account-1",
+                },
+            })
+            const snapshot = readCodexChatGptAuthFileSync({ CODEX_HOME: sourceCodexHome })
+
+            expect(snapshot).not.toBeNull()
+
+            const restored = restoreCodexChatGptAuthFileSync({
+                env: { CODEX_HOME: targetCodexHome },
+                authJson: snapshot!.authJson,
+            })
+
+            expect(restored.ready).toBe(true)
+            expect(restored.accountId).toBe("account-1")
+            expect(inspectCodexChatGptAuthStatusSync({ CODEX_HOME: targetCodexHome }).ready).toBe(true)
+        } finally {
+            rmSync(sourceCodexHome, { recursive: true, force: true })
+            rmSync(targetCodexHome, { recursive: true, force: true })
         }
     })
 

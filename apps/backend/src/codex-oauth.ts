@@ -3,7 +3,9 @@ import { spawn } from "node:child_process"
 import { chmodSync, mkdirSync } from "node:fs"
 import {
     inspectCodexChatGptAuthStatusSync,
+    readCodexChatGptAuthFileSync,
     resolveCodexHome,
+    type CodexChatGptAuthFileSnapshot,
     type CodexChatGptAuthStatus,
 } from "./codex-auth"
 
@@ -79,12 +81,14 @@ export function createCodexOAuthControlHandler(config: {
         codexHome: string
         env: Record<string, string | undefined>
     }) => CodexDeviceLoginProcess
+    persistChatGptAuth?: (auth: CodexChatGptAuthFileSnapshot) => Promise<void>
 }): (request: Request) => Promise<Response | undefined> {
     const controller = new CodexOAuthController({
         env: config.env ?? process.env,
         logger: config.logger,
         spawnDeviceLogin: config.spawnDeviceLogin,
     })
+    let lastPersistedAuthJson: string | null = null
 
     return async (request: Request): Promise<Response | undefined> => {
         const { pathname } = new URL(request.url)
@@ -98,11 +102,31 @@ export function createCodexOAuthControlHandler(config: {
 
         try {
             if (request.method === "GET" && pathname === "/codex/oauth/status") {
-                return json(controller.getSnapshot(), 200)
+                const snapshot = controller.getSnapshot()
+                await persistAuthIfReady({
+                    env: config.env ?? process.env,
+                    snapshot,
+                    lastPersistedAuthJson,
+                    persistChatGptAuth: config.persistChatGptAuth,
+                    onPersisted: (authJson) => {
+                        lastPersistedAuthJson = authJson
+                    },
+                })
+                return json(snapshot, 200)
             }
 
             if (request.method === "POST" && pathname === "/codex/oauth/start") {
-                return json(await controller.start(), 200)
+                const snapshot = await controller.start()
+                await persistAuthIfReady({
+                    env: config.env ?? process.env,
+                    snapshot,
+                    lastPersistedAuthJson,
+                    persistChatGptAuth: config.persistChatGptAuth,
+                    onPersisted: (authJson) => {
+                        lastPersistedAuthJson = authJson
+                    },
+                })
+                return json(snapshot, 200)
             }
 
             return json({ error: "Not Found" }, 404)
@@ -115,6 +139,29 @@ export function createCodexOAuthControlHandler(config: {
             return json({ error: message }, 400)
         }
     }
+}
+
+async function persistAuthIfReady(args: {
+    env: Record<string, string | undefined>
+    snapshot: CodexOAuthSnapshot
+    lastPersistedAuthJson: string | null
+    persistChatGptAuth?: (auth: CodexChatGptAuthFileSnapshot) => Promise<void>
+    onPersisted: (authJson: string) => void
+}): Promise<void> {
+    if (!args.snapshot.ready || !args.persistChatGptAuth) {
+        return
+    }
+
+    const auth = readCodexChatGptAuthFileSync(args.env)
+    if (!auth) {
+        throw new Error("Codex ChatGPT login is ready but the auth file could not be read for persistence")
+    }
+    if (auth.authJson === args.lastPersistedAuthJson) {
+        return
+    }
+
+    await args.persistChatGptAuth(auth)
+    args.onPersisted(auth.authJson)
 }
 
 export class CodexOAuthController {

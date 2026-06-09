@@ -15,9 +15,17 @@ import { startManualRunPolling, stopManualRunPolling } from "./manual-runs"
 import { performStartupSync, startPeriodicSync, stopPeriodicSync } from "./sync"
 import { writeHeartbeatSnapshot } from "./health-write"
 import { createCodexOAuthControlHandler } from "./codex-oauth"
+import {
+    persistCodexChatGptAuthToControlPlane,
+    restoreCodexChatGptAuthFromControlPlane,
+} from "./codex-auth-persistence"
 
 async function main(): Promise<void> {
     await resolveAllSecrets()
+    await restoreCodexChatGptAuthFromControlPlane({
+        backend,
+        logger,
+    })
     const recoveredRuns = await backend.recoverRunningRuns()
 
     if (recoveredRuns > 0) {
@@ -93,6 +101,13 @@ function startHealthServer(scheduler: Scheduler): void {
         handleRequest: createCodexOAuthControlHandler({
             serviceToken: backendServiceToken,
             logger,
+            persistChatGptAuth: async (auth) => {
+                await persistCodexChatGptAuthToControlPlane({
+                    backend,
+                    auth,
+                    logger,
+                })
+            },
         }),
     })
 }

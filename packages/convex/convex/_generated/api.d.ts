@@ -19,6 +19,7 @@ import type * as lib_dryRunLedger from "../lib/dryRunLedger.js";
 import type * as lib_heartbeatModel from "../lib/heartbeatModel.js";
 import type * as lib_instrumentClaims from "../lib/instrumentClaims.js";
 import type * as lib_killSwitchState from "../lib/killSwitchState.js";
+import type * as lib_mutations_codexAuth from "../lib/mutations/codexAuth.js";
 import type * as lib_mutations_orders from "../lib/mutations/orders.js";
 import type * as lib_mutations_portfolio from "../lib/mutations/portfolio.js";
 import type * as lib_mutations_portfolioGovernance from "../lib/mutations/portfolioGovernance.js";
@@ -43,6 +44,7 @@ import type * as lib_mutations_systemManualRuns from "../lib/mutations/systemMan
 import type * as lib_mutations_systemReset from "../lib/mutations/systemReset.js";
 import type * as lib_orderIdentityLookup from "../lib/orderIdentityLookup.js";
 import type * as lib_providerPositions from "../lib/providerPositions.js";
+import type * as lib_queries_codexAuth from "../lib/queries/codexAuth.js";
 import type * as lib_queries_dashboard from "../lib/queries/dashboard.js";
 import type * as lib_queries_evidenceBounds from "../lib/queries/evidenceBounds.js";
 import type * as lib_queries_orders from "../lib/queries/orders.js";
@@ -76,6 +78,7 @@ declare const fullApi: ApiFromModules<{
   "lib/heartbeatModel": typeof lib_heartbeatModel;
   "lib/instrumentClaims": typeof lib_instrumentClaims;
   "lib/killSwitchState": typeof lib_killSwitchState;
+  "lib/mutations/codexAuth": typeof lib_mutations_codexAuth;
   "lib/mutations/orders": typeof lib_mutations_orders;
   "lib/mutations/portfolio": typeof lib_mutations_portfolio;
   "lib/mutations/portfolioGovernance": typeof lib_mutations_portfolioGovernance;
@@ -100,6 +103,7 @@ declare const fullApi: ApiFromModules<{
   "lib/mutations/systemReset": typeof lib_mutations_systemReset;
   "lib/orderIdentityLookup": typeof lib_orderIdentityLookup;
   "lib/providerPositions": typeof lib_providerPositions;
+  "lib/queries/codexAuth": typeof lib_queries_codexAuth;
   "lib/queries/dashboard": typeof lib_queries_dashboard;
   "lib/queries/evidenceBounds": typeof lib_queries_evidenceBounds;
   "lib/queries/orders": typeof lib_queries_orders;

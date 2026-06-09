@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
 import { describe, expect, it, vi } from "vitest"
-import { writeCodexChatGptAuthFileSync } from "./codex-auth"
+import { writeCodexChatGptAuthFileSync, type CodexChatGptAuthFileSnapshot } from "./codex-auth"
 import { createCodexOAuthControlHandler } from "./codex-oauth"
 
 describe("Codex OAuth control handler", () => {
@@ -82,10 +82,12 @@ describe("Codex OAuth control handler", () => {
     it("reports ready after Codex writes ChatGPT auth.json", async () => {
         const codexHome = createTempCodexHome()
         const deviceLogin = new FakeCodexDeviceLoginProcess()
+        const persistChatGptAuth = vi.fn(async (_auth: CodexChatGptAuthFileSnapshot) => {})
         const handler = createCodexOAuthControlHandler({
             serviceToken: "service-token",
             env: { CODEX_HOME: codexHome },
             spawnDeviceLogin: vi.fn(() => deviceLogin),
+            persistChatGptAuth,
         })
 
         try {
@@ -121,6 +123,10 @@ describe("Codex OAuth control handler", () => {
             expect(body.accountId).toBe("account-1")
             expect(body.message).toBe("Codex ChatGPT login is active")
             expect(deviceLogin.kill).toHaveBeenCalledWith("SIGTERM")
+            expect(persistChatGptAuth).toHaveBeenCalledTimes(1)
+            expect(persistChatGptAuth.mock.calls[0]?.[0]).toMatchObject({
+                accountId: "account-1",
+            })
         } finally {
             rmSync(codexHome, { recursive: true, force: true })
         }

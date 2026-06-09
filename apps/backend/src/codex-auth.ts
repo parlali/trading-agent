@@ -19,6 +19,12 @@ export interface CodexChatGptAuthTokens {
     accountId: string
 }
 
+export interface CodexChatGptAuthFileSnapshot {
+    authJson: string
+    accountId: string
+    lastRefresh: string | null
+}
+
 export function resolveCodexHome(env: Record<string, string | undefined> = process.env): string {
     const configuredHome = env.CODEX_HOME?.trim()
     if (configuredHome) {
@@ -52,33 +58,11 @@ export function inspectCodexChatGptAuthStatusSync(
     }
 
     try {
-        const parsed = JSON.parse(readFileSync(authFilePath, "utf8")) as unknown
-        const auth = readRecord(parsed)
-        const tokens = readRecord(auth.tokens)
-        const authMode = readString(auth.auth_mode)
-        const accessToken = readString(tokens.access_token)
-        const refreshToken = readString(tokens.refresh_token)
-        const idToken = readString(tokens.id_token)
-        const accountId = readString(tokens.account_id)
-        const lastRefresh = readString(auth.last_refresh)
-
-        if (authMode !== "chatgpt") {
-            return invalidStatus(codexHome, authFilePath, "Codex auth file is not a ChatGPT login")
-        }
-
-        if (!accessToken || !refreshToken || !idToken || !accountId) {
-            return invalidStatus(codexHome, authFilePath, "Codex ChatGPT login is incomplete")
-        }
-
-        return {
-            ready: true,
-            status: "ready",
+        return inspectCodexChatGptAuthPayload(
+            JSON.parse(readFileSync(authFilePath, "utf8")) as unknown,
             codexHome,
-            authFilePath,
-            accountId,
-            lastRefresh,
-            message: "Codex ChatGPT login is active",
-        }
+            authFilePath
+        )
     } catch {
         return invalidStatus(codexHome, authFilePath, "Codex auth file could not be parsed")
     }
@@ -114,6 +98,87 @@ export function writeCodexChatGptAuthFileSync(args: {
     chmodSync(authFilePath, 0o600)
 
     return inspectCodexChatGptAuthStatusSync(env)
+}
+
+export function readCodexChatGptAuthFileSync(
+    env: Record<string, string | undefined> = process.env
+): CodexChatGptAuthFileSnapshot | null {
+    const status = inspectCodexChatGptAuthStatusSync(env)
+    if (!status.ready || !status.accountId) {
+        return null
+    }
+
+    return {
+        authJson: readFileSync(status.authFilePath, "utf8"),
+        accountId: status.accountId,
+        lastRefresh: status.lastRefresh,
+    }
+}
+
+export function restoreCodexChatGptAuthFileSync(args: {
+    env?: Record<string, string | undefined>
+    authJson: string
+}): CodexChatGptAuthStatus {
+    const env = args.env ?? process.env
+    const authFilePath = resolveCodexAuthFilePath(env)
+    const codexHome = resolveCodexHome(env)
+    let parsed: unknown
+
+    try {
+        parsed = JSON.parse(args.authJson) as unknown
+    } catch {
+        throw new Error("Persisted Codex ChatGPT auth file could not be parsed")
+    }
+
+    const status = inspectCodexChatGptAuthPayload(parsed, codexHome, authFilePath)
+    if (!status.ready) {
+        throw new Error(`Persisted Codex ChatGPT auth file is invalid: ${status.message}`)
+    }
+
+    mkdirSync(dirname(authFilePath), {
+        recursive: true,
+        mode: 0o700,
+    })
+    writeFileSync(authFilePath, `${JSON.stringify(parsed, null, 4)}\n`, {
+        mode: 0o600,
+    })
+    chmodSync(dirname(authFilePath), 0o700)
+    chmodSync(authFilePath, 0o600)
+
+    return inspectCodexChatGptAuthStatusSync(env)
+}
+
+function inspectCodexChatGptAuthPayload(
+    parsed: unknown,
+    codexHome: string,
+    authFilePath: string
+): CodexChatGptAuthStatus {
+    const auth = readRecord(parsed)
+    const tokens = readRecord(auth.tokens)
+    const authMode = readString(auth.auth_mode)
+    const accessToken = readString(tokens.access_token)
+    const refreshToken = readString(tokens.refresh_token)
+    const idToken = readString(tokens.id_token)
+    const accountId = readString(tokens.account_id)
+    const lastRefresh = readString(auth.last_refresh)
+
+    if (authMode !== "chatgpt") {
+        return invalidStatus(codexHome, authFilePath, "Codex auth file is not a ChatGPT login")
+    }
+
+    if (!accessToken || !refreshToken || !idToken || !accountId) {
+        return invalidStatus(codexHome, authFilePath, "Codex ChatGPT login is incomplete")
+    }
+
+    return {
+        ready: true,
+        status: "ready",
+        codexHome,
+        authFilePath,
+        accountId,
+        lastRefresh,
+        message: "Codex ChatGPT login is active",
+    }
 }
 
 function invalidStatus(codexHome: string, authFilePath: string, message: string): CodexChatGptAuthStatus {

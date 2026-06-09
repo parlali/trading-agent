@@ -28,6 +28,7 @@ import type {
     DeleteStrategyBatchResult,
     DeleteStrategyResult,
     AgentLogRow,
+    CodexChatGptAuthRecord,
     ExecutionSafetyFaultRow,
     FullResetAudit,
     KillSwitchState,
@@ -46,6 +47,7 @@ import type {
     ResolveExecutionSafetyFaultsArgs,
     RunDiagnostics,
     RunTrigger,
+    StoreCodexChatGptAuthArgs,
     StoredRun,
     StoredStrategy,
     StrategyOrderHistoryRow,
@@ -500,6 +502,25 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
                     keys,
                     ...requireMachineAuth(),
                 }) as Record<string, string | null>
+            )
+        },
+        async getCodexChatGptAuth(): Promise<CodexChatGptAuthRecord | null> {
+            return await runWithTimeout(
+                "Convex query getCodexChatGptAuth",
+                async () => await client.query(api.queries.getCodexChatGptAuth, {
+                    ...requireMachineAuth(),
+                } as never) as CodexChatGptAuthRecord | null
+            )
+        },
+        async storeCodexChatGptAuth(args: StoreCodexChatGptAuthArgs): Promise<void> {
+            await runWithTimeout(
+                "Convex mutation storeCodexChatGptAuth",
+                async () => await client.mutation(api.mutations.storeCodexChatGptAuth, {
+                    ...requireMachineAuth(),
+                    authJson: args.authJson,
+                    accountId: args.accountId,
+                    lastRefresh: args.lastRefresh ?? undefined,
+                } as never)
             )
         },
         async reportHeartbeat(app: App, status: "healthy" | "degraded" | "unhealthy", metadata?: Record<string, unknown>): Promise<void> {
