@@ -73,7 +73,7 @@ describe("scheduler provider gates", () => {
         )).toThrow("Codex provider requires ChatGPT login auth")
     })
 
-    it("rejects Codex live strategies while the dry-run gate is active", () => {
+    it("allows Codex live strategies when ChatGPT login is active", () => {
         expect(() => assertStrategyLlmProviderCanRun(
             {
                 provider: "codex",
@@ -82,8 +82,11 @@ describe("scheduler provider gates", () => {
             },
             { dryRun: false },
             createSecrets(),
-            { env: {} }
-        )).toThrow("Codex provider is dry-run only")
+            {
+                env: {},
+                codexChatGptAuthStatus: createCodexAuthStatus(true),
+            }
+        )).not.toThrow()
     })
 })
 

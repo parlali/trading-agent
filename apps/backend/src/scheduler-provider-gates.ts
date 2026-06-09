@@ -7,7 +7,7 @@ export const STRATEGY_LLM_PROVIDER_SECRET_KEYS = [
 
 export function assertStrategyLlmProviderCanRun(
     llmConfig: StrategyLlmConfig,
-    policy: Record<string, unknown>,
+    _policy: Record<string, unknown>,
     strategySecrets: Record<string, string | null>,
     options: {
         env?: Record<string, string | undefined>
@@ -23,7 +23,6 @@ export function assertStrategyLlmProviderCanRun(
 
     assertCodexProviderCanRun(
         llmConfig,
-        policy,
         options.env ?? process.env,
         options.codexChatGptAuthStatus
     )
@@ -31,14 +30,9 @@ export function assertStrategyLlmProviderCanRun(
 
 function assertCodexProviderCanRun(
     llmConfig: Extract<StrategyLlmConfig, { provider: "codex" }>,
-    policy: Record<string, unknown>,
     env: Record<string, string | undefined>,
     codexChatGptAuthStatus?: CodexChatGptAuthStatus
 ): void {
-    if (policy.dryRun !== true) {
-        throw new Error("Cannot run strategy: Codex provider is dry-run only until live-readiness gates pass")
-    }
-
     if (llmConfig.authMode !== "chatgpt") {
         throw new Error("Cannot run strategy: Codex provider requires ChatGPT login auth")
     }
