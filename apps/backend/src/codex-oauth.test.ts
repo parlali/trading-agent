@@ -155,6 +155,35 @@ describe("Codex OAuth control handler", () => {
             rmSync(codexHome, { recursive: true, force: true })
         }
     })
+
+    it("reports sanitized Codex CLI output when device login exits early", async () => {
+        const codexHome = createTempCodexHome()
+        const deviceLogin = new FakeCodexDeviceLoginProcess()
+        const handler = createCodexOAuthControlHandler({
+            serviceToken: "service-token",
+            env: { CODEX_HOME: codexHome },
+            spawnDeviceLogin: vi.fn(() => deviceLogin),
+        })
+
+        try {
+            const pendingResponse = handler(new Request("http://backend/codex/oauth/start", {
+                method: "POST",
+                headers: {
+                    authorization: "Bearer service-token",
+                },
+            }))
+            deviceLogin.writeStderr("error: unexpected argument '--device-auth' after code TEST-12345")
+            deviceLogin.close(1)
+            const response = await pendingResponse
+            const body = await response!.json() as Record<string, unknown>
+
+            expect(response!.status).toBe(200)
+            expect(body.status).toBe("failed")
+            expect(body.message).toBe("Codex device-code login ended before ChatGPT authorized the backend (exit code 1): error: unexpected argument '--device-auth' after code <redacted-code>")
+        } finally {
+            rmSync(codexHome, { recursive: true, force: true })
+        }
+    })
 })
 
 function createTempCodexHome(): string {
@@ -172,6 +201,10 @@ class FakeCodexDeviceLoginProcess extends EventEmitter {
 
     writeStderr(value: string): void {
         this.stderr.emit("data", value)
+    }
+
+    close(code: number | null, signal: NodeJS.Signals | null = null): void {
+        this.emit("close", code, signal)
     }
 }
 

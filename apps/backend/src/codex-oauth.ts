@@ -318,7 +318,7 @@ export class CodexOAuthController {
         this.failSession(
             session,
             "failed",
-            `Codex device-code login ended before ChatGPT authorized the backend (${reason})`
+            formatDeviceLoginFailureMessage(session, reason)
         )
     }
 
@@ -489,4 +489,21 @@ function appendBoundedOutput(current: string, next: string): string {
 
 function formatDate(value: number | null): string | null {
     return value ? new Date(value).toISOString() : null
+}
+
+function formatDeviceLoginFailureMessage(session: CodexDeviceLoginSession, reason: string): string {
+    const output = sanitizeDeviceLoginOutput(`${session.stdout}\n${session.stderr}`)
+    if (!output) {
+        return `Codex device-code login ended before ChatGPT authorized the backend (${reason})`
+    }
+
+    return `Codex device-code login ended before ChatGPT authorized the backend (${reason}): ${output}`
+}
+
+function sanitizeDeviceLoginOutput(value: string): string {
+    return stripAnsi(value)
+        .replace(CODEX_DEVICE_LOGIN_CODE_PATTERN, "<redacted-code>")
+        .replace(/\s+/gu, " ")
+        .trim()
+        .slice(0, 500)
 }
