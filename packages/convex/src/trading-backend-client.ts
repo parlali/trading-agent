@@ -711,6 +711,15 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
                 async () => await client.mutation(api.mutations.triggerManualRun, { strategyId } as never) as Id<"manual_run_requests">
             )
         },
+        async triggerManualRunAsService(strategyId: Id<"strategies">): Promise<Id<"manual_run_requests">> {
+            return await runWithTimeout(
+                "Convex mutation triggerManualRunAsService",
+                async () => await client.mutation(api.mutations.triggerManualRunAsService, {
+                    ...requireMachineAuth(),
+                    strategyId,
+                } as never) as Id<"manual_run_requests">
+            )
+        },
         async acknowledgeAlert(alertId: Id<"alerts">): Promise<void> {
             await runWithTimeout(
                 "Convex mutation acknowledgeAlert",

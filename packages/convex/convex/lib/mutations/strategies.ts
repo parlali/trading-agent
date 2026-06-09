@@ -17,6 +17,7 @@ import {
     sumDeletedCounts,
 } from "./strategyCascadeDelete"
 import { venueAppV } from "../validators"
+import { enqueueManualRunRequest } from "./systemManualRuns"
 
 const strategyImportArg = v.object({
     app: venueAppV,
@@ -569,28 +570,9 @@ export const triggerManualRun = mutation({
     },
     handler: async (ctx, args) => {
         await requireUser(ctx)
-        const strategy = await ctx.db.get(args.strategyId)
-
-        if (!strategy) {
-            throw new Error(`Strategy not found: ${args.strategyId}`)
-        }
-
-        const existing = await ctx.db
-            .query("manual_run_requests")
-            .withIndex("by_strategy_terminal", (q) =>
-                q.eq("strategyId", args.strategyId).eq("terminalAt", undefined)
-            )
-            .first()
-
-        if (existing) {
-            return existing._id
-        }
-
-        return await ctx.db.insert("manual_run_requests", {
+        return await enqueueManualRunRequest(ctx, {
             strategyId: args.strategyId,
-            app: strategy.app,
-            requestedAt: Date.now(),
-            attemptCount: 0,
+            requireEnabled: false,
         })
     },
 })

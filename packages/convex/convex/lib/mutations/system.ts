@@ -123,6 +123,7 @@ export {
     ackManualRunRequest,
     claimManualRunRequests,
     clearManualRunRequest,
+    triggerManualRunAsService,
 } from "./systemManualRuns"
 
 export {

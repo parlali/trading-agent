@@ -82,6 +82,7 @@ type BunRuntime = {
 }
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 60_000
+const MAX_CAPTURED_PROCESS_OUTPUT_LENGTH = 4096
 
 export class CodexJsonRpcClient {
     private nextId = 1
@@ -290,6 +291,7 @@ class ProcessJsonRpcTransport implements CodexJsonRpcTransport {
     private readonly encoder = new TextEncoder()
     private writeQueue = Promise.resolve()
     private closed = false
+    private stderr = ""
 
     constructor(
         private readonly process: BunSpawnProcess,
@@ -308,13 +310,18 @@ class ProcessJsonRpcTransport implements CodexJsonRpcTransport {
             this.process.stderr,
             (line) => {
                 if (line.trim().length > 0) {
-                    this.logger?.warn("Codex app-server stderr", { message: line })
+                    const message = sanitizeProcessOutput(line)
+                    this.stderr = appendBoundedOutput(this.stderr, `${message}\n`)
+                    this.logger?.warn("Codex app-server stderr", { message })
                 }
             },
             (error) => this.emitError(error)
         )
         void this.process.exited.then((exitCode) => {
             this.logger?.info("Codex app-server exited", { exitCode })
+            if (!this.closed) {
+                this.emitError(new Error(formatProcessExitMessage(exitCode, this.stderr)))
+            }
             this.emitClose()
         }).catch((error) => {
             this.emitError(error instanceof Error ? error : new Error(String(error)))
@@ -370,6 +377,34 @@ class ProcessJsonRpcTransport implements CodexJsonRpcTransport {
             handler()
         }
     }
+}
+
+function formatProcessExitMessage(exitCode: number, stderr: string): string {
+    const detail = stderr.trim()
+    if (!detail) {
+        return `Codex app-server exited before completing the request (exit code ${exitCode})`
+    }
+
+    return `Codex app-server exited before completing the request (exit code ${exitCode}): ${detail}`
+}
+
+function appendBoundedOutput(current: string, next: string): string {
+    const combined = `${current}${next}`
+    if (combined.length <= MAX_CAPTURED_PROCESS_OUTPUT_LENGTH) {
+        return combined
+    }
+
+    return combined.slice(combined.length - MAX_CAPTURED_PROCESS_OUTPUT_LENGTH)
+}
+
+function sanitizeProcessOutput(value: string): string {
+    return value
+        .replace(/\u001b\[[0-9;]*m/g, "")
+        .replace(/\b[A-Z0-9]{4}-[A-Z0-9]{5}\b/g, "<redacted-code>")
+        .replace(/\bBearer\s+[A-Za-z0-9._-]+/g, "Bearer <redacted>")
+        .replace(/\b(?:access_token|refresh_token|id_token|account_id)(["']?\s*[:=]\s*["']?)[^"',\s}]+/gi, "$1<redacted>")
+        .replace(/\bsk-[A-Za-z0-9_-]+/g, "<redacted-api-key>")
+        .replace(/\bac_[A-Za-z0-9._-]+/g, "<redacted-auth-code>")
 }
 
 export function createProcessStdinWriter(stdin: BunStdin): ProcessStdinWriter {

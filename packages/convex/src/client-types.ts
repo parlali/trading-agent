@@ -483,6 +483,7 @@ export interface TradingBackendClient extends TradeEventLogger, AgentMessageLogg
     clearManualRunRequest(requestId: Id<"manual_run_requests">): Promise<void>
     createAlert(args: CreateAlertArgs): Promise<void>
     triggerManualRun(strategyId: Id<"strategies">): Promise<Id<"manual_run_requests">>
+    triggerManualRunAsService(strategyId: Id<"strategies">): Promise<Id<"manual_run_requests">>
     acknowledgeAlert(alertId: Id<"alerts">): Promise<void>
     getStrategyOwnedInstruments(strategyId: Id<"strategies">): Promise<string[]>
     getInstrumentClaimsForStrategy(strategyId: Id<"strategies">): Promise<Array<{ instrument: string }>>

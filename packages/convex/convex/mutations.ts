@@ -42,6 +42,10 @@ export {
 } from "./lib/mutations/system"
 
 export {
+    triggerManualRunAsService,
+} from "./lib/mutations/systemManualRuns"
+
+export {
     reconcileProviderPortfolio,
     recordProviderSyncFailure,
     adoptProviderPositions,

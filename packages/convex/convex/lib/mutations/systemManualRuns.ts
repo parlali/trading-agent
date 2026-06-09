@@ -1,4 +1,4 @@
-import { mutation } from "../../_generated/server"
+import { mutation, type MutationCtx } from "../../_generated/server"
 import type { Doc, Id } from "../../_generated/dataModel"
 import { v } from "convex/values"
 import { requireServiceToken } from "../authGuards"
@@ -18,6 +18,42 @@ const manualRunOutcomeV = v.union(
     v.literal("retryable_failure"),
     v.literal("terminal_failure")
 )
+
+export async function enqueueManualRunRequest(
+    ctx: Pick<MutationCtx, "db">,
+    args: {
+        strategyId: Id<"strategies">
+        requireEnabled: boolean
+    }
+): Promise<Id<"manual_run_requests">> {
+    const strategy = await ctx.db.get(args.strategyId)
+
+    if (!strategy) {
+        throw new Error(`Strategy not found: ${args.strategyId}`)
+    }
+
+    if (args.requireEnabled && !strategy.enabled) {
+        throw new Error(`Strategy is disabled: ${args.strategyId}`)
+    }
+
+    const existing = await ctx.db
+        .query("manual_run_requests")
+        .withIndex("by_strategy_terminal", (q) =>
+            q.eq("strategyId", args.strategyId).eq("terminalAt", undefined)
+        )
+        .first()
+
+    if (existing) {
+        return existing._id
+    }
+
+    return await ctx.db.insert("manual_run_requests", {
+        strategyId: args.strategyId,
+        app: strategy.app,
+        requestedAt: Date.now(),
+        attemptCount: 0,
+    })
+}
 
 function boundManualRunLeaseMs(value: number | undefined): number {
     return Math.max(1_000, Math.min(value ?? DEFAULT_MANUAL_RUN_LEASE_MS, MAX_MANUAL_RUN_LEASE_MS))
@@ -39,6 +75,20 @@ export const clearManualRunRequest = mutation({
     handler: async (ctx, args) => {
         requireServiceToken(args.serviceToken)
         await ctx.db.delete(args.requestId)
+    },
+})
+
+export const triggerManualRunAsService = mutation({
+    args: {
+        serviceToken: v.string(),
+        strategyId: v.id("strategies"),
+    },
+    handler: async (ctx, args) => {
+        requireServiceToken(args.serviceToken)
+        return await enqueueManualRunRequest(ctx, {
+            strategyId: args.strategyId,
+            requireEnabled: true,
+        })
     },
 })
 
