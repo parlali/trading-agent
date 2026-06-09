@@ -267,6 +267,39 @@ describe("createOKXProposeAdjustmentTool", () => {
         }
     })
 
+    it("stops protection update retries when the tool is aborted during retry delay", async () => {
+        const controller = new AbortController()
+        const faultRecorder = vi.fn(async () => {})
+        const pipeline = createPipeline({ stopLoss: 95, takeProfit: 112 })
+        const venue = createVenue({ stopLoss: 97, takeProfit: 118 })
+        venue.updateProtectionOrders.mockRejectedValueOnce(new Error("No open OKX swap position found for BTC-USDT-SWAP"))
+        const tool = createOKXProposeAdjustmentTool(pipeline as never, venue as never, {
+            onExecutionSafetyFault: faultRecorder,
+        })
+
+        const result = tool.handler({
+            instrument: "BTC-USDT-SWAP",
+            stopLoss: 97,
+            takeProfit: 118,
+            reason: "replace both",
+        }, {
+            signal: controller.signal,
+        })
+
+        await vi.waitFor(() => {
+            expect(venue.updateProtectionOrders).toHaveBeenCalledTimes(1)
+        })
+        controller.abort()
+
+        await expect(result).rejects.toMatchObject({
+            name: "AbortError",
+            message: "Tool execution cancelled",
+        })
+        expect(venue.updateProtectionOrders).toHaveBeenCalledTimes(1)
+        expect(pipeline.closePosition).not.toHaveBeenCalled()
+        expect(faultRecorder).not.toHaveBeenCalled()
+    })
+
     it("persists residual exposure evidence when fail-closed flattening fails", async () => {
         const faultRecorder = vi.fn(async () => {})
         const closePosition = vi.fn(async () => {

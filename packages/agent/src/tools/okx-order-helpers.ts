@@ -14,7 +14,7 @@ import {
 } from "@valiq-trading/core"
 import { computeImpliedRR, computeTakeProfitFromRR } from "@valiq-trading/mt5"
 import { createRejectedExecutionToolResult } from "./execution-response"
-import { assertToolNotAborted } from "../tool-registry"
+import { assertToolNotAborted, createToolAbortError } from "../tool-registry"
 
 const OKX_ESTIMATED_ONE_WAY_FEE_RATE = 0.0025
 
@@ -764,14 +764,8 @@ function delay(ms: number, signal?: AbortSignal): Promise<void> {
         }, ms)
         const onAbort = () => {
             clearTimeout(timer)
-            reject(createAbortError("Tool execution cancelled"))
+            reject(createToolAbortError())
         }
         signal?.addEventListener("abort", onAbort, { once: true })
     })
-}
-
-function createAbortError(message: string): Error {
-    const error = new Error(message)
-    error.name = "AbortError"
-    return error
 }

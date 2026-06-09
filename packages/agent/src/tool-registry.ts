@@ -62,8 +62,12 @@ export class ToolRegistry {
 
 export function assertToolNotAborted(signal?: AbortSignal): void {
     if (signal?.aborted) {
-        const error = new Error("Tool execution cancelled")
-        error.name = "AbortError"
-        throw error
+        throw createToolAbortError()
     }
+}
+
+export function createToolAbortError(): Error {
+    const error = new Error("Tool execution cancelled")
+    error.name = "AbortError"
+    return error
 }

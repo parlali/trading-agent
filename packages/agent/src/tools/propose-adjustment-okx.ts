@@ -19,7 +19,7 @@ import {
     flattenOKXPositionAfterProtectionFailure,
     type OKXProtectionFailureCategory,
 } from "./okx-order-helpers"
-import { assertToolNotAborted } from "../tool-registry"
+import { assertToolNotAborted, createToolAbortError } from "../tool-registry"
 
 export function createOKXProposeAdjustmentTool(
     pipeline: ExecutionPipeline,
@@ -126,6 +126,7 @@ export function createOKXProposeAdjustmentTool(
                 stopLoss: finalStopLoss,
                 takeProfit: finalTakeProfit,
                 identity: protectionContext.identity,
+                signal: context?.signal,
             })
 
             if (!protectionUpdate.ok) {
@@ -254,6 +255,7 @@ async function updateProtectionOrdersWithRetry(args: {
     stopLoss?: number
     takeProfit?: number
     identity: Parameters<OKXVenueAdapter["updateProtectionOrders"]>[0]["identity"]
+    signal?: AbortSignal
 }): Promise<
     | { ok: true; value: OKXProtectionUpdateResult }
     | {
@@ -270,17 +272,21 @@ async function updateProtectionOrdersWithRetry(args: {
     } | undefined
 
     for (let attempt = 0; attempt < 3; attempt++) {
+        assertToolNotAborted(args.signal)
         try {
+            const value = await args.venue.updateProtectionOrders({
+                instrument: args.instrument,
+                stopLoss: args.stopLoss,
+                takeProfit: args.takeProfit,
+                identity: args.identity,
+            })
+            assertToolNotAborted(args.signal)
             return {
                 ok: true,
-                value: await args.venue.updateProtectionOrders({
-                    instrument: args.instrument,
-                    stopLoss: args.stopLoss,
-                    takeProfit: args.takeProfit,
-                    identity: args.identity,
-                }),
+                value,
             }
         } catch (error) {
+            assertToolNotAborted(args.signal)
             const errorDetail = getExecutionErrorDetail(error)
             const message = errorDetail?.message ?? getErrorMessage(error)
             const category = classifyOKXProtectionFailure(message)
@@ -294,7 +300,7 @@ async function updateProtectionOrdersWithRetry(args: {
                 break
             }
 
-            await delay((attempt + 1) * 500)
+            await delay((attempt + 1) * 500, args.signal)
         }
     }
 
@@ -329,8 +335,20 @@ function createProtectionRejectedResult(
     }
 }
 
-function delay(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms))
+function delay(ms: number, signal?: AbortSignal): Promise<void> {
+    assertToolNotAborted(signal)
+
+    return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+            signal?.removeEventListener("abort", onAbort)
+            resolve()
+        }, ms)
+        const onAbort = () => {
+            clearTimeout(timer)
+            reject(createToolAbortError())
+        }
+        signal?.addEventListener("abort", onAbort, { once: true })
+    })
 }
 
 function priceMatches(actual: number | undefined, expected: number | undefined): boolean {
