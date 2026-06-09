@@ -28,6 +28,10 @@ RUN bunx turbo build --concurrency=1
 FROM oven/bun:1 AS runner
 WORKDIR /app
 
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates nodejs openssl \
+    && update-ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 RUN bun install -g @openai/codex@0.138.0
 
 COPY --from=builder /app/node_modules ./node_modules
@@ -41,6 +45,8 @@ WORKDIR /app/apps/backend
 ENV NODE_ENV=production
 ENV BACKEND_SERVICE_TOKEN=""
 ENV CODEX_HOME=/var/lib/valiq/codex
+ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+ENV CODEX_CA_CERTIFICATE=/etc/ssl/certs/ca-certificates.crt
 RUN mkdir -p /var/lib/valiq/codex && chmod 700 /var/lib/valiq/codex
 EXPOSE 3100
 CMD ["bun", "run", "src/index.ts"]
