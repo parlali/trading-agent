@@ -616,7 +616,7 @@ export class ExecutionPipeline {
             })
         } catch (error) {
             result = createRejectedExecutionResultFromUnknownError("", error)
-            result = normalizeExecutionResultIdentity(result, submitContext.identity)
+            result = toRecoverableOperationResult(normalizeExecutionResultIdentity(result, submitContext.identity))
         }
         await this.recordCommitUnknownSafetyFaultIfNeeded(intent, "close", result)
         return await this.recordCloseResult({
@@ -692,7 +692,7 @@ export class ExecutionPipeline {
             })
         } catch (error) {
             result = createRejectedExecutionResultFromUnknownError("", error)
-            result = normalizeExecutionResultIdentity(result, submitContext.identity)
+            result = toRecoverableOperationResult(normalizeExecutionResultIdentity(result, submitContext.identity))
         }
         await this.recordCommitUnknownSafetyFaultIfNeeded(intent, "close", result)
         return await this.recordCloseResult({
