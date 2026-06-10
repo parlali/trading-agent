@@ -278,11 +278,12 @@ export async function applyProviderWorkingOrderUpdate(
 ): Promise<void> {
     const order = args.order
     const liveOrder = args.liveOrder
+    const previousStatus = order.status
     const nextStatus = liveOrder.status
     const nextFilledQuantity = liveOrder.filledQuantity
     const nextRemainingQuantity = liveOrder.remainingQuantity
     const nextAvgFillPrice = liveOrder.avgFillPrice ?? order.avgFillPrice
-    const statusChanged = order.status !== nextStatus
+    const statusChanged = previousStatus !== nextStatus
     const quantityChanged =
         order.filledQuantity !== nextFilledQuantity ||
         order.remainingQuantity !== nextRemainingQuantity ||
@@ -321,7 +322,7 @@ export async function applyProviderWorkingOrderUpdate(
         strategyId: order.strategyId,
         type: isTerminalOrderStatus(nextStatus) ? "terminal" : "status_change",
         status: nextStatus,
-        previousStatus: order.status,
+        previousStatus,
         reason: "Provider reconciliation refreshed the live working-order state",
         details: {
             providerOrderId: liveOrder.orderId,
@@ -348,6 +349,7 @@ export async function applyClosedOrderInference(
     }
 ): Promise<void> {
     const order = args.order
+    const previousStatus = order.status
     const nextStatus = args.inferredResolution.status
     const nextFilledQuantity = args.inferredResolution.filledQuantity ?? order.filledQuantity
     const nextRemainingQuantity = args.inferredResolution.remainingQuantity ?? order.remainingQuantity
@@ -380,7 +382,7 @@ export async function applyClosedOrderInference(
         strategyId: order.strategyId,
         type: "terminal",
         status: nextStatus,
-        previousStatus: order.status,
+        previousStatus,
         reason: resolutionReason,
         details: {
             providerOrderId: order.providerOrderId ?? order.orderId,

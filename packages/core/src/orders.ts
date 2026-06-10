@@ -381,4 +381,3 @@ function mergeOrderIntent(
             : intent.metadata,
     }
 }
-
