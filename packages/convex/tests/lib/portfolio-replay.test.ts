@@ -837,6 +837,12 @@ describe("Convex MT5 provider close replay", () => {
 
         expect(db.rows.orders).toHaveLength(orderCountAfterFirstSync)
         expect(db.rows.order_transitions).toHaveLength(transitionCountAfterFirstSync)
+
+        const canonicalCloseAfterRerun = (db.rows.orders ?? []).find((order) => order.orderId === "canonical-us30-close")
+        expect(resolveCloseOrderRealizedPnl(canonicalCloseAfterRerun as never)).toBe(5.28)
+        const retiredSyntheticAfterRerun = (db.rows.orders ?? []).find((order) => order.orderId === syntheticOrderId)
+        expect(retiredSyntheticAfterRerun).toMatchObject({ status: "cancelled" })
+        expect(resolveCloseOrderRealizedPnl(retiredSyntheticAfterRerun as never)).toBeUndefined()
     })
 
 })
@@ -1216,10 +1222,16 @@ describe("Convex OKX net-mode closure replay", () => {
 
         await callRegistered(reconcileProviderPortfolio, ctx, reconcileArgs)
 
-        expect(db.rows.orders).toHaveLength(orderCount)
+        const ordersAfterRerun = db.rows.orders ?? []
+        expect(ordersAfterRerun).toHaveLength(orderCount)
         expect(db.rows.order_transitions ?? []).toHaveLength(transitionCount)
-        expect(resolveCloseOrderRealizedPnl(closeA as never)).toBeCloseTo(31.14)
-        expect(resolveCloseOrderRealizedPnl(closeB as never)).toBeCloseTo(35.92)
+
+        const closeAAfterRerun = ordersAfterRerun.find((order) => order.orderId === "vokc01aaaaaaaaaa")
+        const closeBAfterRerun = ordersAfterRerun.find((order) => order.orderId === "vokc01bbbbbbbbbb")
+        expect(resolveCloseOrderRealizedPnl(closeAAfterRerun as never)).toBeCloseTo(31.14)
+        expect(resolveCloseOrderRealizedPnl(closeBAfterRerun as never)).toBeCloseTo(35.92)
+        expect(closeAAfterRerun).toMatchObject({ status: "filled", strategyId: "strategy-okx-a" })
+        expect(closeBAfterRerun).toMatchObject({ status: "filled", strategyId: "strategy-okx-b" })
     })
 
     it("imports an external net-mode broker close as a synthetic provider close exactly once", async () => {
@@ -1284,6 +1296,14 @@ describe("Convex OKX net-mode closure replay", () => {
         expect(db.rows.orders).toHaveLength(orderCount)
         expect(db.rows.order_transitions ?? []).toHaveLength(transitionCount)
         expect(db.rows.trade_events ?? []).toHaveLength(tradeEventCount)
+
+        const syntheticAfterRerun = (db.rows.orders ?? []).find((order) => order.orderId === syntheticOrderId)
+        expect(syntheticAfterRerun).toMatchObject({
+            strategyId: "strategy-okx-a",
+            status: "filled",
+            filledQuantity: 5,
+        })
+        expect(resolveCloseOrderRealizedPnl(syntheticAfterRerun as never)).toBeCloseTo(-20.1)
     })
 
     it("fails closed with a drift alert when a broker close cannot be attributed to a single owned position", async () => {

@@ -226,6 +226,64 @@ describe("order lifecycle persistence", () => {
         })
     })
 
+    it("keeps failed cancels recoverable until provider truth resolves the order", async () => {
+        const persistence = createMemoryOrderPersistence()
+        const pipeline = new ExecutionPipeline({
+            venue: {
+                ...createPendingLifecycleVenue(),
+                cancelOrder: async () => {
+                    throw new Error("socket closed before cancel acknowledgement")
+                },
+            },
+            venueName: "mt5",
+            policy: {
+                dryRun: false,
+                safety: {
+                    account: {
+                        allocationPercent: 100,
+                    },
+                },
+            },
+            riskValidators: [allowIntent],
+            logger: createLogger({ minLevel: "fatal" }),
+            orderPersistence: persistence.adapter,
+            runId: "run-cancel-recovery",
+            strategyId: "strategy-1",
+        })
+
+        const submitted = await pipeline.executeIntent(
+            {
+                instrument: "XAUUSD",
+                side: "buy",
+                quantity: 0.01,
+                orderType: "limit",
+                limitPrice: 4715.5,
+                timeInForce: "day",
+                metadata: {
+                    action: "entry",
+                },
+            },
+            account,
+            []
+        )
+
+        const cancelResult = await pipeline.cancelOrder(submitted.result.orderId, "test cancel failure")
+        expect(cancelResult.status).toBe("rejected")
+        expect(cancelResult.commitOutcome).toBe("commit_unknown")
+        expect(persistence.orders.get(submitted.result.orderId)).toMatchObject({
+            status: "rejected",
+            commitOutcome: "commit_unknown",
+        })
+
+        const corrected = await pipeline.getOrderStatus(submitted.result.orderId)
+        expect(corrected.status).toBe("pending")
+        expect(persistence.orders.get(submitted.result.orderId)).toMatchObject({
+            status: "pending",
+        })
+
+        pipeline.stopAllTracking()
+    })
+
     it("keeps one canonical order id across provider replacements and assigns canonical transition sequences", async () => {
         const persistence = createMemoryOrderPersistence()
         const pipeline = new ExecutionPipeline({

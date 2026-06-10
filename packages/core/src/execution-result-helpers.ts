@@ -27,6 +27,17 @@ export function createRejectedExecutionResultFromUnknownError(
     }
 }
 
+export function toRecoverableOperationResult(result: ExecutionResult): ExecutionResult {
+    if (result.status !== "rejected") {
+        return result
+    }
+
+    return {
+        ...result,
+        commitOutcome: "commit_unknown",
+    }
+}
+
 export function mergeExecutionIntentUpdates(
     requestedChanges: Partial<OrderIntent>,
     venueUpdates: Partial<OrderIntent> | undefined

@@ -294,7 +294,7 @@ export async function applyProviderWorkingOrderUpdate(
         providerOrderId: liveOrder.orderId,
         providerClientOrderId: readProviderClientOrderId(liveOrder) ?? order.providerClientOrderId,
         providerOrderAliases: mergeProviderOrderAliases(order, liveOrder.orderId),
-        commitOutcome: order.commitOutcome === "commit_unknown" ? "recovered" : (order.commitOutcome ?? "accepted"),
+        commitOutcome: order.commitOutcome === "commit_unknown" ? "recovered" : order.commitOutcome,
         signedOrderFingerprint: readSignedOrderFingerprint(liveOrder) ?? order.signedOrderFingerprint,
         status: nextStatus,
         filledQuantity: nextFilledQuantity,
@@ -357,7 +357,7 @@ export async function applyClosedOrderInference(
         : "Provider reconciliation inferred a cancellation after the order left the live working-order book without fill evidence"
 
     await patchOrderRowFromDoc(ctx, order, {
-        commitOutcome: order.commitOutcome === "commit_unknown" ? "recovered" : (order.commitOutcome ?? "accepted"),
+        commitOutcome: order.commitOutcome === "commit_unknown" ? "recovered" : order.commitOutcome,
         status: nextStatus,
         filledQuantity: nextFilledQuantity,
         remainingQuantity: nextRemainingQuantity,

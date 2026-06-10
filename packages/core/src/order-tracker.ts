@@ -23,6 +23,7 @@ import {
 import type { VenueAdapter, TradeEventLogger, OrderLifecycleConfig, OrderOperationContext, OrderStatusCallback } from "./execution-contracts"
 import type { Logger } from "./logger"
 import { hasIntentChanges } from "./intent"
+import { toRecoverableOperationResult } from "./execution-result-helpers"
 
 interface TrackedOrderState {
     handle: TrackedOrderHandle
@@ -461,7 +462,7 @@ export class OrderLifecycleManager {
                 decision.changes,
                 createOrderOperationContext(tracked.handle.snapshot)
             )
-            await this.applyExecutionResult(tracked, result, "modify_attempt", decision.reason)
+            await this.applyExecutionResult(tracked, toRecoverableOperationResult(result), "modify_attempt", decision.reason)
             return
         }
 
@@ -470,7 +471,7 @@ export class OrderLifecycleManager {
             tracked.handle.snapshot.providerOrderId,
             createOrderOperationContext(tracked.handle.snapshot)
         )
-        await this.applyExecutionResult(tracked, result, "cancel_attempt", decision.reason)
+        await this.applyExecutionResult(tracked, toRecoverableOperationResult(result), "cancel_attempt", decision.reason)
     }
 
     private async persistSnapshot(snapshot: OrderSnapshot): Promise<void> {

@@ -469,13 +469,13 @@ export async function patchOrderRowFromDoc(
 ): Promise<Id<"orders">> {
     return await upsertOrderRow(ctx, {
         orderId: order.orderId,
-        canonicalOrderId: order.canonicalOrderId ?? order.orderId,
-        providerOrderId: order.providerOrderId ?? order.orderId,
+        canonicalOrderId: order.canonicalOrderId,
+        providerOrderId: order.providerOrderId,
         providerClientOrderId: order.providerClientOrderId,
-        providerOrderAliases: order.providerOrderAliases ?? [],
+        providerOrderAliases: order.providerOrderAliases,
         submitAttemptId: order.submitAttemptId,
         submitAttemptSequence: order.submitAttemptSequence,
-        commitOutcome: order.commitOutcome ?? "accepted",
+        commitOutcome: order.commitOutcome,
         signedOrderFingerprint: order.signedOrderFingerprint,
         signedOrderMetadata: order.signedOrderMetadata,
         runId: order.runId,

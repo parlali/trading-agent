@@ -49,6 +49,7 @@ import {
     mergeExecutionIntentUpdates,
     normalizeModifyExecutionResult,
     shouldPersistModifyIntentUpdates,
+    toRecoverableOperationResult,
 } from "./execution-result-helpers"
 import { createExecutionIdentity, mergeExecutionIdentity } from "./execution-identity"
 import {
@@ -399,10 +400,7 @@ export class ExecutionPipeline {
         } catch (error) {
             result = createRejectedExecutionResultFromUnknownError(providerOrderId, error)
         }
-        result = normalizeExecutionResultIdentity(result, {
-            ...cancelIdentity,
-            commitOutcome: result.status === "rejected" ? "rejected" : "accepted",
-        })
+        result = toRecoverableOperationResult(normalizeExecutionResultIdentity(result, cancelIdentity))
         void this.tradeEventLogger?.logSubmission(this.runId, this.strategyId, result, intent)
         const updatedSnapshot = await this.lifecycleManager.captureVenueUpdate(canonicalOrderId, result, "cancel_attempt", reason)
         if (preparedHandle) {
@@ -495,18 +493,18 @@ export class ExecutionPipeline {
                 existing?.avgFillPrice
             )
         }
-        const identityNormalizedResult = normalizeExecutionResultIdentity(result, {
+        const identityNormalizedResult = toRecoverableOperationResult(normalizeExecutionResultIdentity(result, {
             canonicalOrderId,
             providerClientOrderId: existing?.providerClientOrderId ?? canonicalOrderId,
             providerOrderId,
             providerOrderAliases: existing?.providerOrderAliases ?? [],
             submitAttemptId: existing?.submitAttemptId ?? "",
             submitAttemptSequence: existing?.submitAttemptSequence ?? 1,
-            commitOutcome: result.status === "rejected" ? "rejected" : "accepted",
+            commitOutcome: "accepted",
             venue: this.venueName,
             role: "modify",
             sequence: 0,
-        })
+        }))
         const normalizedResult = normalizeModifyExecutionResult(identityNormalizedResult, existing, providerOrderId)
         const resultWithIntentUpdates: ExecutionResult = {
             ...normalizedResult,
