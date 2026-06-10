@@ -492,4 +492,3 @@ function readMetadata(metadata: unknown): Record<string, unknown> | undefined {
         ? metadata as Record<string, unknown>
         : undefined
 }
-
