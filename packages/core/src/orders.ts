@@ -137,6 +137,25 @@ export const isTerminalOrderStatus = (status: OrderStatus): boolean => {
     return TERMINAL_ORDER_STATUSES.includes(status)
 }
 
+export const isProviderConfirmedTerminalOrderState = (state: {
+    status: OrderStatus
+    commitOutcome?: ExecutionCommitOutcome
+}): boolean => {
+    return isTerminalOrderStatus(state.status) &&
+        state.status !== "timed_out" &&
+        state.commitOutcome !== "commit_unknown"
+}
+
+export const isStaleTerminalOrderRegression = (
+    existing: {
+        status: OrderStatus
+        commitOutcome?: ExecutionCommitOutcome
+    },
+    nextStatus: OrderStatus
+): boolean => {
+    return isProviderConfirmedTerminalOrderState(existing) && !isTerminalOrderStatus(nextStatus)
+}
+
 export const isActiveEntryOrderStatus = (status: OrderStatus): boolean => {
     return ACTIVE_ORDER_STATUSES.includes(status)
 }
@@ -203,6 +222,17 @@ export const updateOrderSnapshotFromExecution = (
     now?: number
 ): OrderSnapshot => {
     const timestamp = now ?? result.timestamp ?? Date.now()
+
+    if (isStaleTerminalOrderRegression(snapshot, result.status)) {
+        return {
+            ...snapshot,
+            polling: {
+                ...snapshot.polling,
+                lastCheckedAt: timestamp,
+            },
+        }
+    }
+
     const nextIntent = mergeOrderIntent(snapshot.intent, result.intentUpdates)
     const nextQuantity = nextIntent.quantity
     const filledQuantity = result.filledQuantity ?? snapshot.filledQuantity
@@ -210,7 +240,7 @@ export const updateOrderSnapshotFromExecution = (
         (result.orderId && result.orderId !== snapshot.orderId ? result.orderId : undefined) ??
         snapshot.providerOrderId
     const nextProviderClientOrderId = result.providerClientOrderId ?? snapshot.providerClientOrderId
-    const providerOrderAliases = dedupeOrderIdentifiers([
+    const providerOrderAliases = mergeIdentityAliases([
         ...snapshot.providerOrderAliases,
         ...(result.providerOrderAliases ?? []),
         snapshot.providerOrderId !== snapshot.orderId ? snapshot.providerOrderId : undefined,
@@ -350,18 +380,4 @@ function mergeOrderIntent(
             }
             : intent.metadata,
     }
-}
-
-function dedupeOrderIdentifiers(orderIds: Array<string | undefined>): string[] {
-    const seen = new Set<string>()
-
-    for (const orderId of orderIds) {
-        if (!orderId || orderId.trim().length === 0) {
-            continue
-        }
-
-        seen.add(orderId)
-    }
-
-    return Array.from(seen)
 }

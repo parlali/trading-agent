@@ -1,9 +1,10 @@
 import type { Doc, Id } from "../../_generated/dataModel"
 import {
     getOrderIdentityCandidates,
+    isCanonicalExecutionOrderId,
     isTerminalOrderStatus,
 } from "@valiq-trading/core"
-import { appendOrderTransition, upsertOrderRow } from "./orders"
+import { appendOrderTransition, patchOrderRowFromDoc, upsertOrderRow } from "./orders"
 import type {
     OrderDoc,
     PortfolioMutationCtx,
@@ -206,7 +207,7 @@ export function resolveCanonicalProviderProtectionOrderId(
     order: Pick<ProviderWorkingOrderInput, "providerClientOrderId" | "metadata">
 ): string | undefined {
     const providerClientOrderId = readProviderClientOrderId(order)
-    return isCanonicalOrderId(providerClientOrderId)
+    return isCanonicalExecutionOrderId(providerClientOrderId)
         ? providerClientOrderId
         : undefined
 }
@@ -277,12 +278,12 @@ export async function applyProviderWorkingOrderUpdate(
 ): Promise<void> {
     const order = args.order
     const liveOrder = args.liveOrder
-    const nextProviderOrderAliases = mergeProviderOrderAliases(order, liveOrder.orderId)
+    const previousStatus = order.status
     const nextStatus = liveOrder.status
     const nextFilledQuantity = liveOrder.filledQuantity
     const nextRemainingQuantity = liveOrder.remainingQuantity
     const nextAvgFillPrice = liveOrder.avgFillPrice ?? order.avgFillPrice
-    const statusChanged = order.status !== nextStatus
+    const statusChanged = previousStatus !== nextStatus
     const quantityChanged =
         order.filledQuantity !== nextFilledQuantity ||
         order.remainingQuantity !== nextRemainingQuantity ||
@@ -290,32 +291,17 @@ export async function applyProviderWorkingOrderUpdate(
     const currentProviderOrderId = order.providerOrderId ?? order.orderId
     const providerOrderIdChanged = currentProviderOrderId !== liveOrder.orderId
 
-    await upsertOrderRow(ctx, {
-        orderId: order.orderId,
-        canonicalOrderId: order.canonicalOrderId ?? order.orderId,
+    await patchOrderRowFromDoc(ctx, order, {
         providerOrderId: liveOrder.orderId,
         providerClientOrderId: readProviderClientOrderId(liveOrder) ?? order.providerClientOrderId,
-        providerOrderAliases: nextProviderOrderAliases,
-        submitAttemptId: order.submitAttemptId,
-        submitAttemptSequence: order.submitAttemptSequence,
-        commitOutcome: order.commitOutcome === "commit_unknown" ? "recovered" : (order.commitOutcome ?? "accepted"),
+        providerOrderAliases: mergeProviderOrderAliases(order, liveOrder.orderId),
+        commitOutcome: order.commitOutcome === "commit_unknown" ? "recovered" : order.commitOutcome,
         signedOrderFingerprint: readSignedOrderFingerprint(liveOrder) ?? order.signedOrderFingerprint,
-        signedOrderMetadata: order.signedOrderMetadata,
-        runId: order.runId,
-        strategyId: order.strategyId,
-        venue: order.venue,
-        instrument: order.instrument,
         status: nextStatus,
-        action: order.action,
-        quantity: order.quantity,
         filledQuantity: nextFilledQuantity,
         remainingQuantity: nextRemainingQuantity,
         avgFillPrice: nextAvgFillPrice,
-        submittedAt: order.submittedAt,
         updatedAt: liveOrder.updatedAt,
-        intent: order.intent,
-        metadata: order.metadata,
-        lastTransitionSequence: order.lastTransitionSequence,
         polling: {
             ...order.polling,
             lastCheckedAt: args.updatedAt,
@@ -336,7 +322,7 @@ export async function applyProviderWorkingOrderUpdate(
         strategyId: order.strategyId,
         type: isTerminalOrderStatus(nextStatus) ? "terminal" : "status_change",
         status: nextStatus,
-        previousStatus: order.status,
+        previousStatus,
         reason: "Provider reconciliation refreshed the live working-order state",
         details: {
             providerOrderId: liveOrder.orderId,
@@ -363,6 +349,7 @@ export async function applyClosedOrderInference(
     }
 ): Promise<void> {
     const order = args.order
+    const previousStatus = order.status
     const nextStatus = args.inferredResolution.status
     const nextFilledQuantity = args.inferredResolution.filledQuantity ?? order.filledQuantity
     const nextRemainingQuantity = args.inferredResolution.remainingQuantity ?? order.remainingQuantity
@@ -371,32 +358,13 @@ export async function applyClosedOrderInference(
         ? "Provider reconciliation inferred a fill from provider-truth position state after the order left the live working-order book"
         : "Provider reconciliation inferred a cancellation after the order left the live working-order book without fill evidence"
 
-    await upsertOrderRow(ctx, {
-        orderId: order.orderId,
-        canonicalOrderId: order.canonicalOrderId ?? order.orderId,
-        providerOrderId: order.providerOrderId ?? order.orderId,
-        providerClientOrderId: order.providerClientOrderId,
-        providerOrderAliases: order.providerOrderAliases ?? [],
-        submitAttemptId: order.submitAttemptId,
-        submitAttemptSequence: order.submitAttemptSequence,
-        commitOutcome: order.commitOutcome === "commit_unknown" ? "recovered" : (order.commitOutcome ?? "accepted"),
-        signedOrderFingerprint: order.signedOrderFingerprint,
-        signedOrderMetadata: order.signedOrderMetadata,
-        runId: order.runId,
-        strategyId: order.strategyId,
-        venue: order.venue,
-        instrument: order.instrument,
+    await patchOrderRowFromDoc(ctx, order, {
+        commitOutcome: order.commitOutcome === "commit_unknown" ? "recovered" : order.commitOutcome,
         status: nextStatus,
-        action: order.action,
-        quantity: order.quantity,
         filledQuantity: nextFilledQuantity,
         remainingQuantity: nextRemainingQuantity,
         avgFillPrice: nextAvgFillPrice,
-        submittedAt: order.submittedAt,
         updatedAt: args.updatedAt,
-        intent: order.intent,
-        metadata: order.metadata,
-        lastTransitionSequence: order.lastTransitionSequence,
         polling: {
             ...order.polling,
             lastCheckedAt: args.updatedAt,
@@ -414,7 +382,7 @@ export async function applyClosedOrderInference(
         strategyId: order.strategyId,
         type: "terminal",
         status: nextStatus,
-        previousStatus: order.status,
+        previousStatus,
         reason: resolutionReason,
         details: {
             providerOrderId: order.providerOrderId ?? order.orderId,
@@ -471,10 +439,6 @@ export function readSignedOrderFingerprint(
     return typeof fingerprint === "string" && fingerprint.trim()
         ? fingerprint.trim()
         : undefined
-}
-
-function isCanonicalOrderId(value: string | undefined): value is string {
-    return typeof value === "string" && /^v[a-z0-9]{5}[a-z2-7]{10}$/.test(value)
 }
 
 export async function listActiveOrdersForApp(

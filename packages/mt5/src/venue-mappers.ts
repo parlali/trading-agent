@@ -226,6 +226,23 @@ export function resolveMT5FilledQuantity(
     return remainingVolume
 }
 
+export function aggregateMT5FilledStats(results: ExecutionResult[]): {
+    filledQuantity: number
+    avgFillPrice?: number
+} {
+    const filledResults = results.filter((result) => result.status === "filled")
+    const filledQuantity = filledResults.reduce((total, result) => total + result.filledQuantity, 0)
+    const fillValue = filledResults.reduce(
+        (total, result) => total + result.filledQuantity * (result.fillPrice ?? 0),
+        0
+    )
+
+    return {
+        filledQuantity,
+        avgFillPrice: filledQuantity > 0 ? fillValue / filledQuantity : undefined,
+    }
+}
+
 export function aggregateMT5CloseResults(
     instrument: string,
     results: ExecutionResult[]
@@ -234,12 +251,8 @@ export function aggregateMT5CloseResults(
         return results[0]!
     }
 
+    const { filledQuantity, avgFillPrice } = aggregateMT5FilledStats(results)
     const filledResults = results.filter((result) => result.status === "filled")
-    const filledQuantity = filledResults.reduce((total, result) => total + result.filledQuantity, 0)
-    const fillValue = filledResults.reduce(
-        (total, result) => total + result.filledQuantity * (result.fillPrice ?? 0),
-        0
-    )
     const failedResults = results.filter((result) => result.status !== "filled")
     const status: ExecutionResult["status"] = failedResults.length === 0
         ? "filled"
@@ -270,7 +283,7 @@ export function aggregateMT5CloseResults(
         providerClientOrderId: providerClientOrderIds.length === 1 ? providerClientOrderIds[0] : undefined,
         status,
         filledQuantity,
-        fillPrice: filledQuantity > 0 ? fillValue / filledQuantity : undefined,
+        fillPrice: avgFillPrice,
         timestamp: Date.now(),
         error: errorDetail ? formatExecutionError(errorDetail) : undefined,
         errorDetail,

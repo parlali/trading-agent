@@ -2,6 +2,7 @@ import { mutation } from "../../_generated/server"
 import type { Doc, Id } from "../../_generated/dataModel"
 import { v } from "convex/values"
 import {
+    isCanonicalExecutionOrderId,
     resolveProviderAdoptionInstruments,
 } from "@valiq-trading/core"
 import { requireServiceToken } from "../authGuards"
@@ -399,7 +400,7 @@ export const reconcileProviderPortfolio = mutation({
             syncedAt: now,
         }))
 
-        await reconcileProviderPositionClosures(ctx, {
+        const closureReconciliation = await reconcileProviderPositionClosures(ctx, {
             app: args.app,
             strategyMap,
             existingProviderPositions,
@@ -541,6 +542,17 @@ export const reconcileProviderPortfolio = mutation({
         const unownedOrders = resolvedWorkingOrders.filter((order) =>
             order.ownershipStatus !== "owned" && order.expectedExternal !== true
         )
+        await incrementControlPlaneMetric(ctx, {
+            metric: "reconcile_provider_portfolio.unattributed_closures",
+            app: args.app,
+            delta: closureReconciliation.unattributedClosures.length,
+        })
+        await incrementControlPlaneMetric(ctx, {
+            metric: "reconcile_provider_portfolio.unmatched_closed_positions",
+            app: args.app,
+            delta: closureReconciliation.unmatchedClosedPositions.length,
+        })
+
         const driftSummary = createDriftSummary({
             unownedPositionCount: unownedPositions.length,
             unownedOrderCount: unownedOrders.length,
@@ -549,6 +561,8 @@ export const reconcileProviderPortfolio = mutation({
             statusMismatches,
             ownershipMismatches: Array.from(ownershipMismatches),
             exposureViolations,
+            unattributedClosures: closureReconciliation.unattributedClosures,
+            unmatchedClosedPositions: closureReconciliation.unmatchedClosedPositions,
         })
         const driftDetected = driftSummary !== undefined
         const stale = false
@@ -623,9 +637,7 @@ function resolveCanonicalOrderIdFromProviderIdentity(order: {
         typeof metadata?.providerClientOrderId === "string" ? metadata.providerClientOrderId : undefined,
     ]
 
-    return candidates.find((candidate) =>
-        typeof candidate === "string" && /^v[a-z0-9]{5}[a-z2-7]{10}$/.test(candidate)
-    )
+    return candidates.find(isCanonicalExecutionOrderId)
 }
 
 function resolveAlpacaPositionClaimMetadata(args: {

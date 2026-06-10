@@ -4,6 +4,7 @@ import {
     ExecutionCostTracker,
     formatExecutionError,
     getExecutionErrorDetail,
+    mergeIdentityAliases,
     type AccountState,
     type ExecutionCostAssessment,
     type ExecutionCostSnapshot,
@@ -28,6 +29,7 @@ import {
 import { toMT5MarketSnapshot, type MT5MarketSnapshot } from "./market-context"
 import {
     aggregateMT5CloseResults,
+    aggregateMT5FilledStats,
     buildMT5ExecutionCostSnapshot,
     mapMT5OrderState,
     mapMT5Position,
@@ -608,20 +610,22 @@ export class MT5VenueAdapter implements VenueAdapter, PriceVerifier {
                 ? {
                     ...cancelResult,
                     providerOrderId: cancelResult.providerOrderId ?? String(ticket),
-                    providerOrderAliases: mergeProviderOrderAliases(
-                        cancelResult.providerOrderAliases,
-                        [status.orderId, status.providerOrderId]
-                    ),
+                    providerOrderAliases: mergeIdentityAliases([
+                        ...(cancelResult.providerOrderAliases ?? []),
+                        status.orderId,
+                        status.providerOrderId,
+                    ]),
                     errorDetail: mergeCancelStatusEvidence(cancelResult, status),
                     error: cancelResult.error,
                 }
                 : {
                     ...status,
                     providerOrderId: status.providerOrderId ?? String(ticket),
-                    providerOrderAliases: mergeProviderOrderAliases(
-                        cancelResult.providerOrderAliases,
-                        [cancelResult.orderId, cancelResult.providerOrderId]
-                    ),
+                    providerOrderAliases: mergeIdentityAliases([
+                        ...(cancelResult.providerOrderAliases ?? []),
+                        cancelResult.orderId,
+                        cancelResult.providerOrderId,
+                    ]),
                     errorDetail: undefined,
                     error: undefined,
                 }
@@ -642,12 +646,7 @@ async function sleep(delayMs: number): Promise<void> {
 
 function aggregateMT5CancelResults(orderId: string, results: ExecutionResult[]): ExecutionResult {
     const unresolved = results.filter((result) => result.status !== "cancelled" && result.errorDetail !== undefined)
-    const filledResults = results.filter((result) => result.status === "filled")
-    const filledQuantity = filledResults.reduce((total, result) => total + result.filledQuantity, 0)
-    const fillValue = filledResults.reduce(
-        (total, result) => total + result.filledQuantity * (result.fillPrice ?? 0),
-        0
-    )
+    const { filledQuantity, avgFillPrice } = aggregateMT5FilledStats(results)
     const terminalResult = results.find((result) => result.status !== "cancelled" && result.errorDetail === undefined)
     const errorDetail = unresolved.length > 0
         ? createExecutionErrorDetail(
@@ -675,7 +674,7 @@ function aggregateMT5CancelResults(orderId: string, results: ExecutionResult[]):
         providerOrderAliases: results.map((result) => result.orderId).filter((value) => value !== orderId),
         status: unresolved.length > 0 ? "rejected" : terminalResult?.status ?? "cancelled",
         filledQuantity,
-        fillPrice: filledQuantity > 0 ? fillValue / filledQuantity : terminalResult?.fillPrice,
+        fillPrice: avgFillPrice ?? terminalResult?.fillPrice,
         timestamp: Date.now(),
         error: errorDetail ? formatExecutionError(errorDetail) : undefined,
         errorDetail,
@@ -688,16 +687,6 @@ function resolveMT5MutationPrice(intent: OrderIntent): number | undefined {
     }
 
     return isPositiveMT5Price(intent.stopPrice) ? intent.stopPrice : undefined
-}
-
-function mergeProviderOrderAliases(
-    current: string[] | undefined,
-    values: Array<string | undefined>
-): string[] {
-    return Array.from(new Set([
-        ...(current ?? []),
-        ...values.filter((value): value is string => Boolean(value)),
-    ]))
 }
 
 function mergeCancelStatusEvidence(

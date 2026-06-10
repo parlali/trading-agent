@@ -267,6 +267,109 @@ describe("OKXVenueAdapter account snapshot semantics", () => {
         ])
     })
 
+    it("excludes net-mode opening fills that report zero fillPnl and keeps canonical client ids on closures", async () => {
+        const client = {
+            getFillsHistory: vi.fn().mockResolvedValue([
+                {
+                    instId: "ETH-USDT-SWAP",
+                    tradeId: "trade-net-open",
+                    ordId: "ord-net-open",
+                    clOrdId: "voke01aaaaaaaaaa",
+                    side: "sell",
+                    posSide: "net",
+                    fillSz: "2",
+                    fillPx: "3400",
+                    fillPnl: "0",
+                    ts: "1777279250000",
+                },
+                {
+                    instId: "ETH-USDT-SWAP",
+                    tradeId: "trade-net-close",
+                    ordId: "ord-net-close",
+                    clOrdId: "vokc01aaaaaaaaaa",
+                    side: "buy",
+                    posSide: "net",
+                    fillSz: "2",
+                    fillPx: "3380",
+                    fillPnl: "4",
+                    ts: "1777279260000",
+                },
+            ]),
+            getInstruments: vi.fn().mockResolvedValue([
+                createSwapInstrument("ETH-USDT-SWAP", "0.1", "ETH"),
+            ]),
+        }
+        const adapter = new OKXVenueAdapter(client as never, {
+            marginMode: "cross",
+            positionMode: "net_mode",
+        })
+
+        const closures = await adapter.getRecentPositionClosures()
+
+        expect(closures).toHaveLength(1)
+        expect(closures[0]).toMatchObject({
+            instrument: "ETH-USDT-SWAP",
+            side: "short",
+            quantity: 0.2,
+            fillPrice: 3380,
+            metadata: {
+                orderId: "ord-net-close",
+                clientOrderId: "vokc01aaaaaaaaaa",
+                fillPnl: 4,
+            },
+        })
+    })
+
+    it("paginates fills history and fails closed when the bounded page budget is exceeded", async () => {
+        const buildPage = (page: number) => Array.from({ length: 100 }, (_, index) => ({
+            instId: "ETH-USDT-SWAP",
+            tradeId: `trade-${page}-${index}`,
+            ordId: `ord-${page}-${index}`,
+            billId: `bill-${page}-${index}`,
+            side: "sell",
+            posSide: "long",
+            fillSz: "1",
+            fillPx: "3400",
+            ts: "1777279250000",
+        }))
+        const exhaustedClient = {
+            getFillsHistory: vi.fn().mockImplementation(async (_instType, params: { after?: string }) =>
+                buildPage(params.after ? Number(params.after.split("-")[1]) + 1 : 0)
+            ),
+            getInstruments: vi.fn().mockResolvedValue([
+                createSwapInstrument("ETH-USDT-SWAP", "0.1", "ETH"),
+            ]),
+        }
+        const exhaustedAdapter = new OKXVenueAdapter(exhaustedClient as never, {
+            marginMode: "cross",
+            positionMode: "long_short_mode",
+        })
+
+        await expect(exhaustedAdapter.getRecentPositionClosures()).rejects.toThrow("pagination exceeded")
+        expect(exhaustedClient.getFillsHistory).toHaveBeenCalledTimes(10)
+
+        const pagedClient = {
+            getFillsHistory: vi.fn()
+                .mockResolvedValueOnce(buildPage(0))
+                .mockResolvedValueOnce(buildPage(1).slice(0, 5)),
+            getInstruments: vi.fn().mockResolvedValue([
+                createSwapInstrument("ETH-USDT-SWAP", "0.1", "ETH"),
+            ]),
+        }
+        const pagedAdapter = new OKXVenueAdapter(pagedClient as never, {
+            marginMode: "cross",
+            positionMode: "long_short_mode",
+        })
+
+        const closures = await pagedAdapter.getRecentPositionClosures()
+
+        expect(pagedClient.getFillsHistory).toHaveBeenCalledTimes(2)
+        expect(pagedClient.getFillsHistory.mock.calls[1]?.[1]).toMatchObject({
+            after: "bill-0-99",
+        })
+        expect(closures).toHaveLength(105)
+    })
+
     it("does not require fillPnl when position side proves an OKX fill is a close", async () => {
         const client = {
             getFillsHistory: vi.fn().mockResolvedValue([

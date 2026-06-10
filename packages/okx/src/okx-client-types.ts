@@ -62,6 +62,8 @@ export interface OKXFill {
     instId: string
     tradeId: string
     ordId: string
+    clOrdId?: string
+    billId?: string
     side: "buy" | "sell"
     posSide?: string
     fillSz: string
