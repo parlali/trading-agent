@@ -260,7 +260,7 @@ export function isOKXClosingFill(fill: OKXFill): boolean {
         return fill.side === "buy"
     }
 
-    return isFiniteNumberString(fill.fillPnl)
+    return isFiniteNumberString(fill.fillPnl) && Number(fill.fillPnl) !== 0
 }
 
 export function resolveOKXClosurePositionSide(fill: OKXFill): Position["side"] {

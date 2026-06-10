@@ -8,7 +8,7 @@ import type {
 type ProviderPositionRow = Omit<Doc<"provider_positions">, "_id" | "_creationTime">
 type ProviderWorkingOrderRow = Omit<Doc<"provider_working_orders">, "_id" | "_creationTime">
 
-const PROVIDER_POSITION_PATCH_FIELDS = [
+const PROVIDER_POSITION_COMPARE_FIELDS = [
     "providerPositionId",
     "strategyId",
     "ownershipStatus",
@@ -22,10 +22,14 @@ const PROVIDER_POSITION_PATCH_FIELDS = [
     "stopLoss",
     "takeProfit",
     "metadata",
+] as const satisfies readonly (keyof ProviderPositionRow)[]
+
+const PROVIDER_POSITION_PATCH_FIELDS = [
+    ...PROVIDER_POSITION_COMPARE_FIELDS,
     "syncedAt",
 ] as const satisfies readonly (keyof ProviderPositionRow)[]
 
-const PROVIDER_WORKING_ORDER_PATCH_FIELDS = [
+const PROVIDER_WORKING_ORDER_COMPARE_FIELDS = [
     "canonicalOrderId",
     "providerOrderId",
     "providerClientOrderId",
@@ -50,6 +54,10 @@ const PROVIDER_WORKING_ORDER_PATCH_FIELDS = [
     "submittedAt",
     "updatedAt",
     "cancelAt",
+] as const satisfies readonly (keyof ProviderWorkingOrderRow)[]
+
+const PROVIDER_WORKING_ORDER_PATCH_FIELDS = [
+    ...PROVIDER_WORKING_ORDER_COMPARE_FIELDS,
     "syncedAt",
 ] as const satisfies readonly (keyof ProviderWorkingOrderRow)[]
 
@@ -75,9 +83,8 @@ export async function upsertProviderPositionRows(
             continue
         }
 
-        const changed = hasFieldChange(current, row, PROVIDER_POSITION_PATCH_FIELDS)
-
-        if (!changed) {
+        if (!hasFieldChange(current, row, PROVIDER_POSITION_COMPARE_FIELDS)) {
+            await ctx.db.patch(current._id, { syncedAt: row.syncedAt })
             stats.unchanged++
             continue
         }
@@ -120,9 +127,8 @@ export async function upsertProviderWorkingOrderRows(
             continue
         }
 
-        const changed = hasFieldChange(current, row, PROVIDER_WORKING_ORDER_PATCH_FIELDS)
-
-        if (!changed) {
+        if (!hasFieldChange(current, row, PROVIDER_WORKING_ORDER_COMPARE_FIELDS)) {
+            await ctx.db.patch(current._id, { syncedAt: row.syncedAt })
             stats.unchanged++
             continue
         }
@@ -387,7 +393,15 @@ function hasFieldChange<TCurrent, TRow, K extends keyof TCurrent & keyof TRow>(
     row: TRow,
     fields: readonly K[]
 ): boolean {
-    return fields.some((field) => (current[field] as unknown) !== (row[field] as unknown))
+    return fields.some((field) => !fieldValuesEqual(current[field] as unknown, row[field] as unknown))
+}
+
+function fieldValuesEqual(left: unknown, right: unknown): boolean {
+    if (Array.isArray(left) && Array.isArray(right)) {
+        return left.length === right.length && left.every((value, index) => value === right[index])
+    }
+
+    return left === right
 }
 
 function pickFields<TRow, K extends keyof TRow>(

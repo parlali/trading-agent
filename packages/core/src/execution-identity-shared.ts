@@ -7,6 +7,12 @@ import {
     EXECUTION_IDENTITY_VOLATILE_METADATA_KEYS,
 } from "./execution-identity-constants"
 
+const CANONICAL_EXECUTION_ORDER_ID_PATTERN = /^v[a-z0-9]{5}[a-z2-7]{10}$/
+
+export function isCanonicalExecutionOrderId(value: unknown): boolean {
+    return typeof value === "string" && CANONICAL_EXECUTION_ORDER_ID_PATTERN.test(value)
+}
+
 export function normalizeExecutionRole(role: ExecutionIdentityInput["role"]): ExecutionOrderRole {
     if (role === "adjustment") {
         return "entry"

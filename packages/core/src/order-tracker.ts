@@ -351,6 +351,7 @@ export class OrderLifecycleManager {
             await this.applyExecutionResult(tracked, result, "status_change")
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error)
+            const previousError = tracked.handle.snapshot.polling.lastError
             const snapshot = {
                 ...tracked.handle.snapshot,
                 polling: {
@@ -368,13 +369,15 @@ export class OrderLifecycleManager {
             }
             await this.persistSnapshot(snapshot)
             this.logger.error("Error polling order status", { orderId, error: message })
-            this.createAlert({
-                strategyId: snapshot.strategyId,
-                runId: snapshot.runId,
-                orderId,
-                severity: "warning",
-                message: `Order status polling failed for ${orderId}: ${message}`,
-            })
+            if (previousError === undefined) {
+                this.createAlert({
+                    strategyId: snapshot.strategyId,
+                    runId: snapshot.runId,
+                    orderId,
+                    severity: "warning",
+                    message: `Order status polling failed for ${orderId}: ${message}`,
+                })
+            }
             this.schedulePoll(orderId)
         }
     }
@@ -410,14 +413,9 @@ export class OrderLifecycleManager {
         }
 
         await this.persistTransition(tracked, transition)
-        if (
-            previousSnapshot.status !== updatedSnapshot.status ||
-            previousSnapshot.filledQuantity !== updatedSnapshot.filledQuantity
-        ) {
-            void this.tradeEventLogger?.logFillUpdate(this.runId, this.strategyId, result)
-        }
 
         if (previousSnapshot.status !== updatedSnapshot.status || previousSnapshot.filledQuantity !== updatedSnapshot.filledQuantity) {
+            void this.tradeEventLogger?.logFillUpdate(this.runId, this.strategyId, result)
             this.logger.info("Order status update", {
                 orderId: updatedSnapshot.orderId,
                 status: updatedSnapshot.status,
@@ -529,6 +527,9 @@ export class OrderLifecycleManager {
         }
 
         this.trackedOrders.set(snapshot.orderId, tracked)
+        if (shouldPollSnapshot(snapshot)) {
+            this.schedulePoll(snapshot.orderId)
+        }
         return tracked
     }
 

@@ -59,18 +59,10 @@ export function setsIntersect(left: Set<string>, right: Set<string>): boolean {
 }
 
 export function readMetadataRecord(value: string | undefined): Record<string, unknown> | undefined {
-    if (!value) {
-        return undefined
-    }
-
-    try {
-        const parsed = JSON.parse(value)
-        return parsed && typeof parsed === "object"
-            ? parsed as Record<string, unknown>
-            : undefined
-    } catch {
-        return undefined
-    }
+    const parsed = parseJson<unknown>(value)
+    return parsed && typeof parsed === "object"
+        ? parsed as Record<string, unknown>
+        : undefined
 }
 
 export function addExpectedExternalIdentifier(
@@ -143,8 +135,18 @@ export function createDriftSummary(args: {
     statusMismatches: string[]
     ownershipMismatches: string[]
     exposureViolations: string[]
+    unattributedClosures?: string[]
+    unmatchedClosedPositions?: string[]
 }): string | undefined {
     const parts: string[] = []
+
+    if (args.unattributedClosures && args.unattributedClosures.length > 0) {
+        parts.push(`${args.unattributedClosures.length} provider close(s) could not be safely attributed to a strategy-owned position: ${args.unattributedClosures.join(", ")}`)
+    }
+
+    if (args.unmatchedClosedPositions && args.unmatchedClosedPositions.length > 0) {
+        parts.push(`${args.unmatchedClosedPositions.length} owned position(s) disappeared without matching broker close evidence: ${args.unmatchedClosedPositions.join(", ")}`)
+    }
 
     if (args.unownedPositionCount > 0) {
         parts.push(`${args.unownedPositionCount} live position(s) lack a clean strategy owner`)

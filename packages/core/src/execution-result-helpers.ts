@@ -74,20 +74,9 @@ export function normalizeModifyExecutionResult(
         }
     }
 
-    const preserveFilledState = existing.status === "filled" &&
-        result.status === "filled" &&
-        result.filledQuantity === 0 &&
-        result.fillPrice === undefined
-
     return {
         ...result,
         orderId: result.orderId || orderId,
-        status: preserveFilledState ? existing.status : result.status,
-        filledQuantity: preserveFilledState
-            ? existing.filledQuantity
-            : result.filledQuantity,
-        fillPrice: preserveFilledState
-            ? existing.avgFillPrice
-            : result.fillPrice ?? existing.avgFillPrice,
+        fillPrice: result.fillPrice ?? existing.avgFillPrice,
     }
 }

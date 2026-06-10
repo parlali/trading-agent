@@ -99,8 +99,8 @@ export class DryRunExecutionBook {
             })
             return
         }
-        this.cashAdjustment += resolveDryRunCashDelta(side, quantity, fillPrice)
         if (existing.side === positionSide) {
+            this.cashAdjustment += resolveDryRunCashDelta(side, quantity, fillPrice)
             const totalQty = existing.quantity + quantity
             const avgEntry = (existing.quantity * existing.entryPrice + quantity * fillPrice) / totalQty
             const currentPrice = resolveDryRunCurrentPrice(metadata, result) ?? existing.currentPrice
@@ -123,9 +123,11 @@ export class DryRunExecutionBook {
                 ),
             })
         } else {
-            const closedQty = Math.min(existing.quantity, quantity)
+            const effectiveQuantity = action === "close" ? Math.min(existing.quantity, quantity) : quantity
+            this.cashAdjustment += resolveDryRunCashDelta(side, effectiveQuantity, fillPrice)
+            const closedQty = Math.min(existing.quantity, effectiveQuantity)
             this.realizedPnl += resolveDryRunRealizedPnl(existing, side, closedQty, fillPrice)
-            const netQty = existing.quantity - quantity
+            const netQty = existing.quantity - effectiveQuantity
             if (netQty === 0) {
                 this.positions.delete(instrument)
             } else if (netQty > 0) {
@@ -148,7 +150,7 @@ export class DryRunExecutionBook {
                         result
                     ),
                 })
-            } else if (action !== "close") {
+            } else {
                 const flippedQty = Math.abs(netQty)
                 const currentPrice = resolveDryRunCurrentPrice(metadata, result) ?? fillPrice
                 this.positions.set(instrument, {

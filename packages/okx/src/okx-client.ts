@@ -190,6 +190,7 @@ export class OKXClient {
             begin?: number
             end?: number
             limit?: number
+            after?: string
         } = {}
     ): Promise<OKXFill[]> {
         return await this.privateRequest<OKXFill>("GET", "/api/v5/trade/fills-history", {
@@ -198,6 +199,7 @@ export class OKXClient {
             begin: params.begin,
             end: params.end,
             limit: params.limit,
+            after: params.after,
         })
     }
 

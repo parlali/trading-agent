@@ -74,6 +74,7 @@ async function mapClosureGroup(
         closedAt: Number.isFinite(closedAt) ? closedAt : Date.now(),
         metadata: {
             orderId: first.ordId,
+            clientOrderId: first.clOrdId || undefined,
             tradeIds: group.map((fill) => fill.tradeId).filter(Boolean),
             side: first.side,
             posSide: first.posSide,

@@ -2,7 +2,11 @@ import { mutation } from "../../_generated/server"
 import type { DatabaseWriter } from "../../_generated/server"
 import type { Doc, Id } from "../../_generated/dataModel"
 import { v } from "convex/values"
-import { DEFAULT_STALE_RUN_TIMEOUT_MS, type ExecutionCommitOutcome } from "@valiq-trading/core"
+import {
+    DEFAULT_STALE_RUN_TIMEOUT_MS,
+    isStaleTerminalOrderRegression,
+    type ExecutionCommitOutcome,
+} from "@valiq-trading/core"
 import { requireServiceToken } from "../authGuards"
 import { getClaimInstrumentsForOrder, reconcileOrderInstrumentClaim } from "../instrumentClaims"
 import { incrementControlPlaneMetric } from "../controlPlaneMetrics"
@@ -391,6 +395,14 @@ export async function upsertOrderRow(
     }
 
     const existing = await findOrderRowByIdentity(ctx.db, args.orderId)
+    if (existing && isStaleTerminalOrderRegression(existing, args.status)) {
+        await incrementControlPlaneMetric(ctx, {
+            metric: "upsert_order.terminal_regression_blocked",
+            app: strategy.app,
+        })
+        return existing._id
+    }
+
     const payload = {
         orderId: args.orderId,
         canonicalOrderId: args.canonicalOrderId ?? args.orderId,
@@ -448,6 +460,42 @@ export async function upsertOrderRow(
         updatedAt: args.updatedAt,
     })
     return orderDocId
+}
+
+export async function patchOrderRowFromDoc(
+    ctx: { db: DatabaseWriter },
+    order: Doc<"orders">,
+    overrides: Partial<UpsertOrderArgs> = {}
+): Promise<Id<"orders">> {
+    return await upsertOrderRow(ctx, {
+        orderId: order.orderId,
+        canonicalOrderId: order.canonicalOrderId ?? order.orderId,
+        providerOrderId: order.providerOrderId ?? order.orderId,
+        providerClientOrderId: order.providerClientOrderId,
+        providerOrderAliases: order.providerOrderAliases ?? [],
+        submitAttemptId: order.submitAttemptId,
+        submitAttemptSequence: order.submitAttemptSequence,
+        commitOutcome: order.commitOutcome ?? "accepted",
+        signedOrderFingerprint: order.signedOrderFingerprint,
+        signedOrderMetadata: order.signedOrderMetadata,
+        runId: order.runId,
+        strategyId: order.strategyId,
+        venue: order.venue,
+        instrument: order.instrument,
+        status: order.status,
+        action: order.action,
+        quantity: order.quantity,
+        filledQuantity: order.filledQuantity,
+        remainingQuantity: order.remainingQuantity,
+        avgFillPrice: order.avgFillPrice,
+        submittedAt: order.submittedAt,
+        updatedAt: order.updatedAt,
+        intent: order.intent,
+        metadata: order.metadata,
+        lastTransitionSequence: order.lastTransitionSequence,
+        polling: order.polling,
+        ...overrides,
+    })
 }
 
 export async function appendOrderTransition(

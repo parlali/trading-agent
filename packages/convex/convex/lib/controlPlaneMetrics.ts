@@ -2,7 +2,7 @@ import type { Doc } from "../_generated/dataModel"
 import type { MutationCtx } from "../_generated/server"
 
 export async function incrementControlPlaneMetric(
-    ctx: MutationCtx,
+    ctx: Pick<MutationCtx, "db">,
     args: {
         metric: string
         app?: Doc<"control_plane_metrics">["app"]

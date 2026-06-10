@@ -1,3 +1,4 @@
+import { isCanonicalExecutionOrderId } from "@valiq-trading/core"
 import type { DatabaseReader } from "../_generated/server"
 import type { Doc } from "../_generated/dataModel"
 
@@ -39,6 +40,10 @@ export async function findOrderRowByIdentity(
 
     if (byProviderOrderId) {
         return byProviderOrderId
+    }
+
+    if (isCanonicalExecutionOrderId(orderId) || orderId.startsWith("provider-close:")) {
+        return null
     }
 
     const orders = await db

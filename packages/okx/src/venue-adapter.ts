@@ -19,6 +19,7 @@ import {
 import {
     OKXClient,
     type OKXApiPosSide,
+    type OKXFill,
     type OKXMarginMode,
     type OKXOrder,
     type OKXPositionMode,
@@ -157,7 +158,6 @@ export class OKXVenueAdapter implements VenueAdapter, PriceVerifier {
             )
         }
 
-        const rules = await this.getInstrumentRules(instId)
         await this.assertTradingPreconditions()
 
         const leverage = resolveLeverage(intent)
@@ -415,15 +415,46 @@ export class OKXVenueAdapter implements VenueAdapter, PriceVerifier {
     }
 
     async getRecentPositionClosures(): Promise<ProviderPositionClosure[]> {
-        const fills = await this.client.getFillsHistory("SWAP", {
-            begin: Date.now() - 24 * 60 * 60 * 1000,
-            limit: 100,
-        })
+        const fills = await this.getRecentFills(Date.now() - 24 * 60 * 60 * 1000)
         return await mapOKXRecentPositionClosures({
             fills,
             getInstrumentRules: (instId) => this.getInstrumentRules(instId),
             contractsToBaseQuantity: (rules, contracts) =>
                 this.contractsToBaseQuantity(rules, contracts),
+        })
+    }
+
+    private async getRecentFills(begin: number): Promise<OKXFill[]> {
+        const pageSize = 100
+        const maxPages = 10
+        const fills: OKXFill[] = []
+        let after: string | undefined
+
+        for (let page = 0; page < maxPages; page++) {
+            const batch = await this.client.getFillsHistory("SWAP", {
+                begin,
+                limit: pageSize,
+                after,
+            })
+            fills.push(...batch)
+
+            const oldest = batch[batch.length - 1]
+            if (batch.length < pageSize || !oldest?.billId) {
+                return fills
+            }
+
+            after = oldest.billId
+        }
+
+        throw createExecutionError("venue", "OKX fills-history pagination exceeded the bounded page budget; refusing to reconcile closures from a truncated fill window", {
+            code: "FILLS_HISTORY_TRUNCATED",
+            retryable: true,
+            details: {
+                begin,
+                pageSize,
+                maxPages,
+                fetched: fills.length,
+            },
         })
     }
 
