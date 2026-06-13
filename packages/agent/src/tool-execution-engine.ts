@@ -485,7 +485,16 @@ export class ToolExecutionEngine {
         content: string,
         rawInput: string
     ): Promise<void> {
-        const sequence = this.config.nextTranscriptSequence?.() ?? 0
+        if (!this.config.agentLogger) {
+            return
+        }
+
+        const nextTranscriptSequence = this.config.nextTranscriptSequence
+        if (!nextTranscriptSequence) {
+            throw new Error("ToolExecutionEngine requires nextTranscriptSequence when agentLogger is configured")
+        }
+
+        const sequence = nextTranscriptSequence()
         await safeLogAgentMessage({
             agentLogger: this.config.agentLogger,
             logger: this.config.logger,
