@@ -127,6 +127,33 @@ describe("ToolExecutionEngine", () => {
         expect(agentLogger.log).toHaveBeenCalledTimes(1)
     })
 
+    it("uses the runtime transcript sequence allocator for MCP tool logs", async () => {
+        let sequence = 2
+        const agentLogger = {
+            log: vi.fn(async (
+                _runId: string,
+                _strategyId: string,
+                _sequence: number,
+                _role: string,
+                _content: string,
+                _toolName?: string,
+                _toolInput?: string,
+                _toolOutput?: string
+            ) => undefined),
+        }
+        const engine = createEngine(async () => ({ accepted: true }), {
+            agentLogger,
+            nextTranscriptSequence: () => {
+                sequence++
+                return sequence
+            },
+        })
+
+        await engine.executeMcpCall("fake_tool", { value: "valid" }, "call-sequence")
+
+        expect(agentLogger.log.mock.calls[0]?.[2]).toBe(3)
+    })
+
     it("returns validation errors before invoking the handler on both transports", async () => {
         const handler = vi.fn(async () => ({ shouldNotRun: true }))
         const openRouterEngine = createEngine(handler)
@@ -198,6 +225,44 @@ describe("ToolExecutionEngine", () => {
         expect(outcome.degradedResearch(true)).toMatchObject({
             active: true,
             decisionUnderDegradedContext: true,
+        })
+    })
+
+    it("degrades repeated MCP tool-level errors returned in fulfilled results", async () => {
+        const tools = new ToolRegistry()
+        tools.register({
+            name: "mcp_macro_search",
+            description: "MCP search",
+            parameters: z.object({
+                query: z.string(),
+            }),
+            category: "research",
+            contractOwner: "mcp:macro",
+            handler: async () => ({
+                isError: true,
+                content: [{
+                    type: "text",
+                    text: "provider unavailable",
+                }],
+            }),
+        })
+        const engine = new ToolExecutionEngine({
+            tools,
+            context: createContext(),
+            logger: createLogger({ minLevel: "fatal" }),
+            runStartedAt: Date.now(),
+            runTimeoutMs: 60_000,
+            maxRepeatedToolErrors: 3,
+        })
+
+        for (let i = 0; i < 3; i++) {
+            await engine.executeMcpCall("mcp_macro_search", { query: "rates" }, `call-${i}`)
+        }
+
+        expect(engine.getOutcome().fatalFault).toBeUndefined()
+        expect(engine.getOutcome().degradedResearch(true)).toMatchObject({
+            active: true,
+            toolFailureCount: 1,
         })
     })
 
@@ -377,6 +442,7 @@ function createEngine(
                 toolOutput?: string
             ) => Promise<void>
         }
+        nextTranscriptSequence?: () => number
     } = {}
 ): ToolExecutionEngine {
     const tools = new ToolRegistry()
@@ -408,6 +474,7 @@ function createEngine(
         runTimeoutMs: options.runTimeoutMs ?? 60_000,
         maxToolTimeoutMs: options.maxToolTimeoutMs,
         maxRepeatedToolErrors: 3,
+        nextTranscriptSequence: options.nextTranscriptSequence,
     })
 }
 

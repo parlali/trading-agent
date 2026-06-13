@@ -299,5 +299,6 @@ function createAgentRunResult(): AgentRunResult {
             codexThreadId: "thread-1",
             codexTurnIds: ["turn-1"],
         },
+        toolManifest: [],
     }
 }

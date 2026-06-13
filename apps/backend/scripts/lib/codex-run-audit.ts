@@ -134,8 +134,8 @@ const CANONICAL_RUN_TOOL_NAMES = new Set([
     ...listSchedulerExtraToolNames(),
 ])
 
-function isCanonicalRunToolName(toolName: string): boolean {
-    return CANONICAL_RUN_TOOL_NAMES.has(toolName) || toolName.startsWith("mcp_")
+function isCanonicalRunToolName(toolName: string, runRegisteredToolNames: ReadonlySet<string>): boolean {
+    return CANONICAL_RUN_TOOL_NAMES.has(toolName) || runRegisteredToolNames.has(toolName)
 }
 
 export function buildCodexRunAuditArtifact(input: CodexRunAuditInput): CodexRunAuditArtifact {
@@ -144,8 +144,9 @@ export function buildCodexRunAuditArtifact(input: CodexRunAuditInput): CodexRunA
     const toolNames = Array.from(
         new Set(toolLogs.map((log) => log.toolName).filter((toolName): toolName is string => Boolean(toolName)))
     ).sort((left, right) => left.localeCompare(right))
+    const runRegisteredToolNames = extractRegisteredToolNames(input.run)
     const forbiddenToolNames = toolNames.filter((toolName) => FORBIDDEN_CODEX_TOOL_NAMES.has(toolName))
-    const nonCanonicalToolNames = toolNames.filter((toolName) => !isCanonicalRunToolName(toolName))
+    const nonCanonicalToolNames = toolNames.filter((toolName) => !isCanonicalRunToolName(toolName, runRegisteredToolNames))
     const ledger = input.positions.find((position) => isDryRunAccountLedgerPosition(position))
     const dryRunPositions = input.positions.filter((position) => !isDryRunAccountLedgerPosition(position))
     const providerSync = input.portfolioFreshness.find((row) => row.app === input.run.app)
@@ -252,6 +253,14 @@ export function buildCodexRunAuditArtifact(input: CodexRunAuditInput): CodexRunA
         gates,
         failures,
     }
+}
+
+function extractRegisteredToolNames(run: StoredRun): Set<string> {
+    return new Set(
+        (run.toolManifest ?? [])
+            .map((tool) => tool.name)
+            .filter((name): name is string => typeof name === "string" && name.length > 0)
+    )
 }
 
 function buildFailures(args: {

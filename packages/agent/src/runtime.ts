@@ -3,7 +3,7 @@ import type { LLMUsage } from "./llm-usage"
 import { ConversationManager } from "./conversation"
 import { buildSystemPrompt } from "./prompt-builder"
 import { ToolExecutionEngine, type DegradedResearchOutcome, type OpportunityCoverageMetrics } from "./tool-execution-engine"
-import type { ToolRegistry } from "./tool-registry"
+import type { ToolManifestEntry, ToolRegistry } from "./tool-registry"
 import { OpenRouterAgentProvider, type OpenRouterAgentProviderConfig } from "./providers/openrouter/openrouter-agent-provider"
 import { CodexAppServerProvider, type CodexAppServerProviderConfig } from "./providers/codex/codex-app-server-provider"
 import type { AgentModelProvider, AgentProviderDiagnostics } from "./providers/types"
@@ -31,6 +31,7 @@ export interface AgentRunResult {
     opportunityCoverage: OpportunityCoverageMetrics
     degradedResearch?: DegradedResearchOutcome
     providerDiagnostics: AgentProviderDiagnostics
+    toolManifest: ToolManifestEntry[]
 }
 
 const DEFAULT_MAX_ITERATIONS = 25
@@ -91,6 +92,7 @@ export async function executeAgentRun(
         agentLogger,
         runStartedAt,
         runTimeoutMs,
+        nextTranscriptSequence: () => conversation.reserveSequence(),
     })
     const provider = createAgentModelProvider(providerConfig)
 
@@ -119,6 +121,7 @@ export async function executeAgentRun(
             opportunityCoverage: outcome.opportunityCoverage,
             degradedResearch: outcome.degradedResearch(decisionTaken),
             providerDiagnostics: providerResult.diagnostics,
+            toolManifest: tools.getManifest(),
         }
     } finally {
         provider.cancel()

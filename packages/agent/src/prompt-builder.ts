@@ -420,7 +420,7 @@ function buildRulesSection(schedule?: string, trigger?: string): string {
             "- Do NOT redo full market research. The previous run already gathered that context and handed it off to you above.",
             "- Focus on: checking positions, evaluating if your thesis still holds, adjusting or closing positions, and monitoring fills.",
             "- Use research tools (web_search, web_fetch, or configured MCP research tools) only if something specific changed that invalidates your previous analysis.",
-            "- Research tool call budgets are halved for callback runs. Use them wisely.",
+            "- Configured MCP research tools have a two-call callback budget instead of the normal four-call scheduled-run budget. Use them wisely.",
             "- If nothing has changed and no action is needed, write a brief summary and exit. Do not burn tokens re-analyzing a static situation.",
         )
     }

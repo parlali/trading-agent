@@ -91,36 +91,6 @@ describe("backend plugin shared helpers", () => {
             "MCP_SERVER_URL",
             "MCP_PROVIDER_CONFIGS",
             "MCP_SERVER_TOKEN",
-            "MCP_PROVIDER_1_ID",
-            "MCP_PROVIDER_1_URL",
-            "MCP_PROVIDER_1_TOKEN",
-            "MCP_PROVIDER_1_CATEGORY",
-            "MCP_PROVIDER_1_TIMEOUT_MS",
-            "MCP_PROVIDER_1_MAX_TOOLS",
-            "MCP_PROVIDER_2_ID",
-            "MCP_PROVIDER_2_URL",
-            "MCP_PROVIDER_2_TOKEN",
-            "MCP_PROVIDER_2_CATEGORY",
-            "MCP_PROVIDER_2_TIMEOUT_MS",
-            "MCP_PROVIDER_2_MAX_TOOLS",
-            "MCP_PROVIDER_3_ID",
-            "MCP_PROVIDER_3_URL",
-            "MCP_PROVIDER_3_TOKEN",
-            "MCP_PROVIDER_3_CATEGORY",
-            "MCP_PROVIDER_3_TIMEOUT_MS",
-            "MCP_PROVIDER_3_MAX_TOOLS",
-            "MCP_PROVIDER_4_ID",
-            "MCP_PROVIDER_4_URL",
-            "MCP_PROVIDER_4_TOKEN",
-            "MCP_PROVIDER_4_CATEGORY",
-            "MCP_PROVIDER_4_TIMEOUT_MS",
-            "MCP_PROVIDER_4_MAX_TOOLS",
-            "MCP_PROVIDER_5_ID",
-            "MCP_PROVIDER_5_URL",
-            "MCP_PROVIDER_5_TOKEN",
-            "MCP_PROVIDER_5_CATEGORY",
-            "MCP_PROVIDER_5_TIMEOUT_MS",
-            "MCP_PROVIDER_5_MAX_TOOLS",
         ])
     })
 
@@ -157,11 +127,28 @@ describe("backend plugin shared helpers", () => {
         await expect(createMcpTools({
             secrets: {
                 MCP_SERVER_URL: "https://mcp.example",
-                MCP_PROVIDER_1_ID: "default",
-                MCP_PROVIDER_1_URL: "https://other.example",
+                MCP_PROVIDER_CONFIGS: JSON.stringify([{
+                    id: "default",
+                    url: "https://other.example",
+                }]),
             },
             runLogger,
         })).rejects.toThrow("Duplicate MCP provider id configured: default")
+    })
+
+    it("rejects MCP market-data category because remote providers are advisory research", async () => {
+        const runLogger = createTestLogger()
+
+        await expect(createMcpTools({
+            secrets: {
+                MCP_PROVIDER_CONFIGS: JSON.stringify([{
+                    id: "macro",
+                    url: "https://mcp.example",
+                    category: "market-data",
+                }]),
+            },
+            runLogger,
+        })).rejects.toThrow("MCP_PROVIDER_CONFIGS[0].category must be research")
     })
 
     it("fails closed when session-flat triggers without the audited executor", async () => {

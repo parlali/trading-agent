@@ -1,4 +1,5 @@
 import type { RunDiagnostics } from "@valiq-trading/convex"
+import type { AgentRunResult } from "@valiq-trading/agent"
 import {
     createKillSwitchGuardedVenue as createRuntimeKillSwitchGuardedVenue,
     readConfiguredStrategySafetyPolicy,
@@ -97,7 +98,7 @@ export function buildRunDiagnostics(result: {
         retryCount: number
         decisionUnderDegradedContext: boolean
     }
-}, systemContextDigest?: RunSystemContextDigest): RunDiagnostics | undefined {
+} & Pick<AgentRunResult, "toolManifest">, systemContextDigest?: RunSystemContextDigest): RunDiagnostics | undefined {
     const diagnostics: RunDiagnostics = {}
 
     diagnostics.promptTokens = result.usage.promptTokens
@@ -142,6 +143,7 @@ export function buildRunDiagnostics(result: {
     if (systemContextDigest) {
         diagnostics.systemContextDigest = systemContextDigest
     }
+    diagnostics.toolManifest = result.toolManifest
 
     return Object.keys(diagnostics).length > 0
         ? diagnostics

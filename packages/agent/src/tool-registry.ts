@@ -29,6 +29,13 @@ export interface ToolBinding {
     compatibleVenues?: readonly VenueApp[]
 }
 
+export interface ToolManifestEntry {
+    name: string
+    category?: ToolCategory
+    contractBoundary?: ToolBinding["contractBoundary"]
+    contractOwner?: string
+}
+
 export class ToolRegistry {
     private tools = new Map<string, ToolBinding>()
 
@@ -56,6 +63,15 @@ export class ToolRegistry {
         return this.getAll().map((t) => ({
             name: t.name,
             description: t.description,
+        }))
+    }
+
+    getManifest(): ToolManifestEntry[] {
+        return this.getAll().map((tool) => ({
+            name: tool.name,
+            category: tool.category,
+            contractBoundary: tool.contractBoundary,
+            contractOwner: tool.contractOwner,
         }))
     }
 }

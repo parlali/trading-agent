@@ -12,6 +12,7 @@ export function withCallBudget(
             callCount++
             if (callCount > maxCalls) {
                 return {
+                    isError: true,
                     error: `Budget exhausted: ${tool.name} has been called ${maxCalls} times this run. Use the information you already have to make your decision.`,
                 }
             }

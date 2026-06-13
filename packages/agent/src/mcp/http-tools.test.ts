@@ -147,6 +147,215 @@ describe("HTTP MCP tool bindings", () => {
         })
     })
 
+    it("publishes remote schema but leaves detailed argument validation to the provider", async () => {
+        const server = await startMcpServer(async (request, response) => {
+            const body = await readJsonBody(request)
+
+            if (body.method === "initialize") {
+                writeJsonRpc(response, body.id, {
+                    protocolVersion: "2025-03-26",
+                    capabilities: {},
+                    serverInfo: { name: "schema-server", version: "1.0.0" },
+                })
+                return
+            }
+
+            if (body.method === "notifications/initialized") {
+                response.writeHead(202)
+                response.end()
+                return
+            }
+
+            if (body.method === "tools/list") {
+                writeJsonRpc(response, body.id, {
+                    tools: [{
+                        name: "search",
+                        inputSchema: {
+                            type: "object",
+                            properties: {
+                                query: { type: "string" },
+                            },
+                            required: ["query"],
+                        },
+                    }],
+                })
+                return
+            }
+
+            writeJsonRpc(response, body.id, { content: [] })
+        })
+        servers.push(server)
+
+        const tools = await createHttpMcpToolBindings({
+            providers: [{
+                id: "macro",
+                url: server.url,
+            }],
+            logger: createLogger({ minLevel: "fatal" }),
+        })
+
+        expect(tools[0]?.parameters.safeParse({ query: "rates" }).success).toBe(true)
+        expect(tools[0]?.parameters.safeParse({ query: 42 }).success).toBe(true)
+        expect(tools[0]?.jsonSchema).toMatchObject({
+            required: ["query"],
+        })
+    })
+
+    it("does not collide names for remote tools that differ after the old truncation point", async () => {
+        const server = await startMcpServer(async (request, response) => {
+            const body = await readJsonBody(request)
+
+            if (body.method === "initialize") {
+                writeJsonRpc(response, body.id, {
+                    protocolVersion: "2025-03-26",
+                    capabilities: {},
+                    serverInfo: { name: "name-server", version: "1.0.0" },
+                })
+                return
+            }
+
+            if (body.method === "notifications/initialized") {
+                response.writeHead(202)
+                response.end()
+                return
+            }
+
+            if (body.method === "tools/list") {
+                writeJsonRpc(response, body.id, {
+                    tools: [
+                        {
+                            name: `research_${"a".repeat(48)}_one`,
+                            inputSchema: {
+                                type: "object",
+                                properties: {},
+                            },
+                        },
+                        {
+                            name: `research_${"a".repeat(48)}_two`,
+                            inputSchema: {
+                                type: "object",
+                                properties: {},
+                            },
+                        },
+                    ],
+                })
+                return
+            }
+
+            writeJsonRpc(response, body.id, { content: [] })
+        })
+        servers.push(server)
+
+        const tools = await createHttpMcpToolBindings({
+            providers: [{
+                id: "macro",
+                url: server.url,
+            }],
+            logger: createLogger({ minLevel: "fatal" }),
+        })
+
+        expect(new Set(tools.map((tool) => tool.name)).size).toBe(2)
+        expect(tools.map((tool) => tool.name).every((name) => name.length <= 64)).toBe(true)
+    })
+
+    it("bounds tools/list pagination before registering tools", async () => {
+        const server = await startMcpServer(async (request, response) => {
+            const body = await readJsonBody(request)
+
+            if (body.method === "initialize") {
+                writeJsonRpc(response, body.id, {
+                    protocolVersion: "2025-03-26",
+                    capabilities: {},
+                    serverInfo: { name: "loop-server", version: "1.0.0" },
+                })
+                return
+            }
+
+            if (body.method === "notifications/initialized") {
+                response.writeHead(202)
+                response.end()
+                return
+            }
+
+            if (body.method === "tools/list") {
+                writeJsonRpc(response, body.id, {
+                    tools: [],
+                    nextCursor: "same-cursor",
+                })
+                return
+            }
+
+            writeJsonRpcError(response, body.id, -32601, "method not found")
+        })
+        servers.push(server)
+
+        await expect(createHttpMcpToolBindings({
+            providers: [{
+                id: "macro",
+                url: server.url,
+            }],
+            logger: createLogger({ minLevel: "fatal" }),
+        })).rejects.toThrow("returned repeated cursor same-cursor")
+    })
+
+    it("waits for matching JSON-RPC responses in MCP event streams", async () => {
+        const server = await startMcpServer(async (request, response) => {
+            const body = await readJsonBody(request)
+
+            if (body.method === "initialize") {
+                writeJsonRpc(response, body.id, {
+                    protocolVersion: "2025-03-26",
+                    capabilities: {},
+                    serverInfo: { name: "sse-server", version: "1.0.0" },
+                })
+                return
+            }
+
+            if (body.method === "notifications/initialized") {
+                response.writeHead(202)
+                response.end()
+                return
+            }
+
+            if (body.method === "tools/list") {
+                writeSse(response, [
+                    {
+                        jsonrpc: "2.0",
+                        method: "notifications/progress",
+                        params: {},
+                    },
+                    {
+                        jsonrpc: "2.0",
+                        id: body.id,
+                        result: {
+                            tools: [{
+                                name: "search",
+                                inputSchema: {
+                                    type: "object",
+                                    properties: {},
+                                },
+                            }],
+                        },
+                    },
+                ])
+                return
+            }
+
+            writeJsonRpc(response, body.id, { content: [] })
+        })
+        servers.push(server)
+
+        const tools = await createHttpMcpToolBindings({
+            providers: [{
+                id: "macro",
+                url: server.url,
+            }],
+            logger: createLogger({ minLevel: "fatal" }),
+        })
+
+        expect(tools.map((tool) => tool.name)).toEqual(["mcp_macro_search"])
+    })
+
     async function createFailingMcpServerUrl(): Promise<string> {
         const server = await startMcpServer(async (request, response) => {
             const body = await readJsonBody(request)
@@ -249,4 +458,12 @@ function writeJsonRpcError(response: ServerResponse, id: unknown, code: number, 
 function writeJson(response: ServerResponse, body: unknown): void {
     response.writeHead(200, { "Content-Type": "application/json" })
     response.end(JSON.stringify(body))
+}
+
+function writeSse(response: ServerResponse, events: unknown[]): void {
+    response.writeHead(200, { "Content-Type": "text/event-stream" })
+    for (const event of events) {
+        response.write(`data: ${JSON.stringify(event)}\n\n`)
+    }
+    response.end()
 }

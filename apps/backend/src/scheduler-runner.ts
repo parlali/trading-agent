@@ -1,7 +1,8 @@
 import {
     ToolRegistry,
     executeAgentRun,
-    withCallBudget,
+    withMcpToolCallBudget,
+    type ToolBinding,
 } from "@valiq-trading/agent"
 import { createConvexOrderPersistenceAdapter } from "@valiq-trading/convex"
 import type {
@@ -371,31 +372,33 @@ export async function runStrategy(
             env: process.env,
         })
 
-        const extraTools = await plugin.getExtraTools({
-            secrets: strategySecrets,
-            runLogger,
-        })
         const isCallback = trigger === "callback"
-        const budgetedExtraTools = extraTools.map((tool) =>
-            isCallback ? withCallBudget(tool, 2) : tool
-        )
-
-        const toolPool = buildToolPool({
-            app,
-            strategyId: strategy._id,
-            venue,
-            pipeline: activePipeline,
-            policy,
-            extraTools: budgetedExtraTools,
-            isCallback,
-            runLogger,
-        })
-        const tools = new ToolRegistry()
-        for (const tool of toolPool.forVenue(app)) {
-            tools.register(tool)
-        }
+        const strategyRunStartedAt = Date.now()
 
         await withTimeout(async () => {
+            const extraTools = await plugin.getExtraTools({
+                secrets: strategySecrets,
+                runLogger,
+            })
+            const budgetedExtraTools = extraTools.map((tool) =>
+                applyMcpResearchBudget(tool, isCallback)
+            )
+
+            const toolPool = buildToolPool({
+                app,
+                strategyId: strategy._id,
+                venue,
+                pipeline: activePipeline,
+                policy,
+                extraTools: budgetedExtraTools,
+                isCallback,
+                runLogger,
+            })
+            const tools = new ToolRegistry()
+            for (const tool of toolPool.forVenue(app)) {
+                tools.register(tool)
+            }
+
             const isDryRun = Boolean(policy.dryRun)
             const {
                 pendingOrders,
@@ -479,6 +482,7 @@ export async function runStrategy(
                     logger: runLogger,
                     agentLogger: backend,
                     killSwitchChecker: () => checkKillSwitch(app, `mid-run:${strategy._id}`),
+                    runTimeoutMs: Math.max(1, STRATEGY_RUN_TIMEOUT_MS - (Date.now() - strategyRunStartedAt)),
                 }
             )
 
@@ -643,6 +647,14 @@ export async function runStrategy(
     } finally {
         pipeline?.stopAllTracking()
     }
+}
+
+function applyMcpResearchBudget(tool: ToolBinding, isCallback: boolean): ToolBinding {
+    if (tool.contractOwner?.startsWith("mcp:") !== true) {
+        return tool
+    }
+
+    return withMcpToolCallBudget(tool, isCallback ? 2 : 4)
 }
 
 function buildFailureRunDiagnostics(

@@ -1,15 +1,18 @@
+import { createHash } from "node:crypto"
 import { z } from "zod"
 import type { Logger, VenueApp } from "@valiq-trading/core"
 import type { ToolBinding, ToolCategory } from "../tool-registry"
+import { withCallBudget } from "../tools/with-call-budget"
 import { HttpMcpClient, type HttpMcpTool } from "./http-client"
 
 export interface HttpMcpProviderConfig {
     id: string
     url: string
     token?: string
-    category?: Extract<ToolCategory, "research" | "market-data">
+    category?: Extract<ToolCategory, "research">
     timeoutMs?: number
     maxTools?: number
+    maxListPages?: number
     compatibleVenues?: readonly VenueApp[]
 }
 
@@ -19,8 +22,9 @@ export interface CreateHttpMcpToolBindingsConfig {
     signal?: AbortSignal
 }
 
-const remoteMcpParamsSchema = z.record(z.string(), z.unknown())
 const DEFAULT_MCP_MAX_TOOLS_PER_PROVIDER = 50
+const MAX_OPENROUTER_TOOL_NAME_LENGTH = 64
+const remoteMcpParamsSchema = z.record(z.string(), z.unknown())
 
 export async function createHttpMcpToolBindings(
     config: CreateHttpMcpToolBindingsConfig
@@ -34,14 +38,14 @@ export async function createHttpMcpToolBindings(
             url: provider.url,
             token: provider.token,
             timeoutMs: provider.timeoutMs,
+            maxListPages: provider.maxListPages,
             logger: config.logger,
         })
-        const tools = await client.listTools(config.signal)
         const maxTools = provider.maxTools ?? DEFAULT_MCP_MAX_TOOLS_PER_PROVIDER
-
-        if (tools.length > maxTools) {
-            throw new Error(`MCP provider ${provider.id} exposed ${tools.length} tools, exceeding configured maxTools ${maxTools}`)
-        }
+        const tools = await client.listTools({
+            signal: config.signal,
+            maxTools,
+        })
 
         for (const remoteTool of tools) {
             const binding = createBindingForRemoteTool({
@@ -72,6 +76,12 @@ export async function createHttpMcpToolBindings(
     return bindings
 }
 
+export function withMcpToolCallBudget(tool: ToolBinding, maxCalls: number): ToolBinding {
+    return tool.contractOwner?.startsWith("mcp:") === true
+        ? withCallBudget(tool, maxCalls)
+        : tool
+}
+
 function createBindingForRemoteTool(args: {
     provider: HttpMcpProviderConfig
     remoteTool: HttpMcpTool
@@ -98,7 +108,7 @@ function createBindingForRemoteTool(args: {
         return null
     }
 
-    const registeredName = `mcp_${providerPart}_${toolPart}`
+    const registeredName = buildMcpToolName(providerPart, toolPart, args.provider.id, args.remoteTool.name)
     const description = [
         args.remoteTool.description?.trim() || `Call MCP tool ${args.remoteTool.name}`,
         `Provider: ${args.provider.id}. Upstream tool: ${args.remoteTool.name}.`,
@@ -149,5 +159,34 @@ function sanitizeToolNamePart(value: string): string {
         .toLowerCase()
         .replace(/[^a-z0-9_]+/g, "_")
         .replace(/^_+|_+$/g, "")
-        .slice(0, 48)
+}
+
+function buildMcpToolName(providerPart: string, toolPart: string, rawProviderId: string, rawToolName: string): string {
+    const baseName = `mcp_${providerPart}_${toolPart}`
+    if (isValidOpenRouterToolName(baseName)) {
+        return baseName
+    }
+
+    const hash = createHash("sha256")
+        .update(`${rawProviderId}\0${rawToolName}`)
+        .digest("hex")
+        .slice(0, 10)
+    const prefix = "mcp_"
+    const separatorLength = 2
+    const available = MAX_OPENROUTER_TOOL_NAME_LENGTH - prefix.length - separatorLength - hash.length
+    const providerLength = Math.max(8, Math.floor(available * 0.4))
+    const toolLength = Math.max(8, available - providerLength)
+    const shortened = `${prefix}${providerPart.slice(0, providerLength)}_${toolPart.slice(0, toolLength)}_${hash}`
+
+    if (!isValidOpenRouterToolName(shortened)) {
+        throw new Error(`MCP tool name could not be made OpenRouter-compatible for provider ${rawProviderId} tool ${rawToolName}`)
+    }
+
+    return shortened
+}
+
+function isValidOpenRouterToolName(value: string): boolean {
+    return value.length > 0 &&
+        value.length <= MAX_OPENROUTER_TOOL_NAME_LENGTH &&
+        /^[a-zA-Z0-9_-]+$/.test(value)
 }

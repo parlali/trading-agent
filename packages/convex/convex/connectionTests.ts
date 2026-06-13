@@ -6,9 +6,18 @@ import { v } from "convex/values"
 import { requireUser } from "./lib/authGuards"
 import {
     buildAccountSecretKeyMap,
+    createLogger,
     resolveAccountScopedSecretKeys,
     type VenueApp,
 } from "@valiq-trading/core"
+import {
+    MCP_PROVIDER_SECRET_KEYS,
+    ToolExecutionEngine,
+    ToolRegistry,
+    createHttpMcpToolBindings,
+    resolveMcpProviderConfigs,
+    withMcpToolCallBudget,
+} from "@valiq-trading/agent"
 import {
     ALPACA_RUNTIME_SECRET_KEYS,
     AlpacaClient,
@@ -496,83 +505,57 @@ export const testMcpConnection = action({
     },
     handler: async (ctx, args) => {
         await requireUser(ctx)
-        const serverUrl = env("MCP_SERVER_URL")
-        const token = env("MCP_SERVER_TOKEN")
+        const providers = resolveMcpProviderConfigs({
+            secrets: readMcpConnectionSecrets(),
+        })
 
-        if (!serverUrl) {
-            return { ok: false, error: "MCP_SERVER_URL not configured in Convex environment variables", steps: [] }
+        if (providers.length === 0) {
+            return { ok: false, error: "No MCP provider configured. Set MCP_PROVIDER_CONFIGS or MCP_SERVER_URL in Convex environment variables", steps: [] }
         }
 
         const steps: StepResult[] = []
-        const headers: Record<string, string> = {
-            "Content-Type": "application/json",
-        }
-
-        if (token) {
-            headers.Authorization = `Bearer ${token}`
-        }
 
         try {
-            const initialize = await fetchJson(serverUrl, {
-                method: "POST",
-                headers,
-                body: JSON.stringify({
-                    jsonrpc: "2.0",
-                    id: 1,
-                    method: "initialize",
-                    params: {
-                        protocolVersion: "2025-03-26",
-                        capabilities: {},
-                        clientInfo: {
-                            name: "trading-dashboard-connection-test",
-                            version: "1.0.0",
-                        },
-                    },
-                }),
+            steps.push({
+                name: "Runtime Config",
+                ok: true,
+                data: {
+                    providerIds: providers.map((provider) => provider.id),
+                },
             })
-            if (!initialize.ok) {
-                steps.push({ name: "Initialize", ok: false, error: initialize.error })
-                return { ok: false, steps }
-            }
-            steps.push({ name: "Initialize", ok: true, data: summarizeJsonRpcResult(initialize.data) })
 
-            const tools = await fetchJson(serverUrl, {
-                method: "POST",
-                headers,
-                body: JSON.stringify({
-                    jsonrpc: "2.0",
-                    id: 2,
-                    method: "tools/list",
-                    params: {},
-                }),
+            const toolBindings = await createHttpMcpToolBindings({
+                providers,
             })
-            if (!tools.ok) {
-                steps.push({ name: "List Tools", ok: false, error: tools.error })
-                return { ok: false, steps }
+            const registry = new ToolRegistry()
+            for (const tool of toolBindings) {
+                registry.register(withMcpToolCallBudget(tool, 4))
             }
 
-            const toolNames = readMcpToolNames(tools.data)
+            const toolNames = registry.getAll().map((tool) => tool.name).sort((left, right) => left.localeCompare(right))
             steps.push({ name: "List Tools", ok: true, data: { toolNames } })
 
             if (args.toolName) {
-                const call = await fetchJson(serverUrl, {
-                    method: "POST",
-                    headers,
-                    body: JSON.stringify({
-                        jsonrpc: "2.0",
-                        id: 3,
-                        method: "tools/call",
-                        params: {
-                            name: args.toolName,
-                            arguments: {},
-                        },
-                    }),
+                if (!registry.has(args.toolName)) {
+                    steps.push({ name: "Call Tool", ok: false, error: `Tool ${args.toolName} is not registered in runtime ToolRegistry` })
+                    return { ok: false, steps }
+                }
+
+                const engine = new ToolExecutionEngine({
+                    tools: registry,
+                    context: createMcpConnectionRunContext(),
+                    logger: createLogger({ minLevel: "fatal" }),
+                    runStartedAt: Date.now(),
+                    runTimeoutMs: 60_000,
+                    maxRepeatedToolErrors: 1,
                 })
+                const result = await engine.executeMcpCall(args.toolName, {}, "connection-test-call")
+                const outcome = engine.getOutcome()
                 steps.push({
                     name: "Call Tool",
-                    ok: call.ok,
-                    data: call.ok ? summarizeJsonRpcResult(call.data) : undefined,
-                    error: call.ok ? undefined : call.error,
+                    ok: !result.isError && !outcome.fatalFault,
+                    data: result,
+                    error: result.isError ? result.content : outcome.fatalFault?.reason,
                 })
             }
         } catch (error: unknown) {
@@ -583,27 +566,32 @@ export const testMcpConnection = action({
     },
 })
 
-function summarizeJsonRpcResult(value: unknown): unknown {
-    if (!value || typeof value !== "object") {
-        return value
+function readMcpConnectionSecrets(): Record<string, string | null> {
+    const secrets: Record<string, string | null> = {}
+    for (const key of MCP_PROVIDER_SECRET_KEYS) {
+        secrets[key] = env(key)
     }
-
-    const record = value as Record<string, unknown>
-    return "result" in record ? record.result : value
+    return secrets
 }
 
-function readMcpToolNames(value: unknown): string[] {
-    const result = summarizeJsonRpcResult(value)
-    if (!result || typeof result !== "object") {
-        return []
+function createMcpConnectionRunContext() {
+    return {
+        runId: "connection-test",
+        strategyId: "connection-test",
+        app: "polymarket" as const,
+        timestamp: Date.now(),
+        trigger: "manual" as const,
+        positions: [],
+        accountState: {
+            balance: 0,
+            equity: 0,
+            buyingPower: 0,
+            marginUsed: 0,
+            marginAvailable: 0,
+            openPnl: 0,
+            dayPnl: 0,
+        },
+        policy: {},
+        context: "MCP connection test",
     }
-
-    const tools = (result as Record<string, unknown>).tools
-    if (!Array.isArray(tools)) {
-        return []
-    }
-
-    return tools
-        .map((tool) => tool && typeof tool === "object" ? (tool as Record<string, unknown>).name : undefined)
-        .filter((name): name is string => typeof name === "string")
 }

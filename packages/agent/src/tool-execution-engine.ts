@@ -59,6 +59,7 @@ export interface ToolExecutionEngineConfig {
     runTimeoutMs: number
     maxToolTimeoutMs?: number
     maxRepeatedToolErrors?: number
+    nextTranscriptSequence?: () => number
 }
 
 interface OpenRouterToolExecutionCallbacks {
@@ -103,7 +104,6 @@ export class ToolExecutionEngine {
     private degradedResearchToolFailureCount = 0
     private degradedResearchRetryCount = 0
     private fatalFault: ToolExecutionFatalFault | undefined
-    private mcpLogSequence = 0
 
     constructor(private readonly config: ToolExecutionEngineConfig) {
         this.maxRepeatedToolErrors = config.maxRepeatedToolErrors ?? DEFAULT_MAX_REPEATED_TOOL_ERRORS
@@ -231,7 +231,7 @@ export class ToolExecutionEngine {
         return {
             toolName,
             content: modelContent,
-            isError: result.status === "rejected" || Boolean(this.fatalFault),
+            isError: result.status === "rejected" || isToolLevelErrorContent(content) || Boolean(this.fatalFault),
             fatal: Boolean(this.fatalFault),
         }
     }
@@ -345,6 +345,34 @@ export class ToolExecutionEngine {
     ): string {
         if (result.status === "fulfilled") {
             const value = result.value
+            const toolLevelError = readToolLevelError(value)
+            if (toolLevelError) {
+                this.config.logger.error("Tool returned error result", {
+                    toolName: entry.toolName,
+                    error: toolLevelError,
+                })
+                let content = JSON.stringify(value)
+                const repeatedError = recordRepeatedToolError(this.repeatedToolErrors, entry.toolName, content)
+
+                if (repeatedError < this.maxRepeatedToolErrors) {
+                    return content
+                }
+
+                if (isResearchTool(entry.toolBinding)) {
+                    this.degradedResearchToolFailureCount++
+                    this.degradedResearchRetryCount += repeatedError
+                    this.degradedResearchReasons.add(`${entry.toolName}: tool-level error loop`)
+                    clearRepeatedToolErrors(this.repeatedToolErrors, entry.toolName)
+                    content = JSON.stringify({
+                        warning: `Degraded research mode active: ${entry.toolName} returned repeated tool-level errors and has been bounded for this run.`,
+                    })
+                    return content
+                }
+
+                this.setFatalFault(entry.toolName, content, `repeated identical ${entry.toolName} tool error`)
+                return content
+            }
+
             clearRepeatedToolErrors(this.repeatedToolErrors, entry.toolName)
             return typeof value === "string" ? value : JSON.stringify(value)
         }
@@ -453,13 +481,15 @@ export class ToolExecutionEngine {
         content: string,
         rawInput: string
     ): Promise<void> {
-        this.mcpLogSequence++
+        const sequence = this.config.nextTranscriptSequence
+            ? this.config.nextTranscriptSequence()
+            : 1
         await safeLogAgentMessage({
             agentLogger: this.config.agentLogger,
             logger: this.config.logger,
             runId: this.config.context.runId,
             strategyId: this.config.context.strategyId,
-            sequence: this.mcpLogSequence,
+            sequence,
             role: "tool",
             content,
             toolName,
@@ -598,7 +628,8 @@ function isSafetyCriticalToolBoundary(toolBinding: ToolBinding): boolean {
 
 function isResearchTool(toolBinding: ToolBinding): boolean {
     return toolBinding.category === "research" ||
-        toolBinding.category === "web"
+        toolBinding.category === "web" ||
+        toolBinding.contractOwner?.startsWith("mcp:") === true
 }
 
 function recordOpportunityCoverage(
@@ -665,4 +696,26 @@ function readRecord(value: unknown): Record<string, unknown> | undefined {
     return value && typeof value === "object" && !Array.isArray(value)
         ? value as Record<string, unknown>
         : undefined
+}
+
+function readToolLevelError(value: unknown): string | undefined {
+    const record = readRecord(value)
+    if (record?.isError !== true) {
+        return undefined
+    }
+
+    if (typeof record.error === "string" && record.error.length > 0) {
+        return record.error
+    }
+
+    if (typeof record.message === "string" && record.message.length > 0) {
+        return record.message
+    }
+
+    return "tool returned isError=true"
+}
+
+function isToolLevelErrorContent(content: string): boolean {
+    const parsed = parseToolResult(content)
+    return parsed?.isError === true
 }
