@@ -1,7 +1,9 @@
 import { api } from "../convex/_generated/api"
 import type { Id } from "../convex/_generated/dataModel"
 import type {
+    AccountPnlEvent,
     AccountState,
+    AccountConfig,
     App,
     ExecutionResult,
     OrderIntent,
@@ -374,20 +376,23 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
                 })
             )
         },
-        async reconcileProviderPortfolio(
-            app: Exclude<App, "backend">,
-            venue: string,
-            source: ProviderPortfolioReconciliationResult["source"],
-            accountState: AccountState,
-            positions: Position[],
-            workingOrders: WorkingOrder[],
-            positionClosures: ProviderPositionClosure[] = []
-        ): Promise<ProviderPortfolioReconciliationResult> {
+    async reconcileProviderPortfolio(
+        app: Exclude<App, "backend">,
+        accountId: string,
+        venue: string,
+        source: ProviderPortfolioReconciliationResult["source"],
+        accountState: AccountState,
+        positions: Position[],
+        workingOrders: WorkingOrder[],
+        positionClosures: ProviderPositionClosure[] = [],
+        accountPnlEvents: AccountPnlEvent[] = []
+    ): Promise<ProviderPortfolioReconciliationResult> {
             return await runWithTimeout(
                 "Convex mutation reconcileProviderPortfolio",
                 async () => await client.mutation(api.mutations.reconcileProviderPortfolio, {
                     ...requireMachineAuth(),
                     app,
+                    accountId,
                     venue,
                     source,
                     accountState: {
@@ -429,6 +434,15 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
                         fillPrice: closure.fillPrice,
                         closedAt: closure.closedAt,
                         metadata: closure.metadata ? JSON.stringify(closure.metadata) : undefined,
+                    })),
+                    accountPnlEvents: accountPnlEvents.map((event) => ({
+                        providerEventId: event.providerEventId,
+                        eventType: event.eventType,
+                        instrument: event.instrument,
+                        amount: event.amount,
+                        currency: event.currency,
+                        occurredAt: event.occurredAt,
+                        metadata: event.metadata ? JSON.stringify(event.metadata) : undefined,
                     })),
                 } as never) as ProviderPortfolioReconciliationResult
             )
@@ -485,12 +499,13 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
                 } as never) as { resolved: number }
             )
         },
-        async recordProviderSyncFailure(app: Exclude<App, "backend">, error: string): Promise<void> {
+        async recordProviderSyncFailure(app: Exclude<App, "backend">, accountId: string, error: string): Promise<void> {
             await runWithTimeout(
                 "Convex mutation recordProviderSyncFailure",
                 async () => await client.mutation(api.mutations.recordProviderSyncFailure, {
                     ...requireMachineAuth(),
                     app,
+                    accountId,
                     error,
                 } as never)
             )
@@ -561,23 +576,6 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
                 } as never) as ReportHeartbeatSnapshotResult
             )
         },
-        async snapshotAccountState(app: App, venue: string, state: AccountState): Promise<void> {
-            await runWithTimeout(
-                "Convex mutation snapshotAccountState",
-                async () => await client.mutation(api.mutations.snapshotAccountState, {
-                    ...requireMachineAuth(),
-                    app,
-                    venue,
-                    balance: state.balance,
-                    equity: state.equity,
-                    buyingPower: state.buyingPower,
-                    marginUsed: state.marginUsed,
-                    marginAvailable: state.marginAvailable,
-                    openPnl: state.openPnl,
-                    dayPnl: state.dayPnl,
-                } as never)
-            )
-        },
         async getSystemState(): Promise<KillSwitchState> {
             return await runWithTimeout(
                 "Convex query getSystemState",
@@ -590,12 +588,13 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
                 async () => await client.query(api.queries.getControlPlaneMetrics, { ...requireMachineAuth() } as never) as ControlPlaneMetricRow[]
             )
         },
-        async getPortfolioFreshness(app?: Exclude<App, "backend">): Promise<PortfolioFreshnessRow[]> {
+        async getPortfolioFreshness(app?: Exclude<App, "backend">, accountId?: string): Promise<PortfolioFreshnessRow[]> {
             return await runWithTimeout(
                 "Convex query getPortfolioFreshness",
                 async () => await client.query(api.queries.getPortfolioFreshness, {
                     ...requireMachineAuth(),
                     app,
+                    accountId,
                 } as never) as PortfolioFreshnessRow[]
             )
         },
@@ -637,7 +636,8 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
         },
         async getPortfolioPositions(
             app?: Exclude<App, "backend">,
-            strategyId?: Id<"strategies">
+            strategyId?: Id<"strategies">,
+            accountId?: string
         ): Promise<ProviderPositionRow[]> {
             return await runWithTimeout(
                 "Convex query getPortfolioPositions",
@@ -645,12 +645,14 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
                     ...requireMachineAuth(),
                     app,
                     strategyId,
+                    accountId,
                 } as never) as ProviderPositionRow[]
             )
         },
         async getPortfolioPendingOrders(
             app?: Exclude<App, "backend">,
-            strategyId?: Id<"strategies">
+            strategyId?: Id<"strategies">,
+            accountId?: string
         ): Promise<ProviderPendingOrderRow[]> {
             return await runWithTimeout(
                 "Convex query getPortfolioPendingOrders",
@@ -658,6 +660,7 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
                     ...requireMachineAuth(),
                     app,
                     strategyId,
+                    accountId,
                 } as never) as ProviderPendingOrderRow[]
             )
         },
@@ -765,10 +768,10 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
                 async () => await client.query(api.queries.getStrategyOwnershipScope, { ...requireMachineAuth(), strategyId } as never) as StrategyOwnershipScopeRow
             )
         },
-        async getAllOwnedInstrumentsByApp(app: Exclude<App, "backend">): Promise<Array<{ instrument: string, strategyId: string }>> {
+        async getAllOwnedInstrumentsByApp(app: Exclude<App, "backend">, accountId: string): Promise<Array<{ instrument: string, strategyId: string }>> {
             return await runWithTimeout(
                 "Convex query getAllOwnedInstrumentsByApp",
-                async () => await client.query(api.queries.getAllOwnedInstrumentsByApp, { ...requireMachineAuth(), app } as never) as Array<{ instrument: string, strategyId: string }>
+                async () => await client.query(api.queries.getAllOwnedInstrumentsByApp, { ...requireMachineAuth(), app, accountId } as never) as Array<{ instrument: string, strategyId: string }>
             )
         },
         async getLatestPositions(strategyId: Id<"strategies">): Promise<Position[]> {
@@ -798,12 +801,46 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
                 async () => await client.query(api.queries.getAllStrategies, { ...requireMachineAuth() }) as StoredStrategy[]
             )
         },
+        async getAccounts(app?: Exclude<App, "backend">) {
+            return await runWithTimeout(
+                "Convex query getAccounts",
+                async () => await client.query(api.queries.getAccounts, {
+                    ...requireMachineAuth(),
+                    app,
+                } as never)
+            )
+        },
+        async getAccountByAppAndId(app: Exclude<App, "backend">, accountId: string) {
+            return await runWithTimeout(
+                "Convex query getAccountByAppAndId",
+                async () => await client.query(api.queries.getAccountByAppAndId, {
+                    ...requireMachineAuth(),
+                    app,
+                    accountId,
+                } as never)
+            )
+        },
+        async upsertAccount(config: AccountConfig): Promise<Id<"accounts">> {
+            return await runWithTimeout(
+                "Convex mutation upsertAccount",
+                async () => await client.mutation(api.mutations.upsertAccount, {
+                    ...requireMachineAuth(),
+                    app: config.app,
+                    accountId: config.accountId,
+                    label: config.label,
+                    credentialEnvPrefix: config.credentialEnvPrefix,
+                    status: config.status,
+                    notes: config.notes,
+                } as never) as Id<"accounts">
+            )
+        },
         async addStrategy(config: StrategyConfig): Promise<Id<"strategies">> {
             return await runWithTimeout(
                 "Convex mutation upsertStrategy",
                 async () => await client.mutation(api.mutations.upsertStrategy, {
                     ...requireMachineAuth(),
                     app: config.app,
+                    accountId: config.accountId,
                     name: config.name,
                     enabled: config.enabled,
                     schedule: config.schedule,
@@ -819,6 +856,7 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
                     ...requireMachineAuth(),
                     id,
                     app: config.app,
+                    accountId: config.accountId,
                     name: config.name,
                     enabled: config.enabled,
                     schedule: config.schedule,
@@ -906,11 +944,12 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
                 } as never) as FullResetAudit
             )
         },
-        async replaceAllStrategies(strategies: StrategyConfig[]): Promise<ReplaceAllStrategiesResult> {
+        async replaceAllStrategies(strategies: StrategyConfig[], accounts?: AccountConfig[]): Promise<ReplaceAllStrategiesResult> {
             return await runWithTimeout(
                 "Convex mutation replaceAllStrategies",
                 async () => await client.mutation(api.mutations.replaceAllStrategies, {
                     ...requireMachineAuth(),
+                    accounts,
                     strategies,
                 } as never) as ReplaceAllStrategiesResult
             )

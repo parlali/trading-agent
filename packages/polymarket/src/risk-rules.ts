@@ -8,9 +8,11 @@ import {
     type Position,
     type RiskValidator,
 } from "@valiq-trading/core"
+import { getPolymarketOrderSemanticsError } from "./order-semantics"
 
 export const polymarketRiskValidators: readonly RiskValidator[] = [
     canonicalIdentityValidator,
+    supportedOrderSemanticsValidator,
     maxBetValidator,
     priceBoundsValidator,
     liquidityValidator,
@@ -33,6 +35,20 @@ function canonicalIdentityValidator(
         return {
             allowed: false,
             reason: "Polymarket orders require canonical tokenId, conditionId, marketSlug, question, and outcome from broker discovery",
+        }
+    }
+
+    return { allowed: true }
+}
+
+function supportedOrderSemanticsValidator(
+    intent: OrderIntent
+): { allowed: boolean; reason?: string } {
+    const reason = getPolymarketOrderSemanticsError(intent)
+    if (reason) {
+        return {
+            allowed: false,
+            reason,
         }
     }
 

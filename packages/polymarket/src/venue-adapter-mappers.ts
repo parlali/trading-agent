@@ -4,30 +4,17 @@ import {
     type ExecutionResult,
     type OrderIntent,
     type Position,
+    type ProviderPositionClosure,
 } from "@valiq-trading/core"
 import type {
     PolymarketCurrentPosition,
     PolymarketMarket,
     PolymarketOpenOrder,
 } from "./polymarket-client"
+import { mapPolymarketProviderOrderType } from "./order-semantics"
 
 export function mapOrderType(intent: OrderIntent): "GTC" | "GTD" | "FOK" | "FAK" {
-    if (intent.orderType === "market") {
-        return "FOK"
-    }
-
-    switch (intent.timeInForce) {
-        case "gtc":
-            return "GTC"
-        case "ioc":
-            return "FAK"
-        case "fok":
-            return "FOK"
-        case "day":
-            return "GTC"
-        default:
-            return "GTC"
-    }
+    return mapPolymarketProviderOrderType(intent)
 }
 
 export function mapPostOrderStatus(status: string): ExecutionResult["status"] {
@@ -36,8 +23,17 @@ export function mapPostOrderStatus(status: string): ExecutionResult["status"] {
             return "filled"
         case "live":
             return "pending"
+        case "unmatched":
+        case "cancelled":
+        case "canceled":
+            return "cancelled"
+        case "expired":
+            return "expired"
+        case "rejected":
+        case "failed":
+            return "rejected"
         default:
-            return "pending"
+            return "rejected"
     }
 }
 
@@ -53,8 +49,11 @@ export function mapOpenOrderStatus(order: PolymarketOpenOrder): ExecutionResult[
             return "cancelled"
         case "expired":
             return "expired"
+        case "rejected":
+        case "failed":
+            return "rejected"
         default:
-            return "pending"
+            return "rejected"
     }
 }
 
@@ -83,6 +82,16 @@ export function readPolymarketSignedOrderFingerprint(order: {
     return readTrimmedString(order.signedOrderFingerprint) ??
         readTrimmedString(order.signed_order_fingerprint) ??
         readTrimmedString(order.metadata?.signedOrderFingerprint)
+}
+
+export function readPolymarketOrderSalt(order: {
+    salt?: string
+    order?: { salt?: string }
+    metadata?: Record<string, unknown>
+}): string | undefined {
+    return readTrimmedString(order.salt) ??
+        readTrimmedString(order.order?.salt) ??
+        readTrimmedString(order.metadata?.salt)
 }
 
 export function matchesMarketQuery(
@@ -158,10 +167,84 @@ export function mapCurrentPosition(position: PolymarketCurrentPosition): Positio
             side: "buy",
             entryPrice: position.avgPrice,
             currentPrice: position.curPrice,
+            initialValue: position.initialValue,
+            currentValue: position.currentValue,
+            cashPnl: position.cashPnl,
+            totalBought: position.totalBought,
+            realizedPnl: position.realizedPnl,
+            percentRealizedPnl: position.percentRealizedPnl,
+            percentPnl: position.percentPnl,
             redeemable: position.redeemable,
             mergeable: position.mergeable,
             endDate: position.endDate,
             endDateIso: position.endDate,
         },
     }
+}
+
+export function mapSettlementPositionClosure(
+    position: PolymarketCurrentPosition,
+    closedAt: number = Date.now()
+): ProviderPositionClosure | undefined {
+    if (position.size <= 0 || (!position.redeemable && !position.mergeable)) {
+        return undefined
+    }
+
+    const fillPrice = resolveSettlementFillPrice(position)
+    const fillPnl = Number.isFinite(position.cashPnl)
+        ? position.cashPnl
+        : (fillPrice - position.avgPrice) * position.size
+
+    return {
+        instrument: position.asset,
+        providerPositionId: position.asset,
+        side: "long",
+        quantity: position.size,
+        fillPrice,
+        closedAt,
+        metadata: {
+            providerAccountingSource: "polymarket_position_settlement",
+            providerPositionId: position.asset,
+            tokenId: position.asset,
+            asset: position.asset,
+            conditionId: position.conditionId,
+            market: position.conditionId,
+            marketSlug: position.slug,
+            question: position.title,
+            outcome: position.outcome,
+            redeemable: position.redeemable,
+            mergeable: position.mergeable,
+            endDate: position.endDate,
+            endDateIso: position.endDate,
+            avgPrice: position.avgPrice,
+            currentValue: position.currentValue,
+            initialValue: position.initialValue,
+            cashPnl: position.cashPnl,
+            realizedPnl: position.realizedPnl,
+            fillPnl,
+            settlementPrice: fillPrice,
+            fee: 0,
+            feeCcy: "USDC",
+        },
+    }
+}
+
+function resolveSettlementFillPrice(position: PolymarketCurrentPosition): number {
+    if (position.size > 0 && Number.isFinite(position.currentValue) && position.currentValue >= 0) {
+        return roundPolymarketPrice(position.currentValue / position.size)
+    }
+
+    if (Number.isFinite(position.curPrice) && position.curPrice >= 0) {
+        return roundPolymarketPrice(position.curPrice)
+    }
+
+    if (position.size > 0 && Number.isFinite(position.cashPnl) && Number.isFinite(position.avgPrice)) {
+        return roundPolymarketPrice(Math.max(position.avgPrice + position.cashPnl / position.size, 0))
+    }
+
+    return 0
+}
+
+function roundPolymarketPrice(price: number): number {
+    return Math.round(price * 1_000_000) / 1_000_000
 }

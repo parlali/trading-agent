@@ -11,6 +11,7 @@ export {
 } from "./lib/mutations/orders"
 
 export {
+    upsertAccount,
     upsertStrategy,
     disableStrategy,
     deleteStrategy,
@@ -36,7 +37,6 @@ export {
     reportHeartbeat,
     reportHeartbeatLiveness,
     reportHeartbeatSnapshot,
-    snapshotAccountState,
     setKillSwitch,
     claimManualRunRequests,
     ackManualRunRequest,
@@ -52,8 +52,11 @@ export {
 export {
     reconcileProviderPortfolio,
     recordProviderSyncFailure,
-    adoptProviderPositions,
 } from "./lib/mutations/portfolio"
+
+export {
+    adoptProviderPositions,
+} from "./lib/mutations/portfolioAdoption"
 
 export {
     refreshStrategyRiskState,

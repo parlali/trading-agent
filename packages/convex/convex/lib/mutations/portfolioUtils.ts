@@ -135,10 +135,15 @@ export function createDriftSummary(args: {
     statusMismatches: string[]
     ownershipMismatches: string[]
     exposureViolations: string[]
+    moneyAuditMismatches?: string[]
     unattributedClosures?: string[]
     unmatchedClosedPositions?: string[]
 }): string | undefined {
     const parts: string[] = []
+
+    if (args.moneyAuditMismatches && args.moneyAuditMismatches.length > 0) {
+        parts.push(`${args.moneyAuditMismatches.length} account money reconciliation mismatch(es): ${args.moneyAuditMismatches.join(", ")}`)
+    }
 
     if (args.unattributedClosures && args.unattributedClosures.length > 0) {
         parts.push(`${args.unattributedClosures.length} provider close(s) could not be safely attributed to a strategy-owned position: ${args.unattributedClosures.join(", ")}`)

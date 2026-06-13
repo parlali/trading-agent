@@ -9,6 +9,7 @@ import {
     type SubmitOrderContext,
 } from "@valiq-trading/core"
 import type {
+    AlpacaAccountActivity,
     AlpacaAccountResponse,
     AlpacaClockResponse,
     AlpacaEquityQuote,
@@ -21,6 +22,7 @@ import type {
     AlpacaPositionResponse,
 } from "./alpaca-client-types"
 export type {
+    AlpacaAccountActivity,
     AlpacaAccountResponse,
     AlpacaBar,
     AlpacaClockResponse,
@@ -87,6 +89,8 @@ export class AlpacaApiError extends Error {
 }
 
 const ALPACA_REQUEST_TIMEOUT_MS = 30_000
+const ALPACA_ACTIVITY_PAGE_SIZE = 100
+const ALPACA_ACTIVITY_MAX_PAGES = 20
 
 async function toAlpacaApiError(response: Response): Promise<AlpacaApiError> {
     let message = `${response.status} ${response.statusText}`
@@ -136,7 +140,34 @@ export class AlpacaClient {
     }
 
     async getAccount(): Promise<AlpacaAccountResponse> {
-        return await this.request<AlpacaAccountResponse>("/v2/account")
+        const account = await this.request<AlpacaAccountResponse>("/v2/account")
+        this.assertConfiguredAccount(account)
+        return account
+    }
+
+    private assertConfiguredAccount(account: AlpacaAccountResponse): void {
+        const expectedAccountId = this.accountId.trim()
+        const reportedAccountIds = [account.id, account.account_number]
+            .map((value) => value?.trim())
+            .filter((value): value is string => Boolean(value))
+
+        if (expectedAccountId && reportedAccountIds.includes(expectedAccountId)) {
+            return
+        }
+
+        throw createExecutionError(
+            "venue",
+            `Alpaca credentials are bound to account ${reportedAccountIds.join(" / ") || "<unknown>"}, not configured account ${expectedAccountId || "<missing>"}`,
+            {
+                code: "ALPACA_ACCOUNT_BINDING_MISMATCH",
+                retryable: false,
+                details: {
+                    expectedAccountId,
+                    reportedAccountId: account.id,
+                    reportedAccountNumber: account.account_number,
+                },
+            }
+        )
     }
 
     async getPositions(): Promise<AlpacaPositionResponse[]> {
@@ -145,6 +176,59 @@ export class AlpacaClient {
 
     async getOpenOrders(): Promise<AlpacaOrderResponse[]> {
         return await this.request<AlpacaOrderResponse[]>("/v2/orders?status=open&nested=true&direction=desc&limit=500")
+    }
+
+    async getAccountActivities(
+        activityTypes: string[],
+        lookbackHours: number = 168
+    ): Promise<AlpacaAccountActivity[]> {
+        const after = new Date(Date.now() - Math.max(1, lookbackHours) * 60 * 60 * 1000).toISOString()
+        const result: AlpacaAccountActivity[] = []
+
+        for (const activityType of activityTypes) {
+            let pageToken: string | undefined
+            for (let page = 0; page < ALPACA_ACTIVITY_MAX_PAGES; page++) {
+                const query = new URLSearchParams({
+                    after,
+                    direction: "asc",
+                    page_size: String(ALPACA_ACTIVITY_PAGE_SIZE),
+                })
+                if (pageToken) {
+                    query.set("page_token", pageToken)
+                }
+
+                const pageResult = await this.request<AlpacaAccountActivity[]>(
+                    `/v2/account/activities/${encodeURIComponent(activityType)}?${query.toString()}`
+                )
+                result.push(...pageResult)
+                if (pageResult.length < ALPACA_ACTIVITY_PAGE_SIZE) {
+                    pageToken = undefined
+                    break
+                }
+
+                const lastId = pageResult.at(-1)?.id
+                if (!lastId) {
+                    pageToken = undefined
+                    break
+                }
+                pageToken = lastId
+            }
+
+            if (pageToken) {
+                throw createExecutionError("venue", `Alpaca account activities pagination exceeded ${ALPACA_ACTIVITY_MAX_PAGES} pages for ${activityType}`, {
+                    code: "ALPACA_ACCOUNT_ACTIVITIES_PAGE_LIMIT",
+                    retryable: true,
+                    details: {
+                        activityType,
+                        after,
+                        pageSize: ALPACA_ACTIVITY_PAGE_SIZE,
+                        maxPages: ALPACA_ACTIVITY_MAX_PAGES,
+                    },
+                })
+            }
+        }
+
+        return result
     }
 
     async getClock(): Promise<AlpacaClockResponse> {

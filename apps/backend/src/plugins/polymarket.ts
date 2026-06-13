@@ -1,4 +1,5 @@
 import {
+    BASE_RISK_VALIDATORS,
     ExecutionCostTracker,
     type RiskValidator,
     type VenueAdapter,
@@ -52,7 +53,7 @@ export class PolymarketPlugin implements VenuePlugin {
     }
 
     getRiskValidators(): readonly RiskValidator[] {
-        return polymarketRiskValidators
+        return [...BASE_RISK_VALIDATORS, ...polymarketRiskValidators]
     }
 
     getExtraTools(config: ExtraToolsConfig) {

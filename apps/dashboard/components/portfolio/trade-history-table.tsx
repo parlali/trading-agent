@@ -1,6 +1,7 @@
 import { EmptyState } from "@/components/empty-state"
 import { StatusBadge } from "@/components/status-badge"
 import { VenueBadge } from "@/components/venue-badge"
+import { Badge } from "@/components/ui/badge"
 import { formatCurrency, formatTimestamp } from "@/lib/format"
 import { List } from "lucide-react"
 import { CardList } from "./card-list"
@@ -12,6 +13,7 @@ export type PortfolioTradeRow = {
     eventId: string
     timestamp: number
     app: string
+    accountId: string
     strategyId: string
     strategyName: string
     runId: string
@@ -24,6 +26,9 @@ export type PortfolioTradeRow = {
     quantity?: number
     filledQuantity?: number
     price?: number
+    accountingStatus?: "missing" | "estimated" | "provider"
+    accountingSource?: string
+    accountingMissingReason?: string
     summary: string
 }
 
@@ -43,6 +48,12 @@ const tradeHistoryColumns: Column<PortfolioTradeRow>[] = [
         key: "venue",
         header: "Venue",
         render: (row) => <VenueBadge app={row.app} />,
+    },
+    {
+        key: "account",
+        header: "Account",
+        cellClassName: "font-mono text-xs",
+        render: (row) => row.accountId,
     },
     {
         key: "strategy",
@@ -76,12 +87,45 @@ const tradeHistoryColumns: Column<PortfolioTradeRow>[] = [
         render: (row) => row.price != null ? formatCurrency(row.price) : "--",
     },
     {
+        key: "accounting",
+        header: "Accounting",
+        render: (row) => renderAccountingBadge(row),
+    },
+    {
         key: "summary",
         header: "Summary",
         cellClassName: "text-xs text-muted-foreground truncate max-w-[200px]",
         render: (row) => row.summary,
     },
 ]
+
+function renderAccountingBadge(row: PortfolioTradeRow) {
+    if (row.accountingStatus === "missing") {
+        return (
+            <Badge variant="destructive" title={row.accountingMissingReason ?? row.accountingSource}>
+                Missing
+            </Badge>
+        )
+    }
+
+    if (row.accountingStatus === "estimated") {
+        return (
+            <Badge variant="outline" title={row.accountingSource}>
+                Estimated
+            </Badge>
+        )
+    }
+
+    if (row.accountingStatus === "provider") {
+        return (
+            <Badge variant="secondary" title={row.accountingSource}>
+                Provider
+            </Badge>
+        )
+    }
+
+    return "--"
+}
 
 export function TradeHistoryTable({
     trades,
@@ -115,6 +159,7 @@ export function TradeHistoryTable({
                             <div className="flex items-center justify-between">
                                 <div className="flex items-center gap-2 min-w-0">
                                     <StatusBadge status={row.eventType} category="event" />
+                                    {row.accountingStatus ? renderAccountingBadge(row) : null}
                                     <span className="text-sm font-medium font-mono truncate">
                                         {row.instrument ?? "--"}
                                     </span>
@@ -128,6 +173,7 @@ export function TradeHistoryTable({
                             <div className="flex items-center justify-between text-xs text-muted-foreground">
                                 <div className="flex items-center gap-2">
                                     <VenueBadge app={row.app} />
+                                    <span className="font-mono truncate max-w-[90px]">{row.accountId}</span>
                                     <span className="truncate max-w-[100px]">{row.strategyName}</span>
                                 </div>
                                 <span className="whitespace-nowrap shrink-0">

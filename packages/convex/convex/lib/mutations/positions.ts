@@ -27,10 +27,19 @@ export const syncPositions = mutation({
     },
     handler: async (ctx, args) => {
         requireServiceToken(args.serviceToken)
+        const strategy = await ctx.db.get(args.strategyId)
+        if (!strategy) {
+            throw new Error(`Strategy not found: ${args.strategyId}`)
+        }
+        if (strategy.app !== args.app) {
+            throw new Error(`Position sync app mismatch for strategy ${args.strategyId}: ${args.app} !== ${strategy.app}`)
+        }
+
         const now = Date.now()
         await ctx.db.insert("position_syncs", {
             strategyId: args.strategyId,
             app: args.app,
+            accountId: strategy.accountId,
             syncedAt: now,
             positionCount: args.positions.length,
         })
@@ -39,6 +48,7 @@ export const syncPositions = mutation({
             await ctx.db.insert("positions", {
                 strategyId: args.strategyId,
                 app: args.app,
+                accountId: strategy.accountId,
                 positionKey: buildProviderPositionKey(pos),
                 providerPositionId: pos.providerPositionId,
                 instrument: pos.instrument,
@@ -57,6 +67,7 @@ export const syncPositions = mutation({
         await replacePositionClaims(ctx, {
             strategyId: args.strategyId,
             app: args.app,
+            accountId: strategy.accountId,
             positionClaims: args.positions
                 .filter((position) => !isDryRunLedgerMetadata(position.metadata))
                 .map((position) => buildPositionClaim(position)),

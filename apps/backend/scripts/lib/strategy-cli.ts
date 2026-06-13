@@ -12,7 +12,7 @@ import {
 } from "@valiq-trading/convex"
 import { parseStrategyMarkdownDocument } from "@valiq-trading/core"
 import { resolveStrategyLlmConfig } from "@valiq-trading/core"
-import type { App, OrderPersistenceAdapter, StrategyConfig, StrategyLlmConfig } from "@valiq-trading/core"
+import type { AccountConfig, App, OrderPersistenceAdapter, StrategyConfig, StrategyLlmConfig } from "@valiq-trading/core"
 
 const FULL_RESET_CLEAR_BATCH_SIZE = 20
 const FULL_RESET_CLEAR_MAX_BATCHES = 10000
@@ -113,12 +113,17 @@ export function createClient(): TradingBackendClient {
     })
 }
 
-export function createOrderPersistenceAdapter(): OrderPersistenceAdapter {
+export function createOrderPersistenceAdapter(scope?: {
+    app?: Exclude<App, "backend">
+    accountId?: string
+    strategyId?: string
+}): OrderPersistenceAdapter {
     return createConvexOrderPersistenceAdapter({
         url: requireEnv("CONVEX_URL"),
         machineAuth: {
             serviceToken: requireEnv("BACKEND_SERVICE_TOKEN"),
         },
+        orderLookupScope: scope,
     })
 }
 
@@ -127,6 +132,13 @@ export function resolveDocumentPath(): string {
 }
 
 export async function loadStrategiesFromDocument(): Promise<StrategyConfig[]> {
+    return (await loadStrategyDocumentFromDisk()).strategies
+}
+
+export async function loadStrategyDocumentFromDisk(): Promise<{
+    accounts: AccountConfig[]
+    strategies: StrategyConfig[]
+}> {
     const documentPath = resolveDocumentPath()
     let markdown: string
     try {
@@ -137,9 +149,12 @@ export async function loadStrategiesFromDocument(): Promise<StrategyConfig[]> {
     }
     const document = parseStrategyMarkdownDocument(markdown)
 
-    console.log(`Parsed ${document.strategies.length} strategies from ${documentPath}`)
+    console.log(`Parsed ${document.accounts.length} accounts and ${document.strategies.length} strategies from ${documentPath}`)
 
-    return document.strategies
+    return {
+        accounts: document.accounts,
+        strategies: document.strategies,
+    }
 }
 
 export function getStrategyModel(strategy: {

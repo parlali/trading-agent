@@ -2,7 +2,7 @@ import {
     createClient,
     finalizeFullResetCleanup,
     getStrategyLlmSummary,
-    loadStrategiesFromDocument,
+    loadStrategyDocumentFromDisk,
     printDeleteCounts,
     runScript,
     addDeleteCounts,
@@ -11,7 +11,7 @@ import {
 import { resetExistingStrategies } from "./lib/strategy-reset"
 
 runScript(async () => {
-    const strategies = await loadStrategiesFromDocument()
+    const { accounts, strategies } = await loadStrategyDocumentFromDisk()
     const client = createClient()
 
     const existing = await client.getAllStrategies()
@@ -32,12 +32,17 @@ runScript(async () => {
     console.log("Full reset audit passed")
     console.log("")
 
-    console.log(`Importing ${strategies.length} strategies...`)
+    console.log(`Importing ${accounts.length} accounts and ${strategies.length} strategies...`)
+
+    for (const account of accounts) {
+        await client.upsertAccount(account)
+        console.log(`  + account ${account.app}:${account.accountId} (${account.label}, prefix=${account.credentialEnvPrefix})`)
+    }
 
     for (const strategy of strategies) {
         await client.addStrategy(strategy)
-        console.log(`  + ${strategy.name} (${strategy.app}, llm=${getStrategyLlmSummary(strategy)})`)
+        console.log(`  + ${strategy.name} (${strategy.app}:${strategy.accountId}, llm=${getStrategyLlmSummary(strategy)})`)
     }
 
-    console.log(`Imported ${strategies.length} strategies`)
+    console.log(`Imported ${accounts.length} accounts and ${strategies.length} strategies`)
 })

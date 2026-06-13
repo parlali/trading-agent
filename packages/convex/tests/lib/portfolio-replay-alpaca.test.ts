@@ -262,6 +262,288 @@ describe("Convex Alpaca SPY replay", () => {
         )).toBe(true)
     })
 
+    it("records a blocking accounting fault when an owned Alpaca position vanishes without close evidence", async () => {
+        process.env.BACKEND_SERVICE_TOKEN = "test-token"
+        const strategyId = "strategy-vanish"
+        const accountId = "alpaca-acct-a"
+        const vertical = "VS:BEAR_CALL_CREDIT:SPY:2026-05-01:SPY260501C00720000|SPY260501C00721000"
+        const db = new FakeDb({
+            strategies: [{
+                _id: strategyId,
+                app: "alpaca-options",
+                accountId,
+                name: "SPY call vertical",
+                policy: { dryRun: false },
+            }],
+            instrument_claims: [],
+            orders: [],
+            provider_positions: [{
+                _id: "provider-position-vanish",
+                app: "alpaca-options",
+                accountId,
+                positionKey: `alpaca-options:${vertical}:short`,
+                strategyId,
+                ownershipStatus: "owned",
+                instrument: vertical,
+                side: "short",
+                quantity: 1,
+                entryPrice: 0.45,
+                syncedAt: Date.now() - 60_000,
+            }],
+            provider_working_orders: [],
+            provider_sync_state: [],
+            position_syncs: [],
+            positions: [],
+            execution_safety_faults: [],
+            account_snapshots: [],
+            control_plane_metrics: [],
+            alerts: [],
+        })
+        const ctx = { db } as never
+
+        await callRegistered(reconcileProviderPortfolio, ctx, {
+            serviceToken: "test-token",
+            app: "alpaca-options",
+            accountId,
+            venue: "alpaca",
+            source: "periodic_sync",
+            accountState: {
+                balance: 100000,
+                equity: 100000,
+                buyingPower: 100000,
+                marginUsed: 0,
+                marginAvailable: 100000,
+                openPnl: 0,
+                dayPnl: 0,
+            },
+            positions: [],
+            workingOrders: [],
+        })
+
+        expect(db.rows.execution_safety_faults).toEqual([
+            expect.objectContaining({
+                strategyId,
+                app: "alpaca-options",
+                instrument: vertical,
+                category: "accounting_mismatch",
+                blocked: true,
+            }),
+        ])
+        const syncState = (db.rows.provider_sync_state ?? [])[0]
+        expect(syncState?.driftDetected).toBe(true)
+    })
+
+    it("imports Alpaca option expiry activity as provider close evidence for a vanished owned leg", async () => {
+        process.env.BACKEND_SERVICE_TOKEN = "test-token"
+        const strategyId = "strategy-expiry"
+        const runId = "run-expiry"
+        const accountId = "alpaca-acct-a"
+        const instrument = "SPY260501C00720000"
+        const closedAt = Date.parse("2026-05-01T00:00:00.000Z")
+        const openedAt = closedAt - 60_000
+        const db = new FakeDb({
+            strategies: [{
+                _id: strategyId,
+                app: "alpaca-options",
+                accountId,
+                name: "SPY short call",
+                policy: { dryRun: false },
+            }],
+            strategy_runs: [{
+                _id: runId,
+                strategyId,
+                app: "alpaca-options",
+                accountId,
+                status: "completed",
+                startedAt: openedAt,
+                endedAt: openedAt + 30_000,
+            }],
+            instrument_claims: [],
+            orders: [],
+            provider_positions: [{
+                _id: "provider-position-expiry",
+                app: "alpaca-options",
+                accountId,
+                positionKey: `${instrument}:${instrument}`,
+                providerPositionId: instrument,
+                strategyId,
+                ownershipStatus: "owned",
+                instrument,
+                side: "short",
+                quantity: 2,
+                entryPrice: 1.25,
+                syncedAt: openedAt,
+            }],
+            provider_working_orders: [],
+            provider_sync_state: [],
+            position_syncs: [],
+            positions: [],
+            execution_safety_faults: [],
+            account_snapshots: [],
+            control_plane_metrics: [],
+            alerts: [],
+        })
+        const ctx = { db } as never
+
+        await callRegistered(reconcileProviderPortfolio, ctx, {
+            serviceToken: "test-token",
+            app: "alpaca-options",
+            accountId,
+            venue: "alpaca",
+            source: "periodic_sync",
+            accountState: {
+                balance: 100000,
+                equity: 100000,
+                buyingPower: 100000,
+                marginUsed: 0,
+                marginAvailable: 100000,
+                openPnl: 0,
+                dayPnl: 0,
+            },
+            positions: [],
+            workingOrders: [],
+            positionClosures: [{
+                instrument,
+                providerPositionId: instrument,
+                side: "short",
+                quantity: 2,
+                fillPrice: 0,
+                closedAt,
+                metadata: JSON.stringify({
+                    providerAccountingSource: "alpaca_account_activity",
+                    providerActivityId: "activity-expiry-1",
+                    activityType: "OPEXP",
+                    fillPnl: 0,
+                    netAmount: 0,
+                    providerPositionId: instrument,
+                }),
+            }],
+        })
+
+        expect(db.rows.execution_safety_faults).toEqual([])
+        const closeOrder = (db.rows.orders ?? []).find((order) => order.action === "close")
+        expect(closeOrder).toMatchObject({
+            orderId: `provider-close:alpaca-options:${instrument}:${instrument}:${closedAt}`,
+            runId,
+            strategyId,
+            instrument,
+            status: "filled",
+            action: "close",
+            quantity: 2,
+            filledQuantity: 2,
+            avgFillPrice: 0,
+        })
+        if (!closeOrder) {
+            throw new Error("Expected Alpaca provider-close order")
+        }
+        expect(((closeOrder?.intent as Record<string, unknown>).metadata as Record<string, unknown>)).toMatchObject({
+            providerReconciledClose: true,
+            providerAccountingSource: "alpaca_account_activity",
+            providerActivityId: "activity-expiry-1",
+            activityType: "OPEXP",
+            providerPositionId: instrument,
+            positionSide: "short",
+            entryPrice: 1.25,
+        })
+    })
+
+    it("records a blocking fault when provider closure evidence marks accounting missing", async () => {
+        process.env.BACKEND_SERVICE_TOKEN = "test-token"
+        const strategyId = "strategy-closure-missing"
+        const runId = "run-closure-missing"
+        const accountId = "alpaca-acct-a"
+        const instrument = "SPY260501C00720000"
+        const closedAt = Date.parse("2026-05-01T00:00:00.000Z")
+        const db = new FakeDb({
+            strategies: [{
+                _id: strategyId,
+                app: "alpaca-options",
+                accountId,
+                name: "SPY short call",
+                policy: { dryRun: false },
+            }],
+            strategy_runs: [{
+                _id: runId,
+                strategyId,
+                app: "alpaca-options",
+                accountId,
+                status: "completed",
+                startedAt: closedAt - 60_000,
+                endedAt: closedAt - 30_000,
+            }],
+            instrument_claims: [],
+            orders: [],
+            provider_positions: [{
+                _id: "provider-position-closure-missing",
+                app: "alpaca-options",
+                accountId,
+                positionKey: `${instrument}:${instrument}`,
+                providerPositionId: instrument,
+                strategyId,
+                ownershipStatus: "owned",
+                instrument,
+                side: "short",
+                quantity: 1,
+                entryPrice: 1.25,
+                syncedAt: closedAt - 60_000,
+            }],
+            provider_working_orders: [],
+            provider_sync_state: [],
+            position_syncs: [],
+            positions: [],
+            execution_safety_faults: [],
+            account_snapshots: [],
+            control_plane_metrics: [],
+            alerts: [],
+        })
+        const ctx = { db } as never
+
+        await callRegistered(reconcileProviderPortfolio, ctx, {
+            serviceToken: "test-token",
+            app: "alpaca-options",
+            accountId,
+            venue: "alpaca",
+            source: "periodic_sync",
+            accountState: {
+                balance: 100000,
+                equity: 100000,
+                buyingPower: 100000,
+                marginUsed: 0,
+                marginAvailable: 100000,
+                openPnl: 0,
+                dayPnl: 0,
+            },
+            positions: [],
+            workingOrders: [],
+            positionClosures: [{
+                instrument,
+                providerPositionId: instrument,
+                side: "short",
+                quantity: 1,
+                fillPrice: 0,
+                closedAt,
+                metadata: JSON.stringify({
+                    providerAccountingSource: "alpaca_account_activity",
+                    providerAccountingMissing: true,
+                    providerAccountingMissingReason: "alpaca_closure_without_fee_activity",
+                    providerPositionId: instrument,
+                }),
+            }],
+        })
+
+        expect((db.rows.orders ?? []).some((order) => order.action === "close")).toBe(true)
+        expect(db.rows.execution_safety_faults).toEqual([
+            expect.objectContaining({
+                strategyId,
+                app: "alpaca-options",
+                instrument,
+                category: "accounting_mismatch",
+                canonicalOrderId: `provider-close:alpaca-options:${instrument}:${instrument}:${closedAt}`,
+                blocked: true,
+            }),
+        ])
+    })
+
     it("keeps or clears duplicate-exposure faults from provider-truth residual exposure", async () => {
         const strategyId = "strategy-overlap"
         const updatedAt = Date.now()

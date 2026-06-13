@@ -3,13 +3,11 @@ import type { Doc, Id } from "../../_generated/dataModel"
 import { v } from "convex/values"
 import {
     isCanonicalExecutionOrderId,
-    resolveProviderAdoptionInstruments,
 } from "@valiq-trading/core"
 import { requireServiceToken } from "../authGuards"
 import {
     getClaimInstrumentsForOrder,
     reconcileOrderInstrumentClaim,
-    replacePositionClaims,
     resolveAlpacaClaimedStructureForProviderLeg,
 } from "../instrumentClaims"
 import {
@@ -21,9 +19,7 @@ import {
 } from "../validators"
 import { incrementControlPlaneMetric } from "../controlPlaneMetrics"
 import {
-    buildAdoptedPositionClaims,
     buildClaimsByInstrument,
-    buildPositionClaimsByKey,
     hasPositionOwnershipMismatch,
     repairMissingLivePositionClaimsFromFilledOrders,
     resolveOwnership,
@@ -46,9 +42,9 @@ import {
     upsertProviderWorkingOrderRows,
 } from "./portfolioRows"
 import {
-    updateProviderSyncStateFromCurrentRows,
     writeStrategyPositionSnapshots,
 } from "./portfolioSnapshots"
+import { reconcileAccountMoney } from "./portfolioMoneyAudit"
 import { detectExposureGovernanceViolations } from "./portfolioGovernance"
 import {
     buildLiveInstrumentAliases,
@@ -117,6 +113,16 @@ const providerPositionClosureInputV = v.object({
     metadata: v.optional(v.string()),
 })
 
+const accountPnlEventInputV = v.object({
+    providerEventId: v.string(),
+    eventType: v.union(v.literal("funding_fee"), v.literal("fee"), v.literal("adjustment")),
+    instrument: v.optional(v.string()),
+    amount: v.number(),
+    currency: v.string(),
+    occurredAt: v.number(),
+    metadata: v.optional(v.string()),
+})
+
 type StrategyDoc = Doc<"strategies">
 type OrderDoc = Doc<"orders">
 
@@ -124,6 +130,7 @@ export const reconcileProviderPortfolio = mutation({
     args: {
         serviceToken: v.string(),
         app: venueAppV,
+        accountId: v.string(),
         venue: v.string(),
         source: v.union(
             v.literal("startup_sync"),
@@ -134,6 +141,7 @@ export const reconcileProviderPortfolio = mutation({
         positions: v.array(providerPositionInputV),
         workingOrders: v.array(providerWorkingOrderInputV),
         positionClosures: v.optional(v.array(providerPositionClosureInputV)),
+        accountPnlEvents: v.optional(v.array(accountPnlEventInputV)),
     },
     handler: async (ctx, args) => {
         requireServiceToken(args.serviceToken)
@@ -141,12 +149,12 @@ export const reconcileProviderPortfolio = mutation({
         const now = Date.now()
         const previousState = await ctx.db
             .query("provider_sync_state")
-            .withIndex("by_app", (q) => q.eq("app", args.app))
+            .withIndex("by_app_account", (q) => q.eq("app", args.app).eq("accountId", args.accountId))
             .first()
 
         const strategies = await ctx.db
             .query("strategies")
-            .withIndex("by_app", (q) => q.eq("app", args.app))
+            .withIndex("by_app_account", (q) => q.eq("app", args.app).eq("accountId", args.accountId))
             .collect()
 
         const strategyMap = new Map(strategies.map((strategy) => [String(strategy._id), strategy]))
@@ -156,12 +164,13 @@ export const reconcileProviderPortfolio = mutation({
         const expectedExternalInstruments = collectExpectedExternalInstruments(strategies)
         const existingProviderPositions = await ctx.db
             .query("provider_positions")
-            .withIndex("by_app", (q) => q.eq("app", args.app))
+            .withIndex("by_app_account", (q) => q.eq("app", args.app).eq("accountId", args.accountId))
             .collect()
         const existingProviderPositionsByKey = new Map(
             existingProviderPositions.map((position) => [position.positionKey, position])
         )
         const providerPositionClosures = args.positionClosures ?? []
+        const accountPnlEvents = args.accountPnlEvents ?? []
 
         const statusMismatches: string[] = []
         const closedPersistedOrders: string[] = []
@@ -202,6 +211,7 @@ export const reconcileProviderPortfolio = mutation({
                 await reconcileOrderInstrumentClaim(ctx, {
                     strategyId: existingOrder.strategyId,
                     app: strategy.app,
+                    accountId: strategy.accountId,
                     orderId: existingOrder.orderId,
                     instrument: existingOrder.instrument,
                     claimInstruments: getClaimInstrumentsForOrder(existingOrder.instrument, existingOrder.intent),
@@ -214,6 +224,7 @@ export const reconcileProviderPortfolio = mutation({
 
         await repairMissingLivePositionClaimsFromFilledOrders(ctx, {
             app: args.app,
+            accountId: args.accountId,
             strategyMap,
             liveInstrumentAliases: buildLiveInstrumentAliases(
                 args.app,
@@ -227,10 +238,9 @@ export const reconcileProviderPortfolio = mutation({
 
         const refreshedClaims = await ctx.db
             .query("instrument_claims")
-            .withIndex("by_app", (q) => q.eq("app", args.app))
+            .withIndex("by_app_account", (q) => q.eq("app", args.app).eq("accountId", args.accountId))
             .collect()
         const refreshedClaimsByInstrument = buildClaimsByInstrument(refreshedClaims, strategyMap)
-        const refreshedPositionClaimsByKey = buildPositionClaimsByKey(refreshedClaims, strategyMap)
         const ownershipMismatches = new Set<string>()
 
         const resolvedPositions = args.positions.map((position) => {
@@ -241,7 +251,6 @@ export const reconcileProviderPortfolio = mutation({
                 instrument: position.instrument,
                 positionKey,
                 claimsByInstrument: refreshedClaimsByInstrument,
-                claimsByPositionKey: refreshedPositionClaimsByKey,
                 existingPositionByKey: existingProviderPositionsByKey,
                 strategyMap,
             })
@@ -262,15 +271,10 @@ export const reconcileProviderPortfolio = mutation({
             if (
                 hasPositionOwnershipMismatch({
                     positionKey,
-                    claimsByPositionKey: refreshedPositionClaimsByKey,
                     existingPositionByKey: existingProviderPositionsByKey,
                     strategyMap,
-                }) ||
-                previousPosition?.strategyId &&
-                (
-                    ownership.ownershipStatus !== "owned" ||
-                    ownership.strategyId !== previousPosition.strategyId
-                )
+                    resolvedOwnership: ownership,
+                })
             ) {
                 ownershipMismatches.add(positionKey)
             }
@@ -339,6 +343,7 @@ export const reconcileProviderPortfolio = mutation({
         })
         await recordDuplicateExposureFaults(ctx, {
             app: args.app,
+            accountId: args.accountId,
             violations: exposureViolations,
             strategies,
             updatedAt: now,
@@ -371,6 +376,7 @@ export const reconcileProviderPortfolio = mutation({
                 await reconcileOrderInstrumentClaim(ctx, {
                     strategyId: existingOrder.strategyId,
                     app: strategy.app,
+                    accountId: strategy.accountId,
                     orderId: existingOrder.orderId,
                     instrument: existingOrder.instrument,
                     claimInstruments: getClaimInstrumentsForOrder(existingOrder.instrument, existingOrder.intent),
@@ -383,6 +389,7 @@ export const reconcileProviderPortfolio = mutation({
 
         const nextProviderPositions = resolvedPositions.map((position) => ({
             app: args.app,
+            accountId: args.accountId,
             positionKey: position.positionKey,
             providerPositionId: position.providerPositionId,
             strategyId: position.strategyId,
@@ -402,6 +409,7 @@ export const reconcileProviderPortfolio = mutation({
 
         const closureReconciliation = await reconcileProviderPositionClosures(ctx, {
             app: args.app,
+            accountId: args.accountId,
             strategyMap,
             existingProviderPositions,
             livePositionKeys: new Set(nextProviderPositions.map((position) => position.positionKey)),
@@ -411,6 +419,7 @@ export const reconcileProviderPortfolio = mutation({
 
         const nextProviderWorkingOrders = resolvedWorkingOrders.map((order) => ({
             app: args.app,
+            accountId: args.accountId,
             orderId: order.orderId,
             canonicalOrderId: order.canonicalOrderId,
             providerOrderId: order.providerOrderId,
@@ -447,10 +456,22 @@ export const reconcileProviderPortfolio = mutation({
         const accountSnapshotDecision = shouldWriteAccountSnapshot
             ? "written:account_state_changed"
             : "skipped:account_state_unchanged"
+        const moneyReconciliation = await reconcileAccountMoney(ctx, {
+            app: args.app,
+            accountId: args.accountId,
+            venue: args.venue,
+            strategies,
+            currentAccountState: args.accountState,
+            accountPnlEvents,
+            updatedAt: now,
+        })
+        const accountPnlEventWriteStats = moneyReconciliation.eventWriteStats
+        const moneyAuditMismatches = moneyReconciliation.moneyAuditMismatches
 
         if (shouldWriteAccountSnapshot) {
             await ctx.db.insert("account_snapshots", {
                 app: args.app,
+                accountId: args.accountId,
                 venue: args.venue,
                 balance: args.accountState.balance,
                 equity: args.accountState.equity,
@@ -463,10 +484,11 @@ export const reconcileProviderPortfolio = mutation({
             })
         }
 
-        const providerPositionWriteStats = await upsertProviderPositionRows(ctx, args.app, nextProviderPositions)
-        const providerWorkingOrderWriteStats = await upsertProviderWorkingOrderRows(ctx, args.app, nextProviderWorkingOrders)
+        const providerPositionWriteStats = await upsertProviderPositionRows(ctx, args.app, args.accountId, nextProviderPositions)
+        const providerWorkingOrderWriteStats = await upsertProviderWorkingOrderRows(ctx, args.app, args.accountId, nextProviderWorkingOrders)
         await resolveExecutionSafetyFaultsFromProviderTruth(ctx, {
             app: args.app,
+            accountId: args.accountId,
             positions: nextProviderPositions,
             workingOrders: nextProviderWorkingOrders,
             updatedAt: now,
@@ -474,6 +496,7 @@ export const reconcileProviderPortfolio = mutation({
 
         const positionSnapshotResult = await writeStrategyPositionSnapshots(ctx, {
             app: args.app,
+            accountId: args.accountId,
             strategies,
             positions: resolvedPositions,
             syncedAt: now,
@@ -484,6 +507,21 @@ export const reconcileProviderPortfolio = mutation({
         await incrementControlPlaneMetric(ctx, {
             metric: shouldWriteAccountSnapshot ? "reconcile_provider_portfolio.account_snapshot_written" : "reconcile_provider_portfolio.account_snapshot_suppressed",
             app: args.app,
+        })
+        await incrementControlPlaneMetric(ctx, {
+            metric: "reconcile_provider_portfolio.account_pnl_events_inserted",
+            app: args.app,
+            delta: accountPnlEventWriteStats.inserted,
+        })
+        await incrementControlPlaneMetric(ctx, {
+            metric: "reconcile_provider_portfolio.account_pnl_events_patched",
+            app: args.app,
+            delta: accountPnlEventWriteStats.patched,
+        })
+        await incrementControlPlaneMetric(ctx, {
+            metric: "reconcile_provider_portfolio.account_pnl_events_unchanged",
+            app: args.app,
+            delta: accountPnlEventWriteStats.unchanged,
         })
         await incrementControlPlaneMetric(ctx, {
             metric: "reconcile_provider_portfolio.provider_positions_inserted",
@@ -561,6 +599,7 @@ export const reconcileProviderPortfolio = mutation({
             statusMismatches,
             ownershipMismatches: Array.from(ownershipMismatches),
             exposureViolations,
+            moneyAuditMismatches,
             unattributedClosures: closureReconciliation.unattributedClosures,
             unmatchedClosedPositions: closureReconciliation.unmatchedClosedPositions,
         })
@@ -568,7 +607,8 @@ export const reconcileProviderPortfolio = mutation({
         const stale = false
         const providerStatus: Doc<"provider_sync_state">["providerStatus"] = driftDetected ? "degraded" : "healthy"
         const syncStateUpdate = {
-            accountScope: "single-account-per-venue" as const,
+            accountId: args.accountId,
+            accountScope: "account" as const,
             lastSyncedAt: now,
             lastVerifiedAt: now,
             providerStatus,
@@ -595,7 +635,7 @@ export const reconcileProviderPortfolio = mutation({
             await ctx.db.insert("alerts", {
                 app: args.app,
                 severity: "warning",
-                message: `[portfolio] ${args.app} reconciliation drift (${args.source}): ${driftSummary}`,
+                message: `[portfolio] ${args.app}:${args.accountId} reconciliation drift (${args.source}): ${driftSummary}`,
                 acknowledged: false,
                 timestamp: now,
             })
@@ -612,6 +652,7 @@ export const reconcileProviderPortfolio = mutation({
 
         return {
             app: args.app,
+            accountId: args.accountId,
             source: args.source,
             positionCount: resolvedPositions.length,
             pendingOrderCount: resolvedWorkingOrders.length,
@@ -711,6 +752,7 @@ async function recordDuplicateExposureFaults(
     ctx: PortfolioMutationCtx,
     args: {
         app: Doc<"strategies">["app"]
+        accountId: string
         violations: string[]
         strategies: Array<Doc<"strategies">>
         updatedAt: number
@@ -723,7 +765,9 @@ async function recordDuplicateExposureFaults(
     const strategyMap = new Map(args.strategies.map((strategy) => [String(strategy._id), strategy]))
     const existingFaults = await ctx.db
         .query("execution_safety_faults")
-        .withIndex("by_app_blocked", (q) => q.eq("app", args.app).eq("blocked", true))
+        .withIndex("by_app_account_blocked", (q) =>
+            q.eq("app", args.app).eq("accountId", args.accountId).eq("blocked", true)
+        )
         .collect()
     const existingKeys = new Set(
         existingFaults
@@ -751,6 +795,7 @@ async function recordDuplicateExposureFaults(
         await ctx.db.insert("execution_safety_faults", {
             strategyId: strategy._id,
             app: args.app,
+            accountId: args.accountId,
             instrument: parsed.instrument,
             category: "duplicate_exposure",
             message,
@@ -799,6 +844,7 @@ export const recordProviderSyncFailure = mutation({
     args: {
         serviceToken: v.string(),
         app: venueAppV,
+        accountId: v.string(),
         error: v.string(),
     },
     handler: async (ctx, args) => {
@@ -806,14 +852,14 @@ export const recordProviderSyncFailure = mutation({
         const now = Date.now()
         const existing = await ctx.db
             .query("provider_sync_state")
-            .withIndex("by_app", (q) => q.eq("app", args.app))
+            .withIndex("by_app_account", (q) => q.eq("app", args.app).eq("accountId", args.accountId))
             .first()
         const lastVerifiedAt = existing?.lastVerifiedAt
         const stale = isStale(lastVerifiedAt, now)
 
         if (existing) {
             await ctx.db.patch(existing._id, {
-                accountScope: "single-account-per-venue",
+                accountScope: "account",
                 providerStatus: stale ? "stale" : "degraded",
                 stale,
                 lastError: args.error,
@@ -824,7 +870,8 @@ export const recordProviderSyncFailure = mutation({
 
         return await ctx.db.insert("provider_sync_state", {
             app: args.app,
-            accountScope: "single-account-per-venue",
+            accountId: args.accountId,
+            accountScope: "account",
             providerStatus: "stale",
             stale: true,
             driftDetected: false,
@@ -833,174 +880,6 @@ export const recordProviderSyncFailure = mutation({
             pendingOrderCount: 0,
             updatedAt: now,
         })
-    },
-})
-
-export const adoptProviderPositions = mutation({
-    args: {
-        serviceToken: v.string(),
-        app: venueAppV,
-        strategyId: v.id("strategies"),
-        instruments: v.array(v.string()),
-    },
-    handler: async (ctx, args) => {
-        requireServiceToken(args.serviceToken)
-
-        const strategy = await ctx.db.get(args.strategyId)
-        if (!strategy) {
-            throw new Error(`Strategy not found: ${args.strategyId}`)
-        }
-
-        if (strategy.app !== args.app) {
-            throw new Error(`Strategy ${args.strategyId} does not belong to ${args.app}`)
-        }
-
-        const requestedInstruments = Array.from(
-            new Set(
-                args.instruments
-                    .map((instrument) => instrument.trim())
-                    .filter((instrument) => instrument.length > 0)
-            )
-        )
-
-        if (requestedInstruments.length === 0) {
-            return {
-                adoptedPositions: 0,
-                adoptedOrders: 0,
-            }
-        }
-
-        const instrumentSet = new Set(requestedInstruments)
-        const appStrategies = await ctx.db
-            .query("strategies")
-            .withIndex("by_app", (q) => q.eq("app", args.app))
-            .collect()
-        const activeOrders = await listActiveOrdersForApp(ctx, appStrategies)
-        const conflictingOrders = activeOrders.filter(
-            (order) =>
-                instrumentSet.has(order.instrument) &&
-                order.strategyId !== args.strategyId
-        )
-
-        if (conflictingOrders.length > 0) {
-            throw new Error(
-                `Cannot adopt instruments with active Convex-tracked orders owned by another strategy: ${conflictingOrders.map((order) => `${order.instrument}:${order.orderId}`).join(", ")}`
-            )
-        }
-
-        const [claims, providerPositions, providerWorkingOrders] = await Promise.all([
-            ctx.db
-                .query("instrument_claims")
-                .withIndex("by_app", (q) => q.eq("app", args.app))
-                .collect(),
-            ctx.db
-                .query("provider_positions")
-                .withIndex("by_app", (q) => q.eq("app", args.app))
-                .collect(),
-            ctx.db
-                .query("provider_working_orders")
-                .withIndex("by_app", (q) => q.eq("app", args.app))
-                .collect(),
-        ])
-
-        const conflictingProviderPositions = providerPositions.filter(
-            (position) =>
-                instrumentSet.has(position.instrument) &&
-                position.strategyId &&
-                position.strategyId !== args.strategyId
-        )
-        const conflictingProviderWorkingOrders = providerWorkingOrders.filter(
-            (order) =>
-                instrumentSet.has(order.instrument) &&
-                order.strategyId &&
-                order.strategyId !== args.strategyId
-        )
-
-        if (conflictingProviderPositions.length > 0 || conflictingProviderWorkingOrders.length > 0) {
-            const conflictingPositionIds = conflictingProviderPositions.map((position) => position.positionKey)
-            const conflictingOrderIds = conflictingProviderWorkingOrders.map((order) => order.orderId)
-            throw new Error(
-                `Cannot adopt instruments already owned by another strategy. Conflicting provider positions: ${conflictingPositionIds.join(", ") || "none"}; conflicting provider working orders: ${conflictingOrderIds.join(", ") || "none"}`
-            )
-        }
-
-        const instruments = resolveProviderAdoptionInstruments({
-            targetStrategyId: String(args.strategyId),
-            requestedInstruments,
-            rows: [
-                ...providerPositions.map((position) => ({
-                    instrument: position.instrument,
-                    ownershipStatus: position.ownershipStatus,
-                    strategyId: position.strategyId ? String(position.strategyId) : undefined,
-                })),
-                ...providerWorkingOrders.map((order) => ({
-                    instrument: order.instrument,
-                    ownershipStatus: order.ownershipStatus,
-                    strategyId: order.strategyId ? String(order.strategyId) : undefined,
-                })),
-            ],
-            claims: claims.map((claim) => ({
-                instrument: claim.instrument,
-                strategyId: String(claim.strategyId),
-            })),
-        })
-
-        const now = Date.now()
-
-        for (const claim of claims) {
-            if (instrumentSet.has(claim.instrument)) {
-                await ctx.db.delete(claim._id)
-            }
-        }
-
-        const adoptedPositionClaims = buildAdoptedPositionClaims({
-            strategyId: args.strategyId,
-            requestedInstruments: instruments,
-            providerPositions,
-            existingClaims: claims,
-        })
-
-        await replacePositionClaims(ctx, {
-            strategyId: args.strategyId,
-            app: args.app,
-            positionClaims: adoptedPositionClaims,
-            updatedAt: now,
-        })
-
-        let adoptedPositions = 0
-        for (const position of providerPositions) {
-            if (!instrumentSet.has(position.instrument)) {
-                continue
-            }
-
-            await ctx.db.patch(position._id, {
-                strategyId: args.strategyId,
-                ownershipStatus: "owned",
-                expectedExternal: false,
-            })
-            adoptedPositions++
-        }
-
-        let adoptedOrders = 0
-        for (const order of providerWorkingOrders) {
-            if (!instrumentSet.has(order.instrument)) {
-                continue
-            }
-
-            await ctx.db.patch(order._id, {
-                strategyId: args.strategyId,
-                ownershipStatus: "owned",
-                expectedExternal: false,
-            })
-            adoptedOrders++
-        }
-
-        await updateProviderSyncStateFromCurrentRows(ctx, args.app, now)
-
-        return {
-            adoptedPositions,
-            adoptedOrders,
-        }
     },
 })
 

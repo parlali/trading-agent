@@ -78,9 +78,20 @@ export interface MT5PositionClosure {
     profit: number
     swap?: number
     commission?: number
+    fee?: number
     timeDone: number
     entry: number
     reason: number
+}
+
+export interface MT5AccountPnlEvent {
+    providerEventId: string
+    eventType: "funding_fee" | "fee" | "adjustment"
+    instrument?: string
+    amount: number
+    currency: string
+    occurredAt: number
+    metadata?: Record<string, unknown>
 }
 
 export interface MT5OpenOrder {
@@ -151,7 +162,6 @@ export class MT5Client {
     private readonly timeout: number
     private readonly connectTimeout: number
     private readonly fetchImpl: typeof fetch
-    private connected = false
 
     constructor(config: MT5ClientConfig) {
         this.workerUrl = config.workerUrl.replace(/\/$/, "")
@@ -182,7 +192,6 @@ export class MT5Client {
             })
         }
 
-        this.connected = true
         return response.accountInfo!
     }
 
@@ -192,36 +201,43 @@ export class MT5Client {
         } catch {
             // Best effort
         }
-        this.connected = false
     }
 
     async getHealth(): Promise<{ status: string; connected: boolean; login: number | null }> {
         return await this.get("/health")
     }
 
-    connectionKey(credentials: MT5WorkerCredentials): string {
-        return `${this.workerUrl}:${credentials.login}:${credentials.server}`
+    async getAccount(credentials: MT5WorkerCredentials): Promise<MT5AccountInfo> {
+        return await this.postRead<MT5AccountInfo>("/account", this.accountScopedBody(credentials))
     }
 
-    async getAccount(): Promise<MT5AccountInfo> {
-        return await this.get<MT5AccountInfo>("/account")
+    async getPositions(credentials: MT5WorkerCredentials): Promise<MT5Position[]> {
+        return await this.postRead<MT5Position[]>("/positions", this.accountScopedBody(credentials))
     }
 
-    async getPositions(): Promise<MT5Position[]> {
-        return await this.get<MT5Position[]>("/positions")
+    async getOpenOrders(credentials: MT5WorkerCredentials): Promise<MT5OpenOrder[]> {
+        return await this.postRead<MT5OpenOrder[]>("/orders", this.accountScopedBody(credentials))
     }
 
-    async getOpenOrders(): Promise<MT5OpenOrder[]> {
-        return await this.get<MT5OpenOrder[]>("/orders")
-    }
-
-    async getPositionClosures(lookbackHours: number = 24): Promise<MT5PositionClosure[]> {
-        return await this.postRead<MT5PositionClosure[]>("/position/closures", {
+    async getPositionClosures(
+        credentials: MT5WorkerCredentials,
+        lookbackHours: number = 24
+    ): Promise<MT5PositionClosure[]> {
+        return await this.postRead<MT5PositionClosure[]>("/position/closures", this.accountScopedBody(credentials, {
             lookbackHours,
-        })
+        }))
     }
 
-    async submitOrder(params: {
+    async getAccountPnlEvents(
+        credentials: MT5WorkerCredentials,
+        lookbackHours: number = 24
+    ): Promise<MT5AccountPnlEvent[]> {
+        return await this.postRead<MT5AccountPnlEvent[]>("/account/pnl-events", this.accountScopedBody(credentials, {
+            lookbackHours,
+        }))
+    }
+
+    async submitOrder(credentials: MT5WorkerCredentials, params: {
         symbol: string
         side: string
         volume: number
@@ -233,64 +249,60 @@ export class MT5Client {
         comment?: string
         deviation?: number
     }): Promise<MT5OrderResult> {
-        return await this.postMutation<MT5OrderResult>("/order/submit", params)
+        return await this.postMutation<MT5OrderResult>("/order/submit", this.accountScopedBody(credentials, params))
     }
 
-    async modifyPosition(params: {
-        ticket: number
-        stopLoss?: number
-        takeProfit?: number
-    }): Promise<MT5OrderResult> {
-        return await this.postMutation<MT5OrderResult>("/order/modify", params)
-    }
-
-    async modifyOrder(params: {
+    async modifyOrder(credentials: MT5WorkerCredentials, params: {
         ticket: number
         price?: number
         stopLoss?: number
         takeProfit?: number
     }): Promise<MT5OrderResult> {
-        return await this.postMutation<MT5OrderResult>("/order/modify", params)
+        return await this.postMutation<MT5OrderResult>("/order/modify", this.accountScopedBody(credentials, params))
     }
 
-    async cancelOrder(params: {
+    async cancelOrder(credentials: MT5WorkerCredentials, params: {
         ticket: number
     }): Promise<MT5OrderResult> {
-        return await this.postMutation<MT5OrderResult>("/order/cancel", params)
+        return await this.postMutation<MT5OrderResult>("/order/cancel", this.accountScopedBody(credentials, params))
     }
 
-    async cancelAllOrders(): Promise<{ cancelled: number; results: MT5OrderResult[] }> {
-        return await this.postMutation("/order/cancel-all", {})
+    async cancelAllOrders(credentials: MT5WorkerCredentials): Promise<{ cancelled: number; results: MT5OrderResult[] }> {
+        return await this.postMutation("/order/cancel-all", this.accountScopedBody(credentials))
     }
 
-    async closePosition(params: {
+    async closePosition(credentials: MT5WorkerCredentials, params: {
         ticket: number
         volume?: number
         deviation?: number
         comment?: string
     }): Promise<MT5OrderResult> {
-        return await this.postMutation<MT5OrderResult>("/position/close", params)
+        return await this.postMutation<MT5OrderResult>("/position/close", this.accountScopedBody(credentials, params))
     }
 
-    async closeAllPositions(): Promise<{ closed: number; results: MT5OrderResult[] }> {
-        return await this.postMutation("/position/close-all", {})
+    async closeAllPositions(credentials: MT5WorkerCredentials): Promise<{ closed: number; results: MT5OrderResult[] }> {
+        return await this.postMutation("/position/close-all", this.accountScopedBody(credentials))
     }
 
-    async getSymbolInfo(symbols: string[]): Promise<MT5SymbolInfo[]> {
-        return await this.postRead<MT5SymbolInfo[]>("/symbol/info", { symbols })
+    async getSymbolInfo(credentials: MT5WorkerCredentials, symbols: string[]): Promise<MT5SymbolInfo[]> {
+        return await this.postRead<MT5SymbolInfo[]>("/symbol/info", this.accountScopedBody(credentials, { symbols }))
     }
 
-    async getOrderStatus(orderId: number): Promise<{
+    async getOrderStatus(credentials: MT5WorkerCredentials, orderId: number): Promise<{
         ticket: number
         symbol: string
         type: string
         volume: number
         volumeInitial?: number
         price: number
+        profit?: number
+        commission?: number
+        swap?: number
+        fee?: number
         state: string
     } | null> {
         try {
-            return await this.postRead("/order/status", { orderId })
+            return await this.postRead("/order/status", this.accountScopedBody(credentials, { orderId }))
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error)
             if (message.includes("404")) {
@@ -330,7 +342,7 @@ export class MT5Client {
         return {
             orderId: result.orderId || result.dealId || options.fallbackOrderId || "",
             providerOrderId: result.orderId || result.dealId || options.fallbackOrderId || undefined,
-            status: success ? options.successStatus ?? "filled" : "rejected",
+            status: success ? options.successStatus ?? resolveMT5MutationSuccessStatus(result) : "rejected",
             filledQuantity: success ? options.filledQuantity ?? result.volume : 0,
             fillPrice: success
                 ? options.fillPrice ?? (result.price > 0 ? result.price : undefined)
@@ -342,6 +354,18 @@ export class MT5Client {
     }
 
     // -- HTTP transport -------------------------------------------------------
+
+    private accountScopedBody(
+        credentials: MT5WorkerCredentials,
+        params: Record<string, unknown> = {}
+    ): Record<string, unknown> {
+        return {
+            ...params,
+            login: credentials.login,
+            password: credentials.password,
+            server: credentials.server,
+        }
+    }
 
     private async get<T = unknown>(path: string): Promise<T> {
         return await retryWithBackoff(async () => {
@@ -425,6 +449,10 @@ export class MT5Client {
         }
         return h
     }
+}
+
+function resolveMT5MutationSuccessStatus(result: MT5OrderResult): ExecutionResult["status"] {
+    return result.retcode === 10010 ? "partially_filled" : "filled"
 }
 
 function parseWorkerError(text: string): MT5WorkerErrorDetail | undefined {

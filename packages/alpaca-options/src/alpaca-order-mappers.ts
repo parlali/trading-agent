@@ -58,6 +58,9 @@ export function mapOrderResponse(order: AlpacaOrderResponse): ExecutionResult {
     if (limitPrice !== undefined) {
         intentUpdates.limitPrice = limitPrice
     }
+    if (status === "filled" || status === "partially_filled") {
+        intentUpdates.metadata = buildAlpacaOrderAccountingMetadata(order)
+    }
 
     return {
         orderId: order.id,
@@ -70,6 +73,16 @@ export function mapOrderResponse(order: AlpacaOrderResponse): ExecutionResult {
         error: errorDetail ? formatExecutionError(errorDetail) : undefined,
         errorDetail,
         intentUpdates: Object.keys(intentUpdates).length > 0 ? intentUpdates : undefined,
+    }
+}
+
+function buildAlpacaOrderAccountingMetadata(order: AlpacaOrderResponse): Record<string, unknown> {
+    return {
+        providerAccountingSource: "alpaca_order",
+        providerAccountingMissing: true,
+        providerAccountingMissingReason: "alpaca_order_fill_requires_account_activity_fee_reconciliation",
+        providerOrderId: order.id,
+        providerClientOrderId: order.client_order_id,
     }
 }
 
@@ -109,8 +122,8 @@ export function buildCreateOrderPayload(intent: OrderIntent, clientOrderId?: str
         })
     }
 
-    if (!intent.legs || (intent.legs.length !== 2 && intent.legs.length !== 4)) {
-        throw createExecutionError("pre_validation", "Alpaca multi-leg options orders must be submitted as either 2 or 4 legs", {
+    if (!intent.legs || (intent.legs.length !== 1 && intent.legs.length !== 2 && intent.legs.length !== 4)) {
+        throw createExecutionError("pre_validation", "Alpaca options orders must be submitted as 1, 2, or 4 legs", {
             code: "INVALID_LEG_COUNT",
             retryable: false,
         })
@@ -121,6 +134,33 @@ export function buildCreateOrderPayload(intent: OrderIntent, clientOrderId?: str
             code: "INVALID_LEG_RATIO",
             retryable: false,
         })
+    }
+
+    if (intent.legs.length === 1) {
+        const leg = intent.legs[0]!
+        const mappedLeg = mapAlpacaLegSide(leg.side)
+
+        if (leg.instrument.trim().toUpperCase() !== intent.instrument.trim().toUpperCase()) {
+            throw createExecutionError("pre_validation", "Alpaca single-leg option orders require intent instrument to match the leg symbol", {
+                code: "INVALID_SINGLE_LEG_INSTRUMENT",
+                retryable: false,
+                details: {
+                    instrument: intent.instrument,
+                    legInstrument: leg.instrument,
+                },
+            })
+        }
+
+        return {
+            client_order_id: clientOrderId,
+            symbol: leg.instrument,
+            type: mapOrderType(intent.orderType),
+            time_in_force: intent.timeInForce,
+            qty: intent.quantity,
+            limit_price: roundPrice(Math.abs(intent.limitPrice)),
+            side: mappedLeg.side,
+            position_intent: mappedLeg.position_intent,
+        }
     }
 
     return {

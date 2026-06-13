@@ -35,9 +35,21 @@ export function resolvePolymarketCredentials(
         apiSecret: requireResolvedSecret(secrets, "POLYMARKET_API_SECRET"),
         apiPassphrase: requireResolvedSecret(secrets, "POLYMARKET_API_PASSPHRASE"),
         host: secrets.POLYMARKET_HOST ?? undefined,
-        chainId: secrets.POLYMARKET_CHAIN_ID
-            ? Number(secrets.POLYMARKET_CHAIN_ID)
-            : undefined,
+        chainId: resolvePolymarketChainId(secrets.POLYMARKET_CHAIN_ID),
         funderAddress: resolvePolymarketFunderAddress(secrets),
     }
+}
+
+function resolvePolymarketChainId(rawChainId: string | null | undefined): number | undefined {
+    const normalized = rawChainId?.trim()
+    if (!normalized) {
+        return undefined
+    }
+
+    const chainId = Number(normalized)
+    if (!Number.isInteger(chainId) || chainId <= 0) {
+        throw new Error("POLYMARKET_CHAIN_ID must be a positive integer when provided")
+    }
+
+    return chainId
 }

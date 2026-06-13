@@ -16,8 +16,6 @@ Keep tool schemas, adapter contracts, persisted state, and provider payload mapp
 Treat ownership, reconciliation, dry-run accounting, and order lifecycle bugs as safety-critical defects.
 When fixing runtime bugs, trace the full path: agent tool schema -> handler -> execution pipeline -> venue adapter -> provider API -> Convex persistence -> dashboard/read model.
 Tests must cover the real failure mode from logs or exports whenever possible; connection tests must exercise the same runtime config, credentials, and provider path as scheduled strategies.
-Do not mark safety or accounting plan items complete until a replay, export audit, or provider-sync check proves the intended behavior.
-Plan items describe intended behavior to achieve, not specific changes to follow blindly. Implement the smallest correct design that satisfies the behavior and note deviations in your local private plan file when you use one.
 
 When working on local private plan tasks:
 - ALWAYS check off completed tasks: `- [ ]` becomes `- [x]`

@@ -1,8 +1,14 @@
 "use node"
 
-import { action } from "./_generated/server"
+import { action, type ActionCtx } from "./_generated/server"
+import { internal } from "./_generated/api"
 import { v } from "convex/values"
 import { requireUser } from "./lib/authGuards"
+import {
+    buildAccountSecretKeyMap,
+    resolveAccountScopedSecretKeys,
+    type VenueApp,
+} from "@valiq-trading/core"
 import {
     ALPACA_RUNTIME_SECRET_KEYS,
     AlpacaClient,
@@ -39,13 +45,30 @@ function env(key: string): string | null {
     return process.env[key]?.trim() || null
 }
 
-function getSecrets(
+async function getAccountSecrets(
+    ctx: ActionCtx,
+    app: VenueApp,
+    accountId: string,
     keys: readonly string[]
-): Record<string, string | null> {
+): Promise<Record<string, string | null>> {
+    const account = await ctx.runQuery(internal.queries.getAccountByAppAndIdInternal, {
+        app,
+        accountId,
+    })
+
+    if (!account) {
+        throw new Error(`No ${app} account ${accountId} is configured in the account pool`)
+    }
+
+    const scopedKeyMap = buildAccountSecretKeyMap(
+        account,
+        resolveAccountScopedSecretKeys(app, [...keys])
+    )
     const secrets: Record<string, string | null> = {}
 
     for (const key of keys) {
-        secrets[key] = env(key)
+        const scopedKey = scopedKeyMap.get(key)
+        secrets[key] = env(scopedKey ?? key)
     }
 
     return secrets
@@ -98,15 +121,15 @@ export const testBackendHealth = action({
 })
 
 export const testMT5Connection = action({
-    args: {},
-    handler: async (ctx) => {
+    args: { accountId: v.string() },
+    handler: async (ctx, args) => {
         await requireUser(ctx)
 
         const steps: StepResult[] = []
         let runtimeConfig: ReturnType<typeof resolveMT5RuntimeConfig>
 
         try {
-            runtimeConfig = resolveMT5RuntimeConfig(getSecrets(MT5_RUNTIME_SECRET_KEYS))
+            runtimeConfig = resolveMT5RuntimeConfig(await getAccountSecrets(ctx, "mt5", args.accountId, MT5_RUNTIME_SECRET_KEYS))
         } catch (error) {
             steps.push({
                 name: "Runtime Config",
@@ -183,15 +206,15 @@ export const testMT5Connection = action({
 })
 
 export const testAlpacaConnection = action({
-    args: {},
-    handler: async (ctx) => {
+    args: { accountId: v.string() },
+    handler: async (ctx, args) => {
         await requireUser(ctx)
 
         const steps: StepResult[] = []
         let runtimeConfig: ReturnType<typeof resolveAlpacaRuntimeConfig>
 
         try {
-            runtimeConfig = resolveAlpacaRuntimeConfig(getSecrets(ALPACA_RUNTIME_SECRET_KEYS))
+            runtimeConfig = resolveAlpacaRuntimeConfig(await getAccountSecrets(ctx, "alpaca-options", args.accountId, ALPACA_RUNTIME_SECRET_KEYS))
         } catch (error) {
             steps.push({
                 name: "Runtime Config",
@@ -276,15 +299,15 @@ export const testAlpacaConnection = action({
 })
 
 export const testPolymarketConnection = action({
-    args: {},
-    handler: async (ctx) => {
+    args: { accountId: v.string() },
+    handler: async (ctx, args) => {
         await requireUser(ctx)
 
         const steps: StepResult[] = []
         let credentials: ReturnType<typeof resolvePolymarketCredentials>
 
         try {
-            credentials = resolvePolymarketCredentials(getSecrets(POLYMARKET_RUNTIME_SECRET_KEYS))
+            credentials = resolvePolymarketCredentials(await getAccountSecrets(ctx, "polymarket", args.accountId, POLYMARKET_RUNTIME_SECRET_KEYS))
         } catch (error) {
             steps.push({
                 name: "Runtime Config",
@@ -390,15 +413,15 @@ export const testPolymarketConnection = action({
 })
 
 export const testOKXConnection = action({
-    args: {},
-    handler: async (ctx) => {
+    args: { accountId: v.string() },
+    handler: async (ctx, args) => {
         await requireUser(ctx)
 
         const steps: StepResult[] = []
         let runtimeConfig: ReturnType<typeof resolveOKXRuntimeConfig>
 
         try {
-            runtimeConfig = resolveOKXRuntimeConfig(getSecrets(OKX_RUNTIME_SECRET_KEYS))
+            runtimeConfig = resolveOKXRuntimeConfig(await getAccountSecrets(ctx, "okx-swap", args.accountId, OKX_RUNTIME_SECRET_KEYS))
         } catch (error) {
             steps.push({
                 name: "Runtime Config",

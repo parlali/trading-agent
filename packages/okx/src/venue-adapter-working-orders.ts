@@ -7,6 +7,7 @@ import type {
     OKXApiPosSide,
     OKXOrder,
 } from "./okx-client"
+import { buildOKXOrderAccountingMetadata } from "./venue-adapter-execution-results"
 import {
     isFiniteNumberString,
     mapOKXAlgoOrderStatus,
@@ -39,6 +40,8 @@ export async function mapOKXWorkingOrders(args: {
             const filledQuantity = args.contractsToBaseQuantity(rules, Number(order.accFillSz))
             const submittedAt = parseUnixMs(order.cTime)
             const updatedAt = parseUnixMs(order.uTime) ?? submittedAt ?? Date.now()
+            const status = mapOKXOrderStatus(order.state)
+            const accountingMetadata = buildOKXOrderAccountingMetadata(order, status)
 
             return {
                 orderId: toCompositeOrderId("order", order.instId, order.ordId),
@@ -46,7 +49,7 @@ export async function mapOKXWorkingOrders(args: {
                 providerClientOrderId: order.clOrdId,
                 providerOrderAliases: [order.ordId, order.clOrdId].filter((value): value is string => Boolean(value)),
                 instrument: order.instId,
-                status: mapOKXOrderStatus(order.state),
+                status,
                 quantity,
                 filledQuantity,
                 remainingQuantity: Math.max(quantity - filledQuantity, 0),
@@ -62,6 +65,7 @@ export async function mapOKXWorkingOrders(args: {
                     reduceOnly: order.reduceOnly === "true",
                     tdMode: order.tdMode,
                     posSide: order.posSide,
+                    ...accountingMetadata,
                 },
             } satisfies WorkingOrder
         })

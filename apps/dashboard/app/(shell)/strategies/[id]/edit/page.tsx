@@ -39,6 +39,7 @@ export default function EditStrategyPage({
                 initialData={{
                     id: strategy._id,
                     app: strategy.app as ActiveVenueApp,
+                    accountId: strategy.accountId,
                     name: strategy.name,
                     enabled: strategy.enabled,
                     schedule: strategy.schedule,

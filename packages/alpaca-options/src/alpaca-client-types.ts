@@ -1,5 +1,6 @@
 export interface AlpacaAccountResponse {
     id: string
+    account_number?: string
     cash?: string
     equity: string
     buying_power: string
@@ -9,6 +10,21 @@ export interface AlpacaAccountResponse {
     unrealized_pl?: string
     last_equity?: string
     portfolio_value?: string
+}
+
+export interface AlpacaAccountActivity {
+    id: string
+    activity_type: string
+    date?: string
+    transaction_time?: string
+    net_amount?: string
+    description?: string
+    symbol?: string
+    qty?: string
+    price?: string
+    status?: string
+    order_id?: string
+    side?: string
 }
 
 export interface AlpacaPositionResponse {
@@ -26,6 +42,7 @@ export interface AlpacaPositionResponse {
 export interface AlpacaOrderResponse {
     id: string
     client_order_id?: string
+    symbol?: string
     status: string
     order_class?: string
     side?: "buy" | "sell"

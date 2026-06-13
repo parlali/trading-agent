@@ -75,7 +75,49 @@ def map_open_order(order: Any) -> dict[str, Any]:
     }
 
 
-def map_position_closure(mt5_module: Any, deal: Any) -> dict[str, Any] | None:
+def map_position_closures(mt5_module: Any, deals: Any) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    position_volumes: dict[int, float] = {}
+
+    for deal in sorted(deals, key=lambda item: (
+        read_mt5_timestamp_ms(item, "time_msc", "time"),
+        int(getattr(item, "ticket", 0) or 0),
+    )):
+        deal_type = getattr(deal, "type", None)
+        if deal_type not in (mt5_module.DEAL_TYPE_BUY, mt5_module.DEAL_TYPE_SELL):
+            continue
+
+        position_id = int(getattr(deal, "position_id", 0) or 0)
+        if position_id <= 0:
+            continue
+
+        entry = int(getattr(deal, "entry", -1))
+        deal_volume = abs(float(getattr(deal, "volume", 0.0)))
+        if entry == mt5_module.DEAL_ENTRY_IN:
+            position_volumes[position_id] = position_volumes.get(position_id, 0.0) + deal_volume
+            continue
+
+        if entry in (mt5_module.DEAL_ENTRY_OUT, mt5_module.DEAL_ENTRY_OUT_BY):
+            mapped = map_position_closure(mt5_module, deal, deal_volume)
+            if mapped is not None:
+                result.append(mapped)
+            position_volumes[position_id] = max(position_volumes.get(position_id, 0.0) - deal_volume, 0.0)
+            continue
+
+        if entry == mt5_module.DEAL_ENTRY_INOUT:
+            previous_volume = position_volumes.get(position_id, 0.0)
+            if previous_volume <= 0:
+                raise ValueError(f"Cannot determine closed volume for MT5 INOUT reversal deal {int(getattr(deal, 'ticket', 0) or 0)}")
+
+            mapped = map_position_closure(mt5_module, deal, previous_volume)
+            if mapped is not None:
+                result.append(mapped)
+            position_volumes[position_id] = max(deal_volume - previous_volume, 0.0)
+
+    return result
+
+
+def map_position_closure(mt5_module: Any, deal: Any, closed_volume: float | None = None) -> dict[str, Any] | None:
     deal_type = getattr(deal, "type", None)
     if deal_type not in (mt5_module.DEAL_TYPE_BUY, mt5_module.DEAL_TYPE_SELL):
         return None
@@ -92,20 +134,110 @@ def map_position_closure(mt5_module: Any, deal: Any) -> dict[str, Any] | None:
     if position_id <= 0:
         return None
 
+    volume = closed_volume if closed_volume is not None else abs(float(deal.volume))
+
     return {
         "ticket": int(getattr(deal, "ticket", 0)),
         "orderId": int(getattr(deal, "order", 0) or 0),
         "positionId": position_id,
         "symbol": deal.symbol,
         "side": "short" if deal_type == mt5_module.DEAL_TYPE_BUY else "long",
-        "volume": abs(float(deal.volume)),
+        "volume": volume,
         "price": float(deal.price),
         "profit": float(getattr(deal, "profit", 0.0)),
         "swap": float(getattr(deal, "swap", 0.0)),
         "commission": float(getattr(deal, "commission", 0.0)),
+        "fee": float(getattr(deal, "fee", 0.0)),
         "timeDone": read_mt5_timestamp_ms(deal, "time_msc", "time"),
         "entry": entry,
         "reason": int(getattr(deal, "reason", -1)),
+    }
+
+
+def map_account_pnl_event(mt5_module: Any, deal: Any, currency: str) -> dict[str, Any] | None:
+    deal_type = getattr(deal, "type", None)
+    ticket = int(getattr(deal, "ticket", 0) or 0)
+    time_done = read_mt5_timestamp_ms(deal, "time_msc", "time")
+    if deal_type is None:
+        return None
+
+    if deal_type in (mt5_module.DEAL_TYPE_BUY, mt5_module.DEAL_TYPE_SELL):
+        entry = int(getattr(deal, "entry", -1))
+        if entry in (
+            mt5_module.DEAL_ENTRY_OUT,
+            mt5_module.DEAL_ENTRY_OUT_BY,
+            mt5_module.DEAL_ENTRY_INOUT,
+        ):
+            return None
+
+        commission = float(getattr(deal, "commission", 0.0))
+        fee = float(getattr(deal, "fee", 0.0))
+        swap = float(getattr(deal, "swap", 0.0))
+        amount = commission + fee + swap
+        if amount == 0:
+            return None
+
+        return {
+            "providerEventId": f"mt5-deal:{ticket}:entry-charges",
+            "eventType": "fee" if commission + fee != 0 else "adjustment",
+            "instrument": getattr(deal, "symbol", "") or None,
+            "amount": amount,
+            "currency": currency,
+            "occurredAt": time_done,
+            "metadata": {
+                "source": "mt5_history_deals",
+                "dealTicket": ticket,
+                "orderId": int(getattr(deal, "order", 0) or 0),
+                "positionId": int(getattr(deal, "position_id", 0) or 0),
+                "entry": entry,
+                "dealType": int(deal_type),
+                "commission": commission,
+                "fee": fee,
+                "swap": swap,
+            },
+        }
+
+    balance_types = {
+        getattr(mt5_module, "DEAL_TYPE_BALANCE", None),
+        getattr(mt5_module, "DEAL_TYPE_CREDIT", None),
+        getattr(mt5_module, "DEAL_TYPE_CHARGE", None),
+        getattr(mt5_module, "DEAL_TYPE_CORRECTION", None),
+        getattr(mt5_module, "DEAL_TYPE_BONUS", None),
+        getattr(mt5_module, "DEAL_TYPE_COMMISSION", None),
+        getattr(mt5_module, "DEAL_TYPE_COMMISSION_DAILY", None),
+        getattr(mt5_module, "DEAL_TYPE_COMMISSION_MONTHLY", None),
+        getattr(mt5_module, "DEAL_TYPE_DIVIDEND", None),
+        getattr(mt5_module, "DEAL_TYPE_DIVIDEND_FRANKED", None),
+        getattr(mt5_module, "DEAL_TYPE_TAX", None),
+    }
+    balance_types.discard(None)
+    if deal_type not in balance_types:
+        return None
+
+    amount = float(getattr(deal, "profit", 0.0))
+    if amount == 0:
+        return None
+
+    return {
+        "providerEventId": f"mt5-deal:{ticket}:balance",
+        "eventType": "fee" if deal_type in (
+            getattr(mt5_module, "DEAL_TYPE_CHARGE", None),
+            getattr(mt5_module, "DEAL_TYPE_COMMISSION", None),
+            getattr(mt5_module, "DEAL_TYPE_COMMISSION_DAILY", None),
+            getattr(mt5_module, "DEAL_TYPE_COMMISSION_MONTHLY", None),
+            getattr(mt5_module, "DEAL_TYPE_TAX", None),
+        ) else "adjustment",
+        "instrument": getattr(deal, "symbol", "") or None,
+        "amount": amount,
+        "currency": currency,
+        "occurredAt": time_done,
+        "metadata": {
+            "source": "mt5_history_deals",
+            "dealTicket": ticket,
+            "orderId": int(getattr(deal, "order", 0) or 0),
+            "dealType": int(deal_type),
+            "comment": getattr(deal, "comment", ""),
+        },
     }
 
 
@@ -207,6 +339,10 @@ def map_deal_status(mt5_module: Any, order_id: int, deals: Any) -> dict[str, Any
         return None
 
     weighted_price = sum(abs(float(deal.volume)) * float(deal.price) for deal in order_deals)
+    profit = sum(float(getattr(deal, "profit", 0.0)) for deal in order_deals)
+    commission = sum(float(getattr(deal, "commission", 0.0)) for deal in order_deals)
+    swap = sum(float(getattr(deal, "swap", 0.0)) for deal in order_deals)
+    fee = sum(float(getattr(deal, "fee", 0.0)) for deal in order_deals)
     latest_deal = max(order_deals, key=lambda deal: int(getattr(deal, "time", 0)))
 
     return {
@@ -216,7 +352,10 @@ def map_deal_status(mt5_module: Any, order_id: int, deals: Any) -> dict[str, Any
         "volume": total_volume,
         "volumeInitial": total_volume,
         "price": weighted_price / total_volume,
-        "profit": float(latest_deal.profit),
+        "profit": profit,
+        "commission": commission,
+        "swap": swap,
+        "fee": fee,
         "state": "filled",
         "timeDone": read_mt5_timestamp_ms(latest_deal, "time_msc", "time"),
     }

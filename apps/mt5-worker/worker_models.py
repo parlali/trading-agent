@@ -3,13 +3,17 @@ from __future__ import annotations
 from pydantic import BaseModel, Field
 
 
-class ConnectRequest(BaseModel):
+class AccountScopedRequest(BaseModel):
     login: int
     password: str
     server: str
 
 
-class SubmitOrderRequest(BaseModel):
+class ConnectRequest(AccountScopedRequest):
+    pass
+
+
+class SubmitOrderRequest(AccountScopedRequest):
     symbol: str
     side: str
     volume: float
@@ -22,30 +26,35 @@ class SubmitOrderRequest(BaseModel):
     deviation: int = 20
 
 
-class ModifyOrderRequest(BaseModel):
+class ModifyOrderRequest(AccountScopedRequest):
     ticket: int
     price: float | None = None
     stopLoss: float | None = None
     takeProfit: float | None = None
 
 
-class CancelOrderRequest(BaseModel):
+class CancelOrderRequest(AccountScopedRequest):
     ticket: int
 
 
-class ClosePositionRequest(BaseModel):
+class ClosePositionRequest(AccountScopedRequest):
     ticket: int
     volume: float | None = None
     deviation: int = 20
+    comment: str = "close"
 
 
-class SymbolInfoRequest(BaseModel):
+class SymbolInfoRequest(AccountScopedRequest):
     symbols: list[str]
 
 
-class GetOrderRequest(BaseModel):
+class GetOrderRequest(AccountScopedRequest):
     orderId: int = Field(gt=0)
 
 
-class PositionClosuresRequest(BaseModel):
+class PositionClosuresRequest(AccountScopedRequest):
+    lookbackHours: int = Field(default=24, ge=1, le=168)
+
+
+class AccountPnlEventsRequest(AccountScopedRequest):
     lookbackHours: int = Field(default=24, ge=1, le=168)

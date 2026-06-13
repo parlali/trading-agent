@@ -18,6 +18,7 @@ export type {
     OKXTicker,
 } from "./okx-client"
 export { OKXVenueAdapter } from "./venue-adapter"
+export { OKX_ESTIMATED_ONE_WAY_FEE_RATE } from "./execution-fees"
 export type {
     OKXMarketPrice,
 } from "./venue-adapter"

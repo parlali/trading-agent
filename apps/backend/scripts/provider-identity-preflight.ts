@@ -9,6 +9,7 @@ import {
 import type {
     ExecutionSafetyFaultRow,
     PortfolioFreshnessRow,
+    StoredAccount,
     StoredStrategy,
     TradingBackendClient,
 } from "@valiq-trading/convex"
@@ -25,20 +26,28 @@ import {
 
 type VenueApp = Exclude<App, "backend">
 
+interface AccountScope {
+    app: VenueApp
+    accountId: string
+}
+
 export async function runProviderIdentityPreflight(): Promise<void> {
     const client = createClient()
     const orderPersistence = createOrderPersistenceAdapter()
     const appFilter = resolveVenueApp(resolveArg("app"))
     const apps: VenueApp[] = appFilter ? [appFilter] : [...VENUE_APPS]
+    const accounts = (await client.getAccounts())
+        .filter((account) => apps.includes(account.app as VenueApp))
     const strategies = (await client.getAllStrategies())
         .filter((strategy) => apps.includes(strategy.app as VenueApp))
+    const accountScopes = resolvePreflightAccountScopes(apps, accounts, strategies)
 
     const failures: string[] = []
-    await refreshProviderTruth(client, apps, strategies, failures, {
+    await refreshProviderTruth(client, accountScopes, strategies, failures, {
         requireLiveStrategy: appFilter !== undefined,
     })
-    await inspectProviderFreshness(client, apps, failures)
-    await inspectProviderExposure(client, apps, failures)
+    await inspectProviderFreshness(client, accountScopes, failures)
+    await inspectProviderExposure(client, accountScopes, failures)
     await inspectActiveOrders(strategies, orderPersistence, client, failures)
 
     if (failures.length > 0) {
@@ -50,25 +59,25 @@ export async function runProviderIdentityPreflight(): Promise<void> {
     }
 
     console.log(
-        `Provider identity preflight passed for ${apps.join(", ")} with ${strategies.length} strategy record(s) checked`
+        `Provider identity preflight passed for ${formatAccountScopes(accountScopes)} with ${strategies.length} strategy record(s) checked`
     )
 }
 
 async function refreshProviderTruth(
     client: TradingBackendClient,
-    apps: VenueApp[],
+    accountScopes: AccountScope[],
     strategies: StoredStrategy[],
     failures: string[],
     options?: {
         requireLiveStrategy?: boolean
     }
 ): Promise<void> {
-    const refreshStrategies = selectProviderRefreshStrategies(apps, strategies)
+    const refreshStrategies = selectProviderRefreshStrategies(accountScopes, strategies)
 
-    for (const app of apps) {
-        const strategy = refreshStrategies.get(app)
+    for (const scope of accountScopes) {
+        const strategy = refreshStrategies.get(formatAccountScopeKey(scope))
         if (!strategy) {
-            const message = `${app}: no live strategy is available to refresh provider state with scheduled credentials`
+            const message = `${formatAccountScope(scope)}: no live strategy is available to refresh provider state with scheduled credentials`
             if (options?.requireLiveStrategy) {
                 failures.push(message)
             } else {
@@ -81,24 +90,28 @@ async function refreshProviderTruth(
             await refreshProviderPortfolioState(client, strategy)
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error)
-            failures.push(`${app}: provider truth refresh failed: ${message}`)
+            failures.push(`${formatAccountScope(scope)}: provider truth refresh failed: ${message}`)
         }
     }
 }
 
 function selectProviderRefreshStrategies(
-    apps: VenueApp[],
+    accountScopes: AccountScope[],
     strategies: StoredStrategy[]
-): Map<VenueApp, StoredStrategy> {
-    const result = new Map<VenueApp, StoredStrategy>()
+): Map<string, StoredStrategy> {
+    const result = new Map<string, StoredStrategy>()
 
-    for (const app of apps) {
+    for (const scope of accountScopes) {
         const candidates = strategies
-            .filter((strategy) => strategy.app === app && !isDryRunStrategy(strategy))
+            .filter((strategy) =>
+                strategy.app === scope.app &&
+                strategy.accountId === scope.accountId &&
+                !isDryRunStrategy(strategy)
+            )
             .sort(compareProviderRefreshStrategies)
         const strategy = candidates[0]
         if (strategy) {
-            result.set(app, strategy)
+            result.set(formatAccountScopeKey(scope), strategy)
         }
     }
 
@@ -114,22 +127,60 @@ function compareProviderRefreshStrategies(left: StoredStrategy, right: StoredStr
     return left.name.localeCompare(right.name)
 }
 
+function resolvePreflightAccountScopes(
+    apps: VenueApp[],
+    accounts: StoredAccount[],
+    strategies: StoredStrategy[]
+): AccountScope[] {
+    const activeAccountScopes = accounts
+        .filter((account) => account.status === "active")
+        .map((account) => ({
+            app: account.app as VenueApp,
+            accountId: account.accountId,
+        }))
+    const strategyAccountScopes = strategies.map((strategy) => ({
+        app: strategy.app as VenueApp,
+        accountId: strategy.accountId,
+    }))
+    const scopesByKey = new Map<string, AccountScope>()
+
+    for (const scope of [...activeAccountScopes, ...strategyAccountScopes]) {
+        if (apps.includes(scope.app)) {
+            scopesByKey.set(formatAccountScopeKey(scope), scope)
+        }
+    }
+
+    return Array.from(scopesByKey.values())
+        .sort((left, right) => formatAccountScope(left).localeCompare(formatAccountScope(right)))
+}
+
+function formatAccountScopes(scopes: AccountScope[]): string {
+    return scopes.length > 0
+        ? scopes.map(formatAccountScope).join(", ")
+        : "<none>"
+}
+
+function formatAccountScope(scope: AccountScope): string {
+    return `${scope.app}:${scope.accountId}`
+}
+
+function formatAccountScopeKey(scope: AccountScope): string {
+    return `${scope.app}\u0000${scope.accountId}`
+}
+
 if (isExecutedDirectly()) {
     runScript(runProviderIdentityPreflight)
 }
 
 async function inspectProviderFreshness(
     client: TradingBackendClient,
-    apps: VenueApp[],
+    accountScopes: AccountScope[],
     failures: string[]
 ): Promise<void> {
-    const rows = await client.getPortfolioFreshness()
-    const rowsByApp = new Map(rows.map((row) => [row.app, row]))
-
-    for (const app of apps) {
-        const row = rowsByApp.get(app)
+    for (const scope of accountScopes) {
+        const row = (await client.getPortfolioFreshness(scope.app, scope.accountId))[0]
         if (!row) {
-            failures.push(`${app}: provider sync state is missing`)
+            failures.push(`${formatAccountScope(scope)}: provider sync state is missing`)
             continue
         }
         inspectFreshnessRow(row, failures)
@@ -138,28 +189,32 @@ async function inspectProviderFreshness(
 
 function inspectFreshnessRow(row: PortfolioFreshnessRow, failures: string[]): void {
     if (row.stale) {
-        failures.push(`${row.app}: provider sync is stale`)
+        failures.push(`${formatRowScope(row)}: provider sync is stale`)
     }
     if (row.providerStatus !== "healthy") {
-        failures.push(`${row.app}: provider status is ${row.providerStatus}`)
+        failures.push(`${formatRowScope(row)}: provider status is ${row.providerStatus}`)
     }
     if (row.driftDetected) {
-        failures.push(`${row.app}: provider drift detected${formatDetail(row.lastDriftSummary)}`)
+        failures.push(`${formatRowScope(row)}: provider drift detected${formatDetail(row.lastDriftSummary)}`)
     }
     if (row.lastError) {
-        failures.push(`${row.app}: provider sync error${formatDetail(row.lastError)}`)
+        failures.push(`${formatRowScope(row)}: provider sync error${formatDetail(row.lastError)}`)
     }
+}
+
+function formatRowScope(row: PortfolioFreshnessRow): string {
+    return row.accountId ? `${row.app}:${row.accountId}` : row.app
 }
 
 async function inspectProviderExposure(
     client: TradingBackendClient,
-    apps: VenueApp[],
+    accountScopes: AccountScope[],
     failures: string[]
 ): Promise<void> {
-    for (const app of apps) {
+    for (const scope of accountScopes) {
         const [positions, orders] = await Promise.all([
-            client.getPortfolioPositions(app),
-            client.getPortfolioPendingOrders(app),
+            client.getPortfolioPositions(scope.app, undefined, scope.accountId),
+            client.getPortfolioPendingOrders(scope.app, undefined, scope.accountId),
         ])
 
         for (const position of positions) {

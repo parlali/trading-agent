@@ -130,12 +130,25 @@ class FakeBulkCloseMT5(FakeMT5):
         return (FakePosition(),)
 
 
+ROUTE_CREDENTIALS = {
+    "login": 1,
+    "password": "secret",
+    "server": "broker",
+}
+
+
 class FakeRouteClient:
     login = 1
+    server = "broker"
 
     def __init__(self, error: Exception):
         self.error = error
         self._connected = True
+        self.login_assertions: list[int] = []
+
+    def assert_session_login(self, expected_login: int) -> None:
+        self.login_assertions.append(int(expected_login))
+        assert int(expected_login) == int(self.login)
 
     def submit_order(self, **kwargs: object) -> object:
         raise self.error
@@ -180,19 +193,23 @@ async def run_endpoint_harness() -> None:
     import main
 
     main.runtime.reset_state()
-    main.runtime.client = FakeRouteClient(MT5ConnectionError("IPC recv failed", error_type="query_failed"))
+    submit_client = FakeRouteClient(MT5ConnectionError("IPC recv failed", error_type="query_failed"))
+    main.runtime.client = submit_client
 
     await assert_route_http_error(lambda: main.submit_order(
-        main.SubmitOrderRequest(symbol="XAUUSD", side="buy", volume=0.01),
+        main.SubmitOrderRequest(symbol="XAUUSD", side="buy", volume=0.01, **ROUTE_CREDENTIALS),
     ))
+    assert submit_client.login_assertions == [1, 1]
 
     main.runtime.client = FakeRouteClient(MT5ConnectionError("IPC recv failed", error_type="query_failed"))
-    await assert_route_http_error(lambda: main.get_positions())
+    await assert_route_http_error(lambda: main.get_positions(
+        main.AccountScopedRequest(**ROUTE_CREDENTIALS),
+    ))
 
     main.runtime.client = FakeRouteClient(ValueError("Position 202 not found"))
     try:
         result = await main.close_position(
-            main.ClosePositionRequest(ticket=202),
+            main.ClosePositionRequest(ticket=202, **ROUTE_CREDENTIALS),
         )
         assert result["success"] is False
         assert result["orderId"] == ""

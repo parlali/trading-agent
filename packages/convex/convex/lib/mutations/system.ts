@@ -43,30 +43,6 @@ export {
     reportHeartbeatSnapshot,
 } from "./systemHeartbeats"
 
-export const snapshotAccountState = mutation({
-    args: {
-        serviceToken: v.string(),
-        app: appV,
-        venue: v.string(),
-        ...accountSnapshotValueFieldsV,
-    },
-    handler: async (ctx, args) => {
-        requireServiceToken(args.serviceToken)
-        return await ctx.db.insert("account_snapshots", {
-            app: args.app,
-            venue: args.venue,
-            balance: args.balance,
-            equity: args.equity,
-            buyingPower: args.buyingPower,
-            marginUsed: args.marginUsed,
-            marginAvailable: args.marginAvailable,
-            openPnl: args.openPnl,
-            dayPnl: args.dayPnl,
-            timestamp: Date.now(),
-        })
-    },
-})
-
 export const setKillSwitch = mutation({
     args: {
         scope: v.union(

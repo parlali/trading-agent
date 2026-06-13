@@ -46,6 +46,21 @@ describe("tool contracts", () => {
         })
     })
 
+    it("does not advertise Alpaca propose_adjustment when venue risk rules reject that lifecycle", () => {
+        expect(() => getToolContract("propose_adjustment", "alpaca-options")).toThrow(
+            "Tool propose_adjustment is not compatible with venue alpaca-options"
+        )
+    })
+
+    it("does not advertise unsupported Polymarket adjustment or modify lifecycles", () => {
+        expect(() => getToolContract("propose_adjustment", "polymarket")).toThrow(
+            "Tool propose_adjustment is not compatible with venue polymarket"
+        )
+        expect(() => getToolContract("modify_order", "polymarket")).toThrow(
+            "Tool modify_order is not compatible with venue polymarket"
+        )
+    })
+
     it("defines required canonical metadata for every tool variant", () => {
         for (const contract of toolContractDefinitions) {
             expect(contract.name.length).toBeGreaterThan(0)

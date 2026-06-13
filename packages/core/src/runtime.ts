@@ -177,23 +177,3 @@ export function requireResolvedSecret(
     }
     return value
 }
-
-export function resolveCredentialPrefix(ref: string): string {
-    return ref.toUpperCase().replace(/[^A-Z0-9]+/g, "_")
-}
-
-export function createAccountSnapshotPersister(config: {
-    appName: string
-    venueName: string
-    backend: { snapshotAccountState(app: string, venue: string, state: AccountState): Promise<void> }
-    logger: { error(msg: string, meta?: Record<string, unknown>): void }
-}): (accountState: AccountState) => Promise<void> {
-    return async (accountState: AccountState): Promise<void> => {
-        try {
-            await config.backend.snapshotAccountState(config.appName, config.venueName, accountState)
-        } catch (error) {
-            const message = error instanceof Error ? error.message : String(error)
-            config.logger.error("Failed to persist account snapshot", { error: message })
-        }
-    }
-}

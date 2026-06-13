@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useCallback } from "react"
-import { useAction } from "convex/react"
+import { useAction, useQuery } from "convex/react"
 import { api } from "@valiq-trading/convex"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -186,8 +186,16 @@ export default function TestPage() {
     const testPolymarket = useAction(api.connectionTests.testPolymarketConnection)
     const testOKX = useAction(api.connectionTests.testOKXConnection)
     const testValiq = useAction(api.connectionTests.testValiqConnection)
+    const accounts = useQuery(api.queries.getAccounts, {})
 
     const [valiqPrompt, setValiqPrompt] = useState("")
+
+    const venueTests = {
+        "mt5": { run: testMT5, icon: BarChart3, description: "Runtime-aligned worker health, MT5 account, positions, and working orders" },
+        "alpaca-options": { run: testAlpaca, icon: TrendingUp, description: "Runtime-aligned Alpaca trading account, positions, and market-data host" },
+        "polymarket": { run: testPolymarket, icon: Coins, description: "Runtime-aligned signer and funder config, authenticated startup path, account state, positions, and open bets" },
+        "okx-swap": { run: testOKX, icon: TrendingUp, description: "Runtime-aligned OKX account config, balance, positions, and market data" },
+    } as const
 
     return (
         <div className="space-y-4">
@@ -206,33 +214,33 @@ export default function TestPage() {
                     onRun={() => testBackend()}
                 />
 
-                <TestCard
-                    title={VENUE_META.mt5.label}
-                    description="Runtime-aligned worker health, MT5 account, positions, and working orders"
-                    icon={BarChart3}
-                    onRun={() => testMT5()}
-                />
-
-                <TestCard
-                    title={VENUE_META["alpaca-options"].label}
-                    description="Runtime-aligned Alpaca trading account, positions, and market-data host"
-                    icon={TrendingUp}
-                    onRun={() => testAlpaca()}
-                />
-
-                <TestCard
-                    title={VENUE_META.polymarket.label}
-                    description="Runtime-aligned signer and funder config, authenticated startup path, account state, positions, and open bets"
-                    icon={Coins}
-                    onRun={() => testPolymarket()}
-                />
-
-                <TestCard
-                    title={VENUE_META["okx-swap"].label}
-                    description="Runtime-aligned OKX account config, balance, positions, and market data"
-                    icon={TrendingUp}
-                    onRun={() => testOKX()}
-                />
+                {accounts === undefined ? (
+                    <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        Loading account pool...
+                    </div>
+                ) : accounts.length === 0 ? (
+                    <div className="rounded-md border border-border-subtle px-3 py-2 text-xs text-muted-foreground">
+                        No accounts configured in the account pool. Venue connection tests run per account.
+                    </div>
+                ) : (
+                    (Object.keys(venueTests) as Array<keyof typeof venueTests>).flatMap((app) =>
+                        accounts
+                            .filter((account) => account.app === app)
+                            .map((account) => {
+                                const venueTest = venueTests[app]
+                                return (
+                                    <TestCard
+                                        key={`${app}:${account.accountId}`}
+                                        title={`${VENUE_META[app].label} - ${account.label}`}
+                                        description={`${account.accountId} (${account.credentialEnvPrefix}). ${venueTest.description}`}
+                                        icon={venueTest.icon}
+                                        onRun={() => venueTest.run({ accountId: account.accountId })}
+                                    />
+                                )
+                            })
+                    )
+                )}
 
                 <TestCard
                     title="Val-iQ"

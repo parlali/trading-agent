@@ -42,4 +42,28 @@ describe("DryRunExecutionBook close accounting", () => {
         expect(positions[0]?.quantity).toBe(1)
         expect(positions[0]?.entryPrice).toBe(110)
     })
+
+    it("applies the option contract multiplier to Alpaca structure cash and PnL", () => {
+        const book = new DryRunExecutionBook({ dryRun: true, dryRunInitialCash: 10_000 }, "run-1")
+
+        book.netPosition("VS:SPY:2026-06-19:bear_call_credit:520:525", "sell", 1, 1.2, "entry")
+        book.netPosition("VS:SPY:2026-06-19:bear_call_credit:520:525", "buy", 1, 0.7, "close")
+
+        expect(book.getPositions()).toEqual([])
+        const account = book.getAccountState()
+        expect(account.balance).toBe(10_050)
+        expect(account.dayPnl).toBe(50)
+    })
+
+    it("applies the option contract multiplier to raw OCC option symbols", () => {
+        const book = new DryRunExecutionBook({ dryRun: true, dryRunInitialCash: 10_000 }, "run-1")
+
+        book.netPosition("SPY260619C00520000", "sell", 1, 1.2, "entry")
+        book.netPosition("SPY260619C00520000", "buy", 1, 0.7, "close")
+
+        expect(book.getPositions()).toEqual([])
+        const account = book.getAccountState()
+        expect(account.balance).toBe(10_050)
+        expect(account.dayPnl).toBe(50)
+    })
 })

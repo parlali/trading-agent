@@ -23,6 +23,7 @@ function StrategyCard({ strategy, onRun }: {
         _id: string
         name: string
         app: string
+        accountId: string
         enabled: boolean
         schedule: string
         latestRun?: { status: string, startedAt: number } | null
@@ -58,6 +59,9 @@ function StrategyCard({ strategy, onRun }: {
                 <div className="min-w-0">
                     <p className="text-sm font-medium truncate">{strategy.name}</p>
                     <div className="flex items-center gap-2 mt-1 flex-wrap">
+                        <code className="text-xs text-muted-foreground font-mono">
+                            {strategy.accountId}
+                        </code>
                         <code className="text-xs text-muted-foreground font-mono">
                             {strategy.schedule}
                         </code>
@@ -108,13 +112,43 @@ export default function StrategiesPage() {
         return <PageSkeleton count={3} height="h-20" spacing="space-y-4" />
     }
 
-    const groupedByVenue = ACTIVE_VENUE_APPS.map((app) => ({
-        app,
-        meta: VENUE_META[app],
-        strategies: overview.strategies.filter((s) => s.app === app),
-    })).filter((group) => group.strategies.length > 0)
+    const groupedByAccount = ACTIVE_VENUE_APPS.flatMap((app) => {
+        const accounts = (overview.accounts ?? [])
+            .filter((account) => account.app === app)
+            .map((account) => ({
+                app,
+                meta: VENUE_META[app],
+                account,
+                strategies: overview.strategies.filter((strategy) =>
+                    strategy.app === app && strategy.accountId === account.accountId
+                ),
+            }))
 
-    if (groupedByVenue.length === 0) {
+        const declaredAccountIds = new Set(accounts.map((group) => group.account.accountId))
+        const undeclaredStrategies = overview.strategies.filter((strategy) =>
+            strategy.app === app && !declaredAccountIds.has(strategy.accountId)
+        )
+
+        return [
+            ...accounts,
+            ...(
+                undeclaredStrategies.length > 0
+                    ? [{
+                        app,
+                        meta: VENUE_META[app],
+                        account: {
+                            accountId: "undeclared",
+                            label: "Undeclared",
+                            status: "disabled" as const,
+                        },
+                        strategies: undeclaredStrategies,
+                    }]
+                    : []
+            ),
+        ]
+    }).filter((group) => group.strategies.length > 0)
+
+    if (groupedByAccount.length === 0) {
         return (
             <div className="space-y-6">
                 <div className="flex justify-end">
@@ -144,11 +178,15 @@ export default function StrategiesPage() {
                     </Link>
                 </Button>
             </div>
-            {groupedByVenue.map(({ app, meta, strategies }) => (
-                <div key={app} className="space-y-3">
-                    <div className="flex items-center gap-2">
+            {groupedByAccount.map(({ app, meta, account, strategies }) => (
+                <div key={`${app}:${account.accountId}`} className="space-y-3">
+                    <div className="flex items-center gap-2 flex-wrap">
                         <meta.icon className="h-4 w-4 text-muted-foreground" />
                         <h3 className="text-sm font-semibold">{meta.label}</h3>
+                        <Badge variant="outline" className="text-xs font-mono">
+                            {account.accountId}
+                        </Badge>
+                        <span className="text-xs text-muted-foreground">{account.label}</span>
                         <Badge variant="secondary" className="text-xs">
                             {strategies.length}
                         </Badge>

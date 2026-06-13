@@ -33,6 +33,7 @@ import { Activity, ClipboardList } from "lucide-react"
 
 type PortfolioPosition = {
     app: string
+    accountId: string
     providerPositionId?: string
     strategyId?: string
     strategyName?: string
@@ -51,6 +52,7 @@ type PortfolioPosition = {
 
 type PortfolioPendingOrder = {
     app: string
+    accountId: string
     strategyId?: string
     strategyName?: string
     ownershipStatus: string
@@ -125,7 +127,7 @@ function isLiveWorkingOrderStatus(status: string): boolean {
 }
 
 function getPositionKey(pos: PortfolioPosition) {
-    return [pos.app, pos.instrument, pos.side, pos.quantity, pos.entryPrice].join(":")
+    return [pos.app, pos.accountId, pos.instrument, pos.side, pos.quantity, pos.entryPrice].join(":")
 }
 
 function formatLevel(value: number | undefined): string {
@@ -138,6 +140,12 @@ const positionColumns: Column<PortfolioPosition>[] = [
         key: "venue",
         header: "Venue",
         render: (pos) => <VenueBadge app={pos.app} />,
+    },
+    {
+        key: "account",
+        header: "Account",
+        cellClassName: "font-mono text-xs",
+        render: (pos) => pos.accountId,
     },
     {
         key: "strategy",
@@ -212,6 +220,12 @@ const pendingOrderColumns: Column<PortfolioPendingOrder>[] = [
         key: "venue",
         header: "Venue",
         render: (order) => <VenueBadge app={order.app} />,
+    },
+    {
+        key: "account",
+        header: "Account",
+        cellClassName: "font-mono text-xs",
+        render: (order) => order.accountId,
     },
     {
         key: "strategy",
@@ -328,6 +342,9 @@ function PositionsTab({ positions }: { positions: PortfolioPosition[] }) {
                             <div className="flex items-center justify-between text-xs text-muted-foreground">
                                 <div className="flex items-center gap-2">
                                     <VenueBadge app={pos.app} />
+                                    <span className="font-mono truncate max-w-[90px]">
+                                        {pos.accountId}
+                                    </span>
                                     <span className="truncate max-w-[100px]">
                                         {pos.expectedExternal ? "Expected External" : (pos.strategyName ?? "Unowned")}
                                     </span>
@@ -398,6 +415,9 @@ function PendingOrdersTab({ orders }: { orders: PortfolioPendingOrder[] }) {
                             <div className="flex items-center justify-between text-xs text-muted-foreground">
                                 <div className="flex items-center gap-2">
                                     <VenueBadge app={order.app} />
+                                    <span className="font-mono truncate max-w-[90px]">
+                                        {order.accountId}
+                                    </span>
                                     <span className="truncate max-w-[100px]">
                                         {order.expectedExternal
                                             ? "Expected External"

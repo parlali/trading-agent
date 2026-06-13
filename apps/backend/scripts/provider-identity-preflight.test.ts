@@ -6,8 +6,8 @@ import { providerIdentityPreflightTestables } from "./provider-identity-prefligh
 describe("provider identity preflight", () => {
     it("selects enabled live strategies for provider refresh", () => {
         const selected = providerIdentityPreflightTestables.selectProviderRefreshStrategies([
-            "alpaca-options",
-            "mt5",
+            { app: "alpaca-options", accountId: "test-account" },
+            { app: "mt5", accountId: "test-account" },
         ], [
             createStrategy({
                 _id: "dry-run" as never,
@@ -32,8 +32,8 @@ describe("provider identity preflight", () => {
             }),
         ])
 
-        expect(selected.get("alpaca-options")?._id).toBe("enabled-live")
-        expect(selected.has("mt5")).toBe(false)
+        expect(selected.get("alpaca-options\u0000test-account")?._id).toBe("enabled-live")
+        expect(selected.has("mt5\u0000test-account")).toBe(false)
     })
 
     it("rejects owned provider-live orders without canonical identity proof", () => {
@@ -140,6 +140,7 @@ function createStrategy(overrides?: Partial<StoredStrategy>): StoredStrategy {
         _id: "strategy-okx" as never,
         _creationTime: 1,
         app: "okx-swap",
+        accountId: "test-account",
         name: "OKX reset replay",
         enabled: false,
         schedule: "0 * * * *",

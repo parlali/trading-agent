@@ -6,6 +6,7 @@ import {
     getExecutionErrorDetail,
     mergeIdentityAliases,
     type AccountState,
+    type AccountPnlEvent,
     type ExecutionCostAssessment,
     type ExecutionCostSnapshot,
     type ExecutionResult,
@@ -23,6 +24,8 @@ import {
 import {
     isRecoverableMT5ConnectionError,
     MT5Client,
+    type MT5AccountPnlEvent,
+    type MT5PositionClosure,
     type MT5SymbolInfo,
     type MT5WorkerCredentials,
 } from "./mt5-client"
@@ -48,11 +51,6 @@ import {
 
 export class MT5VenueAdapter implements VenueAdapter, PriceVerifier {
     readonly identityCapability = "native_client_id" as const
-    private static readonly connectionPromises = new Map<string, Promise<void>>()
-    private lastConnectedAt = 0
-    private readonly CONNECTION_TTL = 60_000
-    private readonly CONNECT_RETRY_ATTEMPTS = 6
-    private readonly CONNECT_RETRY_DELAY_MS = 1_000
 
     constructor(
         private readonly client: MT5Client,
@@ -61,61 +59,48 @@ export class MT5VenueAdapter implements VenueAdapter, PriceVerifier {
     ) {}
 
     async ensureConnected(): Promise<void> {
-        if (Date.now() - this.lastConnectedAt < this.CONNECTION_TTL) {
-            return
-        }
-
-        const key = this.client.connectionKey(this.credentials)
-        const existingPromise = MT5VenueAdapter.connectionPromises.get(key)
-        if (existingPromise) {
-            await existingPromise
-            this.lastConnectedAt = Date.now()
-            return
-        }
-
-        const connectionPromise = this.establishConnection()
-        MT5VenueAdapter.connectionPromises.set(key, connectionPromise)
-        try {
-            await connectionPromise
-        } finally {
-            if (MT5VenueAdapter.connectionPromises.get(key) === connectionPromise) {
-                MT5VenueAdapter.connectionPromises.delete(key)
-            }
-        }
+        const info = await this.client.getAccount(this.credentials)
+        this.assertAccountIdentity(info.login)
     }
 
-    private async establishConnection(): Promise<void> {
-        for (let attempt = 1; attempt <= this.CONNECT_RETRY_ATTEMPTS; attempt++) {
-            const health = await this.client.getHealth()
-            if (health.connected && health.login === this.credentials.login) {
-                this.lastConnectedAt = Date.now()
-                return
-            }
-
-            try {
-                await this.client.connect(this.credentials)
-                this.lastConnectedAt = Date.now()
-                return
-            } catch (error) {
-                if (!isMT5ConnectContention(error) || attempt === this.CONNECT_RETRY_ATTEMPTS) {
-                    throw error
+    private assertAccountIdentity(reportedLogin: number): void {
+        if (reportedLogin !== this.credentials.login) {
+            throw createExecutionError(
+                "venue",
+                `MT5 worker served account ${reportedLogin} but this adapter is bound to login ${this.credentials.login}`,
+                {
+                    code: "session_login_mismatch",
+                    retryable: false,
+                    details: {
+                        expectedLogin: this.credentials.login,
+                        reportedLogin,
+                        server: this.credentials.server,
+                    },
                 }
-                await sleep(this.CONNECT_RETRY_DELAY_MS)
-            }
+            )
         }
     }
 
     async getPositions(): Promise<Position[]> {
         return await this.withRecoverableRead(async () => {
             const observedAt = Date.now()
-            const raw = await this.client.getPositions()
+            const raw = await this.client.getPositions(this.credentials)
             return raw.map((position) => mapMT5Position(position, observedAt))
         })
     }
 
     async getAccountState(): Promise<AccountState> {
         return await this.withRecoverableRead(async () => {
-            const info = await this.client.getAccount()
+            const info = await this.client.getAccount(this.credentials)
+            this.assertAccountIdentity(info.login)
+            assertMT5AccountCurrency(info.currency)
+            const [closures, accountPnlEvents] = await Promise.all([
+                this.client.getPositionClosures(this.credentials, 24),
+                this.client.getAccountPnlEvents(this.credentials, 24),
+            ])
+            for (const event of accountPnlEvents) {
+                assertMT5AccountCurrency(event.currency)
+            }
 
             return {
                 balance: info.balance,
@@ -124,7 +109,7 @@ export class MT5VenueAdapter implements VenueAdapter, PriceVerifier {
                 marginUsed: info.margin,
                 marginAvailable: info.freeMargin,
                 openPnl: info.profit,
-                dayPnl: 0,
+                dayPnl: resolveMT5DayPnl(info.profit, closures, accountPnlEvents),
             }
         })
     }
@@ -132,7 +117,7 @@ export class MT5VenueAdapter implements VenueAdapter, PriceVerifier {
     async getWorkingOrders(): Promise<WorkingOrder[]> {
         return await this.withRecoverableRead(async () => {
             const observedAt = Date.now()
-            const orders = await this.client.getOpenOrders()
+            const orders = await this.client.getOpenOrders(this.credentials)
             return orders.map((order) => mapMT5WorkingOrder(order, observedAt))
         })
     }
@@ -140,8 +125,26 @@ export class MT5VenueAdapter implements VenueAdapter, PriceVerifier {
     async getRecentPositionClosures(): Promise<ProviderPositionClosure[]> {
         return await this.withRecoverableRead(async () => {
             const observedAt = Date.now()
-            const closures = await this.client.getPositionClosures()
+            const closures = await this.client.getPositionClosures(this.credentials)
             return closures.map((closure) => mapMT5PositionClosure(closure, observedAt))
+        })
+    }
+
+    async getAccountPnlEvents(): Promise<AccountPnlEvent[]> {
+        return await this.withRecoverableRead(async () => {
+            const events = await this.client.getAccountPnlEvents(this.credentials)
+            for (const event of events) {
+                assertMT5AccountCurrency(event.currency)
+            }
+            return events.map((event) => ({
+                providerEventId: event.providerEventId,
+                eventType: event.eventType,
+                instrument: event.instrument,
+                amount: event.amount,
+                currency: event.currency,
+                occurredAt: event.occurredAt,
+                metadata: event.metadata,
+            }))
         })
     }
 
@@ -156,10 +159,9 @@ export class MT5VenueAdapter implements VenueAdapter, PriceVerifier {
             })
         }
 
-        await this.ensureConnected()
         const providerClientOrderId = context.identity.providerClientOrderId
 
-        const result = await this.client.submitOrder({
+        const result = await this.client.submitOrder(this.credentials, {
             symbol: intent.instrument,
             side: intent.side,
             volume: intent.quantity,
@@ -208,7 +210,7 @@ export class MT5VenueAdapter implements VenueAdapter, PriceVerifier {
         await sleep(250)
         return await this.withRecoverableRead(async () => {
             const providerClientOrderId = context.identity.providerClientOrderId
-            const orders = await this.client.getOpenOrders()
+            const orders = await this.client.getOpenOrders(this.credentials)
             const matches = orders.filter((order) => order.comment === providerClientOrderId)
 
             if (matches.length > 1) {
@@ -246,7 +248,7 @@ export class MT5VenueAdapter implements VenueAdapter, PriceVerifier {
                 }
             }
 
-            const positions = await this.client.getPositions()
+            const positions = await this.client.getPositions(this.credentials)
             const positionMatches = positions.filter((position) =>
                 position.comment === providerClientOrderId
             )
@@ -299,8 +301,6 @@ export class MT5VenueAdapter implements VenueAdapter, PriceVerifier {
     }
 
     async cancelOrder(orderId: string, context?: OrderOperationContext): Promise<ExecutionResult> {
-        await this.ensureConnected()
-
         const ticketIds = uniqueTickets([
             orderId,
             context?.canonicalOrderId,
@@ -315,7 +315,7 @@ export class MT5VenueAdapter implements VenueAdapter, PriceVerifier {
 
         const results: ExecutionResult[] = []
         for (const ticket of ticketIds) {
-            const result = await this.client.cancelOrder({ ticket })
+            const result = await this.client.cancelOrder(this.credentials, { ticket })
             const mappedResult = this.client.mapOrderResultToExecution(result, {
                 fallbackOrderId: String(ticket),
                 successStatus: "cancelled",
@@ -332,8 +332,6 @@ export class MT5VenueAdapter implements VenueAdapter, PriceVerifier {
     }
 
     async modifyOrder(orderId: string, changes: Partial<OrderIntent>): Promise<ExecutionResult> {
-        await this.ensureConnected()
-
         const price = isPositiveMT5Price(changes.limitPrice)
             ? changes.limitPrice
             : isPositiveMT5Price(changes.stopPrice)
@@ -354,7 +352,7 @@ export class MT5VenueAdapter implements VenueAdapter, PriceVerifier {
         }
 
         return await this.withTicket(orderId, async (ticket) => {
-            const result = await this.client.modifyOrder({
+            const result = await this.client.modifyOrder(this.credentials, {
                 ticket,
                 price,
                 stopLoss,
@@ -372,28 +370,38 @@ export class MT5VenueAdapter implements VenueAdapter, PriceVerifier {
 
     async closePosition(
         instrument: string,
-        _preparedIntent?: OrderIntent,
+        preparedIntent?: OrderIntent,
         context?: SubmitOrderContext
     ): Promise<ExecutionResult> {
         const providerClientOrderId = requireMT5CloseProviderClientOrderId(context, instrument)
-        await this.ensureConnected()
-
-        const positions = await this.client.getPositions()
-        const matchingPositions = positions.filter((position) => position.symbol === instrument)
-
-        if (matchingPositions.length === 0) {
+        const ticket = readMT5CloseTicket(preparedIntent)
+        if (ticket === undefined) {
             return rejectMT5PreValidation({
-                message: `No open MT5 position found for ${instrument}`,
-                code: "POSITION_NOT_FOUND",
+                message: `MT5 close for ${instrument} requires provider position identity`,
+                code: "MISSING_PROVIDER_POSITION_ID",
                 details: {
                     instrument,
                 },
             })
         }
 
+        const positions = await this.client.getPositions(this.credentials)
+        const matchingPositions = positions.filter((position) => position.symbol === instrument && position.ticket === ticket)
+
+        if (matchingPositions.length === 0) {
+            return rejectMT5PreValidation({
+                message: `No open MT5 position found for ${instrument} ticket ${ticket}`,
+                code: "POSITION_NOT_FOUND",
+                details: {
+                    instrument,
+                    ticket,
+                },
+            })
+        }
+
         const results: ExecutionResult[] = []
         for (const position of matchingPositions) {
-            const result = await this.client.closePosition({
+            const result = await this.client.closePosition(this.credentials, {
                 ticket: position.ticket,
                 comment: providerClientOrderId,
             })
@@ -416,8 +424,6 @@ export class MT5VenueAdapter implements VenueAdapter, PriceVerifier {
         context?: SubmitOrderContext
     ): Promise<ExecutionResult> {
         const providerClientOrderId = requireMT5CloseProviderClientOrderId(context, position.instrument)
-        await this.ensureConnected()
-
         const ticket = readMT5Ticket(position)
         if (ticket === undefined) {
             return rejectMT5PreValidation({
@@ -430,7 +436,7 @@ export class MT5VenueAdapter implements VenueAdapter, PriceVerifier {
             })
         }
 
-        const result = await this.client.closePosition({
+        const result = await this.client.closePosition(this.credentials, {
             ticket,
             comment: providerClientOrderId,
         })
@@ -445,7 +451,7 @@ export class MT5VenueAdapter implements VenueAdapter, PriceVerifier {
     async getOrderStatus(orderId: string): Promise<ExecutionResult> {
         return await this.withRecoverableRead(async () =>
             await this.withTicket(orderId, async (ticket) => {
-                const status = await this.client.getOrderStatus(ticket)
+                const status = await this.client.getOrderStatus(this.credentials, ticket)
                 if (!status) {
                     throw createExecutionError("venue", `MT5 order ${orderId} not found in order book or history`, {
                         code: "ORDER_NOT_FOUND",
@@ -469,6 +475,7 @@ export class MT5VenueAdapter implements VenueAdapter, PriceVerifier {
                     filledQuantity: hasFilledQuantity ? filledQuantity : 0,
                     fillPrice: hasFilledQuantity && status.price > 0 ? status.price : undefined,
                     timestamp: Date.now(),
+                    intentUpdates: buildMT5OrderStatusAccountingMetadata(status, normalizedStatus),
                 }
             })
         )
@@ -476,7 +483,7 @@ export class MT5VenueAdapter implements VenueAdapter, PriceVerifier {
 
     async getSymbolInfo(symbol: string): Promise<MT5SymbolInfo | null> {
         return await this.withRecoverableRead(async () => {
-            const results = await this.client.getSymbolInfo([symbol])
+            const results = await this.client.getSymbolInfo(this.credentials, [symbol])
             return results.length > 0 ? (results[0] ?? null) : null
         })
     }
@@ -535,7 +542,7 @@ export class MT5VenueAdapter implements VenueAdapter, PriceVerifier {
         }
 
         return await this.withRecoverableRead(async () => {
-            const results = await this.client.getSymbolInfo(symbols)
+            const results = await this.client.getSymbolInfo(this.credentials, symbols)
             return await Promise.all(
                 results.map(async (symbolInfo) => toMT5MarketSnapshot(
                     symbolInfo,
@@ -574,7 +581,6 @@ export class MT5VenueAdapter implements VenueAdapter, PriceVerifier {
     }
 
     private async withRecoverableRead<T>(read: () => Promise<T>): Promise<T> {
-        await this.ensureConnected()
         try {
             return await read()
         } catch (error) {
@@ -582,8 +588,6 @@ export class MT5VenueAdapter implements VenueAdapter, PriceVerifier {
                 throw error
             }
 
-            this.lastConnectedAt = 0
-            await this.ensureConnected()
             return await read()
         }
     }
@@ -635,13 +639,106 @@ export class MT5VenueAdapter implements VenueAdapter, PriceVerifier {
     }
 }
 
-export function isMT5ConnectContention(error: unknown): boolean {
-    const detail = getExecutionErrorDetail(error)
-    return detail?.retryable === true && detail.code === "connect_in_progress"
-}
-
 async function sleep(delayMs: number): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, delayMs))
+}
+
+function assertMT5AccountCurrency(currency: string | undefined): void {
+    const normalized = currency?.trim().toUpperCase()
+    if (normalized === "USD") {
+        return
+    }
+
+    throw createExecutionError("venue", `MT5 account currency ${currency ?? "<missing>"} is unsupported; accounting is denominated in USD`, {
+        code: "MT5_ACCOUNT_CURRENCY_UNSUPPORTED",
+        retryable: false,
+        details: {
+            currency,
+            expectedCurrency: "USD",
+        },
+    })
+}
+
+function resolveMT5DayPnl(
+    openPnl: number,
+    closures: MT5PositionClosure[],
+    accountPnlEvents: MT5AccountPnlEvent[]
+): number {
+    return openPnl
+        + closures.reduce((total, closure) => total + resolveMT5ClosurePnl(closure), 0)
+        + accountPnlEvents.reduce((total, event) => total + event.amount, 0)
+}
+
+function resolveMT5ClosurePnl(closure: MT5PositionClosure): number {
+    return closure.profit
+        + finiteOrZero(closure.swap)
+        + finiteOrZero(closure.commission)
+        + finiteOrZero(closure.fee)
+}
+
+function finiteOrZero(value: number | undefined): number {
+    return typeof value === "number" && Number.isFinite(value) ? value : 0
+}
+
+function readMT5CloseTicket(intent: OrderIntent | undefined): number | undefined {
+    const metadata = intent?.metadata
+    return readMT5MetadataTicket(metadata?.providerPositionId) ?? readMT5MetadataTicket(metadata?.ticket)
+}
+
+function readMT5MetadataTicket(value: unknown): number | undefined {
+    if (typeof value === "number" && Number.isInteger(value) && value > 0) {
+        return value
+    }
+    if (typeof value === "string") {
+        return parseMT5Ticket(value)
+    }
+    return undefined
+}
+
+function buildMT5OrderStatusAccountingMetadata(
+    status: {
+        ticket: number
+        profit?: number
+        commission?: number
+        swap?: number
+        fee?: number
+    },
+    orderStatus: ExecutionResult["status"]
+): ExecutionResult["intentUpdates"] | undefined {
+    if (orderStatus !== "filled" && orderStatus !== "partially_filled") {
+        return undefined
+    }
+
+    const metadata: Record<string, unknown> = {
+        providerAccountingSource: "mt5_deal_status",
+        providerOrderId: String(status.ticket),
+    }
+    const hasAccounting = [
+        appendFiniteMetadataNumber(metadata, "fillPnl", status.profit),
+        appendFiniteMetadataNumber(metadata, "commission", status.commission),
+        appendFiniteMetadataNumber(metadata, "swap", status.swap),
+        appendFiniteMetadataNumber(metadata, "fee", status.fee),
+    ].some(Boolean)
+
+    if (!hasAccounting) {
+        metadata.providerAccountingMissing = true
+        metadata.providerAccountingMissingReason = "mt5_order_status_without_deal_accounting"
+    }
+
+    return { metadata }
+}
+
+function appendFiniteMetadataNumber(
+    metadata: Record<string, unknown>,
+    key: string,
+    value: number | undefined
+): boolean {
+    if (typeof value !== "number" || !Number.isFinite(value)) {
+        return false
+    }
+
+    metadata[key] = value
+    return true
 }
 
 function aggregateMT5CancelResults(orderId: string, results: ExecutionResult[]): ExecutionResult {

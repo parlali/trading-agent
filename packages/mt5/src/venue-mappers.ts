@@ -178,7 +178,7 @@ export function mapMT5SubmissionResult(
     result: MT5OrderResult,
     intent: OrderIntent
 ): ExecutionResult {
-    if (intent.orderType === "market") {
+    if (intent.orderType === "market" || result.retcode === 10010) {
         return client.mapOrderResultToExecution(result)
     }
 
@@ -293,6 +293,7 @@ export function aggregateMT5CloseResults(
 export function mapMT5PositionClosure(raw: MT5PositionClosure, observedAt: number = Date.now()): ProviderPositionClosure {
     const swap = typeof raw.swap === "number" && Number.isFinite(raw.swap) ? raw.swap : undefined
     const commission = typeof raw.commission === "number" && Number.isFinite(raw.commission) ? raw.commission : undefined
+    const fee = typeof raw.fee === "number" && Number.isFinite(raw.fee) ? raw.fee : undefined
 
     return {
         instrument: raw.symbol,
@@ -309,6 +310,7 @@ export function mapMT5PositionClosure(raw: MT5PositionClosure, observedAt: numbe
             profit: raw.profit,
             ...(swap !== undefined ? { swap } : {}),
             ...(commission !== undefined ? { commission } : {}),
+            ...(fee !== undefined ? { fee } : {}),
             entry: raw.entry,
             reason: raw.reason,
             providerAccountingSource: "mt5_deal",

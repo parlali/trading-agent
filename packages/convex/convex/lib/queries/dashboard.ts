@@ -1,6 +1,4 @@
 import { query } from "../../_generated/server"
-import { v } from "convex/values"
-import { VENUE_APPS } from "@valiq-trading/core"
 import { requireUser } from "../authGuards"
 import { getLatestPositionsForStrategy } from "../instrumentClaims"
 import { isDryRunLedgerMetadata } from "../dryRunLedger"
@@ -9,7 +7,6 @@ import { createDefaultKillSwitchState } from "../killSwitchState"
 function isNonNullable<T>(value: T): value is NonNullable<T> {
     return value !== null && value !== undefined
 }
-
 function resolveSnapshotEquity(snapshot: { balance: number; openPnl: number; equity?: number }): number {
     return snapshot.equity ?? (snapshot.balance + snapshot.openPnl)
 }
@@ -21,28 +18,61 @@ export const getDashboardOverview = query({
         const [
             systemState,
             appHealth,
+            accounts,
             strategies,
             runs,
             alerts,
+            syncStates,
+            riskStates,
         ] = await Promise.all([
             ctx.db
                 .query("system_state")
                 .withIndex("by_key", (q) => q.eq("key", "kill_switches"))
                 .first(),
             ctx.db.query("app_heartbeats").collect(),
+            ctx.db.query("accounts").collect(),
             ctx.db.query("strategies").collect(),
             ctx.db.query("strategy_runs").order("desc").take(50),
             ctx.db.query("alerts").order("desc").take(20),
+            ctx.db.query("provider_sync_state").collect(),
+            ctx.db.query("strategy_risk_states").collect(),
         ])
 
-        const [accountSnapshots, openPositionsByStrategy] = await Promise.all([
+        const [accountSnapshotsByAccount, accountPnlEventsByAccount, unresolvedFaultsByAccount, openPositionsByStrategy] = await Promise.all([
             Promise.all(
-                VENUE_APPS.map((app) =>
+                accounts.map((account) =>
                     ctx.db
                         .query("account_snapshots")
-                        .withIndex("by_app_timestamp", (q) => q.eq("app", app))
-                        .order("desc")
-                        .first()
+                        .withIndex("by_app_account", (q) => q.eq("app", account.app).eq("accountId", account.accountId))
+                        .collect()
+                )
+            ),
+            Promise.all(
+                accounts.map((account) =>
+                    ctx.db
+                        .query("account_pnl_events")
+                        .withIndex("by_app_account", (q) => q.eq("app", account.app).eq("accountId", account.accountId))
+                        .collect()
+                )
+            ),
+            Promise.all(
+                accounts.map(async (account) =>
+                    (
+                        await Promise.all([
+                            ctx.db
+                                .query("execution_safety_faults")
+                                .withIndex("by_app_account_blocked", (q) =>
+                                    q.eq("app", account.app).eq("accountId", account.accountId).eq("blocked", true)
+                                )
+                                .collect(),
+                            ctx.db
+                                .query("execution_safety_faults")
+                                .withIndex("by_app_account_blocked", (q) =>
+                                    q.eq("app", account.app).eq("accountId", account.accountId).eq("blocked", false)
+                                )
+                                .collect(),
+                        ])
+                    ).flat()
                 )
             ),
             Promise.all(
@@ -63,10 +93,112 @@ export const getDashboardOverview = query({
             }
         }
 
+        const strategiesByAccount = new Map<string, typeof strategies>()
+        for (const strategy of strategies) {
+            const key = createAccountKey(strategy.app, strategy.accountId)
+            const existing = strategiesByAccount.get(key) ?? []
+            existing.push(strategy)
+            strategiesByAccount.set(key, existing)
+        }
+
+        const latestRunByAccount = new Map<string, typeof runs>()
+        for (const run of runs) {
+            if (!run.accountId) {
+                continue
+            }
+            const key = createAccountKey(run.app, run.accountId)
+            const existing = latestRunByAccount.get(key) ?? []
+            existing.push(run)
+            latestRunByAccount.set(key, existing)
+        }
+
+        const strategyById = new Map(strategies.map((strategy) => [String(strategy._id), strategy]))
+        const accountRows = accounts
+            .map((account, index) => {
+                const key = createAccountKey(account.app, account.accountId)
+                const accountStrategies = strategiesByAccount.get(key) ?? []
+                const latestSnapshot = (accountSnapshotsByAccount[index] ?? [])
+                    .sort((left, right) => right.timestamp - left.timestamp)[0] ?? null
+                const pnlEvents = accountPnlEventsByAccount[index] ?? []
+                const recentAccountRuns = (latestRunByAccount.get(key) ?? []).slice(0, 10)
+                const accountSyncState = syncStates.find((state) =>
+                    state.app === account.app && state.accountId === account.accountId
+                ) ?? null
+                const accountRiskStates = riskStates.filter((state) =>
+                    accountStrategies.some((strategy) => String(strategy._id) === String(state.strategyId))
+                )
+                const unresolvedFaults = (unresolvedFaultsByAccount[index] ?? []).filter((fault) =>
+                    fault.resolvedAt === undefined
+                )
+
+                return {
+                    ...account,
+                    latestSnapshot,
+                    syncState: accountSyncState,
+                    strategyCount: accountStrategies.length,
+                    enabledStrategyCount: accountStrategies.filter((strategy) => strategy.enabled).length,
+                    blockedStrategyCount: accountRiskStates.filter((state) => state.safetyState === "blocked").length,
+                    unresolvedFaultCount: unresolvedFaults.length,
+                    unresolvedBlockingFaultCount: unresolvedFaults.filter((fault) => fault.blocked).length,
+                    latestRun: recentAccountRuns[0] ?? null,
+                    recentRunCount: recentAccountRuns.length,
+                    latestPnlEvent: pnlEvents.sort((left, right) => right.occurredAt - left.occurredAt)[0] ?? null,
+                }
+            })
+            .sort((left, right) =>
+                left.app.localeCompare(right.app) ||
+                left.accountId.localeCompare(right.accountId)
+            )
+
+        const modelComparison = strategies
+            .map((strategy) => {
+                const latestRun = latestRunByStrategy.get(String(strategy._id)) ?? null
+                const snapshot = accountRows.find((account) =>
+                    account.app === strategy.app && account.accountId === strategy.accountId
+                )?.latestSnapshot ?? null
+                return {
+                    strategyId: strategy._id,
+                    strategyName: strategy.name,
+                    app: strategy.app,
+                    accountId: strategy.accountId,
+                    model: readStrategyModel(strategy.policy),
+                    enabled: strategy.enabled,
+                    latestRun,
+                    equity: snapshot ? resolveSnapshotEquity(snapshot) : null,
+                    openPnl: snapshot?.openPnl ?? null,
+                    dayPnl: snapshot?.dayPnl ?? null,
+                    opportunityRealizedPnl: latestRun?.opportunityRealizedPnl ?? null,
+                }
+            })
+            .sort((left, right) =>
+                left.model.localeCompare(right.model) ||
+                left.app.localeCompare(right.app) ||
+                left.accountId.localeCompare(right.accountId)
+            )
+
+        const moneyAuditAlerts = alerts.filter((alert) =>
+            alert.message.includes("money reconciliation mismatch") ||
+            alert.message.includes("account money reconciliation mismatch")
+        )
+
+        const unresolvedFaults = unresolvedFaultsByAccount
+            .flat()
+            .filter((fault) => fault.resolvedAt === undefined)
+            .sort((left, right) => right.occurredAt - left.occurredAt)
+            .slice(0, 20)
+            .map((fault) => ({
+                ...fault,
+                strategyName: strategyById.get(String(fault.strategyId))?.name ?? "Unknown strategy",
+            }))
+
         return {
             systemState: systemState ?? createDefaultKillSwitchState(),
             appHealth,
-            accountSnapshots: accountSnapshots.filter(isNonNullable),
+            accounts: accountRows,
+            accountSnapshots: accountRows.map((account) => account.latestSnapshot).filter(isNonNullable),
+            modelComparison,
+            moneyAuditAlerts,
+            unresolvedFaults,
             activeRuns: runs.filter((run) => run.status === "running"),
             recentRuns: runs.slice(0, 10),
             recentAlerts: alerts,
@@ -79,135 +211,24 @@ export const getDashboardOverview = query({
     },
 })
 
-export const getPnlSummary = query({
-    args: {
-        timeRange: v.union(
-            v.literal("24h"),
-            v.literal("7d"),
-            v.literal("30d")
-        ),
-    },
-    handler: async (ctx, args) => {
-        await requireUser(ctx)
-        const durationMsByRange = {
-            "24h": 24 * 60 * 60 * 1000,
-            "7d": 7 * 24 * 60 * 60 * 1000,
-            "30d": 30 * 24 * 60 * 60 * 1000,
-        } as const
-        const end = Date.now()
-        const start = end - durationMsByRange[args.timeRange]
-        const snapshotsByApp = await Promise.all(
-            VENUE_APPS.map((app) =>
-                ctx.db
-                    .query("account_snapshots")
-                    .withIndex("by_app_timestamp", (q) => q.eq("app", app).gte("timestamp", start))
-                    .order("asc")
-                    .collect()
-            )
-        )
-        const filteredSnapshots = snapshotsByApp.flat()
+function createAccountKey(app: string, accountId: string): string {
+    return `${app}:${accountId}`
+}
 
-        const pointsByApp = new Map<string, typeof filteredSnapshots>()
-        for (const snapshot of filteredSnapshots) {
-            const existing = pointsByApp.get(snapshot.app) ?? []
-            existing.push(snapshot)
-            pointsByApp.set(snapshot.app, existing)
-        }
+function readStrategyModel(policy: unknown): string {
+    if (!policy || typeof policy !== "object") {
+        return "unconfigured"
+    }
 
-        const apps = VENUE_APPS.map((app) => {
-            const points = pointsByApp.get(app) ?? []
-            const first = points[0] ?? null
-            const latest = points[points.length - 1] ?? null
-            const change = first && latest
-                ? resolveSnapshotEquity(latest) - resolveSnapshotEquity(first)
-                : 0
+    const record = policy as Record<string, unknown>
+    const llm = record.llm && typeof record.llm === "object"
+        ? record.llm as Record<string, unknown>
+        : undefined
+    const model = typeof llm?.model === "string"
+        ? llm.model
+        : typeof record.model === "string"
+            ? record.model
+            : undefined
 
-            return {
-                app,
-                points,
-                latest,
-                change,
-            }
-        })
-
-        return {
-            timeRange: args.timeRange,
-            start,
-            end,
-            apps,
-            aggregate: {
-                latestNetLiq: apps.reduce((total, item) => {
-                    if (!item.latest) {
-                        return total
-                    }
-
-                    return total + resolveSnapshotEquity(item.latest)
-                }, 0),
-                periodChange: apps.reduce((total, item) => total + item.change, 0),
-            },
-        }
-    },
-})
-
-export const getEquityTimeSeries = query({
-    args: {
-        timeRange: v.union(
-            v.literal("24h"),
-            v.literal("7d"),
-            v.literal("30d"),
-            v.literal("90d"),
-            v.literal("all")
-        ),
-    },
-    handler: async (ctx, args) => {
-        await requireUser(ctx)
-        const durationMsByRange = {
-            "24h": 24 * 60 * 60 * 1000,
-            "7d": 7 * 24 * 60 * 60 * 1000,
-            "30d": 30 * 24 * 60 * 60 * 1000,
-            "90d": 90 * 24 * 60 * 60 * 1000,
-            "all": Infinity,
-        } as const
-
-        const end = Date.now()
-        const start = args.timeRange === "all" ? 0 : end - durationMsByRange[args.timeRange]
-
-        const snapshotsByApp = await Promise.all(
-            VENUE_APPS.map((app) =>
-                ctx.db
-                    .query("account_snapshots")
-                    .withIndex("by_app_timestamp", (q) => q.eq("app", app).gte("timestamp", start))
-                    .order("asc")
-                    .collect()
-            )
-        )
-
-        return snapshotsByApp
-            .flat()
-            .sort((a, b) => a.timestamp - b.timestamp)
-            .map((s) => ({
-                app: s.app,
-                timestamp: s.timestamp,
-                equity: resolveSnapshotEquity(s),
-                balance: s.balance,
-                openPnl: s.openPnl,
-            }))
-    },
-})
-
-export const getAccountSnapshots = query({
-    args: {},
-    handler: async (ctx) => {
-        await requireUser(ctx)
-        const snapshots = await Promise.all(
-            VENUE_APPS.map((app) =>
-                ctx.db
-                    .query("account_snapshots")
-                    .withIndex("by_app_timestamp", (q) => q.eq("app", app))
-                    .order("desc")
-                    .first()
-            )
-        )
-        return snapshots.filter(isNonNullable)
-    },
-})
+    return model && model.trim().length > 0 ? model : "unconfigured"
+}

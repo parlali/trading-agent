@@ -25,24 +25,25 @@ type StrategySnapshotPosition = ProviderPositionInput & {
 export async function updateProviderSyncStateFromCurrentRows(
     ctx: PortfolioMutationCtx,
     app: Doc<"strategies">["app"],
+    accountId: string,
     now: number
 ): Promise<void> {
     const [state, positions, orders, strategies] = await Promise.all([
         ctx.db
             .query("provider_sync_state")
-            .withIndex("by_app", (q) => q.eq("app", app))
+            .withIndex("by_app_account", (q) => q.eq("app", app).eq("accountId", accountId))
             .first(),
         ctx.db
             .query("provider_positions")
-            .withIndex("by_app", (q) => q.eq("app", app))
+            .withIndex("by_app_account", (q) => q.eq("app", app).eq("accountId", accountId))
             .collect(),
         ctx.db
             .query("provider_working_orders")
-            .withIndex("by_app", (q) => q.eq("app", app))
+            .withIndex("by_app_account", (q) => q.eq("app", app).eq("accountId", accountId))
             .collect(),
         ctx.db
             .query("strategies")
-            .withIndex("by_app", (q) => q.eq("app", app))
+            .withIndex("by_app_account", (q) => q.eq("app", app).eq("accountId", accountId))
             .collect(),
     ])
 
@@ -103,6 +104,7 @@ export async function writeStrategyPositionSnapshots(
     ctx: PortfolioMutationCtx,
     args: {
         app: Doc<"strategies">["app"]
+        accountId: string
         strategies: StrategyDoc[]
         positions: Array<{
             strategyId?: Id<"strategies">
@@ -147,13 +149,14 @@ export async function writeStrategyPositionSnapshots(
         if (unchanged) {
             skipped++
             appendSnapshotHash(hashInput, strategy._id, snapshotHash, false)
-            await replaceStrategyPositionClaims(ctx, args.app, strategy._id, strategyPositions, args.syncedAt)
+            await replaceStrategyPositionClaims(ctx, args.app, args.accountId, strategy._id, strategyPositions, args.syncedAt)
             continue
         }
 
         await ctx.db.insert("position_syncs", {
             strategyId: strategy._id,
             app: args.app,
+            accountId: args.accountId,
             syncedAt: args.syncedAt,
             positionCount: strategyPositions.length,
             snapshotHash,
@@ -164,6 +167,7 @@ export async function writeStrategyPositionSnapshots(
             await ctx.db.insert("positions", {
                 strategyId: strategy._id,
                 app: args.app,
+                accountId: args.accountId,
                 positionKey: position.positionKey,
                 providerPositionId: position.providerPositionId,
                 instrument: position.instrument,
@@ -179,7 +183,7 @@ export async function writeStrategyPositionSnapshots(
             })
         }
 
-        await replaceStrategyPositionClaims(ctx, args.app, strategy._id, strategyPositions, args.syncedAt)
+        await replaceStrategyPositionClaims(ctx, args.app, args.accountId, strategy._id, strategyPositions, args.syncedAt)
 
         written++
         appendSnapshotHash(hashInput, strategy._id, snapshotHash, true)
@@ -243,6 +247,7 @@ function appendSnapshotHash(
 async function replaceStrategyPositionClaims(
     ctx: PortfolioMutationCtx,
     app: Doc<"strategies">["app"],
+    accountId: string,
     strategyId: Id<"strategies">,
     positions: Array<{
         positionKey?: string
@@ -256,6 +261,7 @@ async function replaceStrategyPositionClaims(
     await replacePositionClaims(ctx, {
         strategyId,
         app,
+        accountId,
         positionClaims: positions.flatMap(buildSnapshotPositionClaims),
         updatedAt,
     })

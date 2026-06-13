@@ -67,6 +67,7 @@ export default function StrategyDetailPage({
         upsertStrategy({
             id: strategy!._id,
             app: strategy!.app,
+            accountId: strategy!.accountId,
             name: strategy!.name,
             enabled: checked,
             schedule: strategy!.schedule,
@@ -146,6 +147,10 @@ export default function StrategyDetailPage({
                                 checked={strategy.enabled}
                                 onCheckedChange={handleToggleEnabled}
                             />
+                        </div>
+                        <div>
+                            <p className="text-xs text-muted-foreground mb-1">Account</p>
+                            <code className="text-sm font-mono">{strategy.accountId}</code>
                         </div>
                         <div>
                             <p className="text-xs text-muted-foreground mb-1">Schedule</p>

@@ -223,3 +223,43 @@ describe("PolymarketClient.getCurrentPositions", () => {
         expect(url.searchParams.get("user")).toBe("0x1111111111111111111111111111111111111111")
     })
 })
+
+describe("PolymarketClient.prepareOrder", () => {
+    const fetchMock = vi.fn<typeof fetch>()
+    const originalFetch = globalThis.fetch
+
+    beforeEach(() => {
+        fetchMock.mockReset()
+        globalThis.fetch = fetchMock as typeof fetch
+    })
+
+    afterEach(() => {
+        globalThis.fetch = originalFetch
+    })
+
+    it("carries the provider fee rate into the signed order and its metadata", async () => {
+        fetchMock.mockImplementation(async (input) => {
+            const url = new URL(String(input))
+            if (url.pathname === "/tick-size") {
+                return createJsonResponse({ minimum_tick_size: "0.01" })
+            }
+            if (url.pathname === "/fee-rate") {
+                return createJsonResponse({ fee_rate_bps: "20" })
+            }
+            return createStatusResponse(404)
+        })
+
+        const prepared = await createClient().prepareOrder({
+            tokenId: "123456",
+            canonicalOrderId: "vpmc01entry1234",
+            side: "buy",
+            size: 10,
+            price: 0.42,
+            orderType: "GTC",
+            negRisk: false,
+        })
+
+        expect((prepared.orderBody.order as Record<string, unknown>).feeRateBps).toBe("20")
+        expect(prepared.signedOrderMetadata.feeRateBps).toBe(20)
+    })
+})

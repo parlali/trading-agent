@@ -3,6 +3,7 @@ import {
     createExecutionError,
     ExecutionCostTracker,
     getExecutionErrorDetail,
+    type AccountPnlEvent,
     type AccountState,
     type ExecutionCostAssessment,
     type ExecutionCostSnapshot,
@@ -11,6 +12,7 @@ import {
     type PriceVerification,
     type PriceVerifier,
     type Position,
+    type ProviderPositionClosure,
     type SubmitOrderContext,
     type SubmitRecoveryResult,
     type VenueAdapter,
@@ -30,9 +32,16 @@ import {
     parseOptionContractSymbol,
 } from "./risk-rules"
 import {
+    mapOrderStatus as mapAlpacaOrderStatus,
+} from "./alpaca-order-mappers"
+import {
     buildGroupCloseIntent,
+    ALPACA_ACCOUNT_PNL_ACTIVITY_TYPES,
+    ALPACA_OPTION_CLOSURE_ACTIVITY_TYPES,
     computeAlpacaStructurePrices,
     isAlpacaOptionPosition,
+    mapAlpacaAccountPnlEvent,
+    mapAlpacaOptionActivityClosure,
     mapSinglePosition,
     mapWorkingOrder,
     resolveGroupForClose,
@@ -195,8 +204,22 @@ export class AlpacaOptionsVenueAdapter implements VenueAdapter, PriceVerifier {
     async getWorkingOrders(): Promise<WorkingOrder[]> {
         const orders = await this.client.getOpenOrders()
         return orders
+            .filter((order) => ACTIVE_ORDER_STATUSES.includes(mapAlpacaOrderStatus(order.status)))
             .map((order) => mapWorkingOrder(order))
-            .filter((order) => ACTIVE_ORDER_STATUSES.includes(order.status))
+    }
+
+    async getRecentPositionClosures(): Promise<ProviderPositionClosure[]> {
+        const activities = await this.client.getAccountActivities([...ALPACA_OPTION_CLOSURE_ACTIVITY_TYPES])
+        return activities
+            .map((activity) => mapAlpacaOptionActivityClosure(activity))
+            .filter((closure): closure is ProviderPositionClosure => closure !== undefined)
+    }
+
+    async getAccountPnlEvents(): Promise<AccountPnlEvent[]> {
+        const activities = await this.client.getAccountActivities([...ALPACA_ACCOUNT_PNL_ACTIVITY_TYPES])
+        return activities
+            .map((activity) => mapAlpacaAccountPnlEvent(activity))
+            .filter((event): event is AccountPnlEvent => event !== undefined)
     }
 
     async getMarketClock(): Promise<AlpacaClockResponse> {
@@ -296,7 +319,7 @@ export class AlpacaOptionsVenueAdapter implements VenueAdapter, PriceVerifier {
     async closeProviderPosition(position: Position, preparedIntent?: OrderIntent, context?: SubmitOrderContext): Promise<ExecutionResult> {
         const closeIntent = preparedIntent?.legs && preparedIntent.legs.length > 0
             ? preparedIntent
-            : await this.buildCloseIntent(resolveProviderCloseInstrument(position))
+            : await resolveProviderCloseIntent(this, position)
 
         return await this.client.createOrder(closeIntent, context)
     }
@@ -484,26 +507,107 @@ export class AlpacaOptionsVenueAdapter implements VenueAdapter, PriceVerifier {
     }
 }
 
-function resolveProviderCloseInstrument(position: Position): string {
-    const claimInstrument = readMetadataString(position.metadata, "alpacaClaimInstrument") ??
-        readMetadataString(position.metadata, "claimInstrument")
-
-    if (claimInstrument) {
-        return claimInstrument
+async function resolveSingleLegCloseLimitPrice(
+    adapter: AlpacaOptionsVenueAdapter,
+    position: Position
+): Promise<number> {
+    if (position.currentPrice !== undefined && position.currentPrice > 0) {
+        return roundPrice(position.currentPrice)
     }
 
-    if (position.instrument.startsWith("IC:") || position.instrument.startsWith("VS:")) {
-        return position.instrument
+    const snapshots = await adapter.getOptionSnapshots([position.instrument])
+    const snapshot = snapshots.snapshots[position.instrument]
+    const bid = snapshot?.latestQuote?.bidPrice
+    const ask = snapshot?.latestQuote?.askPrice
+    const midpoint = bid !== undefined && ask !== undefined
+        ? (bid + ask) / 2
+        : undefined
+    const price = midpoint ?? snapshot?.latestTrade?.price
+
+    if (price !== undefined && price > 0) {
+        return roundPrice(price)
     }
 
-    throw createExecutionError("pre_validation", `Alpaca provider-position close requires exact claimed structure evidence for ${position.instrument}`, {
-        code: "ALPACA_CLOSE_CLAIM_REQUIRED",
+    throw createExecutionError("pre_validation", `No current Alpaca option leg price found for ${position.instrument}`, {
+        code: "POSITION_PRICE_UNAVAILABLE",
         retryable: false,
         details: {
             instrument: position.instrument,
             providerPositionId: position.providerPositionId,
         },
     })
+}
+
+function resolveSingleLegCloseSide(position: Position): NonNullable<OrderIntent["legs"]>[number]["side"] {
+    return position.side === "long" ? "sell_to_close" : "buy_to_close"
+}
+
+function assertAlpacaOptionPosition(position: Position): void {
+    if (parseOptionContractSymbol(position.instrument)) {
+        return
+    }
+
+    throw createExecutionError("pre_validation", `Alpaca provider-position close requires an OCC option symbol or exact claimed structure evidence for ${position.instrument}`, {
+        code: "ALPACA_CLOSE_INSTRUMENT_UNSUPPORTED",
+        retryable: false,
+        details: {
+            instrument: position.instrument,
+            providerPositionId: position.providerPositionId,
+        },
+    })
+}
+
+async function buildSingleLegProviderCloseIntent(
+    adapter: AlpacaOptionsVenueAdapter,
+    position: Position
+): Promise<OrderIntent> {
+    assertAlpacaOptionPosition(position)
+    const symbol = position.instrument.trim().toUpperCase()
+    const limitPrice = await resolveSingleLegCloseLimitPrice(adapter, {
+        ...position,
+        instrument: symbol,
+    })
+
+    return {
+        instrument: symbol,
+        side: position.side === "long" ? "sell" : "buy",
+        quantity: position.quantity,
+        orderType: "limit",
+        limitPrice,
+        timeInForce: "day",
+        legs: [{
+            instrument: symbol,
+            side: resolveSingleLegCloseSide(position),
+            quantity: 1,
+        }],
+        metadata: {
+            ...position.metadata,
+            action: "close",
+            providerPositionId: position.providerPositionId,
+            entryPrice: position.entryPrice,
+            positionSide: position.side,
+            estimatedPrice: limitPrice,
+            structureType: "single_option",
+        },
+    }
+}
+
+async function resolveProviderCloseIntent(
+    adapter: AlpacaOptionsVenueAdapter,
+    position: Position
+): Promise<OrderIntent> {
+    const claimInstrument = readMetadataString(position.metadata, "alpacaClaimInstrument") ??
+        readMetadataString(position.metadata, "claimInstrument")
+
+    if (claimInstrument) {
+        return await adapter.buildCloseIntent(claimInstrument)
+    }
+
+    if (position.instrument.startsWith("IC:") || position.instrument.startsWith("VS:")) {
+        return await adapter.buildCloseIntent(position.instrument)
+    }
+
+    return await buildSingleLegProviderCloseIntent(adapter, position)
 }
 
 function readMetadataString(

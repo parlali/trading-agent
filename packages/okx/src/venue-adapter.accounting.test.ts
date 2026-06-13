@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest"
 import type { OKXAccountBalance } from "./okx-client"
+import { OKX_ESTIMATED_ONE_WAY_FEE_RATE } from "./execution-fees"
 import { OKXVenueAdapter } from "./venue-adapter"
 import { mapOKXExecutionResult } from "./venue-adapter-execution-results"
 
@@ -46,6 +47,17 @@ function createInstrumentRules(instId: string, contractValue: number, contractVa
         minContracts: 0.01,
         contractValue,
         contractValueCurrency,
+    }
+}
+
+function withOKXAccountingDefaults<T extends Record<string, unknown>>(client: T): T & {
+    getAlgoOrdersHistory: ReturnType<typeof vi.fn>
+    getAccountBills: ReturnType<typeof vi.fn>
+} {
+    return {
+        getAlgoOrdersHistory: vi.fn().mockResolvedValue([]),
+        getAccountBills: vi.fn().mockResolvedValue([]),
+        ...client,
     }
 }
 
@@ -163,8 +175,45 @@ describe("OKXVenueAdapter account snapshot semantics", () => {
             feeCcy: "USDT",
             fillPnl: 0,
             providerAccountingSource: "okx_order",
+            providerAccountingOccurredAt: 1779027958553,
             providerOrderId: "9000000000000000001",
             tradeId: "7000000001",
+        })
+    })
+
+    it("persists an explicit missing-accounting marker when OKX order truth has no parseable fee or pnl", async () => {
+        const result = await mapOKXExecutionResult({
+            instId: "BTC-USDT-SWAP",
+            order: {
+                instId: "BTC-USDT-SWAP",
+                ordId: "9000000000000000003",
+                clOrdId: "voke01missingacct",
+                state: "filled",
+                ordType: "market",
+                side: "buy",
+                sz: "50",
+                accFillSz: "50",
+                px: "",
+                avgPx: "78000.125",
+                reduceOnly: "false",
+                fee: "",
+                feeCcy: "USDT",
+                pnl: "",
+                tradeId: "7000000003",
+                uTime: "1779027958553",
+            },
+            getInstrumentRules: async () => createInstrumentRules("BTC-USDT-SWAP", 0.01, "BTC"),
+            contractsToBaseQuantity: (_rules, contracts) => contracts * 0.01,
+        })
+
+        expect(result.intentUpdates?.metadata).toMatchObject({
+            providerAccountingSource: "okx_order",
+            providerAccountingOccurredAt: 1779027958553,
+            providerAccountingMissing: true,
+            providerAccountingMissingReason: "okx_order_fee_and_pnl_unparseable",
+            providerOrderId: "9000000000000000003",
+            providerClientOrderId: "voke01missingacct",
+            tradeId: "7000000003",
         })
     })
 
@@ -196,7 +245,7 @@ describe("OKXVenueAdapter account snapshot semantics", () => {
     })
 
     it("imports recent provider fill history as position closure truth", async () => {
-        const client = {
+        const client = withOKXAccountingDefaults({
             getFillsHistory: vi.fn().mockResolvedValue([
                 {
                     instId: "ETH-USDT-SWAP",
@@ -238,7 +287,7 @@ describe("OKXVenueAdapter account snapshot semantics", () => {
             getInstruments: vi.fn().mockResolvedValue([
                 createSwapInstrument("ETH-USDT-SWAP", "0.1", "ETH"),
             ]),
-        }
+        })
         const adapter = new OKXVenueAdapter(client as never, {
             marginMode: "cross",
             positionMode: "long_short_mode",
@@ -267,8 +316,50 @@ describe("OKXVenueAdapter account snapshot semantics", () => {
         ])
     })
 
+    it("fails loud when one OKX close fill group has mixed fee currencies", async () => {
+        const client = withOKXAccountingDefaults({
+            getFillsHistory: vi.fn().mockResolvedValue([
+                {
+                    instId: "ETH-USDT-SWAP",
+                    tradeId: "trade-1",
+                    ordId: "ord-1",
+                    side: "sell",
+                    posSide: "long",
+                    fillSz: "1",
+                    fillPx: "3400",
+                    fillPnl: "12.5",
+                    fee: "-0.2",
+                    feeCcy: "USDT",
+                    ts: "1777279250000",
+                },
+                {
+                    instId: "ETH-USDT-SWAP",
+                    tradeId: "trade-2",
+                    ordId: "ord-1",
+                    side: "sell",
+                    posSide: "long",
+                    fillSz: "1",
+                    fillPx: "3410",
+                    fillPnl: "18.75",
+                    fee: "-0.00001",
+                    feeCcy: "ETH",
+                    ts: "1777279260000",
+                },
+            ]),
+            getInstruments: vi.fn().mockResolvedValue([
+                createSwapInstrument("ETH-USDT-SWAP", "0.1", "ETH"),
+            ]),
+        })
+        const adapter = new OKXVenueAdapter(client as never, {
+            marginMode: "cross",
+            positionMode: "long_short_mode",
+        })
+
+        await expect(adapter.getRecentPositionClosures()).rejects.toThrow("mixed fee currencies")
+    })
+
     it("excludes net-mode opening fills that report zero fillPnl and keeps canonical client ids on closures", async () => {
-        const client = {
+        const client = withOKXAccountingDefaults({
             getFillsHistory: vi.fn().mockResolvedValue([
                 {
                     instId: "ETH-USDT-SWAP",
@@ -298,7 +389,7 @@ describe("OKXVenueAdapter account snapshot semantics", () => {
             getInstruments: vi.fn().mockResolvedValue([
                 createSwapInstrument("ETH-USDT-SWAP", "0.1", "ETH"),
             ]),
-        }
+        })
         const adapter = new OKXVenueAdapter(client as never, {
             marginMode: "cross",
             positionMode: "net_mode",
@@ -320,6 +411,181 @@ describe("OKXVenueAdapter account snapshot semantics", () => {
         })
     })
 
+    it("maps triggered OKX protection algo history onto closure aliases", async () => {
+        const client = withOKXAccountingDefaults({
+            getFillsHistory: vi.fn().mockResolvedValue([
+                {
+                    instId: "ETH-USDT-SWAP",
+                    tradeId: "trade-protection-close",
+                    ordId: "triggered-child-1",
+                    side: "buy",
+                    posSide: "net",
+                    fillSz: "2",
+                    fillPx: "3380",
+                    fillPnl: "4",
+                    fee: "-0.2",
+                    feeCcy: "USDT",
+                    ts: "1777279260000",
+                },
+            ]),
+            getAlgoOrdersHistory: vi.fn().mockResolvedValue([
+                {
+                    algoId: "algo-parent-1",
+                    algoClOrdId: "vokt01aaaaaaaaaa",
+                    actualOrdId: "triggered-child-1",
+                    instId: "ETH-USDT-SWAP",
+                    ordType: "oco",
+                    side: "buy",
+                    posSide: "net",
+                    state: "effective",
+                },
+            ]),
+            getInstruments: vi.fn().mockResolvedValue([
+                createSwapInstrument("ETH-USDT-SWAP", "0.1", "ETH"),
+            ]),
+        })
+        const adapter = new OKXVenueAdapter(client as never, {
+            marginMode: "cross",
+            positionMode: "net_mode",
+        })
+
+        const closures = await adapter.getRecentPositionClosures()
+
+        expect(closures[0]?.metadata).toMatchObject({
+            orderId: "triggered-child-1",
+            triggeredOrderId: "triggered-child-1",
+            algoId: "algo-parent-1",
+            algoClOrdId: "vokt01aaaaaaaaaa",
+            actualOrdId: "triggered-child-1",
+            providerOrderAliases: expect.arrayContaining([
+                "triggered-child-1",
+                "algo-parent-1",
+                "vokt01aaaaaaaaaa",
+            ]),
+            fillPnl: 4,
+            fee: -0.2,
+        })
+    })
+
+    it("ingests OKX funding bills as account PnL events", async () => {
+        const client = withOKXAccountingDefaults({
+            getAccountBills: vi.fn().mockResolvedValue([
+                {
+                    billId: "funding-bill-1",
+                    instId: "BTC-USDT-SWAP",
+                    ccy: "USDT",
+                    amt: "-1.23",
+                    type: "8",
+                    subType: "173",
+                    ts: "1777279260000",
+                },
+                {
+                    billId: "trade-bill-ignored",
+                    instId: "BTC-USDT-SWAP",
+                    ccy: "USDT",
+                    amt: "-0.2",
+                    type: "2",
+                    ts: "1777279260001",
+                },
+            ]),
+        })
+        const adapter = new OKXVenueAdapter(client as never, {
+            marginMode: "cross",
+            positionMode: "net_mode",
+        })
+
+        await expect(adapter.getAccountPnlEvents()).resolves.toEqual([
+            {
+                providerEventId: "funding-bill-1",
+                eventType: "funding_fee",
+                instrument: "BTC-USDT-SWAP",
+                amount: -1.23,
+                currency: "USDT",
+                occurredAt: 1777279260000,
+                metadata: {
+                    source: "okx_account_bills",
+                    billType: "8",
+                    billSubType: "173",
+                },
+            },
+        ])
+    })
+
+    it("fails loud when an OKX funding bill is denominated outside settlement currency", async () => {
+        const client = withOKXAccountingDefaults({
+            getAccountBills: vi.fn().mockResolvedValue([
+                {
+                    billId: "funding-bill-btc",
+                    instId: "BTC-USD-SWAP",
+                    ccy: "BTC",
+                    amt: "-0.00001",
+                    type: "8",
+                    subType: "173",
+                    ts: "1777279260000",
+                },
+            ]),
+        })
+        const adapter = new OKXVenueAdapter(client as never, {
+            marginMode: "cross",
+            positionMode: "net_mode",
+        })
+
+        await expect(adapter.getAccountPnlEvents()).rejects.toThrow("non-settlement currency BTC")
+    })
+
+    it("simulates OKX dry-run market fills from mark price with estimated settlement fees", async () => {
+        const client = withOKXAccountingDefaults({
+            getMarkPrice: vi.fn().mockResolvedValue({
+                instId: "BTC-USDT-SWAP",
+                markPx: "78000.127",
+            }),
+            getInstruments: vi.fn().mockResolvedValue([
+                createSwapInstrument("BTC-USDT-SWAP", "0.01", "BTC"),
+            ]),
+        })
+        const adapter = new OKXVenueAdapter(client as never, {
+            marginMode: "cross",
+            positionMode: "net_mode",
+        })
+
+        const result = await adapter.simulateDryRunOrder({
+            instrument: "BTC-USDT-SWAP",
+            side: "buy",
+            quantity: 0.5,
+            orderType: "market",
+            timeInForce: "gtc",
+        }, {
+            identity: {
+                canonicalOrderId: "voke01dryrun0001",
+                providerClientOrderId: "voke01dryrun0001",
+                providerOrderId: "voke01dryrun0001",
+                providerOrderAliases: [],
+                submitAttemptId: "attempt-1",
+                submitAttemptSequence: 1,
+                commitOutcome: "accepted",
+                venue: "okx-swap",
+                role: "entry",
+                sequence: 1,
+            },
+        })
+
+        expect(result).toMatchObject({
+            orderId: "voke01dryrun0001",
+            status: "filled",
+            filledQuantity: 0.5,
+            fillPrice: 78000.13,
+        })
+        expect(result.intentUpdates?.metadata).toMatchObject({
+            estimatedPrice: 78000.13,
+            currentPrice: 78000.13,
+            fee: expect.closeTo(-0.5 * 78000.13 * OKX_ESTIMATED_ONE_WAY_FEE_RATE),
+            feeCcy: "USDT",
+            providerAccountingSource: "okx_dry_run_simulator",
+            providerFeeEstimated: true,
+            dryRunEstimatedFeeRate: OKX_ESTIMATED_ONE_WAY_FEE_RATE,
+        })
+    })
+
     it("paginates fills history and fails closed when the bounded page budget is exceeded", async () => {
         const buildPage = (page: number) => Array.from({ length: 100 }, (_, index) => ({
             instId: "ETH-USDT-SWAP",
@@ -332,14 +598,14 @@ describe("OKXVenueAdapter account snapshot semantics", () => {
             fillPx: "3400",
             ts: "1777279250000",
         }))
-        const exhaustedClient = {
+        const exhaustedClient = withOKXAccountingDefaults({
             getFillsHistory: vi.fn().mockImplementation(async (_instType, params: { after?: string }) =>
                 buildPage(params.after ? Number(params.after.split("-")[1]) + 1 : 0)
             ),
             getInstruments: vi.fn().mockResolvedValue([
                 createSwapInstrument("ETH-USDT-SWAP", "0.1", "ETH"),
             ]),
-        }
+        })
         const exhaustedAdapter = new OKXVenueAdapter(exhaustedClient as never, {
             marginMode: "cross",
             positionMode: "long_short_mode",
@@ -348,14 +614,14 @@ describe("OKXVenueAdapter account snapshot semantics", () => {
         await expect(exhaustedAdapter.getRecentPositionClosures()).rejects.toThrow("pagination exceeded")
         expect(exhaustedClient.getFillsHistory).toHaveBeenCalledTimes(10)
 
-        const pagedClient = {
+        const pagedClient = withOKXAccountingDefaults({
             getFillsHistory: vi.fn()
                 .mockResolvedValueOnce(buildPage(0))
                 .mockResolvedValueOnce(buildPage(1).slice(0, 5)),
             getInstruments: vi.fn().mockResolvedValue([
                 createSwapInstrument("ETH-USDT-SWAP", "0.1", "ETH"),
             ]),
-        }
+        })
         const pagedAdapter = new OKXVenueAdapter(pagedClient as never, {
             marginMode: "cross",
             positionMode: "long_short_mode",
@@ -370,8 +636,184 @@ describe("OKXVenueAdapter account snapshot semantics", () => {
         expect(closures).toHaveLength(105)
     })
 
+    it("throws loud when a full fills page lacks a pagination cursor instead of silently truncating", async () => {
+        const client = withOKXAccountingDefaults({
+            getFillsHistory: vi.fn().mockResolvedValue(Array.from({ length: 100 }, (_, index) => ({
+                instId: "ETH-USDT-SWAP",
+                tradeId: `trade-${index}`,
+                ordId: `ord-${index}`,
+                side: "sell",
+                posSide: "long",
+                fillSz: "1",
+                fillPx: "3400",
+                ts: "1777279250000",
+            }))),
+            getInstruments: vi.fn().mockResolvedValue([
+                createSwapInstrument("ETH-USDT-SWAP", "0.1", "ETH"),
+            ]),
+        })
+        const adapter = new OKXVenueAdapter(client as never, {
+            marginMode: "cross",
+            positionMode: "long_short_mode",
+        })
+
+        await expect(adapter.getRecentPositionClosures()).rejects.toThrow("without a pagination cursor")
+        expect(client.getFillsHistory).toHaveBeenCalledTimes(1)
+    })
+
+    it("paginates account bills, concatenates pages, and stops on a short page", async () => {
+        const recentTs = String(Date.now())
+        const buildBillsPage = (page: number, length: number) => Array.from({ length }, (_, index) => ({
+            billId: `bill-${page}-${index}`,
+            instId: "BTC-USDT-SWAP",
+            ccy: "USDT",
+            amt: "-0.01",
+            type: "8",
+            subType: "173",
+            ts: recentTs,
+        }))
+        const client = withOKXAccountingDefaults({
+            getAccountBills: vi.fn()
+                .mockResolvedValueOnce(buildBillsPage(0, 100))
+                .mockResolvedValueOnce(buildBillsPage(1, 5)),
+        })
+        const adapter = new OKXVenueAdapter(client as never, {
+            marginMode: "cross",
+            positionMode: "net_mode",
+        })
+
+        const events = await adapter.getAccountPnlEvents()
+
+        expect(events).toHaveLength(105)
+        expect(client.getAccountBills).toHaveBeenCalledTimes(2)
+        expect(client.getAccountBills.mock.calls[1]?.[0]).toMatchObject({
+            after: "bill-0-99",
+        })
+    })
+
+    it("stops paginating account bills once entries fall behind the lookback begin bound", async () => {
+        const staleTs = String(Date.now() - 48 * 60 * 60 * 1000)
+        const client = withOKXAccountingDefaults({
+            getAccountBills: vi.fn().mockResolvedValue(Array.from({ length: 100 }, (_, index) => ({
+                billId: `bill-stale-${index}`,
+                instId: "BTC-USDT-SWAP",
+                ccy: "USDT",
+                amt: "-0.01",
+                type: "8",
+                subType: "173",
+                ts: staleTs,
+            }))),
+        })
+        const adapter = new OKXVenueAdapter(client as never, {
+            marginMode: "cross",
+            positionMode: "net_mode",
+        })
+
+        const events = await adapter.getAccountPnlEvents()
+
+        expect(events).toHaveLength(100)
+        expect(client.getAccountBills).toHaveBeenCalledTimes(1)
+    })
+
+    it("fails closed when account bills pagination exceeds the bounded page budget", async () => {
+        const recentTs = String(Date.now())
+        const client = withOKXAccountingDefaults({
+            getAccountBills: vi.fn().mockImplementation(async (params: { after?: string }) => {
+                const page = params.after ? Number(params.after.split("-")[1]) + 1 : 0
+                return Array.from({ length: 100 }, (_, index) => ({
+                    billId: `bill-${page}-${index}`,
+                    instId: "BTC-USDT-SWAP",
+                    ccy: "USDT",
+                    amt: "-0.01",
+                    type: "8",
+                    subType: "173",
+                    ts: recentTs,
+                }))
+            }),
+        })
+        const adapter = new OKXVenueAdapter(client as never, {
+            marginMode: "cross",
+            positionMode: "net_mode",
+        })
+
+        await expect(adapter.getAccountPnlEvents()).rejects.toThrow("pagination exceeded")
+        expect(client.getAccountBills).toHaveBeenCalledTimes(10)
+    })
+
+    it("paginates algo-order history per ordType and stops on short pages", async () => {
+        const recentCTime = String(Date.now())
+        const buildAlgoPage = (ordType: string, page: number, length: number) => Array.from({ length }, (_, index) => ({
+            algoId: `algo-${ordType}-${page}-${index}`,
+            instId: "ETH-USDT-SWAP",
+            ordType,
+            side: "buy",
+            posSide: "net",
+            state: "effective",
+            cTime: recentCTime,
+        }))
+        const conditionalPages = [buildAlgoPage("conditional", 0, 100), buildAlgoPage("conditional", 1, 3)]
+        const ocoPages = [buildAlgoPage("oco", 0, 2)]
+        const client = withOKXAccountingDefaults({
+            getFillsHistory: vi.fn().mockResolvedValue([]),
+            getInstruments: vi.fn().mockResolvedValue([
+                createSwapInstrument("ETH-USDT-SWAP", "0.1", "ETH"),
+            ]),
+            getAlgoOrdersHistory: vi.fn().mockImplementation(async (params: { ordType: string }) => {
+                const pages = params.ordType === "conditional" ? conditionalPages : ocoPages
+                const next = pages.shift()
+                if (!next) {
+                    throw new Error(`unexpected extra ${params.ordType} page request`)
+                }
+                return next
+            }),
+        })
+        const adapter = new OKXVenueAdapter(client as never, {
+            marginMode: "cross",
+            positionMode: "net_mode",
+        })
+
+        await adapter.getRecentPositionClosures()
+
+        expect(client.getAlgoOrdersHistory).toHaveBeenCalledTimes(3)
+        const conditionalCalls = client.getAlgoOrdersHistory.mock.calls
+            .map((call) => call[0] as { ordType: string, after?: string })
+            .filter((params) => params.ordType === "conditional")
+        expect(conditionalCalls).toHaveLength(2)
+        expect(conditionalCalls[1]).toMatchObject({
+            after: "algo-conditional-0-99",
+        })
+    })
+
+    it("fails closed when algo-order history pagination exceeds the bounded page budget", async () => {
+        const recentCTime = String(Date.now())
+        const client = withOKXAccountingDefaults({
+            getFillsHistory: vi.fn().mockResolvedValue([]),
+            getInstruments: vi.fn().mockResolvedValue([
+                createSwapInstrument("ETH-USDT-SWAP", "0.1", "ETH"),
+            ]),
+            getAlgoOrdersHistory: vi.fn().mockImplementation(async (params: { ordType: string, after?: string }) => {
+                const page = params.after ? Number(params.after.split("-")[2]) + 1 : 0
+                return Array.from({ length: 100 }, (_, index) => ({
+                    algoId: `algo-${params.ordType}-${page}-${index}`,
+                    instId: "ETH-USDT-SWAP",
+                    ordType: params.ordType,
+                    side: "buy",
+                    posSide: "net",
+                    state: "effective",
+                    cTime: recentCTime,
+                }))
+            }),
+        })
+        const adapter = new OKXVenueAdapter(client as never, {
+            marginMode: "cross",
+            positionMode: "net_mode",
+        })
+
+        await expect(adapter.getRecentPositionClosures()).rejects.toThrow("pagination exceeded")
+    })
+
     it("does not require fillPnl when position side proves an OKX fill is a close", async () => {
-        const client = {
+        const client = withOKXAccountingDefaults({
             getFillsHistory: vi.fn().mockResolvedValue([
                 {
                     instId: "BTC-USDT-SWAP",
@@ -399,7 +841,7 @@ describe("OKXVenueAdapter account snapshot semantics", () => {
             getInstruments: vi.fn().mockResolvedValue([
                 createSwapInstrument("BTC-USDT-SWAP", "0.01", "BTC"),
             ]),
-        }
+        })
         const adapter = new OKXVenueAdapter(client as never, {
             marginMode: "cross",
             positionMode: "long_short_mode",

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import { ExecutionPipeline, type VenueAdapter } from "./execution.ts"
 import { createLogger } from "./logger.ts"
 import { matchesOrderIdentifier, type OrderPersistenceAdapter, type OrderSnapshot, type OrderTransition } from "./orders.ts"
@@ -156,8 +156,11 @@ function createFilledLifecycleVenue(): VenueAdapter {
 }
 
 describe("order lifecycle persistence", () => {
-    it("persists commit-unknown submissions without a provider order id", async () => {
+    it("persists commit-unknown submissions without a provider order id and never polls them", async () => {
         const persistence = createMemoryOrderPersistence()
+        const getOrderStatus = vi.fn(async () => {
+            throw new Error("commit-unknown submissions without a provider order id must not be polled")
+        })
         const pipeline = new ExecutionPipeline({
             venue: {
                 ...createPendingLifecycleVenue(),
@@ -171,6 +174,7 @@ describe("order lifecycle persistence", () => {
                         },
                     })
                 },
+                getOrderStatus,
             },
             venueName: "mt5",
             policy: {
@@ -184,6 +188,10 @@ describe("order lifecycle persistence", () => {
             riskValidators: [allowIntent],
             logger: createLogger({ minLevel: "fatal" }),
             orderPersistence: persistence.adapter,
+            lifecycle: {
+                pollInterval: 10,
+                timeout: 5_000,
+            },
             runId: "run-commit-unknown",
             strategyId: "strategy-1",
         })
@@ -224,16 +232,36 @@ describe("order lifecycle persistence", () => {
                 commitOutcome: "commit_unknown",
             }),
         })
+
+        await new Promise((resolve) => setTimeout(resolve, 60))
+        expect(getOrderStatus).not.toHaveBeenCalled()
+        pipeline.stopAllTracking()
     })
 
-    it("keeps failed cancels recoverable until provider truth resolves the order", async () => {
+    it("keeps a failed cancel attempt non-terminal and re-polls until provider truth converges", async () => {
         const persistence = createMemoryOrderPersistence()
+        let providerTruth: "pending" | "filled" = "pending"
         const pipeline = new ExecutionPipeline({
             venue: {
                 ...createPendingLifecycleVenue(),
                 cancelOrder: async () => {
+                    providerTruth = "filled"
                     throw new Error("socket closed before cancel acknowledgement")
                 },
+                getOrderStatus: async (orderId: string) => providerTruth === "filled"
+                    ? {
+                        orderId,
+                        status: "filled",
+                        filledQuantity: 1,
+                        fillPrice: 105.5,
+                        timestamp: 20,
+                    }
+                    : {
+                        orderId,
+                        status: "pending",
+                        filledQuantity: 0,
+                        timestamp: 20,
+                    },
             },
             venueName: "mt5",
             policy: {
@@ -247,6 +275,10 @@ describe("order lifecycle persistence", () => {
             riskValidators: [allowIntent],
             logger: createLogger({ minLevel: "fatal" }),
             orderPersistence: persistence.adapter,
+            lifecycle: {
+                pollInterval: 10,
+                timeout: 5_000,
+            },
             runId: "run-cancel-recovery",
             strategyId: "strategy-1",
         })
@@ -255,9 +287,9 @@ describe("order lifecycle persistence", () => {
             {
                 instrument: "XAUUSD",
                 side: "buy",
-                quantity: 0.01,
+                quantity: 1,
                 orderType: "limit",
-                limitPrice: 4715.5,
+                limitPrice: 105,
                 timeInForce: "day",
                 metadata: {
                     action: "entry",
@@ -268,17 +300,166 @@ describe("order lifecycle persistence", () => {
         )
 
         const cancelResult = await pipeline.cancelOrder(submitted.result.orderId, "test cancel failure")
-        expect(cancelResult.status).toBe("rejected")
+        expect(cancelResult.status).toBe("pending")
         expect(cancelResult.commitOutcome).toBe("commit_unknown")
-        expect(persistence.orders.get(submitted.result.orderId)).toMatchObject({
-            status: "rejected",
+        expect(cancelResult.error).toContain("socket closed before cancel acknowledgement")
+
+        const afterFailedAttempt = persistence.orders.get(submitted.result.orderId)
+        expect(afterFailedAttempt).toMatchObject({
+            status: "pending",
             commitOutcome: "commit_unknown",
         })
+        expect(afterFailedAttempt?.polling.nextCheckAt).toBeDefined()
 
-        const corrected = await pipeline.getOrderStatus(submitted.result.orderId)
-        expect(corrected.status).toBe("pending")
+        await vi.waitFor(() => {
+            expect(persistence.orders.get(submitted.result.orderId)?.status).toBe("filled")
+        }, { timeout: 2_000, interval: 10 })
+
         expect(persistence.orders.get(submitted.result.orderId)).toMatchObject({
+            status: "filled",
+            filledQuantity: 1,
+            avgFillPrice: 105.5,
+        })
+
+        pipeline.stopAllTracking()
+    })
+
+    it("keeps provider-confirmed cancels terminal", async () => {
+        const persistence = createMemoryOrderPersistence()
+        const pipeline = new ExecutionPipeline({
+            venue: createPendingLifecycleVenue(),
+            venueName: "mt5",
+            policy: {
+                dryRun: false,
+                safety: {
+                    account: {
+                        allocationPercent: 100,
+                    },
+                },
+            },
+            riskValidators: [allowIntent],
+            logger: createLogger({ minLevel: "fatal" }),
+            orderPersistence: persistence.adapter,
+            lifecycle: {
+                pollInterval: 10,
+                timeout: 5_000,
+            },
+            runId: "run-cancel-confirmed",
+            strategyId: "strategy-1",
+        })
+
+        const submitted = await pipeline.executeIntent(
+            {
+                instrument: "XAUUSD",
+                side: "buy",
+                quantity: 1,
+                orderType: "limit",
+                limitPrice: 105,
+                timeInForce: "day",
+                metadata: {
+                    action: "entry",
+                },
+            },
+            account,
+            []
+        )
+
+        const cancelResult = await pipeline.cancelOrder(submitted.result.orderId, "confirmed cancel")
+        expect(cancelResult.status).toBe("cancelled")
+
+        const snapshot = persistence.orders.get(submitted.result.orderId)
+        expect(snapshot?.status).toBe("cancelled")
+        expect(snapshot?.polling.nextCheckAt).toBeUndefined()
+        expect(pipeline.getTrackedOrder(submitted.result.orderId)).toBeNull()
+
+        pipeline.stopAllTracking()
+    })
+
+    it("keeps a failed modify attempt non-terminal without persisting unconfirmed intent updates", async () => {
+        const persistence = createMemoryOrderPersistence()
+        let providerTruth: "pending" | "filled" = "pending"
+        const pipeline = new ExecutionPipeline({
+            venue: {
+                ...createPendingLifecycleVenue(),
+                modifyOrder: async () => {
+                    providerTruth = "filled"
+                    throw new Error("connection reset before modify acknowledgement")
+                },
+                getOrderStatus: async (orderId: string) => providerTruth === "filled"
+                    ? {
+                        orderId,
+                        status: "filled",
+                        filledQuantity: 1,
+                        fillPrice: 100,
+                        timestamp: 20,
+                    }
+                    : {
+                        orderId,
+                        status: "pending",
+                        filledQuantity: 0,
+                        timestamp: 20,
+                    },
+            },
+            venueName: "mt5",
+            policy: {
+                dryRun: false,
+                safety: {
+                    account: {
+                        allocationPercent: 100,
+                    },
+                },
+            },
+            riskValidators: [allowIntent],
+            logger: createLogger({ minLevel: "fatal" }),
+            orderPersistence: persistence.adapter,
+            lifecycle: {
+                pollInterval: 10,
+                timeout: 5_000,
+            },
+            runId: "run-modify-recovery",
+            strategyId: "strategy-1",
+        })
+
+        const submitted = await pipeline.executeIntent(
+            {
+                instrument: "XAUUSD",
+                side: "buy",
+                quantity: 1,
+                orderType: "limit",
+                limitPrice: 100,
+                timeInForce: "day",
+                metadata: {
+                    action: "entry",
+                },
+            },
+            account,
+            []
+        )
+
+        const modifyResult = await pipeline.modifyOrder(submitted.result.orderId, {
+            limitPrice: 101,
+        }, "test modify failure")
+        expect(modifyResult.status).toBe("pending")
+        expect(modifyResult.commitOutcome).toBe("commit_unknown")
+        expect(modifyResult.intentUpdates).toBeUndefined()
+        expect(modifyResult.error).toContain("connection reset before modify acknowledgement")
+
+        const afterFailedAttempt = persistence.orders.get(submitted.result.orderId)
+        expect(afterFailedAttempt).toMatchObject({
             status: "pending",
+            commitOutcome: "commit_unknown",
+        })
+        expect(afterFailedAttempt?.intent.limitPrice).toBe(100)
+        expect(afterFailedAttempt?.polling.nextCheckAt).toBeDefined()
+
+        await vi.waitFor(() => {
+            expect(persistence.orders.get(submitted.result.orderId)?.status).toBe("filled")
+        }, { timeout: 2_000, interval: 10 })
+
+        expect(persistence.orders.get(submitted.result.orderId)).toMatchObject({
+            status: "filled",
+            filledQuantity: 1,
+            avgFillPrice: 100,
         })
 
         pipeline.stopAllTracking()

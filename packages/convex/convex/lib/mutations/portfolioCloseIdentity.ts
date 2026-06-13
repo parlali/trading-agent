@@ -9,6 +9,7 @@ import {
 export type ProviderClosePositionCandidate = Pick<
     Doc<"provider_positions">,
     "instrument" |
+    "accountId" |
     "side" |
     "quantity" |
     "entryPrice" |
@@ -19,7 +20,6 @@ export type ProviderClosePositionCandidate = Pick<
 > & {
     strategyId: Id<"strategies">
     runId?: Id<"strategy_runs">
-    requiresStrongClosureIdentity?: boolean
     sourceOrder?: Doc<"orders">
 }
 
@@ -37,6 +37,8 @@ export function buildProviderPositionIdentityCandidates(
     addKnownIdentifier(identifiers, metadata?.posId)
     addKnownIdentifier(identifiers, metadata?.positionId)
     addKnownIdentifier(identifiers, metadata?.providerPositionId)
+    addKnownIdentifier(identifiers, metadata?.tokenId)
+    addKnownIdentifier(identifiers, metadata?.asset)
     return identifiers
 }
 
@@ -49,10 +51,21 @@ export function buildPositionClosureIdentityCandidates(
     const metadata = parseJson<Record<string, unknown>>(closure.metadata)
     addKnownIdentifier(identifiers, metadata?.ticket)
     addKnownIdentifier(identifiers, metadata?.orderId)
+    addKnownIdentifier(identifiers, metadata?.triggeredOrderId)
     addKnownIdentifier(identifiers, metadata?.clientOrderId)
+    addKnownIdentifier(identifiers, metadata?.algoId)
+    addKnownIdentifier(identifiers, metadata?.algoClOrdId)
+    addKnownIdentifier(identifiers, metadata?.actualOrdId)
     addKnownIdentifier(identifiers, metadata?.posId)
     addKnownIdentifier(identifiers, metadata?.positionId)
     addKnownIdentifier(identifiers, metadata?.providerPositionId)
+    addKnownIdentifier(identifiers, metadata?.tokenId)
+    addKnownIdentifier(identifiers, metadata?.asset)
+    if (Array.isArray(metadata?.providerOrderAliases)) {
+        for (const alias of metadata.providerOrderAliases) {
+            addKnownIdentifier(identifiers, alias)
+        }
+    }
     return identifiers
 }
 
@@ -105,13 +118,40 @@ export function resolveProviderCloseOrderProviderId(
     return readIdentifier(parseJson<Record<string, unknown>>(closure.metadata)?.orderId)
 }
 
+export function resolveProviderClosureDealIdFromMetadata(
+    metadata: Record<string, unknown> | undefined
+): string | undefined {
+    return readIdentifier(metadata?.dealId) ??
+        readIdentifier(metadata?.providerDealId) ??
+        readIdentifier(metadata?.ticket)
+}
+
+export function resolveProviderClosureDealId(
+    closure: { metadata?: string }
+): string | undefined {
+    return resolveProviderClosureDealIdFromMetadata(parseJson<Record<string, unknown>>(closure.metadata))
+}
+
+export function orderBelongsToAccount(
+    order: Pick<Doc<"orders">, "app" | "venue" | "accountId">,
+    app: Doc<"strategies">["app"],
+    accountId: string
+): boolean {
+    return (order.app ?? order.venue) === app && order.accountId === accountId
+}
+
 export function buildPositionClosureKey(closure: ProviderPositionClosureInput): string {
-    return [
+    const parts = [
         closure.instrument,
         closure.side,
         closure.closedAt,
         resolveProviderCloseOrderProviderId(closure) ?? closure.providerPositionId ?? "",
-    ].join(":")
+    ]
+    const dealId = resolveProviderClosureDealId(closure)
+    if (dealId) {
+        parts.push(dealId)
+    }
+    return parts.join(":")
 }
 
 export function describeClosure(closure: ProviderPositionClosureInput): string {

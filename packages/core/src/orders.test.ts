@@ -66,6 +66,25 @@ describe("updateOrderSnapshotFromExecution terminal-state guard", () => {
         expect(updated.status).toBe("cancelled")
     })
 
+    it("keeps provider-confirmed terminal truth when an operation attempt ends commit-unknown", () => {
+        const snapshot = createFilledSnapshot()
+
+        const updated = updateOrderSnapshotFromExecution(snapshot, {
+            orderId: "1671367552",
+            status: "filled",
+            commitOutcome: "commit_unknown",
+            filledQuantity: 0.1,
+            timestamp: 3_000,
+            error: "socket closed before cancel acknowledgement",
+        })
+
+        expect(updated.status).toBe("filled")
+        expect(updated.commitOutcome).toBe("accepted")
+        expect(updated.avgFillPrice).toBe(50659.1)
+        expect(updated.polling.lastCheckedAt).toBe(3_000)
+        expect(updated.polling.lastError).toBe("socket closed before cancel acknowledgement")
+    })
+
     it("lets commit-unknown snapshots progress to recovered provider truth", () => {
         const snapshot = {
             ...createFilledSnapshot(),
@@ -83,6 +102,62 @@ describe("updateOrderSnapshotFromExecution terminal-state guard", () => {
 
         expect(updated.status).toBe("pending")
         expect(updated.commitOutcome).toBe("recovered")
+    })
+
+    it("persists provider accounting occurrence time when accounting metadata is present", () => {
+        const snapshot = createFilledSnapshot()
+
+        const updated = updateOrderSnapshotFromExecution(snapshot, {
+            orderId: "1671367552",
+            status: "filled",
+            filledQuantity: 0.1,
+            timestamp: 3_000,
+            intentUpdates: {
+                metadata: {
+                    providerAccountingSource: "okx_order",
+                    fee: -1.23,
+                    feeCcy: "USDT",
+                },
+            },
+        })
+
+        expect(updated.intent.metadata).toMatchObject({
+            providerAccountingSource: "okx_order",
+            providerAccountingOccurredAt: 3_000,
+        })
+    })
+
+    it("persists accounting metadata on immediately filled order snapshots", () => {
+        const snapshot = createOrderSnapshot({
+            strategyId: "strategy-1",
+            runId: "run-1",
+            venue: "okx",
+            action: "entry",
+            intent,
+            result: {
+                orderId: "vokm01abcdefghij",
+                canonicalOrderId: "vokm01abcdefghij",
+                providerOrderId: "9000000000000000001",
+                status: "filled",
+                filledQuantity: 0.1,
+                fillPrice: 50659.1,
+                timestamp: 4_000,
+                intentUpdates: {
+                    metadata: {
+                        providerAccountingSource: "okx_order",
+                        fee: -1.23,
+                        feeCcy: "USDT",
+                    },
+                },
+            },
+            pollIntervalMs: 5_000,
+            timeoutMs: 120_000,
+        })
+
+        expect(snapshot.intent.metadata).toMatchObject({
+            providerAccountingSource: "okx_order",
+            providerAccountingOccurredAt: 4_000,
+        })
     })
 })
 

@@ -33,7 +33,7 @@ export async function collectCodexRunAuditArtifact(args: {
         args.client.getAgentLogs(args.run._id),
         args.client.getTradeEvents(args.run._id),
         args.client.getPositionsForRun(args.strategy._id, args.run._id),
-        args.client.getPortfolioFreshness(args.strategy.app),
+        args.client.getPortfolioFreshness(args.strategy.app, args.strategy.accountId),
     ])
 
     return buildCodexRunAuditArtifact({
@@ -240,15 +240,16 @@ export function resolveProviderSyncRefreshStrategy(args: {
     const candidates = args.allStrategies
         .filter((candidate) =>
             candidate.app === args.targetStrategy.app &&
+            candidate.accountId === args.targetStrategy.accountId &&
             !isDryRunStrategy(candidate)
         )
         .sort(compareStrategiesByName)
 
     if (candidates.length === 0) {
-        throw new Error(`No live ${args.targetStrategy.app} strategy is available to refresh provider-sync evidence; pass --provider-sync-strategy <id> after adding a live strategy for the same venue`)
+        throw new Error(`No live ${args.targetStrategy.app}:${args.targetStrategy.accountId} strategy is available to refresh provider-sync evidence; pass --provider-sync-strategy <id> after adding a live strategy for the same account`)
     }
     if (candidates.length > 1) {
-        throw new Error(`Multiple live ${args.targetStrategy.app} strategies can refresh provider-sync evidence; pass --provider-sync-strategy <id>. Candidates: ${candidates.map((strategy) => `${strategy.name} (${strategy._id})`).join(", ")}`)
+        throw new Error(`Multiple live ${args.targetStrategy.app}:${args.targetStrategy.accountId} strategies can refresh provider-sync evidence; pass --provider-sync-strategy <id>. Candidates: ${candidates.map((strategy) => `${strategy.name} (${strategy._id})`).join(", ")}`)
     }
 
     return candidates[0]!
@@ -276,6 +277,9 @@ function assertProviderSyncRefreshStrategy(
 ): void {
     if (refreshStrategy.app !== targetStrategy.app) {
         throw new Error(`Provider-sync strategy ${refreshStrategy.name} (${refreshStrategy._id}) is for ${refreshStrategy.app}, not target app ${targetStrategy.app}`)
+    }
+    if (refreshStrategy.accountId !== targetStrategy.accountId) {
+        throw new Error(`Provider-sync strategy ${refreshStrategy.name} (${refreshStrategy._id}) is for account ${refreshStrategy.accountId}, not target account ${targetStrategy.accountId}`)
     }
     if (isDryRunStrategy(refreshStrategy)) {
         throw new Error(`Provider-sync strategy ${refreshStrategy.name} (${refreshStrategy._id}) is dry-run; a live same-venue strategy is required to refresh provider truth`)

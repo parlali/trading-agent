@@ -7,8 +7,10 @@ import type {
     StrategySafetyState,
 } from "./types"
 import type { RiskValidator } from "./risk-types"
+import { getIntentAction } from "./intent"
 import {
     isCloseOrCancelIntent,
+    isRiskReducingAction,
     isRiskReducingIntent,
 } from "./risk-intents"
 
@@ -26,6 +28,33 @@ export function rejectRisk(reason: string): { allowed: false; reason: string } {
     return { allowed: false, reason }
 }
 
+export const POLYMARKET_CONDITION_ALIAS_PREFIX = "polymarket-condition:"
+
+export function readPolymarketConditionId(metadata: unknown): string | undefined {
+    if (!metadata || typeof metadata !== "object") {
+        return undefined
+    }
+
+    const candidate = (metadata as Record<string, unknown>).conditionId
+    if (typeof candidate !== "string") {
+        return undefined
+    }
+
+    const normalized = candidate.trim()
+    return normalized.length > 0 ? normalized : undefined
+}
+
+export function buildPolymarketConditionInstrumentAlias(conditionId: unknown): string | undefined {
+    if (typeof conditionId !== "string") {
+        return undefined
+    }
+
+    const normalized = conditionId.trim()
+    return normalized.length > 0
+        ? `${POLYMARKET_CONDITION_ALIAS_PREFIX}${normalized}`
+        : undefined
+}
+
 export const duplicateOrderValidator: RiskValidator = (intent, _policy, _state, positions) => {
     const intentSide = intent.side === "buy" ? "long" : "short"
 
@@ -39,6 +68,24 @@ export const duplicateOrderValidator: RiskValidator = (intent, _policy, _state, 
             reason: `Duplicate: already have ${intentSide} position in ${intent.instrument} (qty: ${duplicate.quantity})`,
         }
     }
+
+    if (intent.side === "buy") {
+        const intentConditionId = readPolymarketConditionId(intent.metadata)
+        const conditionDuplicate = intentConditionId !== undefined
+            ? positions.find((pos) =>
+                pos.instrument !== intent.instrument &&
+                readPolymarketConditionId(pos.metadata) === intentConditionId
+            )
+            : undefined
+
+        if (conditionDuplicate) {
+            return {
+                allowed: false,
+                reason: `Duplicate: market ${intentConditionId} is already exposed through outcome token ${conditionDuplicate.instrument} (qty: ${conditionDuplicate.quantity})`,
+            }
+        }
+    }
+
     return { allowed: true }
 }
 
@@ -194,19 +241,28 @@ export function createInstrumentConflictValidator(
     globallyClaimedInstruments: Map<string, string>
 ): RiskValidator {
     return (intent, _policy, _state, _positions) => {
-        const action = intent.metadata?.action
-        if (action !== "entry" && action !== undefined) {
+        const action = getIntentAction(intent)
+        if (isRiskReducingAction(action)) {
             return { allowed: true }
         }
 
-        const owner = globallyClaimedInstruments.get(intent.instrument)
-        if (!owner) {
-            return { allowed: true }
+        const conditionAlias = buildPolymarketConditionInstrumentAlias(
+            readPolymarketConditionId(intent.metadata)
+        )
+        const claimKeys = conditionAlias !== undefined
+            ? [intent.instrument, conditionAlias]
+            : [intent.instrument]
+
+        for (const claimKey of claimKeys) {
+            const owner = globallyClaimedInstruments.get(claimKey)
+            if (owner) {
+                return {
+                    allowed: false,
+                    reason: `Instrument conflict: ${claimKey} is already owned by strategy ${owner} and this ${action} intent would add or modify exposure on it`,
+                }
+            }
         }
 
-        return {
-            allowed: false,
-            reason: `Instrument conflict: ${intent.instrument} is already owned by strategy ${owner}`,
-        }
+        return { allowed: true }
     }
 }

@@ -2,7 +2,7 @@ import type { OrderIntent, OrderLifecycleContext, Position } from "./types"
 import { readFiniteNumber } from "./value-readers"
 
 export function withLifecycleAction(intent: OrderIntent, lifecycleContext: OrderLifecycleContext): OrderIntent {
-    if (!lifecycleContext.action || intent.metadata?.action) {
+    if (!lifecycleContext.action) {
         return intent
     }
 
@@ -10,8 +10,8 @@ export function withLifecycleAction(intent: OrderIntent, lifecycleContext: Order
         ...intent,
         metadata: {
             ...intent.metadata,
-            action: lifecycleContext.action,
             ...lifecycleContext.metadata,
+            action: lifecycleContext.action,
         },
     }
 }

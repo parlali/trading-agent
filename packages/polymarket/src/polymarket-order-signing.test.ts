@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest"
 import {
     derivePolymarketSalt,
     fingerprintPolymarketSignedOrder,
+    roundToTickSize,
 } from "./polymarket-order-signing.ts"
 
 describe("Polymarket deterministic signed-order identity", () => {
@@ -37,5 +38,12 @@ describe("Polymarket deterministic signed-order identity", () => {
 
         expect(left).toBe(right)
         expect(left).toMatch(/^[a-f0-9]{64}$/)
+    })
+
+    it("rounds prices to decimal tick sizes without binary float noise", () => {
+        expect(roundToTickSize(0.29, "0.01")).toBe(0.29)
+        expect(roundToTickSize(0.58, "0.01")).toBe(0.58)
+        expect(roundToTickSize(0.5782, "0.01")).toBe(0.58)
+        expect(roundToTickSize(0.123456, "1e-4")).toBe(0.1235)
     })
 })

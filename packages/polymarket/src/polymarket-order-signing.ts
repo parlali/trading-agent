@@ -43,8 +43,10 @@ export function calculateOrderAmounts(
 
 export function roundToTickSize(price: number, tickSize: string): number {
     const tick = Number(tickSize)
-    if (tick <= 0) return price
-    return Math.round(price / tick) * tick
+    if (!Number.isFinite(tick) || tick <= 0) return price
+
+    const rounded = Math.round(price / tick) * tick
+    return roundDecimal(rounded, countTickDecimals(tickSize))
 }
 
 export function derivePolymarketSalt(
@@ -67,4 +69,26 @@ export function fingerprintPolymarketSignedOrder(order: unknown): string {
 
 function toRawAmount(amount: number): bigint {
     return BigInt(Math.floor(amount * AMOUNT_MULTIPLIER))
+}
+
+function roundDecimal(value: number, decimals: number): number {
+    const multiplier = 10 ** decimals
+    return Math.round(value * multiplier) / multiplier
+}
+
+function countTickDecimals(tickSize: string): number {
+    const normalized = tickSize.trim().toLowerCase()
+    const [mantissa, exponent] = normalized.split("e")
+    const mantissaDecimals = mantissa?.includes(".")
+        ? mantissa.split(".")[1]?.length ?? 0
+        : 0
+
+    if (exponent !== undefined) {
+        const exponentValue = Number(exponent)
+        return Number.isInteger(exponentValue) && exponentValue < 0
+            ? mantissaDecimals + Math.abs(exponentValue)
+            : Math.max(mantissaDecimals - (Number.isInteger(exponentValue) ? exponentValue : 0), 0)
+    }
+
+    return mantissaDecimals
 }

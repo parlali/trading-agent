@@ -54,7 +54,7 @@ describe("portfolio governance helpers", () => {
         expect(secondKey).not.toBe(positionKey)
     })
 
-    it("resolves same-instrument A/B positions by provider-position claim keys", () => {
+    it("fails closed for same-account same-instrument claims across strategies", () => {
         const strategyA = "strategy-a"
         const strategyB = "strategy-b"
         const strategyMap = new Map([
@@ -64,37 +64,29 @@ describe("portfolio governance helpers", () => {
         const claimsByInstrument = new Map([
             ["XAUUSD", new Set([strategyA, strategyB])],
         ])
-        const claimsByPositionKey = new Map([
-            ["XAUUSD:1600791764", new Set([strategyA])],
-            ["XAUUSD:1600791765", new Set([strategyB])],
-        ])
 
         const resolvedA = portfolioGovernanceTestables.resolveOwnership({
             instrument: "XAUUSD",
             positionKey: "XAUUSD:1600791764",
             claimsByInstrument,
-            claimsByPositionKey,
             strategyMap,
         } as never)
         const resolvedB = portfolioGovernanceTestables.resolveOwnership({
             instrument: "XAUUSD",
             positionKey: "XAUUSD:1600791765",
             claimsByInstrument,
-            claimsByPositionKey,
             strategyMap,
         } as never)
 
         expect(resolvedA).toEqual({
-            strategyId: strategyA,
-            ownershipStatus: "owned",
+            ownershipStatus: "orphaned",
         })
         expect(resolvedB).toEqual({
-            strategyId: strategyB,
-            ownershipStatus: "owned",
+            ownershipStatus: "orphaned",
         })
     })
 
-    it("fails closed when a provider row owner conflicts with a provider-position claim", () => {
+    it("fails closed when a provider row owner conflicts with an instrument claim", () => {
         const strategyA = "strategy-a"
         const strategyB = "strategy-b"
         const strategyMap = new Map([
@@ -106,8 +98,7 @@ describe("portfolio governance helpers", () => {
         const resolved = portfolioGovernanceTestables.resolveOwnership({
             instrument: "XAUUSD",
             positionKey,
-            claimsByInstrument: new Map([["XAUUSD", new Set([strategyA, strategyB])]]),
-            claimsByPositionKey: new Map([[positionKey, new Set([strategyB])]]),
+            claimsByInstrument: new Map([["XAUUSD", new Set([strategyB])]]),
             existingPositionByKey: new Map([
                 [positionKey, {
                     strategyId: strategyA,
@@ -121,66 +112,52 @@ describe("portfolio governance helpers", () => {
         })
         expect(portfolioGovernanceTestables.hasPositionOwnershipMismatch({
             positionKey,
-            claimsByPositionKey: new Map([[positionKey, new Set([strategyB])]]),
             existingPositionByKey: new Map([
                 [positionKey, {
                     strategyId: strategyA,
                 }],
             ]),
             strategyMap,
+            resolvedOwnership: resolved,
         } as never)).toBe(true)
     })
 
-    it("builds adopted position claims from provider row keys and preserves unrelated claims", () => {
-        const strategyA = "strategy-a"
-        const strategyB = "strategy-b"
-
-        const claims = portfolioGovernanceTestables.buildAdoptedPositionClaims({
-            strategyId: strategyA,
-            requestedInstruments: ["XAUUSD"],
-            providerPositions: [
+    it("flags same-account instrument ownership across strategies as duplicate exposure", () => {
+        const violations = portfolioGovernanceTestables.detectExposureGovernanceViolations({
+            strategies: [
                 {
-                    instrument: "XAUUSD",
-                    positionKey: "XAUUSD:1600791764",
+                    _id: "strategy-a",
+                    app: "okx-swap",
+                    accountId: "account-a",
+                    policy: {},
                 },
                 {
-                    instrument: "XAUUSD",
-                    positionKey: "XAUUSD:1600791765",
-                },
-                {
-                    instrument: "EURUSD",
-                    positionKey: "EURUSD:long",
+                    _id: "strategy-b",
+                    app: "okx-swap",
+                    accountId: "account-a",
+                    policy: {},
                 },
             ],
-            existingClaims: [
+            positions: [
                 {
-                    strategyId: strategyA,
-                    source: "position",
-                    instrument: "EURUSD",
-                    sourceId: "EURUSD:long",
+                    strategyId: "strategy-a",
+                    ownershipStatus: "owned",
+                    instrument: "BTC-USDT-SWAP",
+                    side: "long",
                 },
                 {
-                    strategyId: strategyB,
-                    source: "position",
-                    instrument: "XAUUSD",
-                    sourceId: "XAUUSD:old",
+                    strategyId: "strategy-b",
+                    ownershipStatus: "owned",
+                    instrument: "BTC-USDT-SWAP",
+                    side: "long",
                 },
             ],
+            workingOrders: [],
         } as never)
 
-        expect(claims).toEqual([
-            {
-                instrument: "EURUSD",
-                sourceId: "EURUSD:long",
-            },
-            {
-                instrument: "XAUUSD",
-                sourceId: "XAUUSD:1600791764",
-            },
-            {
-                instrument: "XAUUSD",
-                sourceId: "XAUUSD:1600791765",
-            },
+        expect(violations).toEqual([
+            "strategy-a:account-instrument-conflict:BTC-USDT-SWAP",
+            "strategy-b:account-instrument-conflict:BTC-USDT-SWAP",
         ])
     })
 
@@ -950,3 +927,149 @@ function createAlpacaIronCondorOrder() {
         },
     }
 }
+
+describe("polymarket duplicate exposure governance", () => {
+    const conditionId = "0xcond1"
+
+    it("collides YES and NO outcome tokens of one market across strategies on the same account", () => {
+        const violations = portfolioGovernanceTestables.detectExposureGovernanceViolations({
+            strategies: [
+                {
+                    _id: "strategy-yes",
+                    app: "polymarket",
+                    accountId: "account-1",
+                    policy: {},
+                },
+                {
+                    _id: "strategy-no",
+                    app: "polymarket",
+                    accountId: "account-1",
+                    policy: {},
+                },
+            ],
+            positions: [
+                {
+                    strategyId: "strategy-yes",
+                    ownershipStatus: "owned",
+                    instrument: "token-yes",
+                    side: "long",
+                    metadata: JSON.stringify({
+                        tokenId: "token-yes",
+                        conditionId,
+                        outcome: "Yes",
+                    }),
+                },
+                {
+                    strategyId: "strategy-no",
+                    ownershipStatus: "owned",
+                    instrument: "token-no",
+                    side: "long",
+                    metadata: JSON.stringify({
+                        tokenId: "token-no",
+                        conditionId,
+                        outcome: "No",
+                    }),
+                },
+            ],
+            workingOrders: [],
+        } as never)
+
+        expect(violations).toEqual([
+            "strategy-no:account-instrument-conflict:token-no",
+            "strategy-yes:account-instrument-conflict:token-yes",
+        ])
+    })
+
+    it("collides a pending NO entry order against a held YES position of the same market", () => {
+        const violations = portfolioGovernanceTestables.detectExposureGovernanceViolations({
+            strategies: [
+                {
+                    _id: "strategy-yes",
+                    app: "polymarket",
+                    accountId: "account-1",
+                    policy: {},
+                },
+                {
+                    _id: "strategy-no",
+                    app: "polymarket",
+                    accountId: "account-1",
+                    policy: {},
+                },
+            ],
+            positions: [
+                {
+                    strategyId: "strategy-yes",
+                    ownershipStatus: "owned",
+                    instrument: "token-yes",
+                    side: "long",
+                    metadata: JSON.stringify({
+                        tokenId: "token-yes",
+                        conditionId,
+                    }),
+                },
+            ],
+            workingOrders: [
+                {
+                    strategyId: "strategy-no",
+                    ownershipStatus: "owned",
+                    instrument: "token-no",
+                    action: "entry",
+                    side: "buy",
+                    metadata: JSON.stringify({
+                        tokenId: "token-no",
+                        conditionId,
+                    }),
+                },
+            ],
+        } as never)
+
+        expect(violations).toEqual([
+            "strategy-no:account-instrument-conflict:token-no",
+            "strategy-yes:account-instrument-conflict:token-yes",
+        ])
+    })
+
+    it("does not collide outcome tokens of different markets", () => {
+        const violations = portfolioGovernanceTestables.detectExposureGovernanceViolations({
+            strategies: [
+                {
+                    _id: "strategy-yes",
+                    app: "polymarket",
+                    accountId: "account-1",
+                    policy: {},
+                },
+                {
+                    _id: "strategy-other",
+                    app: "polymarket",
+                    accountId: "account-1",
+                    policy: {},
+                },
+            ],
+            positions: [
+                {
+                    strategyId: "strategy-yes",
+                    ownershipStatus: "owned",
+                    instrument: "token-yes",
+                    side: "long",
+                    metadata: JSON.stringify({
+                        tokenId: "token-yes",
+                        conditionId,
+                    }),
+                },
+                {
+                    strategyId: "strategy-other",
+                    ownershipStatus: "owned",
+                    instrument: "token-other",
+                    side: "long",
+                    metadata: JSON.stringify({
+                        tokenId: "token-other",
+                        conditionId: "0xcond2",
+                    }),
+                },
+            ],
+            workingOrders: [],
+        } as never)
+
+        expect(violations).toEqual([])
+    })
+})

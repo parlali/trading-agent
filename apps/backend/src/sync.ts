@@ -18,7 +18,7 @@ import {
 } from "./state"
 import { getRequiredVenueApps } from "./required-apps"
 import { resolveAllSecrets, validateAllEnvironments } from "./plugins/init"
-import { reconcileProviderPortfolio, getProviderSyncConfig, recordProviderSyncFailure } from "./provider-sync"
+import { reconcileProviderPortfolio, recordProviderSyncFailure } from "./provider-sync"
 import { writeHeartbeatSnapshot } from "./health-write"
 import {
     registerStrategyWithScheduler,
@@ -47,67 +47,88 @@ async function syncProviderPortfolioForApp(
         return
     }
 
-    try {
-        const plugin = plugins[app]
-        if (!plugin) return
-        const syncConfig = getProviderSyncConfig(app)
-        const venue = plugin.createVenueAdapter(syncConfig.policy, syncConfig.secrets)
-        const result = await reconcileProviderPortfolio({
-            app,
-            venueName: plugin.venueName,
-            source,
-            venue,
-        })
+    const plugin = plugins[app]
+    if (!plugin) return
+    const allEntries = syncStrategies[app] ?? []
+    if (allEntries.length === 0) {
+        logger.warn(`Skipping provider sync for ${app}: no account-backed strategy entries`)
+        return
+    }
 
-        await writeHeartbeatSnapshot({
-            app,
-            status: result.driftDetected ? "degraded" : "healthy",
-            metadata: {
-                source,
-                positionCount: result.positions.length,
-                pendingOrderCount: result.workingOrders.length,
-                balance: result.accountState.balance,
-                equity: result.accountState.equity,
-                driftDetected: result.driftDetected,
-                driftSummary: result.driftSummary,
-            },
-        })
-
-        if (options.successLogMessage) {
-            logger.info(options.successLogMessage, {
-                app,
-                positionCount: result.positions.length,
-                pendingOrderCount: result.workingOrders.length,
-                balance: result.accountState.balance,
-                equity: result.accountState.equity,
-                driftDetected: result.driftDetected,
-            })
+    const entriesByAccount = new Map<string, typeof allEntries[number]>()
+    for (const entry of allEntries) {
+        if (!entriesByAccount.has(entry.account.accountId)) {
+            entriesByAccount.set(entry.account.accountId, entry)
         }
-    } catch (error) {
-        const message = error instanceof Error ? error.message : String(error)
-        logger.error(options.failureLogMessage, {
-            app,
-            error: message,
-        })
+    }
 
-        await recordProviderSyncFailure(app, message)
-
-        await writeHeartbeatSnapshot({
-            app,
-            status: "degraded",
-            metadata: {
-                ...(options.includeAppInFailureHeartbeat ? { app } : {}),
-                error: message,
-                source,
-            },
-        })
-
-        if (options.alertFailure) {
-            await backend.createAlert({
+    for (const entry of entriesByAccount.values()) {
+        try {
+            const venue = plugin.createVenueAdapter(entry.policy, entry.secrets)
+            const result = await reconcileProviderPortfolio({
                 app,
-                severity: "warning",
-                message: `Periodic provider sync failed for ${app}: ${message}`,
+                accountId: entry.account.accountId,
+                venueName: plugin.venueName,
+                source,
+                venue,
             })
+
+            await writeHeartbeatSnapshot({
+                app,
+                status: result.driftDetected ? "degraded" : "healthy",
+                metadata: {
+                    source,
+                    accountId: entry.account.accountId,
+                    accountLabel: entry.account.label,
+                    positionCount: result.positions.length,
+                    pendingOrderCount: result.workingOrders.length,
+                    balance: result.accountState.balance,
+                    equity: result.accountState.equity,
+                    driftDetected: result.driftDetected,
+                    driftSummary: result.driftSummary,
+                },
+            })
+
+            if (options.successLogMessage) {
+                logger.info(options.successLogMessage, {
+                    app,
+                    accountId: entry.account.accountId,
+                    positionCount: result.positions.length,
+                    pendingOrderCount: result.workingOrders.length,
+                    balance: result.accountState.balance,
+                    equity: result.accountState.equity,
+                    driftDetected: result.driftDetected,
+                })
+            }
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error)
+            logger.error(options.failureLogMessage, {
+                app,
+                accountId: entry.account.accountId,
+                error: message,
+            })
+
+            await recordProviderSyncFailure(app, entry.account.accountId, message)
+
+            await writeHeartbeatSnapshot({
+                app,
+                status: "degraded",
+                metadata: {
+                    ...(options.includeAppInFailureHeartbeat ? { app } : {}),
+                    accountId: entry.account.accountId,
+                    accountLabel: entry.account.label,
+                    error: message,
+                    source,
+                },
+            })
+
+            if (options.alertFailure) {
+                await backend.createAlert({
+                    app,
+                    severity: "warning",
+                    message: `Periodic provider sync failed for ${app}:${entry.account.accountId}: ${message}`,
+                })
+            }
         }
     }
 }

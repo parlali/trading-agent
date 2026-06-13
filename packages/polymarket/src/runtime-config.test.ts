@@ -32,4 +32,23 @@ describe("resolvePolymarketFunderAddress", () => {
 
         expect(credentials.funderAddress).toBe("0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266")
     })
+
+    it("rejects invalid chain IDs before signing configuration is built", () => {
+        expect(() => resolvePolymarketCredentials({
+            POLYMARKET_PRIVATE_KEY: "private-key",
+            POLYMARKET_API_KEY: "api-key",
+            POLYMARKET_API_SECRET: "api-secret",
+            POLYMARKET_API_PASSPHRASE: "api-passphrase",
+            POLYMARKET_CHAIN_ID: "not-a-number",
+            POLYMARKET_FUNDER_ADDRESS: "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266",
+        })).toThrow("POLYMARKET_CHAIN_ID must be a positive integer when provided")
+        expect(() => resolvePolymarketCredentials({
+            POLYMARKET_PRIVATE_KEY: "private-key",
+            POLYMARKET_API_KEY: "api-key",
+            POLYMARKET_API_SECRET: "api-secret",
+            POLYMARKET_API_PASSPHRASE: "api-passphrase",
+            POLYMARKET_CHAIN_ID: "137.5",
+            POLYMARKET_FUNDER_ADDRESS: "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266",
+        })).toThrow("POLYMARKET_CHAIN_ID must be a positive integer when provided")
+    })
 })

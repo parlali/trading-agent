@@ -71,6 +71,11 @@ describe("scheduler runner Codex dry-run side effects", () => {
                 venues: {
                     polymarket: {
                         validated: true,
+                        accounts: {
+                            "test-account": {
+                                validated: true,
+                            },
+                        },
                     },
                 },
             },
@@ -142,7 +147,7 @@ function createBackendMock(storedPositions: Position[], events: string[]) {
     return {
         createAlert: vi.fn(async () => undefined),
         createRun: vi.fn(async () => "run-1"),
-        getAllOwnedInstrumentsByApp: vi.fn(async () => []),
+        getAllOwnedInstrumentsByApp: vi.fn(async (_app, _accountId) => []),
         getLastCompletedRunSummary: vi.fn(async () => null),
         getLatestPositions: vi.fn(async () => storedPositions),
         getStrategyOrderHistory: vi.fn(async () => []),
@@ -245,6 +250,7 @@ function createStrategy(): StoredStrategy {
         _id: "strategy-1" as StoredStrategy["_id"],
         _creationTime: 1,
         app: "polymarket",
+        accountId: "test-account",
         name: "Codex Dry Run Strategy",
         enabled: true,
         schedule: "*/30 * * * *",

@@ -4,6 +4,8 @@ import { reconcileProviderPortfolio } from "../../convex/lib/mutations/portfolio
 import { callRegistered, FakeMutationDb as FakeDb } from "./fakeMutationDb"
 
 describe("Convex OKX net-mode closure replay", () => {
+    const accountId = "account-okx"
+
     it("attaches OKX fills-history PnL to the canonical close order without creating a duplicate provider close", async () => {
         process.env.BACKEND_SERVICE_TOKEN = "test-token"
         const strategyId = "strategy-okx-eth"
@@ -17,6 +19,7 @@ describe("Convex OKX net-mode closure replay", () => {
             strategies: [{
                 _id: strategyId,
                 app: "okx-swap",
+                accountId,
                 name: "OKX ETH",
                 policy: { dryRun: false },
             }],
@@ -24,6 +27,7 @@ describe("Convex OKX net-mode closure replay", () => {
                 _id: runId,
                 strategyId,
                 app: "okx-swap",
+                accountId,
                 status: "completed",
                 startedAt: openedAt,
                 endedAt: openedAt + 30_000,
@@ -39,6 +43,7 @@ describe("Convex OKX net-mode closure replay", () => {
                 runId,
                 strategyId,
                 app: "okx-swap",
+                accountId,
                 venue: "okx",
                 instrument: "ETH-USDT-SWAP",
                 status: "filled",
@@ -72,6 +77,7 @@ describe("Convex OKX net-mode closure replay", () => {
             provider_positions: [{
                 _id: "provider-position-okx",
                 app: "okx-swap",
+                accountId,
                 positionKey: `ETH-USDT-SWAP:${providerPositionId}`,
                 providerPositionId,
                 strategyId,
@@ -105,6 +111,7 @@ describe("Convex OKX net-mode closure replay", () => {
         await callRegistered(reconcileProviderPortfolio, ctx, {
             serviceToken: "test-token",
             app: "okx-swap",
+            accountId,
             venue: "okx",
             source: "periodic_sync",
             accountState: {
@@ -156,6 +163,279 @@ describe("Convex OKX net-mode closure replay", () => {
         expect(orders.some((order) => String(order.orderId).startsWith("provider-close:okx-swap:"))).toBe(false)
     })
 
+    it("attaches triggered OKX protection child fills to the canonical protection close order", async () => {
+        process.env.BACKEND_SERVICE_TOKEN = "test-token"
+        const strategyId = "strategy-okx-protection"
+        const runId = "run-okx-protection"
+        const openedAt = 1_780_430_000_000
+        const closedAt = openedAt + 300_000
+        const closeOrderId = "vokt01aaaaaaaaaa"
+        const db = new FakeDb({
+            strategies: [{
+                _id: strategyId,
+                app: "okx-swap",
+                accountId,
+                name: "OKX Protection",
+                policy: { dryRun: false },
+            }],
+            strategy_runs: [{
+                _id: runId,
+                strategyId,
+                app: "okx-swap",
+                accountId,
+                status: "completed",
+                startedAt: openedAt,
+                endedAt: openedAt + 30_000,
+            }],
+            instrument_claims: [],
+            orders: [{
+                _id: "order-okx-protection",
+                orderId: closeOrderId,
+                canonicalOrderId: closeOrderId,
+                providerOrderId: "algo:ETH-USDT-SWAP:algo-parent-1",
+                providerClientOrderId: closeOrderId,
+                providerOrderAliases: ["algo-parent-1"],
+                runId,
+                strategyId,
+                app: "okx-swap",
+                accountId,
+                venue: "okx",
+                instrument: "ETH-USDT-SWAP",
+                status: "pending",
+                action: "close",
+                quantity: 2,
+                filledQuantity: 0,
+                remainingQuantity: 2,
+                submittedAt: openedAt,
+                updatedAt: openedAt,
+                intent: {
+                    instrument: "ETH-USDT-SWAP",
+                    side: "buy",
+                    quantity: 2,
+                    orderType: "stop_limit",
+                    metadata: {
+                        providerProtectionOrder: true,
+                    },
+                },
+                lastTransitionSequence: 1,
+                polling: {
+                    pollIntervalMs: 5_000,
+                    timeoutMs: 120_000,
+                    startedAt: openedAt,
+                    lastCheckedAt: openedAt,
+                },
+            }],
+            provider_positions: [],
+            provider_working_orders: [],
+            provider_sync_state: [],
+            position_syncs: [],
+            positions: [],
+            execution_safety_faults: [],
+            account_snapshots: [],
+            account_pnl_events: [],
+            control_plane_metrics: [],
+            alerts: [],
+        })
+        const ctx = { db } as never
+
+        await callRegistered(reconcileProviderPortfolio, ctx, {
+            serviceToken: "test-token",
+            app: "okx-swap",
+            accountId,
+            venue: "okx",
+            source: "periodic_sync",
+            accountState: {
+                balance: 40_000,
+                equity: 40_000,
+                buyingPower: 20_000,
+                marginUsed: 0,
+                marginAvailable: 20_000,
+                openPnl: 0,
+                dayPnl: 0,
+            },
+            positions: [],
+            workingOrders: [],
+            positionClosures: [{
+                instrument: "ETH-USDT-SWAP",
+                side: "short",
+                quantity: 2,
+                fillPrice: 1877.49,
+                closedAt,
+                metadata: JSON.stringify({
+                    orderId: "triggered-child-1",
+                    triggeredOrderId: "triggered-child-1",
+                    algoId: "algo-parent-1",
+                    algoClOrdId: closeOrderId,
+                    actualOrdId: "triggered-child-1",
+                    providerOrderAliases: ["triggered-child-1", "algo-parent-1", closeOrderId],
+                    fillPnl: 12.5,
+                    fee: -0.25,
+                    feeCcy: "USDT",
+                    source: "okx_fills_history",
+                }),
+            }],
+        })
+
+        const orders = db.rows.orders ?? []
+        expect(orders.filter((order) => order.action === "close")).toHaveLength(1)
+        const canonical = orders.find((order) => order.orderId === closeOrderId)
+        expect(canonical).toMatchObject({
+            status: "filled",
+            filledQuantity: 2,
+            remainingQuantity: 0,
+            avgFillPrice: 1877.49,
+            providerOrderAliases: expect.arrayContaining(["triggered-child-1", "algo-parent-1"]),
+        })
+        expect(resolveCloseOrderRealizedPnl(canonical as never)).toBeCloseTo(12.25)
+        expect(orders.some((order) => String(order.orderId).startsWith("provider-close:"))).toBe(false)
+    })
+
+    it("records a blocking accounting fault when OKX working-order polling fills without provider accounting", async () => {
+        process.env.BACKEND_SERVICE_TOKEN = "test-token"
+        const strategyId = "strategy-okx-missing-accounting"
+        const runId = "run-okx-missing-accounting"
+        const submittedAt = 1_780_430_000_000
+        const updatedAt = submittedAt + 60_000
+        const orderId = "voke01missingacct"
+        const providerOrderId = "9000000000000000003"
+        const db = new FakeDb({
+            strategies: [{
+                _id: strategyId,
+                app: "okx-swap",
+                accountId,
+                name: "OKX Missing Accounting",
+                policy: { dryRun: false },
+            }],
+            strategy_runs: [{
+                _id: runId,
+                strategyId,
+                app: "okx-swap",
+                accountId,
+                status: "completed",
+                startedAt: submittedAt,
+                endedAt: submittedAt + 30_000,
+            }],
+            instrument_claims: [],
+            orders: [{
+                _id: "order-okx-missing-accounting",
+                orderId,
+                canonicalOrderId: orderId,
+                providerOrderId: `order:BTC-USDT-SWAP:${providerOrderId}`,
+                providerClientOrderId: orderId,
+                providerOrderAliases: [providerOrderId],
+                runId,
+                strategyId,
+                app: "okx-swap",
+                accountId,
+                venue: "okx",
+                instrument: "BTC-USDT-SWAP",
+                status: "pending",
+                action: "entry",
+                quantity: 0.5,
+                filledQuantity: 0,
+                remainingQuantity: 0.5,
+                submittedAt,
+                updatedAt: submittedAt,
+                intent: {
+                    instrument: "BTC-USDT-SWAP",
+                    side: "buy",
+                    quantity: 0.5,
+                    orderType: "market",
+                    metadata: {
+                        action: "entry",
+                    },
+                },
+                lastTransitionSequence: 1,
+                polling: {
+                    pollIntervalMs: 5_000,
+                    timeoutMs: 120_000,
+                    startedAt: submittedAt,
+                    lastCheckedAt: submittedAt,
+                },
+            }],
+            provider_positions: [],
+            provider_working_orders: [],
+            provider_sync_state: [],
+            position_syncs: [],
+            positions: [],
+            execution_safety_faults: [],
+            account_snapshots: [],
+            account_pnl_events: [],
+            control_plane_metrics: [],
+            alerts: [],
+        })
+        const ctx = { db } as never
+
+        await callRegistered(reconcileProviderPortfolio, ctx, {
+            serviceToken: "test-token",
+            app: "okx-swap",
+            accountId,
+            venue: "okx",
+            source: "periodic_sync",
+            accountState: {
+                balance: 40_000,
+                equity: 40_000,
+                buyingPower: 20_000,
+                marginUsed: 0,
+                marginAvailable: 20_000,
+                openPnl: 0,
+                dayPnl: 0,
+            },
+            positions: [],
+            workingOrders: [{
+                orderId: `order:BTC-USDT-SWAP:${providerOrderId}`,
+                providerOrderId: `order:BTC-USDT-SWAP:${providerOrderId}`,
+                providerClientOrderId: orderId,
+                providerOrderAliases: [providerOrderId, orderId],
+                instrument: "BTC-USDT-SWAP",
+                status: "filled",
+                quantity: 0.5,
+                filledQuantity: 0.5,
+                remainingQuantity: 0,
+                submittedAt,
+                updatedAt,
+                side: "buy",
+                avgFillPrice: 78000.125,
+                metadata: JSON.stringify({
+                    providerAccountingSource: "okx_order",
+                    providerAccountingMissing: true,
+                    providerAccountingMissingReason: "okx_order_fee_and_pnl_unparseable",
+                    providerOrderId,
+                    providerClientOrderId: orderId,
+                    tradeId: "7000000003",
+                }),
+            }],
+            positionClosures: [],
+            accountPnlEvents: [],
+        })
+
+        const canonical = (db.rows.orders ?? []).find((order) => order.orderId === orderId)
+        expect(canonical).toMatchObject({
+            status: "filled",
+            filledQuantity: 0.5,
+            remainingQuantity: 0,
+            avgFillPrice: 78000.125,
+        })
+        expect(((canonical?.intent as Record<string, unknown>).metadata as Record<string, unknown>)).toMatchObject({
+            providerAccountingSource: "okx_order",
+            providerAccountingMissing: true,
+            providerAccountingMissingReason: "okx_order_fee_and_pnl_unparseable",
+            providerOrderId,
+            providerClientOrderId: orderId,
+            tradeId: "7000000003",
+        })
+        expect(db.rows.execution_safety_faults).toContainEqual(expect.objectContaining({
+            strategyId,
+            accountId,
+            instrument: "BTC-USDT-SWAP",
+            category: "accounting_mismatch",
+            canonicalOrderId: orderId,
+            providerOrderId: `order:BTC-USDT-SWAP:${providerOrderId}`,
+            blocked: true,
+            message: "Provider reconciliation refreshed a filled working order without provider accounting metadata",
+        }))
+    })
+
     const SHARED_POS_ID = "3618122936764637184"
     const OPENED_AT = 1_780_430_000_000
     const CLOSED_AT = OPENED_AT + 600_000
@@ -164,6 +444,7 @@ describe("Convex OKX net-mode closure replay", () => {
         return {
             _id: id,
             app: "okx-swap",
+            accountId,
             name,
             policy: { dryRun: false },
         }
@@ -174,6 +455,7 @@ describe("Convex OKX net-mode closure replay", () => {
             _id: id,
             strategyId,
             app: "okx-swap",
+            accountId,
             status: "completed",
             startedAt: OPENED_AT,
             endedAt: OPENED_AT + 30_000,
@@ -199,6 +481,7 @@ describe("Convex OKX net-mode closure replay", () => {
             runId: args.runId,
             strategyId: args.strategyId,
             app: "okx-swap",
+            accountId,
             venue: "okx",
             instrument: "ETH-USDT-SWAP",
             status: "filled",
@@ -239,6 +522,7 @@ describe("Convex OKX net-mode closure replay", () => {
         return {
             _id: args.id,
             app: "okx-swap",
+            accountId,
             positionKey: `ETH-USDT-SWAP:${args.posId}`,
             providerPositionId: args.posId,
             strategyId: args.strategyId,
@@ -262,6 +546,7 @@ describe("Convex OKX net-mode closure replay", () => {
         return {
             serviceToken: "test-token",
             app: "okx-swap",
+            accountId,
             venue: "okx",
             source: "periodic_sync",
             accountState: {
@@ -283,12 +568,14 @@ describe("Convex OKX net-mode closure replay", () => {
         quantity: number
         fillPrice: number
         fillPnl: number
+        providerPositionId?: string
         ordId?: string
         clientOrderId?: string
         closedAt?: number
     }) {
         return {
             instrument: "ETH-USDT-SWAP",
+            providerPositionId: args.providerPositionId,
             side: "short",
             quantity: args.quantity,
             fillPrice: args.fillPrice,
@@ -296,6 +583,7 @@ describe("Convex OKX net-mode closure replay", () => {
             metadata: JSON.stringify({
                 orderId: args.ordId,
                 clientOrderId: args.clientOrderId,
+                posId: args.providerPositionId,
                 fillPnl: args.fillPnl,
                 posSide: "net",
                 source: "okx_fills_history",
@@ -493,6 +781,7 @@ describe("Convex OKX net-mode closure replay", () => {
                 quantity: 5,
                 fillPrice: 1877.49,
                 fillPnl: -20.1,
+                providerPositionId: SHARED_POS_ID,
                 ordId: "3621806927859999999",
             }),
         ])
@@ -535,17 +824,11 @@ describe("Convex OKX net-mode closure replay", () => {
         expect(resolveCloseOrderRealizedPnl(syntheticAfterRerun as never)).toBeCloseTo(-20.1)
     })
 
-    it("fails closed with a drift alert when a broker close cannot be attributed to a single owned position", async () => {
+    it("fails closed instead of quantity-matching a broker close without provider position identity", async () => {
         process.env.BACKEND_SERVICE_TOKEN = "test-token"
         const db = new FakeDb({
-            strategies: [
-                buildOkxStrategy("strategy-okx-a", "OKX A"),
-                buildOkxStrategy("strategy-okx-b", "OKX B"),
-            ],
-            strategy_runs: [
-                buildOkxRun("run-okx-a", "strategy-okx-a"),
-                buildOkxRun("run-okx-b", "strategy-okx-b"),
-            ],
+            strategies: [buildOkxStrategy("strategy-okx-a", "OKX A")],
+            strategy_runs: [buildOkxRun("run-okx-a", "strategy-okx-a")],
             instrument_claims: [],
             orders: [],
             provider_positions: [
@@ -553,12 +836,6 @@ describe("Convex OKX net-mode closure replay", () => {
                     id: "provider-position-a",
                     strategyId: "strategy-okx-a",
                     posId: "3618122936764630001",
-                    quantity: 5,
-                }),
-                buildOwnedProviderPosition({
-                    id: "provider-position-b",
-                    strategyId: "strategy-okx-b",
-                    posId: "3618122936764630002",
                     quantity: 5,
                 }),
             ],
@@ -587,12 +864,354 @@ describe("Convex OKX net-mode closure replay", () => {
 
         const syncState = (db.rows.provider_sync_state ?? [])[0]
         expect(syncState?.driftDetected).toBe(true)
-        expect(String(syncState?.lastDriftSummary)).toContain("could not be safely attributed")
+        expect(String(syncState?.lastDriftSummary)).toContain("broker close has provider accounting")
 
         const driftAlert = (db.rows.alerts ?? []).find((alert) =>
-            String(alert.message).includes("could not be safely attributed")
+            String(alert.message).includes("broker close has provider accounting")
         )
         expect(driftAlert).toBeDefined()
+        expect(db.rows.execution_safety_faults ?? []).toEqual([
+            expect.objectContaining({
+                strategyId: "strategy-okx-a",
+                category: "unattributed_closure",
+                blocked: true,
+            }),
+        ])
+    })
+
+    it("records an execution safety fault when a money-bearing close has no order or candidate", async () => {
+        process.env.BACKEND_SERVICE_TOKEN = "test-token"
+        const db = new FakeDb({
+            strategies: [buildOkxStrategy("strategy-okx-a", "OKX A")],
+            strategy_runs: [buildOkxRun("run-okx-a", "strategy-okx-a")],
+            instrument_claims: [],
+            orders: [],
+            provider_positions: [],
+            provider_working_orders: [],
+            provider_sync_state: [],
+            position_syncs: [],
+            positions: [],
+            execution_safety_faults: [],
+            account_snapshots: [],
+            account_pnl_events: [],
+            control_plane_metrics: [],
+            alerts: [],
+        })
+        const ctx = { db } as never
+
+        await callRegistered(reconcileProviderPortfolio, ctx, buildReconcileArgs([
+            buildClosure({
+                quantity: 5,
+                fillPrice: 1877.49,
+                fillPnl: 12,
+                ordId: "unmatched-close-order",
+            }),
+        ]))
+
+        expect(db.rows.orders ?? []).toHaveLength(0)
+        const syncState = (db.rows.provider_sync_state ?? [])[0]
+        expect(syncState?.driftDetected).toBe(true)
+        expect(String(syncState?.lastDriftSummary)).toContain("broker close has provider accounting")
+
+        const fault = (db.rows.execution_safety_faults ?? [])[0]
+        expect(fault).toMatchObject({
+            strategyId: "strategy-okx-a",
+            app: "okx-swap",
+            accountId,
+            instrument: "ETH-USDT-SWAP",
+            category: "unattributed_closure",
+            blocked: true,
+        })
+
+        const metric = (db.rows.control_plane_metrics ?? []).find((row) =>
+            row.metric === "reconcile_provider_portfolio.unattributed_closures"
+        )
+        expect(metric?.value).toBe(1)
+    })
+
+    it("persists OKX account PnL events and uses them in money-level reconciliation", async () => {
+        process.env.BACKEND_SERVICE_TOKEN = "test-token"
+        const db = new FakeDb({
+            strategies: [buildOkxStrategy("strategy-okx-a", "OKX A")],
+            strategy_runs: [buildOkxRun("run-okx-a", "strategy-okx-a")],
+            instrument_claims: [],
+            orders: [],
+            provider_positions: [],
+            provider_working_orders: [],
+            provider_sync_state: [],
+            position_syncs: [],
+            positions: [],
+            execution_safety_faults: [],
+            account_snapshots: [{
+                _id: "snapshot-before",
+                app: "okx-swap",
+                accountId,
+                venue: "okx",
+                balance: 10_000,
+                equity: 10_000,
+                buyingPower: 10_000,
+                marginUsed: 0,
+                marginAvailable: 10_000,
+                openPnl: 0,
+                dayPnl: 0,
+                timestamp: CLOSED_AT - 60_000,
+            }],
+            account_pnl_events: [],
+            control_plane_metrics: [],
+            alerts: [],
+        })
+        const ctx = { db } as never
+
+        await callRegistered(reconcileProviderPortfolio, ctx, {
+            ...buildReconcileArgs([]),
+            accountState: {
+                balance: 9_998.77,
+                equity: 9_998.77,
+                buyingPower: 9_998.77,
+                marginUsed: 0,
+                marginAvailable: 9_998.77,
+                openPnl: 0,
+                dayPnl: -1.23,
+            },
+            accountPnlEvents: [{
+                providerEventId: "funding-bill-1",
+                eventType: "funding_fee",
+                instrument: "BTC-USDT-SWAP",
+                amount: -1.23,
+                currency: "USDT",
+                occurredAt: CLOSED_AT,
+                metadata: JSON.stringify({
+                    source: "okx_account_bills",
+                }),
+            }],
+        })
+
+        expect(db.rows.account_pnl_events).toHaveLength(1)
+        expect(db.rows.alerts ?? []).toHaveLength(0)
+        const syncState = (db.rows.provider_sync_state ?? [])[0]
+        expect(syncState?.driftDetected).toBe(false)
+
+        await callRegistered(reconcileProviderPortfolio, ctx, {
+            ...buildReconcileArgs([]),
+            accountState: {
+                balance: 9_990,
+                equity: 9_990,
+                buyingPower: 9_990,
+                marginUsed: 0,
+                marginAvailable: 9_990,
+                openPnl: 0,
+                dayPnl: -10,
+            },
+            accountPnlEvents: [],
+        })
+
+        const mismatchState = (db.rows.provider_sync_state ?? [])[0]
+        expect(mismatchState?.driftDetected).toBe(true)
+        expect(String(mismatchState?.lastDriftSummary)).toContain("account money reconciliation mismatch")
+        expect(db.rows.execution_safety_faults).toContainEqual(expect.objectContaining({
+            strategyId: "strategy-okx-a",
+            app: "okx-swap",
+            accountId,
+            instrument: "account",
+            category: "accounting_mismatch",
+            blocked: true,
+            message: expect.stringContaining("Money-level reconciliation mismatch"),
+        }))
+    })
+
+    it("excludes account PnL events outside the snapshot window from money-level reconciliation", async () => {
+        process.env.BACKEND_SERVICE_TOKEN = "test-token"
+        const db = new FakeDb({
+            strategies: [buildOkxStrategy("strategy-okx-a", "OKX A")],
+            strategy_runs: [buildOkxRun("run-okx-a", "strategy-okx-a")],
+            instrument_claims: [],
+            orders: [],
+            provider_positions: [],
+            provider_working_orders: [],
+            provider_sync_state: [],
+            position_syncs: [],
+            positions: [],
+            execution_safety_faults: [],
+            account_snapshots: [{
+                _id: "snapshot-before",
+                app: "okx-swap",
+                accountId,
+                venue: "okx",
+                balance: 9_998.77,
+                equity: 9_998.77,
+                buyingPower: 9_998.77,
+                marginUsed: 0,
+                marginAvailable: 9_998.77,
+                openPnl: 0,
+                dayPnl: 0,
+                timestamp: CLOSED_AT - 60_000,
+            }],
+            account_pnl_events: [],
+            control_plane_metrics: [],
+            alerts: [],
+        })
+        const ctx = { db } as never
+
+        await callRegistered(reconcileProviderPortfolio, ctx, {
+            ...buildReconcileArgs([]),
+            accountState: {
+                balance: 9_998.77,
+                equity: 9_998.77,
+                buyingPower: 9_998.77,
+                marginUsed: 0,
+                marginAvailable: 9_998.77,
+                openPnl: 0,
+                dayPnl: 0,
+            },
+            accountPnlEvents: [{
+                providerEventId: "funding-bill-stale",
+                eventType: "funding_fee",
+                instrument: "BTC-USDT-SWAP",
+                amount: -1.23,
+                currency: "USDT",
+                occurredAt: CLOSED_AT - 120_000,
+                metadata: JSON.stringify({
+                    source: "okx_account_bills",
+                }),
+            }],
+        })
+
+        expect(db.rows.account_pnl_events).toHaveLength(1)
+        expect(db.rows.alerts ?? []).toHaveLength(0)
+        const syncState = (db.rows.provider_sync_state ?? [])[0]
+        expect(syncState?.driftDetected).toBe(false)
+    })
+
+    it("patches corrected provider PnL events instead of keeping stale accounting", async () => {
+        process.env.BACKEND_SERVICE_TOKEN = "test-token"
+        const db = new FakeDb({
+            strategies: [buildOkxStrategy("strategy-okx-a", "OKX A")],
+            strategy_runs: [buildOkxRun("run-okx-a", "strategy-okx-a")],
+            instrument_claims: [],
+            orders: [],
+            provider_positions: [],
+            provider_working_orders: [],
+            provider_sync_state: [],
+            position_syncs: [],
+            positions: [],
+            execution_safety_faults: [],
+            account_snapshots: [],
+            account_pnl_events: [{
+                _id: "stale-pnl-event",
+                app: "okx-swap",
+                accountId,
+                venue: "okx",
+                providerEventId: "funding-bill-corrected",
+                eventType: "funding_fee",
+                instrument: "BTC-USDT-SWAP",
+                amount: -1,
+                currency: "USDT",
+                occurredAt: CLOSED_AT - 1_000,
+                metadata: JSON.stringify({ revision: 1 }),
+                syncedAt: CLOSED_AT - 1_000,
+            }],
+            control_plane_metrics: [],
+            alerts: [],
+        })
+        const ctx = { db } as never
+
+        await callRegistered(reconcileProviderPortfolio, ctx, {
+            ...buildReconcileArgs([]),
+            accountPnlEvents: [{
+                providerEventId: "funding-bill-corrected",
+                eventType: "funding_fee",
+                instrument: "BTC-USDT-SWAP",
+                amount: -1.23,
+                currency: "USDT",
+                occurredAt: CLOSED_AT,
+                metadata: JSON.stringify({ revision: 2 }),
+            }],
+        })
+
+        expect(db.rows.account_pnl_events).toHaveLength(1)
+        expect(db.rows.account_pnl_events[0]).toMatchObject({
+            providerEventId: "funding-bill-corrected",
+            amount: -1.23,
+            occurredAt: CLOSED_AT,
+            metadata: JSON.stringify({ revision: 2 }),
+        })
+        expect(db.rows.control_plane_metrics).toContainEqual(expect.objectContaining({
+            metric: "reconcile_provider_portfolio.account_pnl_events_patched",
+            value: 1,
+        }))
+    })
+
+    it("uses provider accounting occurrence time for resting orders filled after the previous snapshot", async () => {
+        process.env.BACKEND_SERVICE_TOKEN = "test-token"
+        const oldCloseOrder = buildCanonicalCloseOrder({
+            id: "order-old-close",
+            orderId: "vokc01oldclose",
+            ordId: "old-provider-close",
+            runId: "run-okx-a",
+            strategyId: "strategy-okx-a",
+            quantity: 1,
+            fillPrice: 1877.49,
+        })
+
+        const db = new FakeDb({
+            strategies: [buildOkxStrategy("strategy-okx-a", "OKX A")],
+            strategy_runs: [buildOkxRun("run-okx-a", "strategy-okx-a")],
+            instrument_claims: [],
+            orders: [{
+                ...oldCloseOrder,
+                updatedAt: CLOSED_AT + 2_000,
+                intent: {
+                    ...oldCloseOrder.intent,
+                    metadata: {
+                        ...(oldCloseOrder.intent.metadata as Record<string, unknown>),
+                        fillPnl: 25,
+                        providerAccountingSource: "okx_order",
+                        providerAccountingOccurredAt: CLOSED_AT,
+                    },
+                },
+            }],
+            provider_positions: [],
+            provider_working_orders: [],
+            provider_sync_state: [],
+            position_syncs: [],
+            positions: [],
+            execution_safety_faults: [],
+            account_snapshots: [{
+                _id: "snapshot-after-close",
+                app: "okx-swap",
+                accountId,
+                venue: "okx",
+                balance: 40_000,
+                equity: 40_000,
+                buyingPower: 20_000,
+                marginUsed: 0,
+                marginAvailable: 20_000,
+                openPnl: 0,
+                dayPnl: 0,
+                timestamp: CLOSED_AT - 1_000,
+            }],
+            account_pnl_events: [],
+            control_plane_metrics: [],
+            alerts: [],
+        })
+        const ctx = { db } as never
+
+        await callRegistered(reconcileProviderPortfolio, ctx, {
+            ...buildReconcileArgs([]),
+            accountState: {
+                balance: 40_025,
+                equity: 40_025,
+                buyingPower: 20_025,
+                marginUsed: 0,
+                marginAvailable: 20_025,
+                openPnl: 0,
+                dayPnl: 25,
+            },
+        })
+
+        const syncState = (db.rows.provider_sync_state ?? [])[0]
+        expect(syncState?.driftDetected).toBe(false)
+        expect(db.rows.alerts ?? []).toHaveLength(0)
     })
 
     it("fails closed when an owned position disappears without broker close evidence", async () => {

@@ -46,6 +46,7 @@ import {
 } from "./execution-metadata"
 import {
     createRejectedExecutionResultFromUnknownError,
+    createUnconfirmedOperationFailureExecutionResult,
     mergeExecutionIntentUpdates,
     normalizeModifyExecutionResult,
     shouldPersistModifyIntentUpdates,
@@ -149,6 +150,7 @@ export class ExecutionPipeline {
             config.tradeEventLogger,
             config.runId,
             config.strategyId,
+            config.accountId,
             config.venueName,
             (previousSnapshot, currentSnapshot) => {
                 reconcileOwnedInstrumentsFromSnapshots(this.ownedInstruments, previousSnapshot, currentSnapshot)
@@ -316,6 +318,7 @@ export class ExecutionPipeline {
         )
         this.rememberSubmitAttemptSnapshot(updatedSnapshot)
         await this.recordCommitUnknownSafetyFaultIfNeeded(finalIntent, lifecycleContext.action, resultWithVerification)
+        await this.recordMissingAccountingSafetyFaultIfNeeded(finalIntent, lifecycleContext.action, resultWithVerification)
         if (preparedHandle) {
             preparedHandle.snapshot = updatedSnapshot
         }
@@ -398,7 +401,7 @@ export class ExecutionPipeline {
                 signedOrderFingerprint: existing?.signedOrderFingerprint,
             })
         } catch (error) {
-            result = createRejectedExecutionResultFromUnknownError(providerOrderId, error)
+            result = createUnconfirmedOperationFailureExecutionResult(providerOrderId, error, existing)
         }
         result = toRecoverableOperationResult(normalizeExecutionResultIdentity(result, cancelIdentity))
         void this.tradeEventLogger?.logSubmission(this.runId, this.strategyId, result, intent)
@@ -486,12 +489,7 @@ export class ExecutionPipeline {
                 signedOrderFingerprint: existing?.signedOrderFingerprint,
             })
         } catch (error) {
-            result = createRejectedExecutionResultFromUnknownError(
-                providerOrderId,
-                error,
-                existing?.filledQuantity ?? 0,
-                existing?.avgFillPrice
-            )
+            result = createUnconfirmedOperationFailureExecutionResult(providerOrderId, error, existing)
         }
         const identityNormalizedResult = toRecoverableOperationResult(normalizeExecutionResultIdentity(result, {
             canonicalOrderId,
@@ -937,6 +935,67 @@ export class ExecutionPipeline {
         }
     }
 
+    private async recordMissingAccountingSafetyFaultIfNeeded(
+        intent: OrderIntent,
+        action: OrderLifecycleContext["action"],
+        result: ExecutionResult
+    ): Promise<void> {
+        if (result.status !== "filled" && result.status !== "partially_filled") {
+            return
+        }
+
+        const metadata = result.intentUpdates?.metadata
+        if (!metadata || metadata.providerAccountingMissing !== true) {
+            return
+        }
+
+        const canonicalOrderId = result.canonicalOrderId ?? result.orderId
+        const fault: ExecutionSafetyFaultInput = {
+            strategyId: this.strategyId,
+            runId: this.runId,
+            venue: this.venueName,
+            instrument: intent.instrument,
+            canonicalOrderId,
+            providerOrderId: result.providerOrderId,
+            providerClientOrderId: result.providerClientOrderId,
+            providerOrderAliases: result.providerOrderAliases,
+            submitAttemptId: result.submitAttemptId,
+            submitAttemptSequence: result.submitAttemptSequence,
+            signedOrderFingerprint: result.signedOrderFingerprint,
+            commitOutcome: result.commitOutcome ?? "accepted",
+            category: "accounting_mismatch",
+            message: `Provider accepted a filled ${action} order without provider accounting metadata`,
+            providerPayload: JSON.stringify({
+                action,
+                result,
+            }),
+        }
+
+        try {
+            await this.executionSafetyFaultRecorder?.(fault)
+        } catch (error) {
+            const message = getErrorMessage(error)
+            this.logger.error("Failed to persist missing-accounting execution safety fault", {
+                instrument: intent.instrument,
+                canonicalOrderId: fault.canonicalOrderId,
+                submitAttemptId: fault.submitAttemptId,
+                error: message,
+            })
+            throw createExecutionError(
+                "internal",
+                `Failed to persist missing-accounting execution safety fault for ${fault.canonicalOrderId}: ${message}`,
+                {
+                    code: "MISSING_ACCOUNTING_FAULT_PERSISTENCE_FAILED",
+                    retryable: true,
+                    details: {
+                        canonicalOrderId: fault.canonicalOrderId,
+                        instrument: intent.instrument,
+                    },
+                }
+            )
+        }
+    }
+
     private resolveIdentitySequence(
         intent: OrderIntent,
         action: SubmitOrderContext["identity"]["role"] | "adjustment"
@@ -992,6 +1051,7 @@ export class ExecutionPipeline {
         const existing = await this.lifecycleManager.getOrderSnapshot(orderId)
         const canonicalOrderId = existing?.orderId ?? orderId
         const providerOrderId = existing?.providerOrderId ?? orderId
+        const action = existing?.action === "close" ? "close" : "entry"
         const result = await this.venue.getOrderStatus(providerOrderId)
         const normalizedResult = normalizeExecutionResultIdentity(result, {
             canonicalOrderId,
@@ -1002,10 +1062,15 @@ export class ExecutionPipeline {
             submitAttemptSequence: existing?.submitAttemptSequence ?? 1,
             commitOutcome: existing?.commitOutcome ?? "accepted",
             venue: this.venueName,
-            role: existing?.action === "close" ? "close" : "entry",
+            role: action,
             sequence: 0,
         })
         await this.lifecycleManager.captureVenueUpdate(canonicalOrderId, normalizedResult, "status_change")
+        await this.recordMissingAccountingSafetyFaultIfNeeded(
+            existing?.intent ?? createSyntheticIntent(action, existing?.instrument ?? providerOrderId, "buy", 0, canonicalOrderId),
+            action,
+            normalizedResult
+        )
         return normalizedResult
     }
 

@@ -448,6 +448,7 @@ export class PolymarketClient {
             price,
             orderType: params.orderType,
             negRisk,
+            feeRateBps,
             makerAmount: orderBody.order.makerAmount,
             takerAmount: orderBody.order.takerAmount,
             expiration: orderBody.order.expiration,

@@ -134,6 +134,7 @@ export const orderCoreFieldsV = {
     signedOrderMetadata: v.optional(v.any()),
     runId: v.id("strategy_runs"),
     strategyId: v.id("strategies"),
+    accountId: v.optional(v.string()),
     venue: v.string(),
     instrument: v.string(),
     status: orderStatusV,

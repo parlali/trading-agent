@@ -68,7 +68,8 @@ function createFreshness(
 ) {
     return {
         app,
-        accountScope: "single-account-per-venue",
+        accountId: "test-account",
+        accountScope: "account",
         lastSyncedAt: Date.now(),
         lastVerifiedAt: Date.now(),
         providerStatus: "healthy",
@@ -157,6 +158,7 @@ function createStrategy(
         _id: "strategy-1" as Id<"strategies">,
         _creationTime: 0,
         app,
+        accountId: "test-account",
         name: `${app} strategy`,
         enabled: true,
         schedule: "0 * * * *",
@@ -216,6 +218,13 @@ describe("resetStrategySafely", () => {
                 .mockResolvedValueOnce([createFreshness("okx-swap")]),
             getActiveRun: vi.fn().mockResolvedValue(null),
             disableStrategy: vi.fn().mockResolvedValue(undefined),
+            getAccountByAppAndId: vi.fn().mockResolvedValue({
+                app: "okx-swap",
+                accountId: "test-account",
+                label: "Test account",
+                credentialEnvPrefix: "OKX_TEST",
+                status: "active",
+            }),
             resolveSecrets: vi.fn().mockResolvedValue({}),
             reconcileProviderPortfolio: vi.fn().mockResolvedValue(undefined),
             deleteStrategy: vi.fn().mockResolvedValue(deleteResult),
@@ -241,6 +250,13 @@ describe("resetStrategySafely", () => {
         vi.spyOn(AlpacaPlugin.prototype, "createVenueAdapter").mockReturnValue(venue as never)
 
         const client = {
+            getAccountByAppAndId: vi.fn().mockResolvedValue({
+                app: "alpaca-options",
+                accountId: "test-account",
+                label: "Test account",
+                credentialEnvPrefix: "ALPACA_TEST",
+                status: "active",
+            }),
             resolveSecrets: vi.fn().mockResolvedValue({}),
             reconcileProviderPortfolio: vi.fn().mockResolvedValue(undefined),
             getPortfolioFreshness: vi.fn().mockResolvedValue([
@@ -472,7 +488,7 @@ describe("resetStrategySafely", () => {
             cancelledOrders: 1,
             closedPositions: 1,
         })
-        expect(pipeline.cancelOrder).toHaveBeenCalledWith("provider-order-1", "reset flatten")
+        expect(pipeline.cancelOrder).toHaveBeenCalledWith("valx01abcde23456", "reset flatten")
         expect(pipeline.closeProviderPosition).toHaveBeenCalledWith(position, "reset flatten")
     })
 

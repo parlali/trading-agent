@@ -261,7 +261,7 @@ function buildPolicySection(context: StrategyRunContext): string {
             "",
             "Lifecycle expectations:",
             "- Use `modify_order` only to improve or reduce the limit price on a still-working entry order",
-            "- Do not use `propose_adjustment` for Alpaca options structures in this strategy path. Filled structures must be managed with `propose_close`, and working entries with `modify_order`.",
+            "- Manage filled structures with `propose_close`, and working entries with `modify_order`",
             "- Use `get_order_status` and `wait_for_order_update` to supervise working orders",
             "- Use `propose_close` to close an already-filled credit vertical or iron condor structure",
             "- Do not submit single-leg options, partial structures, stop orders, or duplicate replacement entries",
@@ -277,6 +277,8 @@ function buildPolicySection(context: StrategyRunContext): string {
             "- Prefer the returned `tokenHandle` for `get_market_price`, `get_order_book`, and `propose_order`; do not shorten or rewrite token IDs",
             "- Call `get_market_price` and `get_order_book` individually for only those top candidate token handles before sizing or placing any trade. Treat `executionCost` from venue tools as the canonical liquidity/tradability signal.",
             "- `propose_order` requires the exact `tokenHandle` from discovery, or the exact canonical token ID plus condition ID, market slug, question, and outcome. Never place an order using only a condition ID, event slug, or question string.",
+            "- Use `propose_close` to reduce or exit existing positions. Polymarket does not support `modify_order` or `propose_adjustment` in this runtime.",
+            "- Supported order semantics are market or limit with gtc, ioc, or fok. Do not use stop orders, stop prices, or day time in force.",
             "- Only opt into `search_markets` live price enrichment if you have a specific reason, and keep the token count tightly bounded",
         )
     }

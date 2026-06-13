@@ -8,6 +8,7 @@ import {
 
 import type {
     OKXAccountBalance,
+    OKXAccountBill,
     OKXAccountConfig,
     OKXAlgoOrder,
     OKXAlgoOrderAck,
@@ -33,6 +34,7 @@ import type {
 export type {
     OKXAccountBalance,
     OKXAccountBalanceDetail,
+    OKXAccountBill,
     OKXAccountConfig,
     OKXAlgoOrder,
     OKXAlgoOrderAck,
@@ -135,6 +137,22 @@ export class OKXClient {
     async getBalance(): Promise<OKXAccountBalance> {
         const data = await this.privateRequest<OKXAccountBalance>("GET", "/api/v5/account/balance")
         return requireFirst(data, "OKX account balance")
+    }
+
+    async getAccountBills(params: {
+        instType?: "SWAP"
+        begin?: number
+        end?: number
+        limit?: number
+        after?: string
+    } = {}): Promise<OKXAccountBill[]> {
+        return await this.privateRequest<OKXAccountBill>("GET", "/api/v5/account/bills", {
+            instType: params.instType,
+            begin: params.begin,
+            end: params.end,
+            limit: params.limit,
+            after: params.after,
+        })
     }
 
     async getPositions(
@@ -401,6 +419,32 @@ export class OKXClient {
                 ordType,
                 instType,
                 instId,
+            }
+        )
+    }
+
+    async getAlgoOrdersHistory(params: {
+        instType?: "SWAP"
+        instId?: string
+        ordType?: OKXAlgoOrderType
+        state?: string
+        begin?: number
+        end?: number
+        limit?: number
+        after?: string
+    } = {}): Promise<OKXAlgoOrder[]> {
+        return await this.privateRequest<OKXAlgoOrder>(
+            "GET",
+            "/api/v5/trade/orders-algo-history",
+            {
+                instType: params.instType ?? "SWAP",
+                instId: params.instId,
+                ordType: params.ordType,
+                state: params.state,
+                begin: params.begin,
+                end: params.end,
+                limit: params.limit,
+                after: params.after,
             }
         )
     }

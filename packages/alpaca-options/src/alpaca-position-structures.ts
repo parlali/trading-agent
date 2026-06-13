@@ -678,6 +678,7 @@ export function mapSinglePosition(position: AlpacaPositionResponse): Position {
     const parsed = parseOptionContractSymbol(position.symbol)
     return {
         instrument: position.symbol,
+        providerPositionId: position.symbol,
         side: position.side,
         quantity: Math.abs(toNumber(position.qty)),
         entryPrice: toNumber(position.avg_entry_price),
@@ -689,6 +690,7 @@ export function mapSinglePosition(position: AlpacaPositionResponse): Position {
                 expiration: parsed.expiration,
                 optionType: parsed.optionType,
                 strike: parsed.strike,
+                providerPositionId: position.symbol,
             }
             : undefined,
     }

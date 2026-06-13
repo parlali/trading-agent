@@ -59,6 +59,7 @@ export interface OrderSnapshot {
     signedOrderMetadata?: Record<string, unknown>
     strategyId: string
     runId: string
+    accountId?: string
     instrument: string
     status: OrderStatus
     action: OrderAction
@@ -164,6 +165,7 @@ export const createOrderSnapshot = (
     params: {
         strategyId: string
         runId: string
+        accountId?: string
         venue: string
         action: OrderAction
         intent: OrderIntent
@@ -180,6 +182,8 @@ export const createOrderSnapshot = (
     const providerOrderId = params.result.providerOrderId ??
         (params.result.orderId && params.result.orderId !== canonicalOrderId ? params.result.orderId : "")
 
+    const intent = mergeOrderIntent(params.intent, stampProviderAccountingOccurredAt(params.result, timestamp))
+
     return {
         orderId: canonicalOrderId,
         canonicalOrderId,
@@ -193,17 +197,18 @@ export const createOrderSnapshot = (
         signedOrderMetadata: params.result.signedOrderMetadata,
         strategyId: params.strategyId,
         runId: params.runId,
-        instrument: params.intent.instrument,
+        accountId: params.accountId,
+        instrument: intent.instrument,
         status: params.result.status,
         action: params.action,
-        quantity: params.intent.quantity,
+        quantity: intent.quantity,
         filledQuantity,
-        remainingQuantity: Math.max(params.intent.quantity - filledQuantity, 0),
+        remainingQuantity: Math.max(intent.quantity - filledQuantity, 0),
         avgFillPrice: params.result.fillPrice,
         submittedAt: timestamp,
         updatedAt: timestamp,
         venue: params.venue,
-        intent: params.intent,
+        intent,
         metadata: params.metadata,
         lastTransitionSequence: 0,
         polling: {
@@ -233,7 +238,19 @@ export const updateOrderSnapshotFromExecution = (
         }
     }
 
-    const nextIntent = mergeOrderIntent(snapshot.intent, result.intentUpdates)
+    if (isProviderConfirmedTerminalOrderState(snapshot) && result.commitOutcome === "commit_unknown") {
+        return {
+            ...snapshot,
+            updatedAt: timestamp,
+            polling: {
+                ...snapshot.polling,
+                lastCheckedAt: timestamp,
+                lastError: result.error ?? snapshot.polling.lastError,
+            },
+        }
+    }
+
+    const nextIntent = mergeOrderIntent(snapshot.intent, stampProviderAccountingOccurredAt(result, timestamp))
     const nextQuantity = nextIntent.quantity
     const filledQuantity = result.filledQuantity ?? snapshot.filledQuantity
     const nextProviderOrderId = result.providerOrderId ??
@@ -379,5 +396,23 @@ function mergeOrderIntent(
                 ...updates.metadata,
             }
             : intent.metadata,
+    }
+}
+
+function stampProviderAccountingOccurredAt(
+    result: ExecutionResult,
+    timestamp: number
+): Partial<OrderIntent> | undefined {
+    const metadata = result.intentUpdates?.metadata
+    if (!metadata || metadata.providerAccountingSource === undefined) {
+        return result.intentUpdates
+    }
+
+    return {
+        ...result.intentUpdates,
+        metadata: {
+            ...metadata,
+            providerAccountingOccurredAt: metadata.providerAccountingOccurredAt ?? timestamp,
+        },
     }
 }

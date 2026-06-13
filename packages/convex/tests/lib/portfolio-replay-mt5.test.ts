@@ -4,6 +4,8 @@ import { reconcileProviderPortfolio } from "../../convex/lib/mutations/portfolio
 import { callRegistered, FakeMutationDb as FakeDb } from "./fakeMutationDb"
 
 describe("Convex MT5 provider close replay", () => {
+    const accountId = "account-mt5"
+
     it("repairs a vanished MT5 entry order and imports broker close history after the live provider row is gone", async () => {
         process.env.BACKEND_SERVICE_TOKEN = "test-token"
         const strategyId = "strategy-mt5"
@@ -14,6 +16,7 @@ describe("Convex MT5 provider close replay", () => {
             strategies: [{
                 _id: strategyId,
                 app: "mt5",
+                accountId,
                 name: "MT5 Gold",
                 policy: { dryRun: false },
             }],
@@ -21,6 +24,7 @@ describe("Convex MT5 provider close replay", () => {
                 _id: runId,
                 strategyId,
                 app: "mt5",
+                accountId,
                 status: "completed",
                 startedAt: openedAt,
                 endedAt: openedAt + 30_000,
@@ -36,6 +40,7 @@ describe("Convex MT5 provider close replay", () => {
                 runId,
                 strategyId,
                 app: "mt5",
+                accountId,
                 venue: "mt5",
                 instrument: "XAUUSD",
                 status: "cancelled",
@@ -78,6 +83,7 @@ describe("Convex MT5 provider close replay", () => {
         await callRegistered(reconcileProviderPortfolio, ctx, {
             serviceToken: "test-token",
             app: "mt5",
+            accountId,
             venue: "mt5",
             source: "periodic_sync",
             accountState: {
@@ -167,6 +173,7 @@ describe("Convex MT5 provider close replay", () => {
             strategies: [{
                 _id: strategyId,
                 app: "mt5",
+                accountId,
                 name: "MT5 US30",
                 policy: { dryRun: false },
             }],
@@ -174,6 +181,7 @@ describe("Convex MT5 provider close replay", () => {
                 _id: runId,
                 strategyId,
                 app: "mt5",
+                accountId,
                 status: "completed",
                 startedAt: openedAt,
                 endedAt: openedAt + 30_000,
@@ -190,6 +198,7 @@ describe("Convex MT5 provider close replay", () => {
                     runId,
                     strategyId,
                     app: "mt5",
+                    accountId,
                     venue: "mt5",
                     instrument: "US30",
                     status: "filled",
@@ -228,6 +237,7 @@ describe("Convex MT5 provider close replay", () => {
                     runId,
                     strategyId,
                     app: "mt5",
+                    accountId,
                     venue: "mt5",
                     instrument: "US30",
                     status: "filled",
@@ -269,6 +279,7 @@ describe("Convex MT5 provider close replay", () => {
                     runId,
                     strategyId,
                     app: "mt5",
+                    accountId,
                     venue: "mt5",
                     instrument: "US30",
                     status: "filled",
@@ -318,6 +329,7 @@ describe("Convex MT5 provider close replay", () => {
         const reconcileArgs = {
             serviceToken: "test-token",
             app: "mt5",
+            accountId,
             venue: "mt5",
             source: "periodic_sync",
             accountState: {

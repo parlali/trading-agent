@@ -8,16 +8,19 @@ import type {
     PortfolioFreshness,
     PortfolioPendingOrder,
     PortfolioPosition,
+    AccountPnlEvent,
     ProviderPositionClosure,
     RunSystemContextDigest,
     StrategyRiskState,
     StrategyConfig,
     TradeEventLogger,
     AccountState,
+    AccountConfig,
     AgentMessageLogger,
     Position,
     WorkingOrder,
     ExecutionResult,
+    ExecutionSafetyFaultCategory,
     ValidationResult,
 } from "@valiq-trading/core"
 
@@ -27,6 +30,11 @@ export interface ConvexOrderPersistenceConfig {
         serviceToken: string
     }
     timeoutMs?: number
+    orderLookupScope?: {
+        app?: Exclude<App, "backend">
+        accountId?: string
+        strategyId?: string
+    }
 }
 
 export interface TradingBackendClientConfig {
@@ -54,11 +62,25 @@ export interface StoredStrategy {
     _id: Id<"strategies">
     _creationTime: number
     app: Exclude<App, "backend">
+    accountId: string
     name: string
     enabled: boolean
     schedule: string
     policy: Record<string, unknown>
     context: string
+    createdAt?: number
+    updatedAt?: number
+}
+
+export interface StoredAccount {
+    _id: Id<"accounts">
+    _creationTime: number
+    app: Exclude<App, "backend">
+    accountId: string
+    label: string
+    credentialEnvPrefix: string
+    status: "active" | "disabled"
+    notes?: string
     createdAt?: number
     updatedAt?: number
 }
@@ -211,6 +233,7 @@ export interface AdoptProviderPositionsResult {
 
 export interface ProviderPortfolioReconciliationResult {
     app: Exclude<App, "backend">
+    accountId: string
     source: "startup_sync" | "periodic_sync" | "post_run_sync"
     positionCount: number
     pendingOrderCount: number
@@ -241,7 +264,7 @@ export interface ExecutionSafetyFaultRow {
     strategyId: Id<"strategies">
     app: Exclude<App, "backend">
     instrument: string
-    category: "position_not_found_yet" | "provider_rejected" | "already_exists_conflict" | "invalid_params" | "commit_unknown" | "duplicate_exposure" | "unknown"
+    category: ExecutionSafetyFaultCategory
     message: string
     providerPayload?: string
     canonicalOrderId?: string
@@ -454,17 +477,19 @@ export interface TradingBackendClient extends TradeEventLogger, AgentMessageLogg
     syncPositions(strategyId: Id<"strategies">, app: App, positions: Position[]): Promise<void>
     reconcileProviderPortfolio(
         app: Exclude<App, "backend">,
+        accountId: string,
         venue: string,
         source: ProviderPortfolioReconciliationResult["source"],
         accountState: AccountState,
         positions: Position[],
         workingOrders: WorkingOrder[],
-        positionClosures?: ProviderPositionClosure[]
+        positionClosures?: ProviderPositionClosure[],
+        accountPnlEvents?: AccountPnlEvent[]
     ): Promise<ProviderPortfolioReconciliationResult>
     refreshStrategyRiskState(args: RefreshStrategyRiskStateArgs): Promise<StrategyRiskStateRow>
     recordExecutionSafetyFault(args: RecordExecutionSafetyFaultArgs): Promise<string>
     resolveExecutionSafetyFaults(args: ResolveExecutionSafetyFaultsArgs): Promise<{ resolved: number }>
-    recordProviderSyncFailure(app: Exclude<App, "backend">, error: string): Promise<void>
+    recordProviderSyncFailure(app: Exclude<App, "backend">, accountId: string, error: string): Promise<void>
     resolveSecrets(keys: string[]): Promise<Record<string, string | null>>
     getCodexChatGptAuth(): Promise<CodexChatGptAuthRecord | null>
     storeCodexChatGptAuth(args: StoreCodexChatGptAuthArgs): Promise<void>
@@ -475,18 +500,17 @@ export interface TradingBackendClient extends TradeEventLogger, AgentMessageLogg
     ): Promise<void>
     reportHeartbeatSnapshot(args: ReportHeartbeatSnapshotArgs): Promise<ReportHeartbeatSnapshotResult>
     reportHeartbeat(app: App, status: "healthy" | "degraded" | "unhealthy", metadata?: Record<string, unknown>): Promise<void>
-    snapshotAccountState(app: App, venue: string, state: AccountState): Promise<void>
     getSystemState(): Promise<KillSwitchState>
     getControlPlaneMetrics(): Promise<ControlPlaneMetricRow[]>
-    getPortfolioFreshness(app?: Exclude<App, "backend">): Promise<PortfolioFreshnessRow[]>
+    getPortfolioFreshness(app?: Exclude<App, "backend">, accountId?: string): Promise<PortfolioFreshnessRow[]>
     getStrategyRiskState(strategyId: Id<"strategies">): Promise<StrategyRiskStateRow | null>
     getStrategyExecutionSafetyFaults(
         strategyId: Id<"strategies">,
         unresolvedOnly?: boolean
     ): Promise<ExecutionSafetyFaultRow[]>
     getStrategyOrderHistory(strategyId: Id<"strategies">, limit?: number): Promise<StrategyOrderHistoryRow[]>
-    getPortfolioPositions(app?: Exclude<App, "backend">, strategyId?: Id<"strategies">): Promise<ProviderPositionRow[]>
-    getPortfolioPendingOrders(app?: Exclude<App, "backend">, strategyId?: Id<"strategies">): Promise<ProviderPendingOrderRow[]>
+    getPortfolioPositions(app?: Exclude<App, "backend">, strategyId?: Id<"strategies">, accountId?: string): Promise<ProviderPositionRow[]>
+    getPortfolioPendingOrders(app?: Exclude<App, "backend">, strategyId?: Id<"strategies">, accountId?: string): Promise<ProviderPendingOrderRow[]>
     adoptProviderPositions(
         app: Exclude<App, "backend">,
         strategyId: Id<"strategies">,
@@ -503,10 +527,13 @@ export interface TradingBackendClient extends TradeEventLogger, AgentMessageLogg
     getStrategyOwnedInstruments(strategyId: Id<"strategies">): Promise<string[]>
     getInstrumentClaimsForStrategy(strategyId: Id<"strategies">): Promise<Array<{ instrument: string }>>
     getStrategyOwnershipScope(strategyId: Id<"strategies">): Promise<StrategyOwnershipScopeRow>
-    getAllOwnedInstrumentsByApp(app: Exclude<App, "backend">): Promise<Array<{ instrument: string, strategyId: string }>>
+    getAllOwnedInstrumentsByApp(app: Exclude<App, "backend">, accountId: string): Promise<Array<{ instrument: string, strategyId: string }>>
     getLatestPositions(strategyId: Id<"strategies">): Promise<Position[]>
     getPositionsForRun(strategyId: Id<"strategies">, runId: Id<"strategy_runs">): Promise<Position[]>
     getAllStrategies(): Promise<StoredStrategy[]>
+    getAccounts(app?: Exclude<App, "backend">): Promise<StoredAccount[]>
+    getAccountByAppAndId(app: Exclude<App, "backend">, accountId: string): Promise<StoredAccount | null>
+    upsertAccount(config: AccountConfig): Promise<Id<"accounts">>
     addStrategy(config: StrategyConfig): Promise<Id<"strategies">>
     updateStrategy(id: Id<"strategies">, config: StrategyConfig): Promise<Id<"strategies">>
     disableStrategy(id: Id<"strategies">): Promise<void>
@@ -520,5 +547,5 @@ export interface TradingBackendClient extends TradeEventLogger, AgentMessageLogg
         preserveApps?: App[]
     ): Promise<ClearFullResetStateBatchResult>
     getFullResetAudit(): Promise<FullResetAudit>
-    replaceAllStrategies(strategies: StrategyConfig[]): Promise<ReplaceAllStrategiesResult>
+    replaceAllStrategies(strategies: StrategyConfig[], accounts?: AccountConfig[]): Promise<ReplaceAllStrategiesResult>
 }

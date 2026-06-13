@@ -14,6 +14,7 @@ import type {
 } from "./portfolioTypes"
 import {
     readMetadataRecord,
+    readOrderIntentRecord,
 } from "./portfolioUtils"
 import { resolveLatestRunIdForStrategy } from "./portfolioOrderRuns"
 
@@ -88,7 +89,7 @@ export async function importCanonicalProviderProtectionOrder(
         canonicalOrderId,
         providerOrderId: args.order.orderId,
         providerClientOrderId,
-        providerOrderAliases: [],
+        providerOrderAliases: mergeInputProviderOrderAliases(args.order),
         submitAttemptId: undefined,
         submitAttemptSequence: undefined,
         commitOutcome: "accepted",
@@ -266,6 +267,7 @@ export async function applyProviderWorkingOrderUpdate(
         liveOrder: Pick<
             ProviderWorkingOrderInput,
             "orderId" |
+            "providerOrderAliases" |
             "status" |
             "filledQuantity" |
             "remainingQuantity" |
@@ -283,6 +285,7 @@ export async function applyProviderWorkingOrderUpdate(
     const nextFilledQuantity = liveOrder.filledQuantity
     const nextRemainingQuantity = liveOrder.remainingQuantity
     const nextAvgFillPrice = liveOrder.avgFillPrice ?? order.avgFillPrice
+    const nextIntent = buildProviderWorkingOrderIntent(order, liveOrder)
     const statusChanged = previousStatus !== nextStatus
     const quantityChanged =
         order.filledQuantity !== nextFilledQuantity ||
@@ -290,17 +293,19 @@ export async function applyProviderWorkingOrderUpdate(
         order.avgFillPrice !== nextAvgFillPrice
     const currentProviderOrderId = order.providerOrderId ?? order.orderId
     const providerOrderIdChanged = currentProviderOrderId !== liveOrder.orderId
+    const intentChanged = nextIntent !== order.intent
 
     await patchOrderRowFromDoc(ctx, order, {
         providerOrderId: liveOrder.orderId,
         providerClientOrderId: readProviderClientOrderId(liveOrder) ?? order.providerClientOrderId,
-        providerOrderAliases: mergeProviderOrderAliases(order, liveOrder.orderId),
+        providerOrderAliases: mergeProviderOrderAliases(order, liveOrder.orderId, liveOrder.providerOrderAliases),
         commitOutcome: order.commitOutcome === "commit_unknown" ? "recovered" : order.commitOutcome,
         signedOrderFingerprint: readSignedOrderFingerprint(liveOrder) ?? order.signedOrderFingerprint,
         status: nextStatus,
         filledQuantity: nextFilledQuantity,
         remainingQuantity: nextRemainingQuantity,
         avgFillPrice: nextAvgFillPrice,
+        intent: nextIntent,
         updatedAt: liveOrder.updatedAt,
         polling: {
             ...order.polling,
@@ -312,7 +317,26 @@ export async function applyProviderWorkingOrderUpdate(
         },
     })
 
-    if (!statusChanged && !quantityChanged && !providerOrderIdChanged) {
+    if (isProviderFillStatus(nextStatus) && !hasProviderAccountingMetadata({
+        ...order,
+        intent: nextIntent,
+        avgFillPrice: nextAvgFillPrice,
+    })) {
+        await recordInferredFillAccountingFault(ctx, {
+            order: {
+                ...order,
+                providerOrderId: liveOrder.orderId,
+                providerClientOrderId: readProviderClientOrderId(liveOrder) ?? order.providerClientOrderId,
+                providerOrderAliases: mergeProviderOrderAliases(order, liveOrder.orderId, liveOrder.providerOrderAliases),
+                intent: nextIntent,
+                avgFillPrice: nextAvgFillPrice,
+            },
+            updatedAt: args.updatedAt,
+            reason: "Provider reconciliation refreshed a filled working order without provider accounting metadata",
+        })
+    }
+
+    if (!statusChanged && !quantityChanged && !providerOrderIdChanged && !intentChanged) {
         return
     }
 
@@ -357,6 +381,9 @@ export async function applyClosedOrderInference(
     const resolutionReason = nextStatus === "filled"
         ? "Provider reconciliation inferred a fill from provider-truth position state after the order left the live working-order book"
         : "Provider reconciliation inferred a cancellation after the order left the live working-order book without fill evidence"
+    const intent = nextStatus === "filled"
+        ? buildInferredFillIntent(order)
+        : order.intent
 
     await patchOrderRowFromDoc(ctx, order, {
         commitOutcome: order.commitOutcome === "commit_unknown" ? "recovered" : order.commitOutcome,
@@ -364,6 +391,7 @@ export async function applyClosedOrderInference(
         filledQuantity: nextFilledQuantity,
         remainingQuantity: nextRemainingQuantity,
         avgFillPrice: nextAvgFillPrice,
+        intent,
         updatedAt: args.updatedAt,
         polling: {
             ...order.polling,
@@ -375,6 +403,13 @@ export async function applyClosedOrderInference(
                 : undefined,
         },
     })
+
+    if (nextStatus === "filled" && !hasProviderAccountingMetadata(order)) {
+        await recordInferredFillAccountingFault(ctx, {
+            order,
+            updatedAt: args.updatedAt,
+        })
+    }
 
     await appendOrderTransition(ctx, {
         orderId: order.orderId,
@@ -394,11 +429,140 @@ export async function applyClosedOrderInference(
     })
 }
 
+function buildInferredFillIntent(order: OrderDoc): Record<string, unknown> {
+    const intent = readOrderIntentRecord(order.intent) ?? {}
+    return {
+        ...intent,
+        metadata: {
+            ...(intent.metadata && typeof intent.metadata === "object" ? intent.metadata as Record<string, unknown> : {}),
+            providerReconciliationInferredFill: true,
+            providerAccountingBackfillMissing: !hasProviderAccountingMetadata(order),
+        },
+    }
+}
+
+function buildProviderWorkingOrderIntent(
+    order: OrderDoc,
+    liveOrder: Pick<ProviderWorkingOrderInput, "status" | "metadata">
+): OrderDoc["intent"] {
+    if (!isProviderFillStatus(liveOrder.status)) {
+        return order.intent
+    }
+
+    const metadata = readMetadataRecord(liveOrder.metadata)
+    if (!metadata) {
+        return order.intent
+    }
+
+    const intent = readOrderIntentRecord(order.intent) ?? {}
+    const previousMetadata = intent.metadata && typeof intent.metadata === "object"
+        ? intent.metadata as Record<string, unknown>
+        : {}
+
+    return {
+        ...intent,
+        metadata: {
+            ...previousMetadata,
+            ...metadata,
+        },
+    }
+}
+
+function isProviderFillStatus(status: Doc<"orders">["status"]): boolean {
+    return status === "filled" || status === "partially_filled"
+}
+
+export function hasProviderAccountingMetadata(order: OrderDoc): boolean {
+    const intent = readOrderIntentRecord(order.intent)
+    const metadata = intent?.metadata && typeof intent.metadata === "object"
+        ? intent.metadata as Record<string, unknown>
+        : undefined
+
+    if (metadata?.providerAccountingMissing === true) {
+        return false
+    }
+
+    const hasFillPnl = hasFiniteMetadataNumber(metadata?.fillPnl)
+
+    if (order.action === "close") {
+        return hasFillPnl ||
+            hasFiniteMetadataNumber(metadata?.fillPrice) ||
+            (typeof order.avgFillPrice === "number" && Number.isFinite(order.avgFillPrice) && order.avgFillPrice > 0)
+    }
+
+    return hasFillPnl ||
+        hasFiniteMetadataNumber(metadata?.fee) ||
+        typeof metadata?.providerAccountingSource === "string"
+}
+
+function hasFiniteMetadataNumber(value: unknown): boolean {
+    if (typeof value === "number") {
+        return Number.isFinite(value)
+    }
+
+    if (typeof value === "string" && value.trim()) {
+        return Number.isFinite(Number(value))
+    }
+
+    return false
+}
+
+async function recordInferredFillAccountingFault(
+    ctx: PortfolioMutationCtx,
+    args: {
+        order: OrderDoc
+        updatedAt: number
+        reason?: string
+    }
+): Promise<void> {
+    if (!args.order.accountId) {
+        throw new Error(`Cannot record inferred fill accounting fault for order without accountId: ${args.order.orderId}`)
+    }
+
+    const message = args.reason ?? `Provider reconciliation inferred a filled ${args.order.action} order without provider accounting metadata`
+    const existing = await ctx.db
+        .query("execution_safety_faults")
+        .withIndex("by_strategy_blocked", (q) => q.eq("strategyId", args.order.strategyId).eq("blocked", true))
+        .collect()
+    if (existing.some((fault) =>
+        fault.category === "accounting_mismatch" &&
+        fault.canonicalOrderId === args.order.orderId &&
+        fault.message === message
+    )) {
+        return
+    }
+
+    await ctx.db.insert("execution_safety_faults", {
+        strategyId: args.order.strategyId,
+        app: args.order.app ?? args.order.venue as Doc<"strategies">["app"],
+        accountId: args.order.accountId,
+        instrument: args.order.instrument,
+        category: "accounting_mismatch",
+        message,
+        providerPayload: JSON.stringify({
+            orderId: args.order.orderId,
+            providerOrderId: args.order.providerOrderId,
+            action: args.order.action,
+        }),
+        canonicalOrderId: args.order.orderId,
+        providerOrderId: args.order.providerOrderId,
+        providerClientOrderId: args.order.providerClientOrderId,
+        providerOrderAliases: args.order.providerOrderAliases,
+        runId: args.order.runId,
+        venue: args.order.venue,
+        blocked: true,
+        occurredAt: args.updatedAt,
+        resolvedAt: undefined,
+        resolutionNote: undefined,
+    })
+}
+
 export function mergeProviderOrderAliases(
     order: Pick<OrderDoc, "orderId" | "providerOrderId" | "providerOrderAliases">,
-    nextProviderOrderId: string
+    nextProviderOrderId: string,
+    nextAliases: string[] = []
 ): string[] {
-    const aliases = new Set<string>(order.providerOrderAliases ?? [])
+    const aliases = new Set<string>([...(order.providerOrderAliases ?? []), ...nextAliases])
 
     if (
         (order.providerOrderId ?? order.orderId) !== order.orderId &&
@@ -409,6 +573,21 @@ export function mergeProviderOrderAliases(
 
     aliases.delete(order.orderId)
     aliases.delete(nextProviderOrderId)
+
+    return Array.from(aliases).sort((left, right) => left.localeCompare(right))
+}
+
+function mergeInputProviderOrderAliases(order: Pick<ProviderWorkingOrderInput, "orderId" | "providerOrderId" | "providerClientOrderId" | "providerOrderAliases">): string[] {
+    const aliases = new Set<string>([
+        ...(order.providerOrderAliases ?? []),
+        order.providerOrderId,
+        order.providerClientOrderId,
+    ].filter((value): value is string => Boolean(value)))
+
+    aliases.delete(order.orderId)
+    if (order.providerClientOrderId) {
+        aliases.delete(order.providerClientOrderId)
+    }
 
     return Array.from(aliases).sort((left, right) => left.localeCompare(right))
 }

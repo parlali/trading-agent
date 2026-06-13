@@ -1,4 +1,5 @@
 import type { AccountState, Position } from "./types"
+import { resolveOptionContractMultiplier } from "./option-multiplier"
 
 export interface StrategyAccountAllocation {
     allocationPercent: number
@@ -88,5 +89,5 @@ function resolvePositionMarginUsage(position: Position): number {
         return metadataMargin
     }
 
-    return Math.abs(position.quantity * position.entryPrice)
+    return Math.abs(position.quantity * position.entryPrice * resolveOptionContractMultiplier(position.instrument, position.metadata))
 }

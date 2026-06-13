@@ -54,6 +54,8 @@ export interface PostOrderResponse {
     orderID: string
     transactionsHashes: string[]
     status: string
+    makingAmount?: string
+    takingAmount?: string
     signedOrderFingerprint?: string
     signedOrderMetadata?: Record<string, unknown>
 }
@@ -98,6 +100,7 @@ export interface PolymarketTrade {
     outcome: string
     trader_side: string
     maker_order_id?: string
+    salt?: string
     signedOrderFingerprint?: string
     signed_order_fingerprint?: string
     metadata?: Record<string, unknown>

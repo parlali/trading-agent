@@ -26,7 +26,8 @@ export async function mapOKXExecutionResult(args: {
             ? Number(args.order.px)
             : undefined
     const status = mapOKXOrderStatus(args.order.state)
-    const accountingMetadata = buildOKXOrderAccountingMetadata(args.order, status)
+    const timestamp = parseUnixMs(args.order.uTime) ?? parseUnixMs(args.order.cTime) ?? Date.now()
+    const accountingMetadata = buildOKXOrderAccountingMetadata(args.order, status, timestamp)
     const errorDetail = status === "rejected"
         ? createExecutionErrorDetail("venue", args.order.state, {
             code: args.order.state,
@@ -46,7 +47,7 @@ export async function mapOKXExecutionResult(args: {
         status,
         filledQuantity,
         fillPrice,
-        timestamp: parseUnixMs(args.order.uTime) ?? parseUnixMs(args.order.cTime) ?? Date.now(),
+        timestamp,
         error: errorDetail ? formatExecutionError(errorDetail) : undefined,
         errorDetail,
         intentUpdates: accountingMetadata
@@ -55,9 +56,10 @@ export async function mapOKXExecutionResult(args: {
     }
 }
 
-function buildOKXOrderAccountingMetadata(
+export function buildOKXOrderAccountingMetadata(
     order: OKXOrder,
-    status: ExecutionResult["status"]
+    status: ExecutionResult["status"],
+    accountingOccurredAt?: number
 ): Record<string, unknown> | undefined {
     if (status !== "filled" && status !== "partially_filled") {
         return undefined
@@ -69,17 +71,33 @@ function buildOKXOrderAccountingMetadata(
 
     const fee = isFiniteNumberString(order.fee) ? Number(order.fee) : undefined
     const fillPnl = isFiniteNumberString(order.pnl) ? Number(order.pnl) : undefined
-    if (fee === undefined && fillPnl === undefined) {
-        return undefined
-    }
-
-    return {
-        fee,
-        feeCcy: order.feeCcy,
-        fillPnl,
+    const metadata: Record<string, unknown> = {
         providerAccountingSource: "okx_order",
         providerOrderId: order.ordId,
         providerClientOrderId: order.clOrdId,
         tradeId: order.tradeId,
     }
+
+    if (accountingOccurredAt !== undefined) {
+        metadata.providerAccountingOccurredAt = accountingOccurredAt
+    }
+
+    if (fee !== undefined) {
+        metadata.fee = fee
+    }
+
+    if (order.feeCcy) {
+        metadata.feeCcy = order.feeCcy
+    }
+
+    if (fillPnl !== undefined) {
+        metadata.fillPnl = fillPnl
+    }
+
+    if (fee === undefined && fillPnl === undefined) {
+        metadata.providerAccountingMissing = true
+        metadata.providerAccountingMissingReason = "okx_order_fee_and_pnl_unparseable"
+    }
+
+    return metadata
 }

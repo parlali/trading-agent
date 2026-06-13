@@ -2,14 +2,14 @@ import { describe, expect, it } from "vitest"
 import { createEmptyCascadeDeleteCounts } from "../../convex/lib/cascadeDelete"
 import {
     assertStrategyDeletionSafe,
+    cascadeDeleteStrategy,
     deleteFinalStrategyAppRows,
     deleteStrategyTableBatch,
 } from "../../convex/lib/mutations/strategyCascadeDelete"
 import { buildStrategyPositionSnapshotHashPayload } from "../../convex/lib/mutations/portfolioSnapshots"
+import { FakeMutationDb } from "./fakeMutationDb"
 
 type RowsByTable = Record<string, unknown[] | undefined>
-type MutableRow = { _id: string, [key: string]: unknown }
-type MutableRowsByTable = Record<string, MutableRow[] | undefined>
 
 function createDeletionSafetyCtx(rows: RowsByTable) {
     return {
@@ -34,47 +34,11 @@ function createDeletionSafetyCtx(rows: RowsByTable) {
     }
 }
 
-function createCascadeDeleteCtx(rows: MutableRowsByTable) {
-    return {
-        db: {
-            query(table: string) {
-                const tableRows = rows[table] ?? []
-
-                return {
-                    withIndex() {
-                        return {
-                            async first() {
-                                return tableRows[0] ?? null
-                            },
-                            async collect() {
-                                return tableRows
-                            },
-                            async take(limit: number) {
-                                return tableRows.slice(0, limit)
-                            },
-                        }
-                    },
-                }
-            },
-            async delete(id: string) {
-                for (const table of Object.keys(rows)) {
-                    const tableRows = rows[table] ?? []
-                    const index = tableRows.findIndex((row) => row._id === id)
-
-                    if (index >= 0) {
-                        tableRows.splice(index, 1)
-                        return
-                    }
-                }
-            },
-        },
-    }
-}
-
 function createLiveStrategy() {
     return {
         _id: "strategy-live",
         app: "mt5",
+        accountId: "acct-1",
         policy: {
             dryRun: false,
         },
@@ -111,37 +75,41 @@ describe("portfolio safety guards", () => {
             .toBeUndefined()
     })
 
-    it("keeps provider verification rows until the final strategy delete batch", async () => {
-        const rows: MutableRowsByTable = {
+    it("scopes batched last-strategy cleanup to the strategy account and keeps account snapshots", async () => {
+        const db = new FakeMutationDb({
             strategies: [{
                 _id: "strategy-live",
                 app: "mt5",
+                accountId: "acct-1",
             }],
             account_snapshots: [{
                 _id: "snapshot-1",
                 app: "mt5",
+                accountId: "acct-1",
             }],
             provider_sync_state: [{
                 _id: "sync-1",
                 app: "mt5",
+                accountId: "acct-1",
             }],
             app_heartbeats: [{
                 _id: "heartbeat-1",
                 app: "mt5",
             }],
-        }
+        })
         const deleted = createEmptyCascadeDeleteCounts()
-        const ctx = createCascadeDeleteCtx(rows)
+        const ctx = { db }
 
         await expect(deleteStrategyTableBatch(ctx as never, "strategy-live" as never, "mt5" as never, deleted, 50))
             .resolves
             .toBe(true)
 
-        expect(deleted.accountSnapshots).toBe(1)
-        expect(deleted.providerSyncStates).toBe(0)
+        expect(deleted.accountSnapshots).toBe(0)
+        expect(deleted.providerSyncStates).toBe(1)
         expect(deleted.appHeartbeats).toBe(0)
-        expect(rows.provider_sync_state).toHaveLength(1)
-        expect(rows.app_heartbeats).toHaveLength(1)
+        expect(db.rows.account_snapshots).toHaveLength(1)
+        expect(db.rows.provider_sync_state).toHaveLength(0)
+        expect(db.rows.app_heartbeats).toHaveLength(1)
 
         await expect(deleteStrategyTableBatch(ctx as never, "strategy-live" as never, "mt5" as never, deleted, 50))
             .resolves
@@ -149,42 +117,160 @@ describe("portfolio safety guards", () => {
 
         await deleteFinalStrategyAppRows(ctx as never, "mt5" as never, deleted)
 
-        expect(deleted.providerSyncStates).toBe(1)
         expect(deleted.appHeartbeats).toBe(1)
-        expect(rows.provider_sync_state).toHaveLength(0)
-        expect(rows.app_heartbeats).toHaveLength(0)
+        expect(db.rows.account_snapshots).toHaveLength(1)
+        expect(db.rows.app_heartbeats).toHaveLength(0)
     })
 
-    it("keeps provider verification rows while sibling strategies remain", async () => {
-        const rows: MutableRowsByTable = {
+    it("does not touch sibling account rows when deleting the last strategy of one account", async () => {
+        const db = new FakeMutationDb({
             strategies: [
                 {
-                    _id: "strategy-live",
+                    _id: "strategy-a",
                     app: "okx-swap",
+                    accountId: "acct-a",
                 },
                 {
-                    _id: "strategy-sibling",
+                    _id: "strategy-b",
                     app: "okx-swap",
+                    accountId: "acct-b",
                 },
             ],
-            provider_sync_state: [{
-                _id: "sync-1",
+            provider_positions: [
+                {
+                    _id: "pos-a",
+                    app: "okx-swap",
+                    accountId: "acct-a",
+                },
+                {
+                    _id: "pos-b",
+                    app: "okx-swap",
+                    accountId: "acct-b",
+                },
+            ],
+            provider_working_orders: [
+                {
+                    _id: "wo-a",
+                    app: "okx-swap",
+                    accountId: "acct-a",
+                },
+                {
+                    _id: "wo-b",
+                    app: "okx-swap",
+                    accountId: "acct-b",
+                },
+            ],
+            provider_sync_state: [
+                {
+                    _id: "sync-a",
+                    app: "okx-swap",
+                    accountId: "acct-a",
+                },
+                {
+                    _id: "sync-b",
+                    app: "okx-swap",
+                    accountId: "acct-b",
+                },
+            ],
+            account_snapshots: [
+                {
+                    _id: "snap-a",
+                    app: "okx-swap",
+                    accountId: "acct-a",
+                },
+                {
+                    _id: "snap-b",
+                    app: "okx-swap",
+                    accountId: "acct-b",
+                },
+            ],
+            app_heartbeats: [{
+                _id: "heartbeat-1",
                 app: "okx-swap",
+            }],
+        })
+        const ctx = { db }
+
+        const counts = await cascadeDeleteStrategy(ctx as never, "strategy-a" as never)
+
+        expect(counts.providerPositions).toBe(1)
+        expect(counts.providerWorkingOrders).toBe(1)
+        expect(counts.providerSyncStates).toBe(1)
+        expect(counts.accountSnapshots).toBe(0)
+        expect(counts.appHeartbeats).toBe(0)
+        expect(db.rows.provider_positions?.map((row) => row._id)).toEqual(["pos-b"])
+        expect(db.rows.provider_working_orders?.map((row) => row._id)).toEqual(["wo-b"])
+        expect(db.rows.provider_sync_state?.map((row) => row._id)).toEqual(["sync-b"])
+        expect(db.rows.account_snapshots?.map((row) => row._id)).toEqual(["snap-a", "snap-b"])
+        expect(db.rows.app_heartbeats).toHaveLength(1)
+        expect(db.rows.strategies?.map((row) => row._id)).toEqual(["strategy-b"])
+    })
+
+    it("keeps account snapshots and pnl events when deleting the last strategy for an app", async () => {
+        const db = new FakeMutationDb({
+            strategies: [{
+                _id: "strategy-a",
+                app: "okx-swap",
+                accountId: "acct-a",
+            }],
+            provider_sync_state: [{
+                _id: "sync-a",
+                app: "okx-swap",
+                accountId: "acct-a",
+            }],
+            account_snapshots: [{
+                _id: "snap-a",
+                app: "okx-swap",
+                accountId: "acct-a",
+            }],
+            account_pnl_events: [{
+                _id: "pnl-a",
+                app: "okx-swap",
+                accountId: "acct-a",
             }],
             app_heartbeats: [{
                 _id: "heartbeat-1",
                 app: "okx-swap",
             }],
-        }
+        })
+        const ctx = { db }
+
+        const counts = await cascadeDeleteStrategy(ctx as never, "strategy-a" as never)
+
+        expect(counts.providerSyncStates).toBe(1)
+        expect(counts.accountSnapshots).toBe(0)
+        expect(counts.appHeartbeats).toBe(1)
+        expect(db.rows.account_snapshots).toHaveLength(1)
+        expect(db.rows.account_pnl_events).toHaveLength(1)
+        expect(db.rows.provider_sync_state).toHaveLength(0)
+        expect(db.rows.app_heartbeats).toHaveLength(0)
+    })
+
+    it("keeps app heartbeats while sibling strategies remain", async () => {
+        const db = new FakeMutationDb({
+            strategies: [
+                {
+                    _id: "strategy-live",
+                    app: "okx-swap",
+                    accountId: "acct-a",
+                },
+                {
+                    _id: "strategy-sibling",
+                    app: "okx-swap",
+                    accountId: "acct-b",
+                },
+            ],
+            app_heartbeats: [{
+                _id: "heartbeat-1",
+                app: "okx-swap",
+            }],
+        })
         const deleted = createEmptyCascadeDeleteCounts()
-        const ctx = createCascadeDeleteCtx(rows)
 
-        await deleteFinalStrategyAppRows(ctx as never, "okx-swap" as never, deleted)
+        await deleteFinalStrategyAppRows({ db } as never, "okx-swap" as never, deleted)
 
-        expect(deleted.providerSyncStates).toBe(0)
         expect(deleted.appHeartbeats).toBe(0)
-        expect(rows.provider_sync_state).toHaveLength(1)
-        expect(rows.app_heartbeats).toHaveLength(1)
+        expect(db.rows.app_heartbeats).toHaveLength(1)
     })
 
     it("keeps provider identity and protection levels in strategy position snapshot hashes", () => {

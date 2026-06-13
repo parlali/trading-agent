@@ -1,4 +1,4 @@
-import type { AccountState, Position, ProviderPositionClosure, VenueAdapter, WorkingOrder } from "@valiq-trading/core"
+import type { AccountPnlEvent, AccountState, Position, ProviderPositionClosure, VenueAdapter, WorkingOrder } from "@valiq-trading/core"
 import type { VenueApp } from "./types"
 
 export interface ProviderPortfolioSnapshot {
@@ -6,6 +6,7 @@ export interface ProviderPortfolioSnapshot {
     positions: Position[]
     workingOrders: WorkingOrder[]
     positionClosures: ProviderPositionClosure[]
+    accountPnlEvents: AccountPnlEvent[]
 }
 
 export async function readProviderPortfolioForSync(
@@ -22,12 +23,14 @@ async function readProviderPortfolioSequentially(venue: VenueAdapter): Promise<P
     const positions = await venue.getPositions()
     const workingOrders = venue.getWorkingOrders ? await venue.getWorkingOrders() : []
     const positionClosures = venue.getRecentPositionClosures ? await venue.getRecentPositionClosures() : []
+    const accountPnlEvents = venue.getAccountPnlEvents ? await venue.getAccountPnlEvents() : []
 
     return {
         accountState,
         positions,
         workingOrders,
         positionClosures,
+        accountPnlEvents,
     }
 }
 
@@ -40,11 +43,15 @@ async function readProviderPortfolioConcurrently(venue: VenueAdapter): Promise<P
     const positionClosures = venue.getRecentPositionClosures
         ? await venue.getRecentPositionClosures()
         : []
+    const accountPnlEvents = venue.getAccountPnlEvents
+        ? await venue.getAccountPnlEvents()
+        : []
 
     return {
         accountState,
         positions,
         workingOrders,
         positionClosures,
+        accountPnlEvents,
     }
 }

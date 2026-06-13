@@ -26,11 +26,12 @@ from mt5_mappers import (
     failed_order_result,
     map_deal_status,
     map_history_order_status,
+    map_account_pnl_event,
     map_open_order,
     map_open_order_status,
     map_order_result,
     map_position,
-    map_position_closure,
+    map_position_closures,
     map_position_status,
     map_symbol_info,
     resolve_filling_mode,
@@ -301,6 +302,23 @@ class MT5Client:
 
         return result
 
+    def assert_session_login(self, expected_login: int) -> None:
+        self.ensure_connected()
+        info = self._require_mt5_result("account_info", mt5.account_info())
+        active_login = int(info.login)
+        if active_login != int(expected_login):
+            self._connected = False
+            log.error(
+                "mt5_session_login_mismatch",
+                expectedLogin=int(expected_login),
+                activeLogin=active_login,
+            )
+            raise MT5ConnectionError(
+                f"MT5 active session login {active_login} does not match requested login {expected_login}",
+                error_type="session_login_mismatch",
+                retryable=False,
+            )
+
     # -- Account & positions ---------------------------------------------------
 
     def get_account_info(self) -> dict[str, Any]:
@@ -347,13 +365,35 @@ class MT5Client:
         if len(deals) == 0:
             return []
 
+        result = map_position_closures(mt5, deals)
+
+        return sorted(result, key=lambda deal: int(deal["timeDone"]), reverse=True)
+
+    def get_account_pnl_events(self, lookback_hours: int = 24) -> list[dict[str, Any]]:
+        self.ensure_connected()
+
+        info = mt5.account_info()
+        if info is None:
+            self._raise_mt5_error("account_info")
+
+        currency = str(getattr(info, "currency", "") or "")
+        now = datetime.now(timezone.utc)
+        start = now - timedelta(hours=max(1, lookback_hours))
+        deals = self._require_mt5_result(
+            "history_deals_get.account_pnl_events",
+            mt5.history_deals_get(start, now),
+        )
+
+        if len(deals) == 0:
+            return []
+
         result: list[dict[str, Any]] = []
         for deal in deals:
-            mapped = map_position_closure(mt5, deal)
+            mapped = map_account_pnl_event(mt5, deal, currency)
             if mapped is not None:
                 result.append(mapped)
 
-        return sorted(result, key=lambda deal: int(deal["timeDone"]), reverse=True)
+        return sorted(result, key=lambda event: int(event["occurredAt"]), reverse=True)
 
     # -- Order execution -------------------------------------------------------
 
@@ -528,6 +568,7 @@ class MT5Client:
         ticket: int,
         volume: float | None = None,
         deviation: int = 20,
+        comment: str = "close",
     ) -> dict[str, Any]:
         """Close an existing position (fully or partially)."""
         self.ensure_connected()
@@ -552,7 +593,7 @@ class MT5Client:
             "price": close_price,
             "deviation": deviation,
             "magic": pos.magic,
-            "comment": "close",
+            "comment": comment,
             "type_time": mt5.ORDER_TIME_GTC,
             "type_filling": self._resolve_filling_mode(pos.symbol),
         }

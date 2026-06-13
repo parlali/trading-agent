@@ -3,11 +3,8 @@ import {
     resolveProviderPositionId,
 } from "../providerPositions"
 import {
-    buildAdoptedPositionClaims,
-    buildPositionClaimsByKey,
     hasPositionOwnershipMismatch,
     resolveOwnership,
-    resolvePositionOwnership,
 } from "./portfolioOwnership"
 import {
     buildProviderCloseIntent,
@@ -28,14 +25,11 @@ import {
 export const portfolioGovernanceTestables = {
     collectExpectedExternalInstruments,
     isExpectedExternalProviderRow,
-    buildAdoptedPositionClaims,
-    buildPositionClaimsByKey,
     buildProviderPositionKey,
     createDriftSummary,
     detectExposureGovernanceViolations,
     hasPositionOwnershipMismatch,
     resolveProviderPositionId,
-    resolvePositionOwnership,
     resolveOwnership,
     resolveLiveWorkingOrderMatch,
     resolveCanonicalProviderProtectionOrderId,

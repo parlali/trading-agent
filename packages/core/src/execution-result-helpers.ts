@@ -10,17 +10,33 @@ import {
 
 export function createRejectedExecutionResultFromUnknownError(
     orderId: string,
-    error: unknown,
-    filledQuantity: number = 0,
-    fillPrice?: number
+    error: unknown
 ): ExecutionResult {
     const errorDetail = getExecutionErrorDetail(error) ?? createExecutionErrorDetail("internal", getErrorMessage(error))
 
     return {
         orderId,
         status: "rejected",
-        filledQuantity,
-        fillPrice,
+        filledQuantity: 0,
+        timestamp: Date.now(),
+        error: formatExecutionError(errorDetail),
+        errorDetail,
+    }
+}
+
+export function createUnconfirmedOperationFailureExecutionResult(
+    orderId: string,
+    error: unknown,
+    existing: OrderSnapshot | null
+): ExecutionResult {
+    const errorDetail = getExecutionErrorDetail(error) ?? createExecutionErrorDetail("internal", getErrorMessage(error))
+
+    return {
+        orderId,
+        status: existing?.status ?? "pending",
+        commitOutcome: "commit_unknown",
+        filledQuantity: existing?.filledQuantity ?? 0,
+        fillPrice: existing?.avgFillPrice,
         timestamp: Date.now(),
         error: formatExecutionError(errorDetail),
         errorDetail,
@@ -55,6 +71,10 @@ export function mergeExecutionIntentUpdates(
 }
 
 export function shouldPersistModifyIntentUpdates(result: ExecutionResult): boolean {
+    if (result.commitOutcome === "commit_unknown") {
+        return false
+    }
+
     return (
         result.status === "pending" ||
         result.status === "partially_filled" ||

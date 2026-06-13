@@ -1,5 +1,7 @@
 import type { StoredStrategy } from "@valiq-trading/convex"
 import {
+    buildAccountSecretKeyMap,
+    resolveAccountScopedSecretKeys,
     validatePolicy,
     type Scheduler,
 } from "@valiq-trading/core"
@@ -99,17 +101,43 @@ export async function resolveStrategyRuntimeState(
 
     const policy = validatePolicy(app, strategy.policy)
     const additionalSecretKeys = plugin.resolveAdditionalSecretKeys?.(policy) ?? []
+    const account = await backend.getAccountByAppAndId(app, strategy.accountId)
+    if (!account) {
+        throw new Error(`Strategy ${strategy.name} (${strategy._id}) references missing account ${app}:${strategy.accountId}`)
+    }
+    if (account.status !== "active") {
+        throw new Error(`Strategy ${strategy.name} (${strategy._id}) references inactive account ${app}:${strategy.accountId}`)
+    }
+
+    const accountScopedKeys = resolveAccountScopedSecretKeys(app, [
+        ...plugin.resolveSecretKeys(),
+        ...additionalSecretKeys,
+    ])
+    const accountSecretKeyMap = buildAccountSecretKeyMap(account, accountScopedKeys)
+    const prefixedAccountSecrets = accountSecretKeyMap.size > 0
+        ? await backend.resolveSecrets(Array.from(accountSecretKeyMap.values()))
+        : {}
+    const accountScopedKeySet = new Set(accountScopedKeys)
+    const additionalSharedSecretKeys = additionalSecretKeys.filter((key) => !accountScopedKeySet.has(key))
     const additionalSecrets =
-        additionalSecretKeys.length > 0
-            ? await backend.resolveSecrets(additionalSecretKeys)
+        additionalSharedSecretKeys.length > 0
+            ? await backend.resolveSecrets(additionalSharedSecretKeys)
             : {}
+    const accountSecrets = Object.fromEntries(
+        Array.from(accountSecretKeyMap.entries()).map(([canonicalKey, prefixedKey]) => [
+            canonicalKey,
+            prefixedAccountSecrets[prefixedKey] ?? null,
+        ])
+    )
 
     return {
         strategy,
+        account,
         policy,
         secrets: {
             ...resolvedSecrets,
             ...additionalSecrets,
+            ...accountSecrets,
         },
     }
 }
@@ -136,10 +164,12 @@ export function syncStrategyEntryChanged(
     next: SyncStrategyEntry
 ): boolean {
     return stableStringify({
+        account: current.account,
         strategy: current.strategy,
         policy: current.policy,
         secrets: current.secrets,
     }) !== stableStringify({
+        account: next.account,
         strategy: next.strategy,
         policy: next.policy,
         secrets: next.secrets,

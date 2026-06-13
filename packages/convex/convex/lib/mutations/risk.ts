@@ -179,12 +179,16 @@ export const recordExecutionSafetyFault = mutation({
         if (!strategy) {
             throw new Error(`Strategy not found: ${args.strategyId}`)
         }
+        if (strategy.app !== args.app) {
+            throw new Error(`Execution safety fault app mismatch for strategy ${args.strategyId}: ${args.app} !== ${strategy.app}`)
+        }
 
         const now = Date.now()
         const blocked = args.blocked ?? true
         const insertedId = await ctx.db.insert("execution_safety_faults", {
             strategyId: args.strategyId,
             app: args.app,
+            accountId: strategy.accountId,
             instrument: args.instrument,
             category: args.category,
             message: args.message,

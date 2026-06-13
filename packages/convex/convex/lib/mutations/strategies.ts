@@ -1,7 +1,7 @@
-import { mutation } from "../../_generated/server"
+import { mutation, type MutationCtx } from "../../_generated/server"
 import type { Doc, Id } from "../../_generated/dataModel"
 import { v } from "convex/values"
-import { validateStrategyConfig } from "@valiq-trading/core"
+import { validateAccountConfig, validateStrategyConfig } from "@valiq-trading/core"
 import { requireUser, requireServiceToken, requireUserOrServiceToken } from "../authGuards"
 import { createEmptyCascadeDeleteCounts, type CascadeDeleteCounts } from "../cascadeDelete"
 import { incrementControlPlaneMetric } from "../controlPlaneMetrics"
@@ -21,16 +21,79 @@ import { enqueueManualRunRequest } from "./systemManualRuns"
 
 const strategyImportArg = v.object({
     app: venueAppV,
+    accountId: v.string(),
     name: v.string(),
     enabled: v.boolean(),
     schedule: v.string(),
     policy: v.any(),
     context: v.string(),
 })
+const accountImportArg = v.object({
+    app: venueAppV,
+    accountId: v.string(),
+    label: v.string(),
+    credentialEnvPrefix: v.string(),
+    status: v.optional(v.union(v.literal("active"), v.literal("disabled"))),
+    notes: v.optional(v.string()),
+})
+
+export const upsertAccount = mutation({
+    args: {
+        app: venueAppV,
+        accountId: v.string(),
+        label: v.string(),
+        credentialEnvPrefix: v.string(),
+        status: v.optional(v.union(v.literal("active"), v.literal("disabled"))),
+        notes: v.optional(v.string()),
+        serviceToken: v.optional(v.string()),
+    },
+    handler: async (ctx, args) => {
+        await requireUserOrServiceToken(ctx, args.serviceToken)
+
+        const account = validateAccountConfig({
+            app: args.app,
+            accountId: args.accountId,
+            label: args.label,
+            credentialEnvPrefix: args.credentialEnvPrefix,
+            status: args.status,
+            notes: args.notes,
+        })
+        const now = Date.now()
+        const existing = await ctx.db
+            .query("accounts")
+            .withIndex("by_app_account", (q) =>
+                q.eq("app", account.app).eq("accountId", account.accountId)
+            )
+            .first()
+
+        if (existing) {
+            await ctx.db.patch(existing._id, {
+                label: account.label,
+                credentialEnvPrefix: account.credentialEnvPrefix,
+                status: account.status,
+                notes: account.notes,
+                updatedAt: now,
+            })
+            return existing._id
+        }
+
+        return await ctx.db.insert("accounts", {
+            app: account.app,
+            accountId: account.accountId,
+            label: account.label,
+            credentialEnvPrefix: account.credentialEnvPrefix,
+            status: account.status,
+            notes: account.notes,
+            createdAt: now,
+            updatedAt: now,
+        })
+    },
+})
 export const upsertStrategy = mutation({
     args: {
         id: v.optional(v.id("strategies")),
         app: venueAppV,
+        accountId: v.string(),
         name: v.string(),
         enabled: v.boolean(),
         schedule: v.string(),
@@ -43,17 +106,20 @@ export const upsertStrategy = mutation({
 
         const strategy = validateStrategyConfig({
             app: args.app,
+            accountId: args.accountId,
             name: args.name,
             enabled: args.enabled,
             schedule: args.schedule,
             policy: args.policy,
             context: args.context,
         })
+        await assertAccountExists(ctx, strategy.app, strategy.accountId)
 
         const now = Date.now()
         if (args.id) {
             await ctx.db.patch(args.id, {
                 app: strategy.app,
+                accountId: strategy.accountId,
                 name: strategy.name,
                 enabled: strategy.enabled,
                 schedule: strategy.schedule,
@@ -65,6 +131,7 @@ export const upsertStrategy = mutation({
         }
         return await ctx.db.insert("strategies", {
             app: strategy.app,
+            accountId: strategy.accountId,
             name: strategy.name,
             enabled: strategy.enabled,
             schedule: strategy.schedule,
@@ -626,11 +693,13 @@ export const deleteAllRuns = mutation({
 export const replaceAllStrategies = mutation({
     args: {
         serviceToken: v.string(),
+        accounts: v.optional(v.array(accountImportArg)),
         strategies: v.array(strategyImportArg),
     },
     handler: async (ctx, args) => {
         requireServiceToken(args.serviceToken)
 
+        const accounts = (args.accounts ?? []).map((account) => validateAccountConfig(account))
         const strategies = args.strategies.map((strategy) => validateStrategyConfig(strategy))
         const existingStrategies = await ctx.db.query("strategies").collect()
 
@@ -655,7 +724,23 @@ export const replaceAllStrategies = mutation({
 
         const now = Date.now()
 
+        if (accounts.length > 0) {
+            const existingAccounts = await ctx.db.query("accounts").collect()
+            for (const account of existingAccounts) {
+                await ctx.db.delete(account._id)
+            }
+
+            for (const account of accounts) {
+                await ctx.db.insert("accounts", {
+                    ...account,
+                    createdAt: now,
+                    updatedAt: now,
+                })
+            }
+        }
+
         for (const strategy of strategies) {
+            await assertAccountExists(ctx, strategy.app, strategy.accountId)
             await ctx.db.insert("strategies", {
                 ...strategy,
                 createdAt: now,
@@ -669,3 +754,24 @@ export const replaceAllStrategies = mutation({
         }
     },
 })
+
+async function assertAccountExists(
+    ctx: MutationCtx,
+    app: Doc<"strategies">["app"],
+    accountId: string
+): Promise<void> {
+    const account = await ctx.db
+        .query("accounts")
+        .withIndex("by_app_account", (q) =>
+            q.eq("app", app).eq("accountId", accountId)
+        )
+        .first()
+
+    if (!account) {
+        throw new Error(`Strategy account is not declared: ${app}:${accountId}`)
+    }
+
+    if (account.status !== "active") {
+        throw new Error(`Strategy account is not active: ${app}:${accountId}`)
+    }
+}

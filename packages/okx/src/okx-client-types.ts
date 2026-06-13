@@ -119,6 +119,7 @@ export interface OKXOrder {
 export interface OKXAlgoOrder {
     algoId: string
     algoClOrdId?: string
+    actualOrdId?: string
     instId: string
     ordType: string
     side: "buy" | "sell"
@@ -128,6 +129,16 @@ export interface OKXAlgoOrder {
     cTime?: string
     uTime?: string
     state?: string
+}
+
+export interface OKXAccountBill {
+    billId: string
+    instId?: string
+    ccy: string
+    amt: string
+    type: string
+    subType?: string
+    ts: string
 }
 
 export interface OKXOrderAck {

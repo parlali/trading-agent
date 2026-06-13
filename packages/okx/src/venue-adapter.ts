@@ -1,9 +1,11 @@
 import {
+    type AccountPnlEvent,
     createExecutionError,
     createExecutionErrorDetail,
     ExecutionCostTracker,
     formatExecutionError,
     getExecutionErrorDetail,
+    isSettlementCurrency,
     type AccountState,
     type ExecutionResult,
     type OrderIntent,
@@ -18,13 +20,14 @@ import {
 } from "@valiq-trading/core"
 import {
     OKXClient,
+    type OKXAccountBill,
     type OKXApiPosSide,
-    type OKXFill,
     type OKXMarginMode,
     type OKXOrder,
     type OKXPositionMode,
 } from "./okx-client"
 import type { OKXMarketSnapshot } from "./market-context"
+import { OKX_ESTIMATED_ONE_WAY_FEE_RATE } from "./execution-fees"
 import {
     floorToStep,
     formatContracts,
@@ -49,6 +52,11 @@ import {
 import { mapOKXAccountState } from "./venue-adapter-account"
 import { mapOKXRecentPositionClosures } from "./venue-adapter-closures"
 import { mapOKXExecutionResult } from "./venue-adapter-execution-results"
+import {
+    getRecentOKXAccountBills,
+    getRecentOKXAlgoOrders,
+    getRecentOKXFills,
+} from "./venue-adapter-history"
 import { mapOKXPositions } from "./venue-adapter-positions"
 import {
     buildOKXAttachedProtectionOrders,
@@ -128,6 +136,79 @@ export class OKXVenueAdapter implements VenueAdapter, PriceVerifier {
             resolvePositionPosSide: (side) => this.resolvePositionPosSide(side),
             getProtectionKey: buildOKXProtectionKey,
         })
+    }
+
+    async simulateDryRunOrder(intent: OrderIntent, context?: SubmitOrderContext): Promise<ExecutionResult> {
+        if (!context?.identity.canonicalOrderId) {
+            throw createExecutionError("pre_validation", "OKX dry-run submission requires canonical execution identity", {
+                code: "MISSING_CANONICAL_ORDER_ID",
+                retryable: false,
+                details: {
+                    instrument: intent.instrument,
+                },
+            })
+        }
+
+        const instId = normalizeInstrument(intent.instrument)
+        if (intent.orderType !== "market" && intent.orderType !== "limit") {
+            throw createExecutionError(
+                "pre_validation",
+                `OKX swap dry-run supports market and limit execution orders. Received ${intent.orderType}.`,
+                {
+                    code: "UNSUPPORTED_ORDER_TYPE",
+                    retryable: false,
+                    details: {
+                        instId,
+                        orderType: intent.orderType,
+                    },
+                }
+            )
+        }
+
+        const fillPrice = await this.resolveDryRunFillPrice(instId, intent)
+        const sizing = await this.normalizeQuantity(instId, intent.quantity)
+        if (sizing.baseQuantity <= 0) {
+            throw createExecutionError(
+                "pre_validation",
+                `Dry-run order quantity for ${instId} is below OKX minimum contract size`,
+                {
+                    code: "QUANTITY_BELOW_MINIMUM",
+                    retryable: false,
+                    details: {
+                        instId,
+                        requestedQuantity: intent.quantity,
+                    },
+                }
+            )
+        }
+
+        const estimatedFee = -Math.abs(sizing.baseQuantity * fillPrice * OKX_ESTIMATED_ONE_WAY_FEE_RATE)
+
+        return {
+            orderId: context.identity.canonicalOrderId,
+            canonicalOrderId: context.identity.canonicalOrderId,
+            providerOrderId: context.identity.providerOrderId,
+            providerClientOrderId: context.identity.providerClientOrderId,
+            providerOrderAliases: context.identity.providerOrderAliases,
+            submitAttemptId: context.identity.submitAttemptId,
+            submitAttemptSequence: context.identity.submitAttemptSequence,
+            commitOutcome: "accepted",
+            status: "filled",
+            filledQuantity: sizing.baseQuantity,
+            fillPrice,
+            timestamp: Date.now(),
+            intentUpdates: {
+                metadata: {
+                    estimatedPrice: fillPrice,
+                    currentPrice: fillPrice,
+                    fee: estimatedFee,
+                    feeCcy: "USDT",
+                    providerAccountingSource: "okx_dry_run_simulator",
+                    providerFeeEstimated: true,
+                    dryRunEstimatedFeeRate: OKX_ESTIMATED_ONE_WAY_FEE_RATE,
+                },
+            },
+        }
     }
 
     async submitOrder(intent: OrderIntent, context?: SubmitOrderContext): Promise<ExecutionResult> {
@@ -415,47 +496,47 @@ export class OKXVenueAdapter implements VenueAdapter, PriceVerifier {
     }
 
     async getRecentPositionClosures(): Promise<ProviderPositionClosure[]> {
-        const fills = await this.getRecentFills(Date.now() - 24 * 60 * 60 * 1000)
+        const begin = Date.now() - 24 * 60 * 60 * 1000
+        const [fills, algoOrders] = await Promise.all([
+            getRecentOKXFills(this.client, begin),
+            getRecentOKXAlgoOrders(this.client, begin),
+        ])
         return await mapOKXRecentPositionClosures({
             fills,
+            algoOrders,
             getInstrumentRules: (instId) => this.getInstrumentRules(instId),
             contractsToBaseQuantity: (rules, contracts) =>
                 this.contractsToBaseQuantity(rules, contracts),
         })
     }
 
-    private async getRecentFills(begin: number): Promise<OKXFill[]> {
-        const pageSize = 100
-        const maxPages = 10
-        const fills: OKXFill[] = []
-        let after: string | undefined
+    async getAccountPnlEvents(): Promise<AccountPnlEvent[]> {
+        const bills = await getRecentOKXAccountBills(this.client, Date.now() - 24 * 60 * 60 * 1000)
+        const fundingBills = bills.filter((bill) => isOKXFundingBill(bill))
 
-        for (let page = 0; page < maxPages; page++) {
-            const batch = await this.client.getFillsHistory("SWAP", {
-                begin,
-                limit: pageSize,
-                after,
-            })
-            fills.push(...batch)
-
-            const oldest = batch[batch.length - 1]
-            if (batch.length < pageSize || !oldest?.billId) {
-                return fills
-            }
-
-            after = oldest.billId
+        for (const bill of fundingBills) {
+            assertOKXFundingBillSettlementCurrency(bill)
         }
 
-        throw createExecutionError("venue", "OKX fills-history pagination exceeded the bounded page budget; refusing to reconcile closures from a truncated fill window", {
-            code: "FILLS_HISTORY_TRUNCATED",
-            retryable: true,
-            details: {
-                begin,
-                pageSize,
-                maxPages,
-                fetched: fills.length,
-            },
-        })
+        return fundingBills
+            .map((bill) => ({
+                providerEventId: bill.billId,
+                eventType: "funding_fee" as const,
+                instrument: bill.instId,
+                amount: Number(bill.amt),
+                currency: bill.ccy,
+                occurredAt: Number(bill.ts),
+                metadata: {
+                    source: "okx_account_bills",
+                    billType: bill.type,
+                    billSubType: bill.subType,
+                },
+            }))
+            .filter((event) =>
+                event.providerEventId &&
+                Number.isFinite(event.amount) &&
+                Number.isFinite(event.occurredAt)
+            )
     }
 
     async getOrderStatus(orderId: string): Promise<ExecutionResult> {
@@ -802,6 +883,33 @@ export class OKXVenueAdapter implements VenueAdapter, PriceVerifier {
         return side === "long" ? "long" : "short"
     }
 
+    private async resolveDryRunFillPrice(instId: string, intent: OrderIntent): Promise<number> {
+        const rawPrice = intent.orderType === "limit"
+            ? intent.limitPrice
+            : await this.getCurrentMarkPrice(instId)
+        const fillPrice = rawPrice !== undefined
+            ? await this.normalizePrice(instId, rawPrice)
+            : undefined
+
+        if (fillPrice === undefined || !Number.isFinite(fillPrice) || fillPrice <= 0) {
+            throw createExecutionError(
+                "pre_validation",
+                `Could not resolve OKX dry-run fill price for ${instId}`,
+                {
+                    code: "INVALID_PRICE",
+                    retryable: false,
+                    details: {
+                        instId,
+                        orderType: intent.orderType,
+                        limitPrice: intent.limitPrice,
+                    },
+                }
+            )
+        }
+
+        return fillPrice
+    }
+
     private async mapExecutionResult(
         instId: string,
         order: OKXOrder
@@ -814,4 +922,30 @@ export class OKXVenueAdapter implements VenueAdapter, PriceVerifier {
                 this.contractsToBaseQuantity(rules, contracts),
         })
     }
+}
+
+function isOKXFundingBill(bill: OKXAccountBill): boolean {
+    const type = `${bill.type}:${bill.subType ?? ""}`.toLowerCase()
+    return type.includes("funding") || bill.type === "8" || bill.subType === "173"
+}
+
+function assertOKXFundingBillSettlementCurrency(bill: OKXAccountBill): void {
+    const currency = bill.ccy.trim().toUpperCase()
+    if (isSettlementCurrency(currency)) {
+        return
+    }
+
+    throw createExecutionError("venue", `OKX funding bill ${bill.billId} is denominated in non-settlement currency ${bill.ccy}`, {
+        code: "OKX_FUNDING_BILL_NON_SETTLEMENT_CURRENCY",
+        retryable: false,
+        details: {
+            billId: bill.billId,
+            instId: bill.instId,
+            currency: bill.ccy,
+            amount: bill.amt,
+            billType: bill.type,
+            billSubType: bill.subType,
+            occurredAt: bill.ts,
+        },
+    })
 }

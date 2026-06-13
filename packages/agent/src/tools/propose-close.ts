@@ -1,5 +1,6 @@
 import { z } from "zod"
 import type { ExecutionPipeline, Position } from "@valiq-trading/core"
+import type { AlpacaOptionsVenueAdapter } from "@valiq-trading/alpaca-options"
 import type { MT5VenueAdapter } from "@valiq-trading/mt5"
 import type { OKXVenueAdapter } from "@valiq-trading/okx"
 import type { ToolBinding } from "../tool-registry"
@@ -41,15 +42,13 @@ export function createProposeCloseTool(
             const position = positions.find((item) => item.instrument === validated.instrument)
             const closeSide = position?.side === "short" ? "buy" : "sell"
             assertToolNotAborted(context?.signal)
-            const estimatedPrice = position
-                ? await options.resolveEstimatedPrice?.({
-                    instrument: validated.instrument,
-                    reason: validated.reason,
-                    closeSide,
-                    position,
-                    signal: context?.signal,
-                })
-                : undefined
+            const estimatedPrice = await options.resolveEstimatedPrice?.({
+                instrument: validated.instrument,
+                reason: validated.reason,
+                closeSide,
+                position,
+                signal: context?.signal,
+            })
             assertToolNotAborted(context?.signal)
             const { result, validation } = await pipeline.closePosition(
                 validated.instrument,
@@ -60,6 +59,26 @@ export function createProposeCloseTool(
             assertToolNotAborted(context?.signal)
             return toExecutionToolResult(result, { validation })
         },
+    })
+}
+
+export function createAlpacaProposeCloseTool(
+    pipeline: ExecutionPipeline,
+    venue: AlpacaOptionsVenueAdapter
+): ToolBinding {
+    return createToolBinding({
+        name: "propose_close",
+        venue: "alpaca-options",
+        handler: createProposeCloseTool(pipeline, {
+            resolveEstimatedPrice: async ({ instrument, signal }) => {
+                assertToolNotAborted(signal)
+                const closeIntent = await venue.buildCloseIntent(instrument)
+                const estimatedPrice = closeIntent.metadata?.estimatedPrice
+                return typeof estimatedPrice === "number" && Number.isFinite(estimatedPrice) && estimatedPrice > 0
+                    ? estimatedPrice
+                    : closeIntent.limitPrice
+            },
+        }).handler,
     })
 }
 

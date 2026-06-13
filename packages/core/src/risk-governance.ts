@@ -1,4 +1,5 @@
 import type { StrategyRiskCooldownState, StrategySafetyState } from "./types"
+import { resolveOptionContractMultiplier } from "./option-multiplier"
 import { readFiniteNumber, readTrimmedString } from "./value-readers"
 
 export interface RiskGovernanceOrderRecord {
@@ -402,10 +403,17 @@ export function resolveCloseOrderRealizedPnl(order: RiskGovernanceOrderRecord): 
         : "long"
 
     if (side === "short") {
-        return (entryPrice - closePrice) * order.filledQuantity
+        return (entryPrice - closePrice) * order.filledQuantity * resolveOrderNotionalMultiplier(order.instrument, metadata)
     }
 
-    return (closePrice - entryPrice) * order.filledQuantity
+    return (closePrice - entryPrice) * order.filledQuantity * resolveOrderNotionalMultiplier(order.instrument, metadata)
+}
+
+function resolveOrderNotionalMultiplier(
+    instrument: string,
+    metadata: Record<string, unknown> | undefined
+): number {
+    return resolveOptionContractMultiplier(instrument, metadata)
 }
 
 function requiresProviderReportedClosePnl(
@@ -456,11 +464,18 @@ function resolveSettlementCurrencyFee(
     }
 
     const feeCurrency = readTrimmedString(metadata?.feeCcy)?.toUpperCase()
-    if (feeCurrency && !["USD", "USDT", "USDC"].includes(feeCurrency)) {
-        return undefined
+    if (feeCurrency && !isSettlementCurrency(feeCurrency)) {
+        const source = readTrimmedString(metadata?.providerAccountingSource) ?? "provider_metadata"
+        throw new Error(`Non-settlement fee currency ${feeCurrency} from ${source} cannot be included in realized PnL`)
     }
 
     return fee
+}
+
+export const SETTLEMENT_CURRENCIES = ["USD", "USDT", "USDC"] as const
+
+export function isSettlementCurrency(currency: string): boolean {
+    return SETTLEMENT_CURRENCIES.includes(currency.toUpperCase() as typeof SETTLEMENT_CURRENCIES[number])
 }
 
 export function computeRecentTradeDigest(args: {

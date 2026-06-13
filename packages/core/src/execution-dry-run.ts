@@ -6,6 +6,7 @@ import {
     isDryRunAccountLedgerPosition,
     resolveDryRunCashDelta,
     resolveDryRunCurrentPrice,
+    resolveDryRunNotionalMultiplier,
     resolveDryRunOpeningCashDelta,
     resolveDryRunRealizedPnl,
     resolveDryRunUnrealizedPnl,
@@ -14,7 +15,7 @@ import {
     orderSideForPositionSide,
     readNumber,
 } from "./execution-metadata"
-import { createExecutionError } from "./utils"
+import { createExecutionErrorDetail, createExecutionError, formatExecutionError } from "./utils"
 
 export class DryRunExecutionBook {
     private positions = new Map<string, Position>()
@@ -82,11 +83,14 @@ export class DryRunExecutionBook {
         }
         const positionSide = side === "buy" ? "long" : "short"
         const existing = this.positions.get(instrument)
+        const multiplier = resolveDryRunNotionalMultiplier(instrument, metadata)
+        const fillFee = resolveDryRunFillFee(result)
         if (!existing) {
             if (action === "close") {
                 return
             }
-            this.cashAdjustment += resolveDryRunCashDelta(side, quantity, fillPrice)
+            this.applyFillFee(fillFee)
+            this.cashAdjustment += resolveDryRunCashDelta(side, quantity, fillPrice, multiplier)
             const currentPrice = resolveDryRunCurrentPrice(metadata, result) ?? fillPrice
             this.positions.set(instrument, {
                 instrument,
@@ -94,13 +98,15 @@ export class DryRunExecutionBook {
                 quantity,
                 entryPrice: fillPrice,
                 currentPrice,
-                unrealizedPnl: resolveDryRunUnrealizedPnl(positionSide, quantity, fillPrice, currentPrice),
+                unrealizedPnl: resolveDryRunUnrealizedPnl(positionSide, quantity, fillPrice, currentPrice, multiplier),
                 metadata: this.buildPositionMetadata(metadata, side, quantity, fillPrice, currentPrice, result),
             })
             return
         }
+        this.applyFillFee(fillFee)
         if (existing.side === positionSide) {
-            this.cashAdjustment += resolveDryRunCashDelta(side, quantity, fillPrice)
+            const existingMultiplier = resolveDryRunNotionalMultiplier(existing.instrument, existing.metadata)
+            this.cashAdjustment += resolveDryRunCashDelta(side, quantity, fillPrice, existingMultiplier)
             const totalQty = existing.quantity + quantity
             const avgEntry = (existing.quantity * existing.entryPrice + quantity * fillPrice) / totalQty
             const currentPrice = resolveDryRunCurrentPrice(metadata, result) ?? existing.currentPrice
@@ -109,7 +115,7 @@ export class DryRunExecutionBook {
                 quantity: totalQty,
                 entryPrice: avgEntry,
                 currentPrice,
-                unrealizedPnl: resolveDryRunUnrealizedPnl(existing.side, totalQty, avgEntry, currentPrice),
+                unrealizedPnl: resolveDryRunUnrealizedPnl(existing.side, totalQty, avgEntry, currentPrice, existingMultiplier),
                 metadata: this.buildPositionMetadata(
                     {
                         ...existing.metadata,
@@ -123,8 +129,9 @@ export class DryRunExecutionBook {
                 ),
             })
         } else {
+            const existingMultiplier = resolveDryRunNotionalMultiplier(existing.instrument, existing.metadata)
             const effectiveQuantity = action === "close" ? Math.min(existing.quantity, quantity) : quantity
-            this.cashAdjustment += resolveDryRunCashDelta(side, effectiveQuantity, fillPrice)
+            this.cashAdjustment += resolveDryRunCashDelta(side, effectiveQuantity, fillPrice, existingMultiplier)
             const closedQty = Math.min(existing.quantity, effectiveQuantity)
             this.realizedPnl += resolveDryRunRealizedPnl(existing, side, closedQty, fillPrice)
             const netQty = existing.quantity - effectiveQuantity
@@ -137,7 +144,7 @@ export class DryRunExecutionBook {
                     ...existing,
                     quantity: netQty,
                     currentPrice,
-                    unrealizedPnl: resolveDryRunUnrealizedPnl(existing.side, netQty, existing.entryPrice, currentPrice),
+                    unrealizedPnl: resolveDryRunUnrealizedPnl(existing.side, netQty, existing.entryPrice, currentPrice, existingMultiplier),
                     metadata: this.buildPositionMetadata(
                         {
                             ...existing.metadata,
@@ -159,11 +166,20 @@ export class DryRunExecutionBook {
                     quantity: flippedQty,
                     entryPrice: fillPrice,
                     currentPrice,
-                    unrealizedPnl: resolveDryRunUnrealizedPnl(positionSide, flippedQty, fillPrice, currentPrice),
+                    unrealizedPnl: resolveDryRunUnrealizedPnl(positionSide, flippedQty, fillPrice, currentPrice, multiplier),
                     metadata: this.buildPositionMetadata(metadata, side, flippedQty, fillPrice, currentPrice, result),
                 })
             }
         }
+    }
+
+    private applyFillFee(fee: number | undefined): void {
+        if (fee === undefined) {
+            return
+        }
+
+        this.cashAdjustment += fee
+        this.realizedPnl += fee
     }
 
     private buildPositionMetadata(
@@ -215,6 +231,31 @@ export async function simulateDryRunOrder(
         return await venue.simulateDryRunOrder(intent, context)
     }
 
+    const fillPrice = intent.limitPrice ?? (intent.metadata?.estimatedPrice as number | undefined)
+    if (fillPrice === undefined || !Number.isFinite(fillPrice) || fillPrice <= 0) {
+        const errorDetail = createExecutionErrorDetail("pre_validation", "Dry-run order simulation requires a positive limitPrice or estimatedPrice", {
+            code: "DRY_RUN_PRICE_REQUIRED",
+            retryable: false,
+            details: {
+                instrument: intent.instrument,
+                orderType: intent.orderType,
+            },
+        })
+        return {
+            orderId: context.identity.canonicalOrderId,
+            canonicalOrderId: context.identity.canonicalOrderId,
+            providerClientOrderId: context.identity.providerClientOrderId,
+            commitOutcome: "accepted",
+            submitAttemptId: context.identity.submitAttemptId,
+            submitAttemptSequence: context.identity.submitAttemptSequence,
+            status: "rejected",
+            filledQuantity: 0,
+            timestamp: Date.now(),
+            error: formatExecutionError(errorDetail),
+            errorDetail,
+        }
+    }
+
     return {
         orderId: context.identity.canonicalOrderId,
         canonicalOrderId: context.identity.canonicalOrderId,
@@ -224,11 +265,16 @@ export async function simulateDryRunOrder(
         submitAttemptSequence: context.identity.submitAttemptSequence,
         status: "filled",
         filledQuantity: intent.quantity,
-        fillPrice: intent.limitPrice ?? (intent.metadata?.estimatedPrice as number) ?? 0,
+        fillPrice,
         timestamp: Date.now(),
     }
 }
 
 function hasDryRunOrderSimulator(venue: VenueAdapter): venue is VenueAdapter & DryRunOrderSimulator {
     return typeof (venue as Partial<DryRunOrderSimulator>).simulateDryRunOrder === "function"
+}
+
+function resolveDryRunFillFee(result: ExecutionResult | undefined): number | undefined {
+    const fee = readNumber(result?.intentUpdates?.metadata?.fee)
+    return fee !== undefined && Number.isFinite(fee) ? fee : undefined
 }

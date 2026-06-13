@@ -4,16 +4,15 @@ import {
     ExecutionCostTracker,
     formatExecutionError,
     getExecutionErrorDetail,
-    readFiniteNumber,
     readTrimmedString,
     type AccountState,
     type DryRunOrderSimulator,
-    type ExecutionCostAssessment,
     type ExecutionResult,
     type OrderIntent,
     type PriceVerification,
     type PriceVerifier,
     type Position,
+    type ProviderPositionClosure,
     type SubmitOrderContext,
     type SubmitRecoveryResult,
     type VenueAdapter,
@@ -22,7 +21,7 @@ import {
 import type {
     CreateOrderParams,
     PolymarketClient,
-    PolymarketMarket,
+    PolymarketCurrentPosition,
     PolymarketOpenOrder,
     PolymarketOrderBook,
     PolymarketTrade,
@@ -31,55 +30,51 @@ import type {
 import { getPolymarketMarketPrice, type PolymarketMarketPrice } from "./market-price"
 import {
     buildCanonicalMetadataFromCurrentPosition,
-    dedupeAndRankMarkets,
     mapCurrentPosition,
     mapOpenOrderStatus,
     mapOpenOrderToExecutionResult,
     mapOrderType,
     mapPostOrderStatus,
-    matchesMarketQuery,
+    mapSettlementPositionClosure,
+    readPolymarketOrderSalt,
     readPolymarketSignedOrderFingerprint,
 } from "./venue-adapter-mappers"
-import { AMOUNT_MULTIPLIER } from "./polymarket-order-signing"
+import { getPolymarketOrderSemanticsError } from "./order-semantics"
+import { resolvePolymarketExecutablePrice } from "./polymarket-pricing"
+import {
+    buildPolymarketFeeMetadata,
+    matchesPolymarketRecoveryTradeGeometry,
+    mergePolymarketRecoveryOrderIds,
+    quantitiesMatch,
+    readPolymarketTradeOrderId,
+    readRecord,
+    resolvePostOrderFillSummary,
+    resolvePreparedSignedOrderSize,
+    summarizePolymarketTradesForOrder,
+} from "./venue-adapter-accounting"
+import {
+    buildPolymarketMarketSearchResult,
+    createPolymarketSearchMarketsLivePriceBudget,
+    POLYMARKET_SEARCH_MARKETS_MAX_LIVE_PRICE_TOKENS,
+    resolvePolymarketCanonicalOrderMetadata,
+    resolvePolymarketSearchMarkets,
+    type PolymarketMarketSearchResult,
+    type PolymarketSearchMarketsLivePriceBudget,
+} from "./venue-adapter-market-metadata"
 
-export interface PolymarketMarketSearchResult {
-    conditionId: string
-    question: string
-    category: string
-    description: string
-    marketSlug: string
-    active: boolean
-    closed: boolean
-    negRisk: boolean
-    minimumOrderSize: number
-    minimumTickSize: number
-    volume?: number
-    liquidity?: number
-    endDateIso: string
-    tokens: Array<{
-        tokenId: string
-        outcome: string
-        midpoint?: number
-        bestBid?: number
-        bestAsk?: number
-        spread?: number
-        executionCost?: ExecutionCostAssessment
-    }>
-}
-
-export const POLYMARKET_SEARCH_MARKETS_MAX_LIVE_PRICE_TOKENS = 4
-export const POLYMARKET_SEARCH_MARKETS_LIVE_PRICE_REQUEST_BUDGET =
-    POLYMARKET_SEARCH_MARKETS_MAX_LIVE_PRICE_TOKENS
+export { buildPolymarketFeeMetadata } from "./venue-adapter-accounting"
 const POLYMARKET_QUANTITY_EPSILON = 1e-9
-
-interface PolymarketSearchMarketsLivePriceBudget {
-    remainingTokens: number
-    remainingRequests: number
+interface PolymarketRecoveryIdentity {
+    salt: string
+    signedOrderFingerprint?: string
+    signedOrderMetadata?: Record<string, unknown>
 }
 
 export class PolymarketVenueAdapter implements VenueAdapter, PriceVerifier, DryRunOrderSimulator {
     readonly identityCapability = "deterministic_signed_id" as const
     private positionsCache: { positions: Position[]; fetchedAt: number } | null = null
+    private currentPositionsCache: { positions: PolymarketCurrentPosition[]; fetchedAt: number } | null = null
+    private currentPositionsInFlight: Promise<PolymarketCurrentPosition[]> | null = null
     private readonly preparedOrders = new Map<string, PreparedPolymarketOrder>()
     private readonly POSITIONS_CACHE_TTL = 5000
     private readonly marketPriceCacheTtlMs = 15_000
@@ -136,16 +131,19 @@ export class PolymarketVenueAdapter implements VenueAdapter, PriceVerifier, DryR
         includeLivePrices?: boolean
         livePriceTokenLimit?: number
     }): Promise<PolymarketMarketSearchResult[]> {
-        const livePriceBudget = this.createSearchMarketsLivePriceBudget(params)
+        const livePriceBudget = createPolymarketSearchMarketsLivePriceBudget({
+            ...params,
+            maxLivePriceTokens: POLYMARKET_SEARCH_MARKETS_MAX_LIVE_PRICE_TOKENS,
+        })
 
         if (params.conditionId) {
             const market = await this.client.getMarket(params.conditionId)
-            return [await this.buildMarketSearchResult(market, livePriceBudget)]
+            return [await this.buildSearchResult(market, livePriceBudget)]
         }
 
         if (params.marketSlug) {
             const market = await this.client.getMarketBySlug(params.marketSlug)
-            return market ? [await this.buildMarketSearchResult(market, livePriceBudget)] : []
+            return market ? [await this.buildSearchResult(market, livePriceBudget)] : []
         }
 
         const limit = params.limit ?? 10
@@ -156,7 +154,7 @@ export class PolymarketVenueAdapter implements VenueAdapter, PriceVerifier, DryR
             throw new Error("search_markets requires category, query, conditionId, or marketSlug")
         }
 
-        const markets = await this.resolveSearchMarkets({
+        const markets = await resolvePolymarketSearchMarkets(this.client, {
             category,
             query,
             limit,
@@ -165,7 +163,7 @@ export class PolymarketVenueAdapter implements VenueAdapter, PriceVerifier, DryR
         return await Promise.all(
             markets
                 .slice(0, limit)
-                .map(async (market) => await this.buildMarketSearchResult(market, livePriceBudget))
+                .map(async (market) => await this.buildSearchResult(market, livePriceBudget))
         )
     }
 
@@ -177,7 +175,7 @@ export class PolymarketVenueAdapter implements VenueAdapter, PriceVerifier, DryR
             return this.positionsCache.positions
         }
 
-        const positions = (await this.client.getCurrentPositions())
+        const positions = (await this.getCurrentPositionsCached())
             .filter((position) => position.size > 0)
             .filter((position) => !position.redeemable && !position.mergeable)
             .map((position) => mapCurrentPosition(position))
@@ -187,39 +185,63 @@ export class PolymarketVenueAdapter implements VenueAdapter, PriceVerifier, DryR
     }
 
     async getAccountState(): Promise<AccountState> {
-        const [usdcBalance, positions] = await Promise.all([
+        const [usdcBalance, currentPositions] = await Promise.all([
             this.client.getBalance(),
-            this.getPositions(),
+            this.getCurrentPositionsCached(),
         ])
 
         let openPnl = 0
-        let totalExposure = 0
+        let tokenValue = 0
 
-        for (const pos of positions) {
-            openPnl += pos.unrealizedPnl ?? 0
-            totalExposure += pos.quantity * pos.entryPrice
+        for (const position of currentPositions) {
+            if (position.size <= 0) {
+                continue
+            }
+
+            tokenValue += Number.isFinite(position.currentValue)
+                ? position.currentValue
+                : position.size * position.avgPrice + position.cashPnl
+            if (!position.redeemable && !position.mergeable) {
+                openPnl += position.cashPnl
+            }
         }
 
-        const totalEquity = usdcBalance + totalExposure + openPnl
+        const totalEquity = usdcBalance + tokenValue
 
         return {
             balance: usdcBalance,
             equity: totalEquity,
             buyingPower: usdcBalance,
-            marginUsed: totalExposure,
+            marginUsed: tokenValue,
             marginAvailable: usdcBalance,
             openPnl,
             dayPnl: 0,
         }
     }
 
+    async getRecentPositionClosures(): Promise<ProviderPositionClosure[]> {
+        const positions = await this.getCurrentPositionsCached()
+        return positions
+            .map((position) => mapSettlementPositionClosure(position))
+            .filter((closure): closure is ProviderPositionClosure => closure !== undefined)
+    }
+
     async getWorkingOrders(): Promise<WorkingOrder[]> {
         const orders = await this.client.getOpenOrders()
+        const filledAssetIds = Array.from(new Set(orders
+            .filter((order) => Number(order.size_matched) > 0)
+            .map((order) => order.asset_id)))
+        const tradesByAssetId = new Map<string, PolymarketTrade[]>()
+        await Promise.all(filledAssetIds.map(async (assetId) => {
+            tradesByAssetId.set(assetId, await this.client.getTrades({ assetId }))
+        }))
+
         return orders.map((order) => {
             const quantity = Number(order.original_size)
             const filledQuantity = Number(order.size_matched)
             const submittedAt = Date.parse(order.created_at)
             const signedOrderFingerprint = readPolymarketSignedOrderFingerprint(order)
+            const tradeSummary = summarizePolymarketTradesForOrder(order.id, tradesByAssetId.get(order.asset_id) ?? [])
 
             return {
                 orderId: order.id,
@@ -235,12 +257,17 @@ export class PolymarketVenueAdapter implements VenueAdapter, PriceVerifier, DryR
                 updatedAt: Number.isFinite(submittedAt) ? submittedAt : Date.now(),
                 side: order.side.toLowerCase() === "buy" ? "buy" : "sell",
                 limitPrice: Number(order.price),
+                avgFillPrice: tradeSummary?.fillPrice,
                 metadata: {
                     market: order.market,
                     outcome: order.outcome,
                     orderType: order.order_type,
                     expiration: order.expiration,
                     signedOrderFingerprint,
+                    ...(filledQuantity > 0 ? tradeSummary?.metadata ?? {
+                        providerAccountingMissing: true,
+                        providerAccountingMissingReason: "polymarket_working_order_fill_requires_data_trade_reconciliation",
+                    } : {}),
                 },
             }
         })
@@ -305,7 +332,30 @@ export class PolymarketVenueAdapter implements VenueAdapter, PriceVerifier, DryR
         } finally {
             this.preparedOrders.delete(context.identity.canonicalOrderId)
         }
-        const price = readFiniteNumber(prepared.signedOrderMetadata.price)
+        const recentTrades = response.status === "matched"
+            ? await this.client.getTrades({ assetId: intent.instrument })
+            : []
+        const fillSummary = resolvePostOrderFillSummary({
+            response,
+            side: intent.side,
+            trades: recentTrades,
+        })
+        if (response.status === "matched" && !fillSummary) {
+            throw createExecutionError("venue", "Polymarket matched order response did not include matched amount or trade evidence", {
+                code: "POLYMARKET_MATCHED_FILL_EVIDENCE_MISSING",
+                retryable: true,
+                details: {
+                    orderId: response.orderID,
+                    canonicalOrderId: context.identity.canonicalOrderId,
+                    instrument: intent.instrument,
+                    responseStatus: response.status,
+                },
+            })
+        }
+        const filledQuantity = fillSummary?.filledQuantity ?? 0
+        const status = response.status === "matched" && filledQuantity > 0 && !quantitiesMatch(filledQuantity, preparedSize)
+            ? "partially_filled"
+            : mapPostOrderStatus(response.status)
 
         return {
             orderId: response.orderID,
@@ -313,10 +363,16 @@ export class PolymarketVenueAdapter implements VenueAdapter, PriceVerifier, DryR
             providerClientOrderId: response.signedOrderFingerprint,
             signedOrderFingerprint: response.signedOrderFingerprint,
             signedOrderMetadata: response.signedOrderMetadata,
-            status: mapPostOrderStatus(response.status),
-            filledQuantity: response.status === "matched" ? preparedSize : 0,
-            fillPrice: response.status === "matched" ? price : undefined,
+            status,
+            filledQuantity,
+            fillPrice: fillSummary?.fillPrice,
             timestamp: Date.now(),
+            intentUpdates: {
+                metadata: {
+                    ...buildPolymarketFeeMetadata(prepared.signedOrderMetadata),
+                    ...fillSummary?.metadata,
+                },
+            },
         }
     }
 
@@ -324,15 +380,14 @@ export class PolymarketVenueAdapter implements VenueAdapter, PriceVerifier, DryR
         intent: OrderIntent,
         canonicalOrderId: string
     ): Promise<CreateOrderParams> {
-        const canonical = this.resolveCanonicalOrderMetadata(intent)
+        this.assertSupportedOrderSemantics(intent)
+        const canonical = resolvePolymarketCanonicalOrderMetadata(intent)
         const tokenId = intent.instrument
         const polyOrderType = mapOrderType(intent)
         let price = intent.limitPrice
         if (price === undefined || price <= 0) {
             const currentPrice = await this.client.getPrice(tokenId, intent.side)
-            price = intent.side === "buy"
-                ? Math.min(currentPrice * 1.02, 0.99)
-                : Math.max(currentPrice * 0.98, 0.01)
+            price = resolvePolymarketExecutablePrice(intent.side, currentPrice)
         }
 
         return {
@@ -347,13 +402,34 @@ export class PolymarketVenueAdapter implements VenueAdapter, PriceVerifier, DryR
         }
     }
 
+    private assertSupportedOrderSemantics(intent: OrderIntent): void {
+        const reason = getPolymarketOrderSemanticsError(intent)
+        if (!reason) {
+            return
+        }
+
+        throw createExecutionError("pre_validation", reason, {
+            code: "POLYMARKET_UNSUPPORTED_ORDER_SEMANTICS",
+            retryable: false,
+            details: {
+                instrument: intent.instrument,
+                orderType: intent.orderType,
+                stopPrice: intent.stopPrice,
+                timeInForce: intent.timeInForce,
+            },
+        })
+    }
+
     classifySubmitError(error: unknown): "commit_unknown" | "rejected" | undefined {
         const detail = getExecutionErrorDetail(error)
+        if (!detail) {
+            return "commit_unknown"
+        }
         if (detail?.code === "INVALID_ORDER_DUPLICATED") {
             return "commit_unknown"
         }
 
-        return detail?.retryable ? "commit_unknown" : "rejected"
+        return detail.retryable ? "commit_unknown" : "rejected"
     }
 
     async recoverSubmittedOrder(
@@ -365,39 +441,49 @@ export class PolymarketVenueAdapter implements VenueAdapter, PriceVerifier, DryR
         const providerSignedOrderFingerprint = readTrimmedString(detail?.details?.signedOrderFingerprint)
         const persistedSignedOrderFingerprint = context.identity.signedOrderFingerprint
         const signedOrderFingerprint = providerSignedOrderFingerprint ?? persistedSignedOrderFingerprint
+        const errorSignedOrderMetadata = readRecord(detail?.details?.signedOrderMetadata)
+        const signedOrderMetadata = context.identity.signedOrderMetadata ?? errorSignedOrderMetadata
+        const salt = readTrimmedString(signedOrderMetadata?.salt)
 
-        if (signedOrderFingerprint) {
-            if (
-                !persistedSignedOrderFingerprint ||
-                persistedSignedOrderFingerprint !== signedOrderFingerprint
-            ) {
-                return {
-                    outcome: "not_found",
-                    message: "Polymarket recovery refused because the signed-order fingerprint was not persisted before post",
-                    details: {
-                        canonicalOrderId: context.identity.canonicalOrderId,
-                        signedOrderFingerprint,
-                        persistedSignedOrderFingerprint,
-                    },
-                }
+        if (
+            providerSignedOrderFingerprint &&
+            persistedSignedOrderFingerprint &&
+            providerSignedOrderFingerprint !== persistedSignedOrderFingerprint
+        ) {
+            return {
+                outcome: "not_found",
+                message: "Polymarket recovery refused because the submitted signed-order fingerprint does not match persisted identity",
+                details: {
+                    canonicalOrderId: context.identity.canonicalOrderId,
+                    signedOrderFingerprint,
+                    persistedSignedOrderFingerprint,
+                },
             }
-
-            return await this.recoverDuplicatedSignedOrder(intent, context, signedOrderFingerprint)
         }
 
-        return {
-            outcome: "not_found",
-            message: "Polymarket recovery could not prove a unique provider order for the deterministic signed-order fingerprint",
-            details: {
-                canonicalOrderId: context.identity.canonicalOrderId,
-                signedOrderFingerprint,
-                tokenId: intent.instrument,
-            },
+        if (!salt) {
+            return {
+                outcome: "not_found",
+                message: "Polymarket recovery could not prove a unique provider order without persisted signed-order salt",
+                details: {
+                    canonicalOrderId: context.identity.canonicalOrderId,
+                    signedOrderFingerprint,
+                    hasSignedOrderMetadata: signedOrderMetadata !== undefined,
+                    tokenId: intent.instrument,
+                },
+            }
         }
+
+        return await this.recoverDuplicatedSignedOrder(intent, context, {
+            salt,
+            signedOrderFingerprint,
+            signedOrderMetadata,
+        })
     }
 
     async simulateDryRunOrder(intent: OrderIntent, context?: SubmitOrderContext): Promise<ExecutionResult> {
-        const canonical = this.resolveCanonicalOrderMetadata(intent)
+        const canonical = resolvePolymarketCanonicalOrderMetadata(intent)
+        this.assertSupportedOrderSemantics(intent)
         if (!context?.identity.canonicalOrderId) {
             throw createExecutionError("pre_validation", "Polymarket dry-run simulation requires canonical execution identity", {
                 code: "MISSING_CANONICAL_ORDER_ID",
@@ -432,6 +518,8 @@ export class PolymarketVenueAdapter implements VenueAdapter, PriceVerifier, DryR
             }
         }
 
+        const feeRateBps = await this.resolveDryRunFeeRateBps(canonical.tokenId)
+
         return {
             orderId: context.identity.canonicalOrderId,
             canonicalOrderId: context.identity.canonicalOrderId,
@@ -443,24 +531,39 @@ export class PolymarketVenueAdapter implements VenueAdapter, PriceVerifier, DryR
             filledQuantity: intent.quantity,
             fillPrice,
             timestamp: Date.now(),
+            intentUpdates: {
+                metadata: buildPolymarketFeeMetadata({
+                    feeRateBps,
+                    size: intent.quantity,
+                    price: fillPrice,
+                }),
+            },
+        }
+    }
+
+    private async resolveDryRunFeeRateBps(tokenId: string): Promise<number | undefined> {
+        try {
+            return await this.client.getFeeRateBps(tokenId)
+        } catch {
+            return undefined
         }
     }
 
     async cancelOrder(orderId: string): Promise<ExecutionResult> {
         await this.client.cancelOrder(orderId)
 
-        // Fetch the order after cancellation to get final state
         try {
             const order = await this.client.getOrder(orderId)
             return mapOpenOrderToExecutionResult(order)
-        } catch {
-            // If the order is already gone, return a cancelled result
-            return {
-                orderId,
-                status: "cancelled",
-                filledQuantity: 0,
-                timestamp: Date.now(),
-            }
+        } catch (error) {
+            throw createExecutionError("venue", "Polymarket cancel status could not be confirmed after cancel request", {
+                code: "POLYMARKET_CANCEL_STATUS_UNCONFIRMED",
+                retryable: true,
+                details: {
+                    orderId,
+                    error: error instanceof Error ? error.message : String(error),
+                },
+            })
         }
     }
 
@@ -551,7 +654,7 @@ export class PolymarketVenueAdapter implements VenueAdapter, PriceVerifier, DryR
     }
 
     async buildCloseIntent(instrument: string): Promise<OrderIntent> {
-        const position = await this.resolveCurrentPositionForToken(instrument)
+        const position = (await this.getPositions()).find((entry) => entry.instrument === instrument) ?? null
         if (!position) {
             throw createExecutionError("pre_validation", `Cannot close Polymarket token ${instrument}: provider position identity is unavailable`, {
                 code: "POLYMARKET_CLOSE_IDENTITY_UNAVAILABLE",
@@ -581,7 +684,7 @@ export class PolymarketVenueAdapter implements VenueAdapter, PriceVerifier, DryR
             side: "sell",
             quantity: position.quantity,
             orderType: "limit",
-            limitPrice: Math.max(sellPrice, 0.01),
+            limitPrice: resolvePolymarketExecutablePrice("sell", sellPrice),
             timeInForce: "ioc",
             metadata: buildCanonicalMetadataFromCurrentPosition(position),
         }
@@ -593,7 +696,7 @@ export class PolymarketVenueAdapter implements VenueAdapter, PriceVerifier, DryR
     }
 
     async verify(intent: OrderIntent): Promise<PriceVerification> {
-        const canonical = this.resolveCanonicalOrderMetadata(intent)
+        const canonical = resolvePolymarketCanonicalOrderMetadata(intent)
         const marketPrice = await this.getMarketPrice(intent.instrument, intent.side)
         const proposedPrice = intent.orderType === "limit" || intent.orderType === "stop_limit"
             ? intent.limitPrice
@@ -654,7 +757,7 @@ export class PolymarketVenueAdapter implements VenueAdapter, PriceVerifier, DryR
     private async recoverDuplicatedSignedOrder(
         intent: OrderIntent,
         context: SubmitOrderContext,
-        signedOrderFingerprint: string
+        identity: PolymarketRecoveryIdentity
     ): Promise<SubmitRecoveryResult> {
         const [openOrders, recentTrades] = await Promise.all([
             this.findOpenOrdersForRecovery(intent),
@@ -663,50 +766,73 @@ export class PolymarketVenueAdapter implements VenueAdapter, PriceVerifier, DryR
             }),
         ])
         const openMatches = openOrders.filter((order) =>
-            readPolymarketSignedOrderFingerprint(order) === signedOrderFingerprint
+            readPolymarketOrderSalt(order) === identity.salt
         )
-        const tradeMatches = recentTrades.filter((trade) =>
-            readPolymarketSignedOrderFingerprint(trade) === signedOrderFingerprint
+        const saltTradeMatches = recentTrades.filter((trade) =>
+            readPolymarketOrderSalt(trade) === identity.salt
         )
 
-        const openMatchesById = new Map(openMatches.map((order) => [order.id, order]))
-        const exactOrderIds = mergePolymarketRecoveryOrderIds([
-            ...openMatches.map((order) => order.id),
-            ...tradeMatches.map(readPolymarketTradeOrderId),
-        ])
+        const recoveredResults: ExecutionResult[] = openMatches.map((order) => ({
+            ...mapOpenOrderToExecutionResult(order),
+            providerClientOrderId: identity.signedOrderFingerprint ?? identity.salt,
+            signedOrderFingerprint: identity.signedOrderFingerprint,
+            signedOrderMetadata: identity.signedOrderMetadata,
+            commitOutcome: "recovered",
+        }))
+        const terminalCandidateOrderIds = mergePolymarketRecoveryOrderIds([
+            ...saltTradeMatches.map(readPolymarketTradeOrderId),
+            ...recentTrades
+                .filter((trade) => matchesPolymarketRecoveryTradeGeometry(trade, intent))
+                .map(readPolymarketTradeOrderId),
+        ]).filter((orderId) => !openMatches.some((order) => order.id === orderId))
 
-        if (exactOrderIds.length === 1) {
-            const orderId = exactOrderIds[0]!
-            const openOrder = openMatchesById.get(orderId)
-            if (openOrder) {
-                return {
-                    outcome: "accepted",
-                    result: {
-                        ...mapOpenOrderToExecutionResult(openOrder),
-                        providerClientOrderId: signedOrderFingerprint,
-                        signedOrderFingerprint,
-                        commitOutcome: "recovered",
-                    },
-                }
-            }
-
-            return await this.recoverPolymarketMatchedOrder(
+        for (const orderId of terminalCandidateOrderIds) {
+            const recovery = await this.recoverPolymarketMatchedOrder(
                 context,
                 orderId,
-                signedOrderFingerprint
+                identity
             )
+            if (recovery.outcome === "accepted") {
+                recoveredResults.push(recovery.result)
+            }
+        }
+
+        if (recoveredResults.length === 1) {
+            return {
+                outcome: "accepted",
+                result: recoveredResults[0]!,
+            }
+        }
+
+        if (recoveredResults.length > 1) {
+            return {
+                outcome: "ambiguous",
+                message: "Polymarket recovery found multiple provider orders proving the same signed-order salt",
+                matches: recoveredResults,
+                details: {
+                    canonicalOrderId: context.identity.canonicalOrderId,
+                    salt: identity.salt,
+                    signedOrderFingerprint: identity.signedOrderFingerprint,
+                    openCandidateCount: openOrders.length,
+                    exactOpenMatchCount: openMatches.length,
+                    saltTradeMatchCount: saltTradeMatches.length,
+                    terminalCandidateOrderIds,
+                    tokenId: intent.instrument,
+                },
+            }
         }
 
         return {
-            outcome: exactOrderIds.length > 1 ? "ambiguous" : "not_found",
-            message: "Polymarket recovery could not prove a unique provider order for the exact signed-order fingerprint",
+            outcome: "not_found",
+            message: "Polymarket recovery could not prove a unique provider order for the signed-order salt",
             details: {
                 canonicalOrderId: context.identity.canonicalOrderId,
-                signedOrderFingerprint,
+                salt: identity.salt,
+                signedOrderFingerprint: identity.signedOrderFingerprint,
                 openCandidateCount: openOrders.length,
                 exactOpenMatchCount: openMatches.length,
-                exactTradeMatchCount: tradeMatches.length,
-                exactOrderIds,
+                saltTradeMatchCount: saltTradeMatches.length,
+                terminalCandidateOrderIds,
                 tokenId: intent.instrument,
             },
         }
@@ -715,17 +841,18 @@ export class PolymarketVenueAdapter implements VenueAdapter, PriceVerifier, DryR
     private async recoverPolymarketMatchedOrder(
         context: SubmitOrderContext,
         orderId: string,
-        signedOrderFingerprint: string
+        identity: PolymarketRecoveryIdentity
     ): Promise<SubmitRecoveryResult> {
         try {
             const order = await this.client.getOrder(orderId)
-            if (readPolymarketSignedOrderFingerprint(order) === signedOrderFingerprint) {
+            if (readPolymarketOrderSalt(order) === identity.salt) {
                 return {
                     outcome: "accepted",
                     result: {
                         ...mapOpenOrderToExecutionResult(order),
-                        providerClientOrderId: signedOrderFingerprint,
-                        signedOrderFingerprint,
+                        providerClientOrderId: identity.signedOrderFingerprint ?? identity.salt,
+                        signedOrderFingerprint: identity.signedOrderFingerprint,
+                        signedOrderMetadata: identity.signedOrderMetadata,
                         commitOutcome: "recovered",
                     },
                 }
@@ -733,10 +860,11 @@ export class PolymarketVenueAdapter implements VenueAdapter, PriceVerifier, DryR
         } catch {
             return {
                 outcome: "not_found",
-                message: "Polymarket recovery found matching activity but provider order lookup did not prove the signed-order fingerprint",
+                message: "Polymarket recovery found matching activity but provider order lookup did not prove the signed-order salt",
                 details: {
                     canonicalOrderId: context.identity.canonicalOrderId,
-                    signedOrderFingerprint,
+                    salt: identity.salt,
+                    signedOrderFingerprint: identity.signedOrderFingerprint,
                     orderId,
                 },
             }
@@ -744,169 +872,49 @@ export class PolymarketVenueAdapter implements VenueAdapter, PriceVerifier, DryR
 
         return {
             outcome: "not_found",
-            message: "Polymarket recovery found matching activity but provider order lookup returned a different signed-order fingerprint",
+            message: "Polymarket recovery found matching activity but provider order lookup returned a different signed-order salt",
             details: {
                 canonicalOrderId: context.identity.canonicalOrderId,
-                signedOrderFingerprint,
+                salt: identity.salt,
+                signedOrderFingerprint: identity.signedOrderFingerprint,
                 orderId,
             },
         }
     }
 
-    private async resolveSearchMarkets(params: {
-        category?: string
-        query?: string
-        limit: number
-    }): Promise<PolymarketMarket[]> {
-        if (params.category && params.query) {
-            const [queryMarkets, categoryMarkets] = await Promise.all([
-                this.client.searchMarkets(params.query, params.limit),
-                this.client.getTopLiquidMarketsForCategory(params.category, params.limit),
-            ])
-
-            return dedupeAndRankMarkets([
-                ...queryMarkets,
-                ...categoryMarkets.filter((market) => matchesMarketQuery(market, params.query!)),
-            ])
+    private async getCurrentPositionsCached(): Promise<PolymarketCurrentPosition[]> {
+        if (
+            this.currentPositionsCache &&
+            Date.now() - this.currentPositionsCache.fetchedAt < this.POSITIONS_CACHE_TTL
+        ) {
+            return this.currentPositionsCache.positions
         }
 
-        if (params.category) {
-            return await this.client.getTopLiquidMarketsForCategory(params.category, params.limit)
+        if (!this.currentPositionsInFlight) {
+            this.currentPositionsInFlight = this.client.getCurrentPositions()
+                .then((positions) => {
+                    this.currentPositionsCache = { positions, fetchedAt: Date.now() }
+                    this.positionsCache = null
+                    return positions
+                })
+                .finally(() => {
+                    this.currentPositionsInFlight = null
+                })
         }
 
-        return await this.client.searchMarkets(params.query!, params.limit)
+        return await this.currentPositionsInFlight
     }
 
-    private async resolveCurrentPositionForToken(tokenId: string): Promise<Position | null> {
-        const positions = await this.getPositions()
-        return positions.find((position) => position.instrument === tokenId) ?? null
-    }
-
-    private async resolveCanonicalMetadataForToken(
-        tokenId: string,
-        conditionId: string,
-        outcome: string
-    ): Promise<Record<string, unknown>> {
-        const position = await this.resolveCurrentPositionForToken(tokenId)
-        if (position?.metadata?.tokenId === tokenId) {
-            return position.metadata
-        }
-
-        const market = await this.client.getMarket(conditionId)
-        const token = market.tokens.find((candidate) => candidate.tokenId === tokenId)
-        if (!token) {
-            throw new Error(`Polymarket token ${tokenId} was not found in market ${conditionId}`)
-        }
-
-        return {
-            tokenId,
-            conditionId: market.conditionId,
-            marketSlug: market.marketSlug,
-            question: market.question,
-            outcome: token.outcome || outcome,
-            category: market.category,
-            endDateIso: market.endDateIso,
-            liquidity: market.liquidity,
-            volume: market.volume,
-            negRisk: market.negRisk,
-        }
-    }
-
-    private resolveCanonicalOrderMetadata(intent: OrderIntent): {
-        tokenId: string
-        conditionId: string
-        marketSlug: string
-        question: string
-        outcome: string
-        category?: string
-        endDateIso?: string
-        liquidity?: number
-        volume?: number
-        negRisk?: boolean
-        expiration?: number
-    } {
-        const metadata = intent.metadata ?? {}
-        const tokenId = readTrimmedString(metadata.tokenId) ?? intent.instrument
-        const conditionId = readTrimmedString(metadata.conditionId)
-        const marketSlug = readTrimmedString(metadata.marketSlug)
-        const question = readTrimmedString(metadata.question)
-        const outcome = readTrimmedString(metadata.outcome)
-
-        if (!tokenId || tokenId !== intent.instrument || !conditionId || !marketSlug || !question || !outcome) {
-            throw new Error("Polymarket orders require canonical tokenId, conditionId, marketSlug, question, and outcome metadata from market discovery")
-        }
-
-        return {
-            tokenId,
-            conditionId,
-            marketSlug,
-            question,
-            outcome,
-            category: readTrimmedString(metadata.category),
-            endDateIso: readTrimmedString(metadata.endDateIso),
-            liquidity: readFiniteNumber(metadata.liquidity),
-            volume: readFiniteNumber(metadata.volume),
-            negRisk: typeof metadata.negRisk === "boolean" ? metadata.negRisk : undefined,
-            expiration: readFiniteNumber(metadata.expiration),
-        }
-    }
-
-    private async buildMarketSearchResult(
-        market: PolymarketMarket,
+    private async buildSearchResult(
+        market: Parameters<typeof buildPolymarketMarketSearchResult>[0]["market"],
         livePriceBudget?: PolymarketSearchMarketsLivePriceBudget
     ): Promise<PolymarketMarketSearchResult> {
-        const tokens = await Promise.all(
-            market.tokens.map(async (token) => {
-                const price = await this.maybeGetSearchMarketsLivePrice(token.tokenId, livePriceBudget)
-
-                return {
-                    tokenId: token.tokenId,
-                    outcome: token.outcome,
-                    midpoint: price?.midpoint,
-                    bestBid: price?.bestBid,
-                    bestAsk: price?.bestAsk,
-                    spread: price?.spread,
-                    executionCost: price?.executionCost,
-                }
-            })
-        )
-
-        return {
-            conditionId: market.conditionId,
-            question: market.question,
-            category: market.category,
-            description: market.description,
-            marketSlug: market.marketSlug,
-            active: market.active,
-            closed: market.closed,
-            negRisk: market.negRisk,
-            minimumOrderSize: market.minimumOrderSize,
-            minimumTickSize: market.minimumTickSize,
-            volume: market.volume,
-            liquidity: market.liquidity,
-            endDateIso: market.endDateIso,
-            tokens,
-        }
-    }
-
-    private createSearchMarketsLivePriceBudget(params: {
-        includeLivePrices?: boolean
-        livePriceTokenLimit?: number
-    }): PolymarketSearchMarketsLivePriceBudget | undefined {
-        if (params.includeLivePrices !== true) {
-            return undefined
-        }
-
-        const requestedTokenLimit = params.livePriceTokenLimit ?? POLYMARKET_SEARCH_MARKETS_MAX_LIVE_PRICE_TOKENS
-        const boundedTokenLimit = Math.min(
-            requestedTokenLimit,
-            POLYMARKET_SEARCH_MARKETS_MAX_LIVE_PRICE_TOKENS
-        )
-
-        return {
-            remainingTokens: boundedTokenLimit,
-            remainingRequests: boundedTokenLimit,
-        }
+        return await buildPolymarketMarketSearchResult({
+            market,
+            livePriceBudget,
+            maybeGetLivePrice: async (tokenId, budget) =>
+                await this.maybeGetSearchMarketsLivePrice(tokenId, budget),
+        })
     }
 
     private async maybeGetSearchMarketsLivePrice(
@@ -989,42 +997,3 @@ export class PolymarketVenueAdapter implements VenueAdapter, PriceVerifier, DryR
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-function mergePolymarketRecoveryOrderIds(orderIds: Array<string | undefined>): string[] {
-    const ids = new Set<string>()
-
-    for (const orderId of orderIds) {
-        const normalized = readTrimmedString(orderId)
-        if (normalized) {
-            ids.add(normalized)
-        }
-    }
-
-    return Array.from(ids).sort((left, right) => left.localeCompare(right))
-}
-
-function resolvePreparedSignedOrderSize(metadata: Record<string, unknown>): number | undefined {
-    const explicitSize = readFiniteNumber(metadata.size)
-    if (explicitSize !== undefined) {
-        return explicitSize
-    }
-
-    const side = readTrimmedString(metadata.side)
-    const rawSize = side === "sell"
-        ? readFiniteNumber(metadata.makerAmount)
-        : side === "buy"
-            ? readFiniteNumber(metadata.takerAmount)
-            : undefined
-
-    return rawSize !== undefined
-        ? rawSize / AMOUNT_MULTIPLIER
-        : undefined
-}
-
-function quantitiesMatch(left: number, right: number): boolean {
-    return Math.abs(left - right) <= POLYMARKET_QUANTITY_EPSILON
-}
-
-function readPolymarketTradeOrderId(trade: PolymarketTrade): string | undefined {
-    return readTrimmedString(trade.maker_order_id) ?? readTrimmedString(trade.taker_order_id)
-}

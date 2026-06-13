@@ -67,6 +67,7 @@ class MT5WorkerRuntime:
         self._watchdog_thread: threading.Thread | None = None
         self._operation_lock: asyncio.Lock | None = None
         self._connect_lock: asyncio.Lock | None = None
+        self._session_lock: asyncio.Lock | None = None
         self._executor: ThreadPoolExecutor | None = None
         self._singleton_lock_handle: Any | None = None
         self._singleton_lock_path: str | None = None
@@ -373,6 +374,11 @@ class MT5WorkerRuntime:
             self._connect_lock = asyncio.Lock()
         return self._connect_lock
 
+    def _session_lock_instance(self) -> asyncio.Lock:
+        if self._session_lock is None:
+            self._session_lock = asyncio.Lock()
+        return self._session_lock
+
     def _executor_instance(self) -> ThreadPoolExecutor:
         if self._executor is None:
             self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="mt5-sdk")
@@ -513,6 +519,94 @@ class MT5WorkerRuntime:
             lambda: func(client),
             timeout_seconds,
         )
+
+    async def run_account_operation(
+        self,
+        operation: str,
+        credentials: Any,
+        func: Callable[[MT5Client], Any],
+        timeout_seconds: float | None = None,
+    ) -> Any:
+        login = int(credentials.login)
+        session_lock = self._session_lock_instance()
+        queue_timeout = self.settings.mt5_operation_queue_timeout_seconds
+        try:
+            await asyncio.wait_for(session_lock.acquire(), timeout=queue_timeout)
+        except (TimeoutError, asyncio.TimeoutError):
+            raise_worker_http_error(
+                f"MT5 account session queue timed out before serving login {login}",
+                "session_queue_timeout",
+                operation not in PRE_SUBMIT_MUTATION_OPERATIONS,
+                details={
+                    "login": login,
+                    "activeOperation": self.state.get("activeOperation"),
+                    "timeoutSeconds": queue_timeout,
+                },
+            )
+
+        try:
+            await self.ensure_session_login(
+                operation,
+                login,
+                credentials.password,
+                credentials.server,
+            )
+
+            def verified(client: MT5Client) -> Any:
+                client.assert_session_login(login)
+                return func(client)
+
+            return await self.run_client_http_operation(operation, verified, timeout_seconds)
+        finally:
+            session_lock.release()
+
+    async def ensure_session_login(
+        self,
+        operation: str,
+        login: int,
+        password: str,
+        server: str,
+    ) -> None:
+        client = self.client
+        if (
+            client is not None
+            and client._connected
+            and not self.terminal_blocked
+            and int(client.login) == login
+            and client.server == server
+        ):
+            return
+
+        log.info(
+            "mt5_session_switch",
+            operation=operation,
+            fromLogin=client.login if client else None,
+            toLogin=login,
+        )
+        result = await self.connect(login, password, server)
+        if not result.get("success"):
+            raise_worker_http_error(
+                f"MT5 session switch to login {login} failed: {result.get('error')}",
+                str(result.get("errorType") or "session_switch_failed"),
+                bool(result.get("retryable", False)),
+                details={"login": login},
+            )
+
+        account_info = result.get("accountInfo") or {}
+        active_login = account_info.get("login")
+        active = self.client
+        if (
+            active is None
+            or not active._connected
+            or int(active.login) != login
+            or int(active_login or 0) != login
+        ):
+            raise_worker_http_error(
+                f"MT5 session login mismatch after reconnect: expected {login}, active {active_login}",
+                "session_login_mismatch",
+                False,
+                details={"login": login, "activeLogin": active_login},
+            )
 
     def should_recover_connection(self, operation: str, exc: MT5ConnectionError) -> bool:
         recoverable_operation = operation in RECOVERABLE_READ_OPERATIONS or operation in PRE_SUBMIT_MUTATION_OPERATIONS

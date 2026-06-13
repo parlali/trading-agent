@@ -10,6 +10,7 @@ export function detectExposureGovernanceViolations(args: {
         expectedExternal?: boolean
         instrument: string
         side: "long" | "short"
+        metadata?: string
     }>
     workingOrders: Array<{
         strategyId?: Id<"strategies">
@@ -18,6 +19,7 @@ export function detectExposureGovernanceViolations(args: {
         instrument: string
         action?: Doc<"orders">["action"]
         side?: "buy" | "sell"
+        metadata?: string
     }>
 }): string[] {
     const strategyPolicies = new Map(
@@ -54,7 +56,7 @@ export function detectExposureGovernanceViolations(args: {
         if (!policy.allowOverlappingExposure) {
             for (const position of strategyPositions) {
                 const sameInstrumentOrders = strategyWorkingOrders.filter((order) =>
-                    instrumentsOverlap(strategy.app, order.instrument, position.instrument) &&
+                    instrumentsOverlap(strategy.app, order, position) &&
                     workingOrderIncreasesExposure(order, position.side)
                 )
 
@@ -75,13 +77,50 @@ export function detectExposureGovernanceViolations(args: {
                 for (const right of openingOrders.slice(leftIndex + 1)) {
                     if (
                         left.side === right.side &&
-                        instrumentsOverlap(strategy.app, left.instrument, right.instrument)
+                        instrumentsOverlap(strategy.app, left, right)
                     ) {
                         const direction = left.side ?? "unknown"
                         violations.add(`${strategyId}:multiple-working-orders:${resolveGovernanceInstrument(left.instrument, right.instrument)}:${direction}`)
                     }
                 }
             }
+        }
+    }
+
+    const exposureByAlias = new Map<string, Map<string, string>>()
+    for (const exposure of [
+        ...ownedPositions.map((position) => ({
+            strategyId: position.strategyId!,
+            instrument: position.instrument,
+            metadata: position.metadata,
+        })),
+        ...ownedWorkingOrders
+            .filter(workingOrderCanOpenRisk)
+            .map((order) => ({
+                strategyId: order.strategyId!,
+                instrument: order.instrument,
+                metadata: order.metadata,
+            })),
+    ]) {
+        const strategy = args.strategies.find((entry) => entry._id === exposure.strategyId)
+        if (!strategy) {
+            continue
+        }
+
+        for (const alias of getProviderInstrumentClaimAliases(strategy.app, exposure.instrument, exposure.metadata)) {
+            const strategiesByInstrument = exposureByAlias.get(alias) ?? new Map<string, string>()
+            strategiesByInstrument.set(String(exposure.strategyId), exposure.instrument)
+            exposureByAlias.set(alias, strategiesByInstrument)
+        }
+    }
+
+    for (const strategiesByInstrument of exposureByAlias.values()) {
+        if (strategiesByInstrument.size <= 1) {
+            continue
+        }
+
+        for (const [strategyId, instrument] of strategiesByInstrument) {
+            violations.add(`${strategyId}:account-instrument-conflict:${instrument}`)
         }
     }
 
@@ -131,11 +170,12 @@ function workingOrderIncreasesExposure(
 
 function instrumentsOverlap(
     app: Doc<"strategies">["app"],
-    left: string,
-    right: string
+    left: { instrument: string; metadata?: string },
+    right: { instrument: string; metadata?: string }
 ): boolean {
-    const leftAliases = new Set(getProviderInstrumentClaimAliases(app, left))
-    return getProviderInstrumentClaimAliases(app, right).some((alias) => leftAliases.has(alias))
+    const leftAliases = new Set(getProviderInstrumentClaimAliases(app, left.instrument, left.metadata))
+    return getProviderInstrumentClaimAliases(app, right.instrument, right.metadata)
+        .some((alias) => leftAliases.has(alias))
 }
 
 function resolveGovernanceInstrument(left: string, right: string): string {

@@ -235,19 +235,29 @@ export async function deleteStrategyTableBatch(
         return true
     }
 
-    const appStrategies = await ctx.db
-        .query("strategies")
-        .withIndex("by_app", (q) => q.eq("app", app))
-        .take(2)
-    const isLastStrategyForApp = appStrategies.length === 1
+    const strategy = await ctx.db.get(strategyId)
 
-    if (!isLastStrategyForApp) {
+    if (!strategy) {
+        return false
+    }
+
+    const accountStrategies = await ctx.db
+        .query("strategies")
+        .withIndex("by_app_account", (q) =>
+            q.eq("app", app).eq("accountId", strategy.accountId)
+        )
+        .take(2)
+    const isLastStrategyForAccount = accountStrategies.length === 1
+
+    if (!isLastStrategyForAccount) {
         return false
     }
 
     const remainingProviderPositions = await ctx.db
         .query("provider_positions")
-        .withIndex("by_app", (q) => q.eq("app", app))
+        .withIndex("by_app_account", (q) =>
+            q.eq("app", app).eq("accountId", strategy.accountId)
+        )
         .take(batchSize)
 
     if (remainingProviderPositions.length > 0) {
@@ -260,7 +270,9 @@ export async function deleteStrategyTableBatch(
 
     const remainingProviderWorkingOrders = await ctx.db
         .query("provider_working_orders")
-        .withIndex("by_app", (q) => q.eq("app", app))
+        .withIndex("by_app_account", (q) =>
+            q.eq("app", app).eq("accountId", strategy.accountId)
+        )
         .take(batchSize)
 
     if (remainingProviderWorkingOrders.length > 0) {
@@ -271,15 +283,17 @@ export async function deleteStrategyTableBatch(
         return true
     }
 
-    const snapshots = await ctx.db
-        .query("account_snapshots")
-        .withIndex("by_app", (q) => q.eq("app", app))
+    const syncStates = await ctx.db
+        .query("provider_sync_state")
+        .withIndex("by_app_account", (q) =>
+            q.eq("app", app).eq("accountId", strategy.accountId)
+        )
         .take(batchSize)
 
-    if (snapshots.length > 0) {
-        for (const snapshot of snapshots) {
-            await ctx.db.delete(snapshot._id)
-            deleted.accountSnapshots++
+    if (syncStates.length > 0) {
+        for (const syncState of syncStates) {
+            await ctx.db.delete(syncState._id)
+            deleted.providerSyncStates++
         }
         return true
     }
@@ -299,16 +313,6 @@ export async function deleteFinalStrategyAppRows(
 
     if (appStrategies.length !== 1) {
         return
-    }
-
-    const providerSyncState = await ctx.db
-        .query("provider_sync_state")
-        .withIndex("by_app", (q) => q.eq("app", app))
-        .first()
-
-    if (providerSyncState) {
-        await ctx.db.delete(providerSyncState._id)
-        deleted.providerSyncStates++
     }
 
     const heartbeat = await ctx.db
@@ -516,16 +520,20 @@ export async function cascadeDeleteStrategy(
         alerts++
     }
 
-    const appStrategies = await ctx.db
+    const accountStrategies = await ctx.db
         .query("strategies")
-        .withIndex("by_app", (q) => q.eq("app", strategy.app))
+        .withIndex("by_app_account", (q) =>
+            q.eq("app", strategy.app).eq("accountId", strategy.accountId)
+        )
         .collect()
-    const isLastStrategyForApp = appStrategies.length === 1
+    const isLastStrategyForAccount = accountStrategies.length === 1
 
-    if (isLastStrategyForApp) {
+    if (isLastStrategyForAccount) {
         const remainingProviderPositions = await ctx.db
             .query("provider_positions")
-            .withIndex("by_app", (q) => q.eq("app", strategy.app))
+            .withIndex("by_app_account", (q) =>
+                q.eq("app", strategy.app).eq("accountId", strategy.accountId)
+            )
             .collect()
 
         for (const position of remainingProviderPositions) {
@@ -535,7 +543,9 @@ export async function cascadeDeleteStrategy(
 
         const remainingProviderWorkingOrders = await ctx.db
             .query("provider_working_orders")
-            .withIndex("by_app", (q) => q.eq("app", strategy.app))
+            .withIndex("by_app_account", (q) =>
+                q.eq("app", strategy.app).eq("accountId", strategy.accountId)
+            )
             .collect()
 
         for (const order of remainingProviderWorkingOrders) {
@@ -543,26 +553,26 @@ export async function cascadeDeleteStrategy(
             providerWorkingOrders++
         }
 
-        const providerSyncState = await ctx.db
+        const remainingProviderSyncStates = await ctx.db
             .query("provider_sync_state")
-            .withIndex("by_app", (q) => q.eq("app", strategy.app))
-            .first()
-
-        if (providerSyncState) {
-            await ctx.db.delete(providerSyncState._id)
-            providerSyncStates++
-        }
-
-        const snapshots = await ctx.db
-            .query("account_snapshots")
-            .withIndex("by_app", (q) => q.eq("app", strategy.app))
+            .withIndex("by_app_account", (q) =>
+                q.eq("app", strategy.app).eq("accountId", strategy.accountId)
+            )
             .collect()
 
-        for (const snapshot of snapshots) {
-            await ctx.db.delete(snapshot._id)
-            accountSnapshots++
+        for (const syncState of remainingProviderSyncStates) {
+            await ctx.db.delete(syncState._id)
+            providerSyncStates++
         }
+    }
 
+    const appStrategies = await ctx.db
+        .query("strategies")
+        .withIndex("by_app", (q) => q.eq("app", strategy.app))
+        .collect()
+    const isLastStrategyForApp = appStrategies.length === 1
+
+    if (isLastStrategyForApp) {
         const heartbeat = await ctx.db
             .query("app_heartbeats")
             .withIndex("by_app", (q) => q.eq("app", strategy.app))
@@ -612,7 +622,9 @@ export async function assertStrategyDeletionSafe(
             .first(),
         ctx.db
             .query("provider_sync_state")
-            .withIndex("by_app", (q) => q.eq("app", strategy.app))
+            .withIndex("by_app_account", (q) =>
+                q.eq("app", strategy.app).eq("accountId", strategy.accountId)
+            )
             .first(),
         ctx.db
             .query("provider_positions")

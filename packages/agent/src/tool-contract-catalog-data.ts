@@ -157,22 +157,8 @@ export const toolContractDefinitions = [
         category: "execution",
         boundary: "shared",
         owner: "shared",
-        compatibleVenues: VENUE_APPS,
+        compatibleVenues: ["mt5", "okx-swap"],
         variants: {
-            "alpaca-options": {
-                description: "Propose adjusting an existing position by adding to or partially reducing it. Provide the instrument, direction, and quantity of the adjustment. Include a reason for the adjustment.",
-                parameters: executionSchemas.genericAdjustmentParamsSchema,
-                jsonSchema: executionSchemas.genericAdjustmentJsonSchema,
-                outputDescription: "Returns the normalized adjustment execution result plus risk validation details.",
-                errorSemantics: "Broker or policy rejections are returned in the execution payload.",
-            },
-            polymarket: {
-                description: "Propose adjusting an existing position by adding to or partially reducing it. Provide the instrument, direction, and quantity of the adjustment. Include a reason for the adjustment.",
-                parameters: executionSchemas.genericAdjustmentParamsSchema,
-                jsonSchema: executionSchemas.genericAdjustmentJsonSchema,
-                outputDescription: "Returns the normalized adjustment execution result plus risk validation details.",
-                errorSemantics: "Broker or policy rejections are returned in the execution payload. Estimated execution pricing is injected from live venue data.",
-            },
             mt5: {
                 description: [
                     "Propose adjusting an existing MT5 position by adding to it.",
@@ -214,19 +200,12 @@ export const toolContractDefinitions = [
         category: "execution",
         boundary: "shared",
         owner: "shared",
-        compatibleVenues: ["alpaca-options", "polymarket", "mt5"],
+        compatibleVenues: ["alpaca-options", "mt5"],
         variants: {
             "alpaca-options": {
                 description: "Modify a working Alpaca multi-leg options order. Supported changes are the positive net limit price and, if truly necessary, the structure quantity. The system handles Alpaca's signed `mleg` wire price.",
                 parameters: executionSchemas.alpacaModifyOrderParamsSchema,
                 jsonSchema: executionSchemas.alpacaModifyOrderJsonSchema,
-                outputDescription: "Returns the normalized order modification result plus the refreshed tracked order snapshot.",
-                errorSemantics: "Broker rejections are returned in the execution payload.",
-            },
-            polymarket: {
-                description: "Modify a pending order. You can change the limit price, stop price, or quantity. At least one modification field must be provided.",
-                parameters: executionSchemas.defaultModifyOrderParamsSchema,
-                jsonSchema: executionSchemas.defaultModifyOrderJsonSchema,
                 outputDescription: "Returns the normalized order modification result plus the refreshed tracked order snapshot.",
                 errorSemantics: "Broker rejections are returned in the execution payload.",
             },

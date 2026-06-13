@@ -7,6 +7,7 @@ import {
 } from "@valiq-trading/core"
 import {
     createTradingBackendClient,
+    type StoredAccount,
     type StoredStrategy,
 } from "@valiq-trading/convex"
 import { AlpacaPlugin } from "./plugins/alpaca"
@@ -114,6 +115,7 @@ export const killSwitchCheckers: Partial<Record<VenueApp, (context: string) => P
 
 export interface SyncStrategyEntry {
     strategy: StoredStrategy
+    account: StoredAccount
     policy: Record<string, unknown>
     secrets: Record<string, string | null>
 }

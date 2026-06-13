@@ -224,6 +224,95 @@ describe("risk governance replay", () => {
         expect(realized).toBeUndefined()
     })
 
+    it("applies the option contract multiplier to fallback close PnL", () => {
+        const realized = resolveCloseOrderRealizedPnl({
+            action: "close",
+            status: "filled",
+            instrument: "VS:SPY:2026-06-19:bear_call_credit:520:525",
+            updatedAt: Date.parse("2026-06-03T09:10:57.748Z"),
+            filledQuantity: 1,
+            avgFillPrice: 0.7,
+            intent: {
+                metadata: {
+                    entryPrice: 1.2,
+                    positionSide: "short",
+                },
+            },
+        })
+
+        expect(realized).toBeCloseTo(50)
+    })
+
+    it("applies the option contract multiplier to raw OCC fallback close PnL", () => {
+        const realized = resolveCloseOrderRealizedPnl({
+            action: "close",
+            status: "filled",
+            instrument: "SPY260619C00520000",
+            updatedAt: Date.parse("2026-06-03T09:10:57.748Z"),
+            filledQuantity: 1,
+            avgFillPrice: 0.7,
+            intent: {
+                metadata: {
+                    entryPrice: 1.2,
+                    positionSide: "short",
+                },
+            },
+        })
+
+        expect(realized).toBeCloseTo(50)
+    })
+
+    it("fails loud on non-settlement-currency close fees", () => {
+        expect(() => resolveCloseOrderRealizedPnl({
+            action: "close",
+            status: "filled",
+            instrument: "ETH-USDT-SWAP",
+            updatedAt: Date.parse("2026-06-03T09:10:57.748Z"),
+            filledQuantity: 1,
+            avgFillPrice: 100,
+            intent: {
+                metadata: {
+                    fillPnl: 10,
+                    fee: -0.001,
+                    feeCcy: "ETH",
+                    providerAccountingSource: "okx_fills_history",
+                },
+            },
+        })).toThrow("Non-settlement fee currency ETH from okx_fills_history")
+    })
+
+    it("fails loud on non-settlement-currency entry fees in risk governance", () => {
+        const now = Date.parse("2026-05-17T17:00:00.000Z")
+
+        expect(() => computeRiskGovernanceState({
+            now,
+            orders: [
+                {
+                    action: "entry",
+                    status: "filled",
+                    instrument: "BTC-USDT-SWAP",
+                    updatedAt: Date.parse("2026-05-17T16:25:58.553Z"),
+                    filledQuantity: 0.5,
+                    avgFillPrice: 78000.125,
+                    intent: {
+                        metadata: {
+                            action: "entry",
+                            fee: -0.00001,
+                            feeCcy: "BTC",
+                            providerAccountingSource: "okx_order",
+                        },
+                    },
+                },
+            ],
+            faults: [],
+            policy: {
+                cooldownMinutesAfterDayBreach: 120,
+                cooldownMinutesAfterWeekBreach: 240,
+                strategyTimezone: "UTC",
+            },
+        })).toThrow("Non-settlement fee currency BTC from okx_order")
+    })
+
     it("includes MT5 swap and commission in provider-reported close PnL", () => {
         const realized = resolveCloseOrderRealizedPnl({
             action: "close",

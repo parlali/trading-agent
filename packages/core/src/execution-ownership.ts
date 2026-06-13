@@ -28,12 +28,12 @@ export function reconcileOwnedInstrumentsFromSnapshots(
     }
 
     if (currentSnapshot.action === "entry" || currentSnapshot.action === "adjustment") {
-        if (isOwnershipActiveStatus(currentSnapshot.status)) {
+        if (isOwnershipActiveSnapshot(currentSnapshot)) {
             ownedInstruments.add(currentSnapshot.instrument)
             return
         }
 
-        if (isOwnershipActiveStatus(previousSnapshot.status)) {
+        if (isOwnershipActiveSnapshot(previousSnapshot)) {
             ownedInstruments.delete(currentSnapshot.instrument)
         }
     }
@@ -41,4 +41,8 @@ export function reconcileOwnedInstrumentsFromSnapshots(
 
 function isOwnershipActiveStatus(status: ExecutionResult["status"]): boolean {
     return status === "pending" || status === "partially_filled" || status === "filled"
+}
+
+function isOwnershipActiveSnapshot(snapshot: OrderSnapshot): boolean {
+    return isOwnershipActiveStatus(snapshot.status) || snapshot.filledQuantity > 0
 }

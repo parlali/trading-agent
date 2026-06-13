@@ -1,0 +1,1 @@
+export const OKX_ESTIMATED_ONE_WAY_FEE_RATE = 0.0025

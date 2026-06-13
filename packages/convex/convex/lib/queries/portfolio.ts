@@ -27,21 +27,27 @@ export const getPortfolioFreshness = query({
     args: {
         serviceToken: v.optional(v.string()),
         app: v.optional(venueAppV),
+        accountId: v.optional(v.string()),
     },
     handler: async (ctx, args) => {
         await requireUserOrServiceToken(ctx, args.serviceToken)
 
-        const apps = args.app ? [args.app] : VENUE_APPS
-        const rows = await Promise.all(
-            apps.map((app) =>
-                ctx.db
-                    .query("provider_sync_state")
-                    .withIndex("by_app", (q) => q.eq("app", app))
-                    .first()
-            )
-        )
+        if (args.app && args.accountId) {
+            const row = await ctx.db
+                .query("provider_sync_state")
+                .withIndex("by_app_account", (q) => q.eq("app", args.app!).eq("accountId", args.accountId!))
+                .first()
+            return [buildFreshnessDto(args.app, row)]
+        }
 
-        return rows.map((row, index) => buildFreshnessDto(apps[index]!, row))
+        const rows = args.app
+            ? await ctx.db
+                .query("provider_sync_state")
+                .withIndex("by_app", (q) => q.eq("app", args.app!))
+                .collect()
+            : await ctx.db.query("provider_sync_state").collect()
+
+        return rows.map((row) => buildFreshnessDto(row.app, row))
     },
 })
 
@@ -49,6 +55,7 @@ export const getPortfolioPositions = query({
     args: {
         serviceToken: v.optional(v.string()),
         app: v.optional(venueAppV),
+        accountId: v.optional(v.string()),
         strategyId: v.optional(v.id("strategies")),
     },
     handler: async (ctx, args) => {
@@ -58,7 +65,12 @@ export const getPortfolioPositions = query({
             args.app
                 ? ctx.db
                     .query("provider_positions")
-                    .withIndex("by_app", (q) => q.eq("app", args.app!))
+                    .withIndex(
+                        args.accountId ? "by_app_account" : "by_app",
+                        (q) => args.accountId
+                            ? q.eq("app", args.app!).eq("accountId", args.accountId!)
+                            : q.eq("app", args.app!)
+                    )
                     .collect()
                 : ctx.db.query("provider_positions").collect(),
             ctx.db.query("strategies").collect(),
@@ -115,6 +127,7 @@ export const getPortfolioPositions = query({
                 .sort((left, right) => left.instrument.localeCompare(right.instrument))
                 .map((row) => ({
                     app: row.app,
+                    accountId: row.accountId,
                     positionKey: row.positionKey,
                     providerPositionId: row.providerPositionId,
                     strategyId: row.strategyId ? String(row.strategyId) : undefined,
@@ -138,6 +151,7 @@ export const getPortfolioPositions = query({
                     const strategy = strategyMap.get(String(row.strategyId))
                     return {
                         app: row.app,
+                        accountId: row.accountId,
                         positionKey: row.positionKey,
                         providerPositionId: row.providerPositionId,
                         strategyId: String(row.strategyId),
@@ -167,6 +181,7 @@ export const getPortfolioPendingOrders = query({
     args: {
         serviceToken: v.optional(v.string()),
         app: v.optional(venueAppV),
+        accountId: v.optional(v.string()),
         strategyId: v.optional(v.id("strategies")),
     },
     handler: async (ctx, args) => {
@@ -176,7 +191,12 @@ export const getPortfolioPendingOrders = query({
             args.app
                 ? ctx.db
                     .query("provider_working_orders")
-                    .withIndex("by_app", (q) => q.eq("app", args.app!))
+                    .withIndex(
+                        args.accountId ? "by_app_account" : "by_app",
+                        (q) => args.accountId
+                            ? q.eq("app", args.app!).eq("accountId", args.accountId!)
+                            : q.eq("app", args.app!)
+                    )
                     .collect()
                 : ctx.db.query("provider_working_orders").collect(),
             ctx.db.query("strategies").collect(),
@@ -194,6 +214,7 @@ export const getPortfolioPendingOrders = query({
             .sort((left, right) => right.updatedAt - left.updatedAt)
             .map((row) => ({
                 app: row.app,
+                accountId: row.accountId,
                 strategyId: row.strategyId ? String(row.strategyId) : undefined,
                 strategyName: row.strategyId ? strategyMap.get(String(row.strategyId))?.name : undefined,
                 ownershipStatus: row.ownershipStatus,
@@ -294,6 +315,7 @@ export const getPortfolioTradeHistory = query({
                 eventId: String(event._id),
                 timestamp: event.timestamp,
                 app: (strategy?.app ?? event.app)!,
+                accountId: event.accountId ?? order?.accountId ?? strategy?.accountId ?? "unassigned",
                 strategyId: String(event.strategyId),
                 strategyName: strategy?.name ?? "Unknown strategy",
                 runId: String(event.runId),
@@ -306,6 +328,9 @@ export const getPortfolioTradeHistory = query({
                 quantity: extractQuantity(payload, order),
                 filledQuantity: extractFilledQuantity(payload, order),
                 price: extractPrice(payload, order),
+                accountingStatus: extractAccountingStatus(payload, order),
+                accountingSource: extractAccountingSource(payload, order),
+                accountingMissingReason: extractAccountingMissingReason(payload, order),
                 summary: summarizeTradeEvent(event, payload, order, strategy?.name ?? "Unknown strategy"),
             }
         })
@@ -324,48 +349,71 @@ export const getPortfolioEquitySeries = query({
         const rangeStart = resolveRangeStart(args.timeRange, end)
         const apps = args.app ? [args.app] : VENUE_APPS
         const snapshotWindows = await Promise.all(
-            apps.map((app) =>
-                Promise.all([
-                    ctx.db
-                        .query("account_snapshots")
-                        .withIndex("by_app_timestamp", (q) => q.eq("app", app).lt("timestamp", rangeStart))
-                        .order("desc")
-                        .take(1),
-                    ctx.db
-                        .query("account_snapshots")
-                        .withIndex("by_app_timestamp", (q) => q.eq("app", app).gte("timestamp", rangeStart))
-                        .order("asc")
-                        .collect(),
-                ])
-            )
+            apps.map(async (app) => {
+                const inRangeRows = await ctx.db
+                    .query("account_snapshots")
+                    .withIndex("by_app_timestamp", (q) => q.eq("app", app).gte("timestamp", rangeStart))
+                    .order("asc")
+                    .collect()
+
+                if (rangeStart <= 0) {
+                    return { baselines: [] as Doc<"account_snapshots">[], inRangeRows }
+                }
+
+                const accounts = await ctx.db
+                    .query("accounts")
+                    .withIndex("by_app", (q) => q.eq("app", app))
+                    .collect()
+                const accountBuckets: Array<string | undefined> = [
+                    ...accounts.map((account) => account.accountId),
+                    undefined,
+                ]
+                const baselineRows = await Promise.all(
+                    accountBuckets.map((accountId) =>
+                        ctx.db
+                            .query("account_snapshots")
+                            .withIndex("by_app_timestamp", (q) => q.eq("app", app).lt("timestamp", rangeStart))
+                            .order("desc")
+                            .filter((q) => q.eq(q.field("accountId"), accountId))
+                            .first()
+                    )
+                )
+
+                return {
+                    baselines: baselineRows.filter(
+                        (row): row is Doc<"account_snapshots"> => row !== null
+                    ),
+                    inRangeRows,
+                }
+            })
         )
 
-        const latestByApp = new Map<Doc<"account_snapshots">["app"], number>()
+        const latestByAccountBucket = new Map<string, EquityBucket>()
         let latestTimestamp = 0
 
-        for (const [baselineRows] of snapshotWindows) {
-            const baseline = baselineRows[0]
-            if (!baseline) {
-                continue
-            }
+        const recordSnapshot = (snapshot: Doc<"account_snapshots">): void => {
+            latestByAccountBucket.set(createEquityBucketKey(snapshot), {
+                app: snapshot.app,
+                equity: resolveSnapshotEquity(snapshot),
+            })
+            latestTimestamp = Math.max(latestTimestamp, snapshot.timestamp)
+        }
 
-            latestByApp.set(baseline.app, resolveSnapshotEquity(baseline))
-            latestTimestamp = Math.max(latestTimestamp, baseline.timestamp)
+        for (const window of snapshotWindows) {
+            for (const baseline of window.baselines) {
+                recordSnapshot(baseline)
+            }
         }
 
         const snapshots = snapshotWindows
-            .flatMap(([, inRangeRows]) => inRangeRows)
+            .flatMap((window) => window.inRangeRows)
             .sort((left, right) => left.timestamp - right.timestamp)
         const series = snapshots.map((snapshot) => {
-            latestByApp.set(snapshot.app, resolveSnapshotEquity(snapshot))
-            latestTimestamp = Math.max(latestTimestamp, snapshot.timestamp)
-            const providers = Object.fromEntries(latestByApp.entries())
-            const total = Array.from(latestByApp.values()).reduce((sum, value) => sum + value, 0)
+            recordSnapshot(snapshot)
 
             return {
                 timestamp: snapshot.timestamp,
-                total,
-                providers,
+                ...aggregateEquityBuckets(latestByAccountBucket),
             }
         })
 
@@ -375,11 +423,10 @@ export const getPortfolioEquitySeries = query({
             start: rangeStart,
             end,
             latest: series[series.length - 1] ?? (
-                latestByApp.size > 0
+                latestByAccountBucket.size > 0
                     ? {
                         timestamp: latestTimestamp || end,
-                        total: Array.from(latestByApp.values()).reduce((sum, value) => sum + value, 0),
-                        providers: Object.fromEntries(latestByApp.entries()),
+                        ...aggregateEquityBuckets(latestByAccountBucket),
                     }
                     : null
             ),
@@ -387,6 +434,29 @@ export const getPortfolioEquitySeries = query({
         }
     },
 })
+
+type EquityBucket = {
+    app: Doc<"account_snapshots">["app"]
+    equity: number
+}
+
+function createEquityBucketKey(snapshot: Doc<"account_snapshots">): string {
+    return `${snapshot.app}:${snapshot.accountId ?? "legacy"}`
+}
+
+function aggregateEquityBuckets(
+    latestByAccountBucket: Map<string, EquityBucket>
+): { total: number; providers: Record<string, number> } {
+    const providers: Record<string, number> = {}
+    let total = 0
+
+    for (const bucket of latestByAccountBucket.values()) {
+        providers[bucket.app] = (providers[bucket.app] ?? 0) + bucket.equity
+        total += bucket.equity
+    }
+
+    return { total, providers }
+}
 
 function buildFreshnessDto(
     app: typeof VENUE_APPS[number],
@@ -399,7 +469,8 @@ function buildFreshnessDto(
 
     return {
         app,
-        accountScope: "single-account-per-venue" as const,
+        accountId: row?.accountId ?? "unassigned",
+        accountScope: "account" as const,
         lastSyncedAt: row?.lastSyncedAt,
         lastVerifiedAt: row?.lastVerifiedAt,
         providerStatus,
@@ -522,6 +593,66 @@ function extractPrice(
         ?? readNumber(payload?.intent, "limitPrice")
         ?? order?.avgFillPrice
         ?? order?.intent?.limitPrice
+}
+
+function extractAccountingStatus(
+    payload: Record<string, unknown> | undefined,
+    order: Doc<"orders"> | undefined
+): "missing" | "estimated" | "provider" | undefined {
+    const metadata = extractAccountingMetadata(payload, order)
+    if (!metadata) {
+        return undefined
+    }
+
+    if (metadata.providerAccountingMissing === true || metadata.providerAccountingBackfillMissing === true) {
+        return "missing"
+    }
+
+    if (metadata.providerFeeEstimated === true) {
+        return "estimated"
+    }
+
+    if (typeof metadata.providerAccountingSource === "string") {
+        return "provider"
+    }
+
+    return undefined
+}
+
+function extractAccountingSource(
+    payload: Record<string, unknown> | undefined,
+    order: Doc<"orders"> | undefined
+): string | undefined {
+    const source = extractAccountingMetadata(payload, order)?.providerAccountingSource
+    return typeof source === "string" ? source : undefined
+}
+
+function extractAccountingMissingReason(
+    payload: Record<string, unknown> | undefined,
+    order: Doc<"orders"> | undefined
+): string | undefined {
+    const metadata = extractAccountingMetadata(payload, order)
+    const reason = metadata?.providerAccountingMissingReason ?? metadata?.providerAccountingBackfillMissingReason
+    return typeof reason === "string" ? reason : undefined
+}
+
+function extractAccountingMetadata(
+    payload: Record<string, unknown> | undefined,
+    order: Doc<"orders"> | undefined
+): Record<string, unknown> | undefined {
+    return {
+        ...readMetadataRecord(readRecord(readRecord(payload?.result)?.intentUpdates)?.metadata),
+        ...readMetadataRecord(readRecord(payload?.intent)?.metadata),
+        ...readMetadataRecord(order?.intent?.metadata),
+    }
+}
+
+function readMetadataRecord(value: unknown): Record<string, unknown> | undefined {
+    return readRecord(value)
+}
+
+function readRecord(value: unknown): Record<string, unknown> | undefined {
+    return value && typeof value === "object" ? value as Record<string, unknown> : undefined
 }
 
 function summarizeTradeEvent(

@@ -31,6 +31,6 @@ export function buildPositionClaim(position: {
 } {
     return {
         instrument: position.instrument,
-        sourceId: position.positionKey ?? buildProviderPositionKey(position),
+        sourceId: position.instrument,
     }
 }

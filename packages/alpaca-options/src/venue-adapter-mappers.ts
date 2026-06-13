@@ -1,8 +1,11 @@
 import {
+    createExecutionError,
+    type AccountPnlEvent,
     type PriceVerification,
+    type ProviderPositionClosure,
     type WorkingOrder,
 } from "@valiq-trading/core"
-import { AlpacaClient } from "./alpaca-client"
+import { AlpacaClient, type AlpacaAccountActivity } from "./alpaca-client"
 import {
     mapOrderStatus as mapAlpacaOrderStatus,
     resolveOrderTimestamp,
@@ -13,7 +16,10 @@ import {
     type AlpacaVerticalSpreadType,
     parseOptionContractSymbol,
 } from "./risk-rules"
-import { roundPrice } from "./alpaca-position-structures"
+import { roundPrice, toNumber } from "./alpaca-position-structures"
+
+export const ALPACA_OPTION_CLOSURE_ACTIVITY_TYPES = ["OPEXP", "OPEXC", "OPASN"] as const
+export const ALPACA_ACCOUNT_PNL_ACTIVITY_TYPES = ["FEE"] as const
 
 export {
     buildGroupCloseIntent,
@@ -50,15 +56,137 @@ export function mapWorkingOrder(order: Awaited<ReturnType<AlpacaClient["getOpenO
         metadata: {
             providerClientOrderId: order.client_order_id,
             legs: order.legs,
+            ...(filledQuantity > 0 ? {
+                providerAccountingSource: "alpaca_order",
+                providerAccountingMissing: true,
+                providerAccountingMissingReason: "alpaca_working_order_fill_requires_account_activity_fee_reconciliation",
+                providerOrderId: order.id,
+            } : {}),
         },
     }
+}
+
+export function mapAlpacaOptionActivityClosure(
+    activity: AlpacaAccountActivity
+): ProviderPositionClosure | undefined {
+    const activityType = activity.activity_type.trim().toUpperCase()
+    if (!isAlpacaOptionClosureActivityType(activityType)) {
+        return undefined
+    }
+    if (activity.status && activity.status.trim().toLowerCase() !== "executed") {
+        return undefined
+    }
+
+    const symbol = activity.symbol?.trim().toUpperCase()
+    if (!symbol || !parseOptionContractSymbol(symbol)) {
+        return undefined
+    }
+
+    const signedQuantity = toNumber(activity.qty)
+    if (!Number.isFinite(signedQuantity) || signedQuantity === 0) {
+        return undefined
+    }
+
+    const netAmount = toNumber(activity.net_amount)
+    const price = toNumber(activity.price)
+
+    return {
+        instrument: symbol,
+        providerPositionId: symbol,
+        side: signedQuantity < 0 ? "long" : "short",
+        quantity: Math.abs(signedQuantity),
+        fillPrice: Number.isFinite(price) && price > 0 ? Math.abs(price) : 0,
+        closedAt: readAlpacaActivityTime(activity),
+        metadata: {
+            providerAccountingSource: "alpaca_account_activity",
+            providerActivityId: activity.id,
+            activityType,
+            description: activity.description,
+            status: activity.status,
+            netAmount,
+            fillPnl: netAmount,
+            symbol,
+            qty: activity.qty,
+            price: activity.price,
+            providerPositionId: symbol,
+        },
+    }
+}
+
+export function mapAlpacaAccountPnlEvent(
+    activity: AlpacaAccountActivity
+): AccountPnlEvent | undefined {
+    const activityType = activity.activity_type.trim().toUpperCase()
+    if (!isAlpacaAccountPnlActivityType(activityType)) {
+        return undefined
+    }
+    if (activity.status && activity.status.trim().toLowerCase() !== "executed") {
+        return undefined
+    }
+
+    const amount = toNumber(activity.net_amount)
+    if (!Number.isFinite(amount) || amount === 0) {
+        return undefined
+    }
+
+    return {
+        providerEventId: `alpaca-activity:${activity.id}`,
+        eventType: "fee",
+        instrument: activity.symbol?.trim().toUpperCase() || undefined,
+        amount,
+        currency: "USD",
+        occurredAt: readAlpacaActivityTime(activity),
+        metadata: {
+            providerAccountingSource: "alpaca_account_activity",
+            providerActivityId: activity.id,
+            activityType,
+            description: activity.description,
+            status: activity.status,
+            netAmount: amount,
+            symbol: activity.symbol,
+        },
+    }
+}
+
+function isAlpacaOptionClosureActivityType(
+    activityType: string
+): activityType is typeof ALPACA_OPTION_CLOSURE_ACTIVITY_TYPES[number] {
+    return ALPACA_OPTION_CLOSURE_ACTIVITY_TYPES.includes(activityType as typeof ALPACA_OPTION_CLOSURE_ACTIVITY_TYPES[number])
+}
+
+function isAlpacaAccountPnlActivityType(
+    activityType: string
+): activityType is typeof ALPACA_ACCOUNT_PNL_ACTIVITY_TYPES[number] {
+    return ALPACA_ACCOUNT_PNL_ACTIVITY_TYPES.includes(activityType as typeof ALPACA_ACCOUNT_PNL_ACTIVITY_TYPES[number])
+}
+
+function readAlpacaActivityTime(activity: AlpacaAccountActivity): number {
+    const raw = activity.transaction_time ?? activity.date
+    const timestamp = raw ? Date.parse(raw) : NaN
+    if (!Number.isFinite(timestamp)) {
+        throw new Error(`Alpaca account activity ${activity.id} has no valid activity timestamp`)
+    }
+    return timestamp
 }
 
 function resolveOrderInstrument(
     order: Awaited<ReturnType<AlpacaClient["getOpenOrders"]>>[number]
 ): string {
     if (!order.legs || order.legs.length === 0) {
-        return order.id
+        const symbol = order.symbol?.trim().toUpperCase()
+        if (symbol && parseOptionContractSymbol(symbol)) {
+            return symbol
+        }
+
+        throw createExecutionError("venue", `Alpaca working order ${order.id} has no legs or option symbol`, {
+            code: "ALPACA_WORKING_ORDER_INSTRUMENT_MISSING",
+            retryable: false,
+            details: {
+                orderId: order.id,
+                symbol: order.symbol,
+                orderClass: order.order_class,
+            },
+        })
     }
 
     const structure = resolveStructureFromOrderLegs(order.legs)

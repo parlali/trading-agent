@@ -67,6 +67,28 @@ describe("resolveStrategyAccountState", () => {
         expect(state.marginAvailable).toBe(2_500)
     })
 
+    it("applies option contract multipliers to fallback strategy margin usage", () => {
+        const state = resolveStrategyAccountState({
+            providerAccountState,
+            positions: [{
+                instrument: "SPY260619C00520000",
+                side: "short",
+                quantity: 2,
+                entryPrice: 1.25,
+                unrealizedPnl: 0,
+            }],
+            policy: {
+                safety: {
+                    account: {
+                        allocationPercent: 20,
+                    },
+                },
+            },
+        })
+
+        expect(state.marginUsed).toBe(250)
+    })
+
     it("fails closed when live strategy account allocation is missing or invalid", () => {
         for (const policy of [
             {},

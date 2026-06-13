@@ -24,6 +24,7 @@ import {
     hasSharedProviderPositionIdentity,
     isRetiredProviderCloseOrder,
     isSyntheticProviderCloseOrder,
+    orderBelongsToAccount,
     readIdentifier,
     readOrderIntentMetadata,
     type ProviderClosePositionCandidate,
@@ -59,6 +60,7 @@ export async function reconcileProviderPositionClosures(
     ctx: PortfolioMutationCtx,
     args: {
         app: Doc<"strategies">["app"]
+        accountId: string
         strategyMap: Map<string, StrategyDoc>
         existingProviderPositions: Doc<"provider_positions">[]
         livePositionKeys: Set<string>
@@ -95,6 +97,8 @@ export async function reconcileProviderPositionClosures(
         }
 
         const orderMatch = await resolveCloseOrderByProviderIdentity(ctx, {
+            app: args.app,
+            accountId: args.accountId,
             closure,
             strategyMap: args.strategyMap,
         })
@@ -106,14 +110,12 @@ export async function reconcileProviderPositionClosures(
                     strategyId: orderMatch.order.strategyId,
                     closure,
                 })
-                if (canonicalCloseOrder) {
-                    await attachClosureToCanonicalCloseOrder(ctx, {
-                        order: canonicalCloseOrder,
-                        position: candidate?.position,
-                        closure,
-                        updatedAt: args.updatedAt,
-                    })
-                }
+                await attachClosureToCanonicalCloseOrder(ctx, {
+                    order: canonicalCloseOrder ?? orderMatch.order,
+                    position: candidate?.position,
+                    closure,
+                    updatedAt: args.updatedAt,
+                })
             }
             consumeCandidate(candidate, closure.quantity)
             importedClosureKeys.add(closureKey)
@@ -135,11 +137,36 @@ export async function reconcileProviderPositionClosures(
 
         const match = resolveMatchingCandidatePosition(candidates, closure)
         if (match.kind === "none") {
+            if (hasProviderAccountingEvidence(closure)) {
+                const description = `${describeClosure(closure)} (broker close has provider accounting but no canonical order or owned position candidate)`
+                unattributedClosures.push(description)
+                await recordUnattributedClosureFaults(ctx, {
+                    app: args.app,
+                    accountId: args.accountId,
+                    strategyMap: args.strategyMap,
+                    closure,
+                    description,
+                    updatedAt: args.updatedAt,
+                })
+            }
             continue
         }
 
         if (match.kind === "ambiguous") {
-            unattributedClosures.push(`${describeClosure(closure)} (${match.reason})`)
+            if (hasProviderAccountingEvidence(closure)) {
+                const description = `${describeClosure(closure)} (broker close has provider accounting but attribution is ambiguous: ${match.reason})`
+                unattributedClosures.push(description)
+                await recordUnattributedClosureFaults(ctx, {
+                    app: args.app,
+                    accountId: args.accountId,
+                    strategyMap: args.strategyMap,
+                    closure,
+                    description,
+                    updatedAt: args.updatedAt,
+                })
+            } else {
+                unattributedClosures.push(`${describeClosure(closure)} (${match.reason})`)
+            }
             continue
         }
 
@@ -150,7 +177,20 @@ export async function reconcileProviderPositionClosures(
             latestRunIdsByStrategy,
         })
         if (!runId) {
-            unattributedClosures.push(`${describeClosure(closure)} (owning strategy has no run to attribute the close to)`)
+            if (hasProviderAccountingEvidence(closure)) {
+                const description = `${describeClosure(closure)} (broker close has provider accounting but the owning strategy has no run to attribute the close to)`
+                unattributedClosures.push(description)
+                await recordUnattributedClosureFaults(ctx, {
+                    app: args.app,
+                    accountId: args.accountId,
+                    strategyMap: args.strategyMap,
+                    closure,
+                    description,
+                    updatedAt: args.updatedAt,
+                })
+            } else {
+                unattributedClosures.push(`${describeClosure(closure)} (owning strategy has no run to attribute the close to)`)
+            }
             continue
         }
 
@@ -189,11 +229,80 @@ export async function reconcileProviderPositionClosures(
         importedClosureKeys.add(closureKey)
     }
 
+    const unmatchedClosedPositions = await resolveUnmatchedClosedPositions(ctx, candidates)
+
+    if (!CLOSURE_TRUTH_APPS.has(args.app)) {
+        await recordVanishedPositionFaults(ctx, {
+            app: args.app,
+            accountId: args.accountId,
+            candidates,
+            unmatchedPositionKeys: unmatchedClosedPositions,
+            updatedAt: args.updatedAt,
+        })
+    }
+
     return {
         unattributedClosures,
-        unmatchedClosedPositions: CLOSURE_TRUTH_APPS.has(args.app)
-            ? await resolveUnmatchedClosedPositions(ctx, candidates)
-            : [],
+        unmatchedClosedPositions,
+    }
+}
+
+async function recordVanishedPositionFaults(
+    ctx: PortfolioMutationCtx,
+    args: {
+        app: Doc<"strategies">["app"]
+        accountId: string
+        candidates: TrackedClosureCandidate[]
+        unmatchedPositionKeys: string[]
+        updatedAt: number
+    }
+): Promise<void> {
+    if (args.unmatchedPositionKeys.length === 0) {
+        return
+    }
+
+    const unmatchedKeys = new Set(args.unmatchedPositionKeys)
+    const existingFaults = await ctx.db
+        .query("execution_safety_faults")
+        .withIndex("by_app_account_blocked", (q) =>
+            q.eq("app", args.app).eq("accountId", args.accountId).eq("blocked", true)
+        )
+        .collect()
+
+    for (const candidate of args.candidates) {
+        if (candidate.historic || !unmatchedKeys.has(candidate.position.positionKey)) {
+            continue
+        }
+
+        const message = `Owned position ${candidate.position.positionKey} disappeared from ${args.app} without close evidence or a canonical close order; realized PnL for this exit is unaccounted (expiry, assignment, or settlement must be reconciled manually)`
+        const duplicate = existingFaults.some((fault) =>
+            fault.strategyId === candidate.position.strategyId &&
+            fault.instrument === candidate.position.instrument &&
+            fault.category === "accounting_mismatch" &&
+            fault.message === message
+        )
+        if (duplicate) {
+            continue
+        }
+
+        await ctx.db.insert("execution_safety_faults", {
+            strategyId: candidate.position.strategyId,
+            app: args.app,
+            accountId: args.accountId,
+            instrument: candidate.position.instrument,
+            category: "accounting_mismatch",
+            message,
+            providerPayload: JSON.stringify({
+                positionKey: candidate.position.positionKey,
+                instrument: candidate.position.instrument,
+                side: candidate.position.side,
+                quantity: candidate.position.quantity,
+                entryPrice: candidate.position.entryPrice,
+            }),
+            blocked: true,
+            occurredAt: args.updatedAt,
+            resolvedAt: undefined,
+        })
     }
 }
 
@@ -230,11 +339,17 @@ function consumeCandidateForOrder(
     closure: ProviderPositionClosureInput,
     order: Doc<"orders">
 ): TrackedClosureCandidate | undefined {
+    const closureIds = buildPositionClosureIdentityCandidates(closure)
+
     return candidates.find((candidate) =>
         !isCandidateConsumed(candidate) &&
         candidate.position.instrument === closure.instrument &&
         candidate.position.side === closure.side &&
-        candidate.position.strategyId === order.strategyId
+        candidate.position.strategyId === order.strategyId &&
+        hasSharedProviderPositionIdentity(
+            buildProviderPositionIdentityCandidates(candidate.position),
+            closureIds
+        )
     )
 }
 
@@ -267,24 +382,76 @@ function resolveMatchingCandidatePosition(
         return { kind: "ambiguous", reason: "multiple owned positions share the provider close identity" }
     }
 
-    const weakMatches = eligible.filter((candidate) =>
-        candidate.position.requiresStrongClosureIdentity !== true
-    )
-    if (weakMatches.length === 0) {
-        return { kind: "none" }
-    }
+    return { kind: "none" }
+}
 
-    const quantityMatches = weakMatches.filter((candidate) =>
-        almostEqual(closure.quantity, candidate.remainingQuantity)
-    )
-    if (quantityMatches.length === 1) {
-        return { kind: "matched", candidate: quantityMatches[0]! }
-    }
-    if (weakMatches.length === 1) {
-        return { kind: "matched", candidate: weakMatches[0]! }
-    }
+function hasProviderAccountingEvidence(closure: ProviderPositionClosureInput): boolean {
+    const metadata = parseJson<Record<string, unknown>>(closure.metadata)
+    return isNonZeroNumber(metadata?.fillPnl) ||
+        isNonZeroNumber(metadata?.profit) ||
+        isNonZeroNumber(metadata?.fee) ||
+        isNonZeroNumber(metadata?.commission) ||
+        isNonZeroNumber(metadata?.swap)
+}
 
-    return { kind: "ambiguous", reason: "multiple owned positions are eligible without provider identity evidence" }
+function isNonZeroNumber(value: unknown): boolean {
+    const number = typeof value === "number"
+        ? value
+        : typeof value === "string" && value.trim()
+            ? Number(value)
+            : undefined
+    return number !== undefined && Number.isFinite(number) && number !== 0
+}
+
+async function recordUnattributedClosureFaults(
+    ctx: PortfolioMutationCtx,
+    args: {
+        app: Doc<"strategies">["app"]
+        accountId: string
+        strategyMap: Map<string, StrategyDoc>
+        closure: ProviderPositionClosureInput
+        description: string
+        updatedAt: number
+    }
+): Promise<void> {
+    const strategies = Array.from(args.strategyMap.values())
+    const existingFaults = await ctx.db
+        .query("execution_safety_faults")
+        .withIndex("by_app_account_blocked", (q) =>
+            q.eq("app", args.app).eq("accountId", args.accountId).eq("blocked", true)
+        )
+        .collect()
+    const providerPayload = JSON.stringify({
+        closure: args.closure,
+        metadata: parseJson<Record<string, unknown>>(args.closure.metadata),
+    })
+
+    for (const strategy of strategies) {
+        const message = `Provider reconciliation found an unattributed money-bearing close: ${args.description}`
+        const duplicate = existingFaults.some((fault) =>
+            fault.strategyId === strategy._id &&
+            fault.instrument === args.closure.instrument &&
+            fault.category === "unattributed_closure" &&
+            fault.message === message
+        )
+        if (duplicate) {
+            continue
+        }
+
+        await ctx.db.insert("execution_safety_faults", {
+            strategyId: strategy._id,
+            app: args.app,
+            accountId: args.accountId,
+            instrument: args.closure.instrument,
+            category: "unattributed_closure",
+            message,
+            providerPayload,
+            blocked: true,
+            occurredAt: args.updatedAt,
+            resolvedAt: undefined,
+            resolutionNote: undefined,
+        })
+    }
 }
 
 async function resolveUnmatchedClosedPositions(
@@ -323,7 +490,11 @@ async function hasRecentFilledCanonicalClose(
         const match = orders.some((order) =>
             order.action === "close" &&
             order.instrument === position.instrument &&
-            order.updatedAt >= position.syncedAt - PROVIDER_CLOSURE_TIME_SKEW_MS
+            order.updatedAt >= position.syncedAt - PROVIDER_CLOSURE_TIME_SKEW_MS &&
+            hasSharedProviderPositionIdentity(
+                buildOrderCloseIdentityCandidates(order),
+                buildProviderPositionIdentityCandidates(position)
+            )
         )
         if (match) {
             return true
@@ -336,6 +507,8 @@ async function hasRecentFilledCanonicalClose(
 async function resolveCloseOrderByProviderIdentity(
     ctx: PortfolioMutationCtx,
     args: {
+        app: Doc<"strategies">["app"]
+        accountId: string
         closure: ProviderPositionClosureInput
         strategyMap: Map<string, StrategyDoc>
     }
@@ -343,6 +516,15 @@ async function resolveCloseOrderByProviderIdentity(
     const metadata = parseJson<Record<string, unknown>>(args.closure.metadata)
     const identifiers = new Set<string>()
     addKnownIdentifier(identifiers, metadata?.clientOrderId)
+    addKnownIdentifier(identifiers, metadata?.triggeredOrderId)
+    addKnownIdentifier(identifiers, metadata?.algoId)
+    addKnownIdentifier(identifiers, metadata?.algoClOrdId)
+    addKnownIdentifier(identifiers, metadata?.actualOrdId)
+    if (Array.isArray(metadata?.providerOrderAliases)) {
+        for (const alias of metadata.providerOrderAliases) {
+            addKnownIdentifier(identifiers, alias)
+        }
+    }
     const orderId = readIdentifier(metadata?.orderId)
     if (orderId) {
         identifiers.add(orderId)
@@ -351,7 +533,11 @@ async function resolveCloseOrderByProviderIdentity(
 
     let syntheticMatch: Doc<"orders"> | undefined
     for (const identifier of identifiers) {
-        const order = await findCloseOrderByIdentifier(ctx, identifier)
+        const order = await findCloseOrderByIdentifier(ctx, {
+            app: args.app,
+            accountId: args.accountId,
+            identifier,
+        })
         if (!order || order.instrument !== args.closure.instrument || !args.strategyMap.has(String(order.strategyId))) {
             continue
         }
@@ -371,28 +557,46 @@ async function resolveCloseOrderByProviderIdentity(
 
 async function findCloseOrderByIdentifier(
     ctx: PortfolioMutationCtx,
-    identifier: string
+    args: {
+        app: Doc<"strategies">["app"]
+        accountId: string
+        identifier: string
+    }
 ): Promise<Doc<"orders"> | null> {
     const byOrderId = await ctx.db
         .query("orders")
-        .withIndex("by_order_id", (q) => q.eq("orderId", identifier))
-        .first()
-    if (byOrderId) {
-        return byOrderId
+        .withIndex("by_order_id", (q) => q.eq("orderId", args.identifier))
+        .collect()
+    const ownedByOrderId = byOrderId.find((order) => orderBelongsToAccount(order, args.app, args.accountId))
+    if (ownedByOrderId) {
+        return ownedByOrderId
     }
 
     const byProviderClientOrderId = await ctx.db
         .query("orders")
-        .withIndex("by_provider_client_order_id", (q) => q.eq("providerClientOrderId", identifier))
-        .first()
-    if (byProviderClientOrderId) {
-        return byProviderClientOrderId
+        .withIndex("by_provider_client_order_id", (q) => q.eq("providerClientOrderId", args.identifier))
+        .collect()
+    const ownedByProviderClientOrderId = byProviderClientOrderId
+        .find((order) => orderBelongsToAccount(order, args.app, args.accountId))
+    if (ownedByProviderClientOrderId) {
+        return ownedByProviderClientOrderId
     }
 
-    return await ctx.db
+    const byProviderOrderId = await ctx.db
         .query("orders")
-        .withIndex("by_provider_order_id", (q) => q.eq("providerOrderId", identifier))
-        .first()
+        .withIndex("by_provider_order_id", (q) => q.eq("providerOrderId", args.identifier))
+        .collect()
+    const ownedByProviderOrderId = byProviderOrderId
+        .find((order) => orderBelongsToAccount(order, args.app, args.accountId))
+    if (ownedByProviderOrderId) {
+        return ownedByProviderOrderId
+    }
+
+    const accountOrders = await ctx.db
+        .query("orders")
+        .withIndex("by_app_account", (q) => q.eq("app", args.app).eq("accountId", args.accountId))
+        .collect()
+    return accountOrders.find((order) => (order.providerOrderAliases ?? []).includes(args.identifier)) ?? null
 }
 
 async function resolveProviderCloseRunId(
@@ -416,6 +620,7 @@ async function resolveHistoricMT5ProviderCloseCandidates(
     ctx: PortfolioMutationCtx,
     args: {
         app: Doc<"strategies">["app"]
+        accountId: string
         strategyMap: Map<string, StrategyDoc>
         positionClosures: ProviderPositionClosureInput[]
     }
@@ -435,7 +640,11 @@ async function resolveHistoricMT5ProviderCloseCandidates(
     const seenOrderIds = new Set<string>()
 
     for (const identifier of closureIdentityCandidates) {
-        const order = await findCloseOrderByIdentifier(ctx, identifier)
+        const order = await findCloseOrderByIdentifier(ctx, {
+            app: args.app,
+            accountId: args.accountId,
+            identifier,
+        })
         if (
             !order ||
             order.app !== args.app ||
@@ -467,7 +676,7 @@ function resolveMT5HistoricProviderCloseCandidate(
     const providerPositionId = resolveHistoricMT5ProviderPositionId(order)
     const side = resolveOrderPositionSide(order)
     const entryPrice = resolveHistoricOrderEntryPrice(order)
-    if (!providerPositionId || !side || entryPrice === undefined) {
+    if (!providerPositionId || !side || entryPrice === undefined || !order.accountId) {
         return undefined
     }
 
@@ -475,6 +684,7 @@ function resolveMT5HistoricProviderCloseCandidate(
     return {
         strategyId: order.strategyId,
         runId: order.runId,
+        accountId: order.accountId,
         instrument: order.instrument,
         side,
         quantity: order.filledQuantity > 0 ? order.filledQuantity : order.quantity,
@@ -482,7 +692,6 @@ function resolveMT5HistoricProviderCloseCandidate(
         providerPositionId,
         positionKey,
         syncedAt: Math.min(order.submittedAt, order.updatedAt),
-        requiresStrongClosureIdentity: true,
         sourceOrder: order,
         metadata: JSON.stringify({
             ticket: providerPositionId,

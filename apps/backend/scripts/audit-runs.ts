@@ -31,14 +31,18 @@ async function main() {
         }
     }
 
-    // Get owned instruments for each app
+    const accounts = await client.getAccounts()
+
     console.log("\n=== OWNED INSTRUMENTS ===")
     for (const app of ["alpaca-options", "polymarket", "mt5"] as const) {
-        const owned = await client.getAllOwnedInstrumentsByApp(app)
-        console.log(`  ${app}: ${owned.length} instruments`)
-        for (const o of owned) {
-            const strat = strategies.find(s => String(s._id) === o.strategyId)
-            console.log(`    ${o.instrument} -> ${strat?.name ?? 'unknown'}`)
+        const appAccounts = accounts.filter((account) => account.app === app)
+        for (const account of appAccounts) {
+            const owned = await client.getAllOwnedInstrumentsByApp(app, account.accountId)
+            console.log(`  ${app}:${account.accountId}: ${owned.length} instruments`)
+            for (const o of owned) {
+                const strat = strategies.find(s => String(s._id) === o.strategyId)
+                console.log(`    ${o.instrument} -> ${strat?.name ?? 'unknown'}`)
+            }
         }
     }
 

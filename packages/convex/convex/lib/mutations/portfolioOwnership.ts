@@ -34,62 +34,11 @@ export function buildClaimsByInstrument(
     return claimsByInstrument
 }
 
-export function buildPositionClaimsByKey(
-    claims: Array<Doc<"instrument_claims">>,
-    strategyMap: Map<string, StrategyDoc>
-): Map<string, Set<Id<"strategies">>> {
-    const claimsByPositionKey = new Map<string, Set<Id<"strategies">>>()
-
-    for (const claim of claims) {
-        if (claim.source !== "position" || !strategyMap.has(String(claim.strategyId))) {
-            continue
-        }
-
-        const positionKey = claim.sourceId.trim()
-        if (positionKey.length === 0) {
-            continue
-        }
-
-        const existing = claimsByPositionKey.get(positionKey) ?? new Set<Id<"strategies">>()
-        existing.add(claim.strategyId)
-        claimsByPositionKey.set(positionKey, existing)
-    }
-
-    return claimsByPositionKey
-}
-
-export function buildAdoptedPositionClaims(args: {
-    strategyId: Id<"strategies">
-    requestedInstruments: string[]
-    providerPositions: Array<Doc<"provider_positions">>
-    existingClaims: Array<Doc<"instrument_claims">>
-}): Array<{ instrument: string; sourceId: string }> {
-    const instrumentSet = new Set(args.requestedInstruments)
-    const adoptedClaims = args.providerPositions
-        .filter((position) => instrumentSet.has(position.instrument))
-        .map((position) => ({
-            instrument: position.instrument,
-            sourceId: position.positionKey,
-        }))
-
-    const preservedClaims = args.existingClaims
-        .filter((claim) =>
-            claim.strategyId === args.strategyId &&
-            claim.source === "position" &&
-            !instrumentSet.has(claim.instrument)
-        )
-        .map((claim) => ({
-            instrument: claim.instrument,
-            sourceId: claim.sourceId,
-        }))
-
-    return [...preservedClaims, ...adoptedClaims]
-}
-
 export async function repairMissingLivePositionClaimsFromFilledOrders(
     ctx: PortfolioMutationCtx,
     args: {
         app: Doc<"strategies">["app"]
+        accountId: string
         strategyMap: Map<string, StrategyDoc>
         liveInstrumentAliases: Map<string, Set<string>>
         updatedAt: number
@@ -102,7 +51,7 @@ export async function repairMissingLivePositionClaimsFromFilledOrders(
     const [existingClaims, filledOrders] = await Promise.all([
         ctx.db
             .query("instrument_claims")
-            .withIndex("by_app", (q) => q.eq("app", args.app))
+            .withIndex("by_app_account", (q) => q.eq("app", args.app).eq("accountId", args.accountId))
             .collect(),
         ctx.db
             .query("orders")
@@ -152,6 +101,7 @@ export async function repairMissingLivePositionClaimsFromFilledOrders(
         await upsertPositionInstrumentClaims(ctx, {
             strategyId: entry.strategyId,
             app: args.app,
+            accountId: args.accountId,
             instruments: entry.instruments,
             updatedAt: args.updatedAt,
         })
@@ -163,7 +113,6 @@ export function resolveOwnership(args: {
     instrument: string
     positionKey?: string
     claimsByInstrument: Map<string, Set<Id<"strategies">>>
-    claimsByPositionKey?: Map<string, Set<Id<"strategies">>>
     existingOrder?: OrderDoc
     existingPositionByKey?: Map<string, Doc<"provider_positions">>
     strategyMap?: Map<string, StrategyDoc>
@@ -181,22 +130,30 @@ export function resolveOwnership(args: {
         }
     }
 
-    if (args.positionKey && (args.existingPositionByKey || args.claimsByPositionKey)) {
-        const positionOwnership = resolvePositionOwnership({
-            positionKey: args.positionKey,
-            claimsByPositionKey: args.claimsByPositionKey,
-            existingPositionByKey: args.existingPositionByKey,
-            strategyMap: args.strategyMap,
-        })
-        if (positionOwnership) {
-            return positionOwnership
-        }
-    }
-
     const claims = collectClaimsForAliases(
         args.claimsByInstrument,
         getProviderInstrumentClaimAliases(args.app, args.instrument)
     )
+
+    if (args.positionKey && args.existingPositionByKey) {
+        const existingStrategyId = readKnownStrategyId(
+            args.existingPositionByKey.get(args.positionKey)?.strategyId,
+            args.strategyMap
+        )
+        if (existingStrategyId) {
+            if (!claims || claims.size === 0 || claims.has(existingStrategyId) && claims.size === 1) {
+                return {
+                    strategyId: existingStrategyId,
+                    ownershipStatus: "owned",
+                }
+            }
+
+            return {
+                ownershipStatus: "orphaned",
+            }
+        }
+    }
+
     if (!claims || claims.size === 0) {
         return { ownershipStatus: "unowned" }
     }
@@ -232,88 +189,23 @@ export function collectClaimsForAliases(
     return claims.size > 0 ? claims : undefined
 }
 
-export function resolvePositionOwnership(args: {
-    positionKey: string
-    claimsByPositionKey?: Map<string, Set<Id<"strategies">>>
-    existingPositionByKey?: Map<string, Doc<"provider_positions">>
-    strategyMap?: Map<string, StrategyDoc>
-}): ResolvedOwnership | undefined {
-    const existingStrategyId = readKnownStrategyId(
-        args.existingPositionByKey?.get(args.positionKey)?.strategyId,
-        args.strategyMap
-    )
-    const claims = args.claimsByPositionKey?.get(args.positionKey)
-
-    if (claims && claims.size > 1) {
-        return {
-            ownershipStatus: "orphaned",
-        }
-    }
-
-    const [claimedStrategyId] = claims ? Array.from(claims) : []
-    const knownClaimedStrategyId = readKnownStrategyId(claimedStrategyId, args.strategyMap)
-
-    if (existingStrategyId && claimedStrategyId && !knownClaimedStrategyId) {
-        return {
-            ownershipStatus: "orphaned",
-        }
-    }
-
-    if (existingStrategyId && knownClaimedStrategyId && existingStrategyId !== knownClaimedStrategyId) {
-        return {
-            ownershipStatus: "orphaned",
-        }
-    }
-
-    if (knownClaimedStrategyId) {
-        return {
-            strategyId: knownClaimedStrategyId,
-            ownershipStatus: "owned",
-        }
-    }
-
-    if (existingStrategyId) {
-        return {
-            strategyId: existingStrategyId,
-            ownershipStatus: "owned",
-        }
-    }
-
-    if (claimedStrategyId) {
-        return {
-            ownershipStatus: "orphaned",
-        }
-    }
-
-    return undefined
-}
-
 export function hasPositionOwnershipMismatch(args: {
     positionKey: string
-    claimsByPositionKey?: Map<string, Set<Id<"strategies">>>
     existingPositionByKey?: Map<string, Doc<"provider_positions">>
     strategyMap?: Map<string, StrategyDoc>
+    resolvedOwnership: ResolvedOwnership
 }): boolean {
-    const claims = args.claimsByPositionKey?.get(args.positionKey)
-    if (claims && claims.size > 1) {
-        return true
-    }
-
     const existingStrategyId = readKnownStrategyId(
         args.existingPositionByKey?.get(args.positionKey)?.strategyId,
         args.strategyMap
     )
-    const [claimedStrategyId] = claims ? Array.from(claims) : []
-    const knownClaimedStrategyId = readKnownStrategyId(claimedStrategyId, args.strategyMap)
-
-    if (existingStrategyId && claimedStrategyId && !knownClaimedStrategyId) {
-        return true
-    }
 
     return Boolean(
         existingStrategyId &&
-        knownClaimedStrategyId &&
-        existingStrategyId !== knownClaimedStrategyId
+        (
+            args.resolvedOwnership.ownershipStatus !== "owned" ||
+            args.resolvedOwnership.strategyId !== existingStrategyId
+        )
     )
 }
 

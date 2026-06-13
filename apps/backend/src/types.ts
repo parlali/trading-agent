@@ -82,6 +82,22 @@ export interface VenueHealthState {
     validated: boolean
     environment?: string
     error?: string
+    accounts?: Record<string, AccountHealthState>
+    lastSyncAt?: number
+    lastVerifiedAt?: number
+    providerStatus?: "healthy" | "degraded" | "stale"
+    stale?: boolean
+    driftDetected?: boolean
+    positionCount?: number
+    pendingOrderCount?: number
+    lastSyncError?: string
+}
+
+export interface AccountHealthState {
+    label?: string
+    validated: boolean
+    error?: string
+    lastValidatedAt?: number
     lastSyncAt?: number
     lastVerifiedAt?: number
     providerStatus?: "healthy" | "degraded" | "stale"

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest"
 import { createExecutionError, type Position } from "@valiq-trading/core"
-import { MT5Client, type MT5OrderResult, type MT5Position, type MT5PositionClosure, type MT5SymbolInfo, type MT5WorkerCredentials } from "./mt5-client.ts"
+import { MT5Client, type MT5AccountPnlEvent, type MT5OrderResult, type MT5Position, type MT5PositionClosure, type MT5SymbolInfo, type MT5WorkerCredentials } from "./mt5-client.ts"
 import { MT5VenueAdapter } from "./venue-adapter.ts"
 
 const credentials: MT5WorkerCredentials = {
@@ -19,6 +19,11 @@ function createClient(): MT5Client {
         connected: true,
         login: credentials.login,
     })
+    client.getAccount = async () => createAccountInfo()
+    client.getPositions = async () => []
+    client.getOpenOrders = async () => []
+    client.getPositionClosures = async () => []
+    client.getAccountPnlEvents = async () => []
 
     return client
 }
@@ -38,117 +43,169 @@ function createIdentityContext(canonicalOrderId: string, role: "entry" | "close"
 }
 
 describe("MT5VenueAdapter", () => {
-    it("bounds MT5 reconnect concurrency, safe-read retry, and transient connect contention", async () => {
-        {
-            const client = createClient()
-            let connectCalls = 0
-            let releaseConnect: (() => void) | undefined
-            const connectReleased = new Promise<void>((resolve) => {
-                releaseConnect = resolve
-            })
-
-            client.getHealth = async () => ({
-                status: "ok",
-                connected: false,
-                login: null,
-            })
-            client.connect = async () => {
-                connectCalls++
-                await connectReleased
-                return createAccountInfo()
-            }
-            client.getAccount = async () => createAccountInfo()
-            client.getPositions = async () => []
-            client.getOpenOrders = async () => []
-
-            const adapter = new MT5VenueAdapter(client, credentials)
-            const reads = Promise.all([
-                adapter.getAccountState(),
-                adapter.getPositions(),
-                adapter.getWorkingOrders(),
-            ])
-
-            await waitForExpectation(() => {
-                expect(connectCalls).toBe(1)
-            })
-
-            releaseConnect?.()
-            await reads
-
-            expect(connectCalls).toBe(1)
+    it("passes the bound account credentials on every account-scoped worker call", async () => {
+        const client = createClient()
+        const seenLogins: Array<{ method: string; login: number }> = []
+        const record = (method: string, passed: MT5WorkerCredentials) => {
+            seenLogins.push({ method, login: passed.login })
+            expect(passed).toEqual(credentials)
         }
 
-        {
-            const client = createClient()
-            let healthConnected = true
-            let connectCalls = 0
-            let accountCalls = 0
+        client.getAccount = async (passed) => {
+            record("getAccount", passed)
+            return createAccountInfo()
+        }
+        client.getPositions = async (passed) => {
+            record("getPositions", passed)
+            return []
+        }
+        client.getOpenOrders = async (passed) => {
+            record("getOpenOrders", passed)
+            return []
+        }
+        client.getPositionClosures = async (passed) => {
+            record("getPositionClosures", passed)
+            return []
+        }
+        client.getAccountPnlEvents = async (passed) => {
+            record("getAccountPnlEvents", passed)
+            return []
+        }
+        client.submitOrder = async (passed): Promise<MT5OrderResult> => {
+            record("submitOrder", passed)
+            return createOrderResult({})
+        }
 
-            client.getHealth = async () => ({
-                status: "ok",
-                connected: healthConnected,
-                login: healthConnected ? credentials.login : null,
-            })
-            client.connect = async () => {
-                connectCalls++
-                healthConnected = true
-                return createAccountInfo()
-            }
-            client.getAccount = async () => {
-                accountCalls++
-                if (accountCalls === 1) {
-                    healthConnected = false
-                    throw createExecutionError("venue", "MT5 worker error: 503 Service Unavailable MT5 not connected", {
-                        code: "not_connected",
-                        retryable: true,
-                    })
+        const adapter = new MT5VenueAdapter(client, credentials)
+        await adapter.getAccountState()
+        await adapter.getPositions()
+        await adapter.getWorkingOrders()
+        await adapter.getRecentPositionClosures()
+        await adapter.getAccountPnlEvents()
+        await adapter.submitOrder(createSubmissionIntent({ orderType: "market" }), {
+            identity: createIdentityContext("vmte01abcde23456"),
+        })
+
+        expect(seenLogins.map((entry) => entry.method)).toEqual([
+            "getAccount",
+            "getPositionClosures",
+            "getAccountPnlEvents",
+            "getPositions",
+            "getOpenOrders",
+            "getPositionClosures",
+            "getAccountPnlEvents",
+            "submitOrder",
+        ])
+        expect(seenLogins.every((entry) => entry.login === credentials.login)).toBe(true)
+    })
+
+    it("fails closed when the worker serves account data for a different login", async () => {
+        const client = createClient()
+        client.getAccount = async () => ({
+            ...createAccountInfo(),
+            login: 999999,
+        })
+
+        const adapter = new MT5VenueAdapter(client, credentials)
+
+        await expect(adapter.getAccountState()).rejects.toThrow("bound to login 123456")
+        await expect(adapter.ensureConnected()).rejects.toThrow("bound to login 123456")
+    })
+
+    it("fails closed when the MT5 account currency is not USD", async () => {
+        const client = createClient()
+        client.getAccount = async () => ({
+            ...createAccountInfo(),
+            currency: "EUR",
+        })
+
+        const adapter = new MT5VenueAdapter(client, credentials)
+
+        await expect(adapter.getAccountState()).rejects.toThrow("MT5 account currency EUR is unsupported")
+    })
+
+    it("surfaces worker session mismatch rejections instead of serving another account", async () => {
+        const client = createClient()
+        client.getPositions = async () => {
+            throw createExecutionError(
+                "venue",
+                "MT5 worker error: 503 Service Unavailable MT5 active session login 222222 does not match requested login 123456",
+                {
+                    code: "session_login_mismatch",
+                    retryable: false,
                 }
-                return createAccountInfo()
-            }
-
-            const adapter = new MT5VenueAdapter(client, credentials)
-            const state = await adapter.getAccountState()
-
-            expect(state.equity).toBe(1000)
-            expect(connectCalls).toBe(1)
-            expect(accountCalls).toBe(2)
+            )
         }
 
-        {
-            const client = createClient()
-            let healthConnected = false
-            let connectCalls = 0
+        const adapter = new MT5VenueAdapter(client, credentials)
 
-            client.getHealth = async () => ({
-                status: "ok",
-                connected: healthConnected,
-                login: healthConnected ? credentials.login : null,
-            })
-            client.connect = async () => {
-                connectCalls++
-                if (connectCalls === 1) {
-                    throw createExecutionError("venue", "MT5 connection failed: MT5 connect already in progress", {
-                        code: "connect_in_progress",
-                        retryable: true,
-                    })
-                }
-                healthConnected = true
-                return createAccountInfo()
+        await expect(adapter.getPositions()).rejects.toThrow("session login 222222")
+    })
+
+    it("retries recoverable read failures once without trusting any cached session", async () => {
+        const client = createClient()
+        let accountCalls = 0
+        client.getAccount = async () => {
+            accountCalls++
+            if (accountCalls === 1) {
+                throw createExecutionError("venue", "MT5 worker error: 503 Service Unavailable MT5 not connected", {
+                    code: "not_connected",
+                    retryable: true,
+                })
             }
-            client.getAccount = async () => createAccountInfo()
-
-            const adapter = new MT5VenueAdapter(client, credentials)
-            const state = await adapter.getAccountState()
-
-            expect(state.equity).toBe(1000)
-            expect(connectCalls).toBe(2)
+            return createAccountInfo()
         }
+
+        const adapter = new MT5VenueAdapter(client, credentials)
+        const state = await adapter.getAccountState()
+
+        expect(state.equity).toBe(1000)
+        expect(accountCalls).toBe(2)
+    })
+
+    it("derives MT5 day PnL from open PnL, provider closures, and account PnL events", async () => {
+        const client = createClient()
+        client.getAccount = async () => ({
+            ...createAccountInfo(),
+            profit: 4.5,
+        })
+        client.getPositionClosures = async (): Promise<MT5PositionClosure[]> => [{
+            ticket: 5101,
+            orderId: 6101,
+            positionId: 4101,
+            symbol: "XAUUSD",
+            side: "long",
+            volume: 0.01,
+            price: 4719,
+            profit: 7,
+            swap: -0.25,
+            commission: -0.5,
+            fee: -0.1,
+            timeDone: Date.now(),
+            entry: 1,
+            reason: 0,
+        }]
+        client.getAccountPnlEvents = async (): Promise<MT5AccountPnlEvent[]> => [{
+            providerEventId: "mt5-deal:7101:entry-charges",
+            eventType: "fee",
+            instrument: "XAUUSD",
+            amount: -0.2,
+            currency: "USD",
+            occurredAt: Date.now(),
+            metadata: {},
+        }]
+
+        const adapter = new MT5VenueAdapter(client, credentials)
+        const state = await adapter.getAccountState()
+
+        expect(state.openPnl).toBe(4.5)
+        expect(state.dayPnl).toBeCloseTo(10.45)
     })
 
     it("keeps successful limit submissions pending until provider status confirms a fill", async () => {
         const client = createClient()
         let submittedComment = ""
-        client.submitOrder = async (params): Promise<MT5OrderResult> => {
+        client.submitOrder = async (_credentials, params): Promise<MT5OrderResult> => {
             submittedComment = params.comment ?? ""
             return createOrderResult({
                 retcode: 10008,
@@ -171,6 +228,29 @@ describe("MT5VenueAdapter", () => {
         expect(result.status).toBe("pending")
         expect(result.filledQuantity).toBe(0)
         expect(result.fillPrice).toBeUndefined()
+    })
+
+    it("keeps MT5 partial completion non-terminal on submission results", async () => {
+        const client = createClient()
+        client.submitOrder = async (): Promise<MT5OrderResult> => createOrderResult({
+            retcode: 10010,
+            retcodeDescription: "Request partially completed",
+            orderId: "1588167645",
+            volume: 0.02,
+            price: 4715.5,
+        })
+
+        const adapter = new MT5VenueAdapter(client, credentials)
+        const result = await adapter.submitOrder(createSubmissionIntent({
+            orderType: "limit",
+            limitPrice: 4715.5,
+        }), {
+            identity: createIdentityContext("vmte01abcde23456"),
+        })
+
+        expect(result.status).toBe("partially_filled")
+        expect(result.filledQuantity).toBe(0.02)
+        expect(result.fillPrice).toBe(4715.5)
     })
 
     it("treats a closed submit socket as commit-unknown", () => {
@@ -301,7 +381,7 @@ describe("MT5VenueAdapter", () => {
     it("cancels every MT5 provider ticket alias and reports residual failures", async () => {
         const client = createClient()
         const cancelledTickets: number[] = []
-        client.cancelOrder = async ({ ticket }): Promise<MT5OrderResult> => {
+        client.cancelOrder = async (_credentials, { ticket }): Promise<MT5OrderResult> => {
             cancelledTickets.push(ticket)
             if (ticket === 1607001002) {
                 return createOrderResult({
@@ -346,7 +426,7 @@ describe("MT5VenueAdapter", () => {
     it("reconciles a failed MT5 cancel with current terminal provider status", async () => {
         const client = createClient()
         const cancelledTickets: number[] = []
-        client.cancelOrder = async ({ ticket }): Promise<MT5OrderResult> => {
+        client.cancelOrder = async (_credentials, { ticket }): Promise<MT5OrderResult> => {
             cancelledTickets.push(ticket)
             return createOrderResult({
                 retcode: 10013,
@@ -378,7 +458,7 @@ describe("MT5VenueAdapter", () => {
     it("cancels one parseable MT5 alias when the canonical id is not a ticket", async () => {
         const client = createClient()
         const cancelledTickets: number[] = []
-        client.cancelOrder = async ({ ticket }): Promise<MT5OrderResult> => {
+        client.cancelOrder = async (_credentials, { ticket }): Promise<MT5OrderResult> => {
             cancelledTickets.push(ticket)
             return createOrderResult({
                 retcode: 10009,
@@ -402,7 +482,7 @@ describe("MT5VenueAdapter", () => {
     it("dedupes MT5 aliases across canonical, provider id, and aliases", async () => {
         const client = createClient()
         const cancelledTickets: number[] = []
-        client.cancelOrder = async ({ ticket }): Promise<MT5OrderResult> => {
+        client.cancelOrder = async (_credentials, { ticket }): Promise<MT5OrderResult> => {
             cancelledTickets.push(ticket)
             return createOrderResult({
                 retcode: 10009,
@@ -445,7 +525,7 @@ describe("MT5VenueAdapter", () => {
     it("ignores zero stop prices during MT5 market submission and verification", async () => {
         const client = createClient()
         let submittedPrice: number | undefined
-        client.submitOrder = async (params): Promise<MT5OrderResult> => {
+        client.submitOrder = async (_credentials, params): Promise<MT5OrderResult> => {
             submittedPrice = params.price
             return createOrderResult({
                 orderId: "1588140268",
@@ -484,8 +564,8 @@ describe("MT5VenueAdapter", () => {
 
     it("modifies MT5 pending order price and protection through the order modify endpoint", async () => {
         const client = createClient()
-        let modifyParams: Parameters<MT5Client["modifyOrder"]>[0] | undefined
-        client.modifyOrder = async (params): Promise<MT5OrderResult> => {
+        let modifyParams: Parameters<MT5Client["modifyOrder"]>[1] | undefined
+        client.modifyOrder = async (_credentials, params): Promise<MT5OrderResult> => {
             modifyParams = params
             return createOrderResult({
                 orderId: "1607001002",
@@ -593,7 +673,59 @@ describe("MT5VenueAdapter", () => {
         expect(result.fillPrice).toBe(4798.66)
     })
 
-    it("closes every MT5 position for the requested symbol", async () => {
+    it("attaches MT5 deal accounting metadata from filled order-status polling", async () => {
+        const client = createClient()
+        client.getOrderStatus = async () => ({
+            ticket: 1594203775,
+            symbol: "XAUUSD",
+            type: "sell_limit",
+            volume: 0,
+            volumeInitial: 0.02,
+            price: 4798.66,
+            profit: 8.73,
+            commission: -0.12,
+            swap: 0.47,
+            fee: -0.05,
+            state: "filled",
+        })
+
+        const adapter = new MT5VenueAdapter(client, credentials)
+        const result = await adapter.getOrderStatus("1594203775")
+
+        expect(result.intentUpdates?.metadata).toMatchObject({
+            providerAccountingSource: "mt5_deal_status",
+            providerOrderId: "1594203775",
+            fillPnl: 8.73,
+            commission: -0.12,
+            swap: 0.47,
+            fee: -0.05,
+        })
+    })
+
+    it("marks MT5 filled order-status polling as missing accounting when no deal accounting is present", async () => {
+        const client = createClient()
+        client.getOrderStatus = async () => ({
+            ticket: 1594203775,
+            symbol: "XAUUSD",
+            type: "sell_limit",
+            volume: 0,
+            volumeInitial: 0.02,
+            price: 4798.66,
+            state: "filled",
+        })
+
+        const adapter = new MT5VenueAdapter(client, credentials)
+        const result = await adapter.getOrderStatus("1594203775")
+
+        expect(result.intentUpdates?.metadata).toMatchObject({
+            providerAccountingSource: "mt5_deal_status",
+            providerOrderId: "1594203775",
+            providerAccountingMissing: true,
+            providerAccountingMissingReason: "mt5_order_status_without_deal_accounting",
+        })
+    })
+
+    it("closes only the MT5 provider ticket carried by the prepared close intent", async () => {
         const client = createClient()
         const closedTickets: number[] = []
         const closeComments: string[] = []
@@ -604,7 +736,7 @@ describe("MT5VenueAdapter", () => {
             createPosition(1588167645, "XAUUSD", 4715.47),
             createPosition(1589000000, "US30.cash", 39000),
         ]
-        client.closePosition = async ({ ticket, comment }): Promise<MT5OrderResult> => {
+        client.closePosition = async (_credentials, { ticket, comment }): Promise<MT5OrderResult> => {
             activeCloses++
             maxActiveCloses = Math.max(maxActiveCloses, activeCloses)
 
@@ -628,18 +760,28 @@ describe("MT5VenueAdapter", () => {
         }
 
         const adapter = new MT5VenueAdapter(client, credentials)
-        const result = await adapter.closePosition("XAUUSD", undefined, {
+        const result = await adapter.closePosition("XAUUSD", {
+            instrument: "XAUUSD",
+            side: "sell",
+            quantity: 0.01,
+            orderType: "market",
+            timeInForce: "ioc",
+            metadata: {
+                action: "close",
+                ticket: 1588140268,
+            },
+        }, {
             identity: createIdentityContext("vmtc01abcde23456", "close"),
         })
 
-        expect(closedTickets).toEqual([1588140268, 1588167645])
-        expect(closeComments).toEqual(["vmtc01abcde23456", "vmtc01abcde23456"])
+        expect(closedTickets).toEqual([1588140268])
+        expect(closeComments).toEqual(["vmtc01abcde23456"])
         expect(maxActiveCloses).toBe(1)
-        expect(result.orderId).toBe("1588140268,1588167645")
+        expect(result.orderId).toBe("1588140268")
         expect(result.providerClientOrderId).toBe("vmtc01abcde23456")
         expect(result.status).toBe("filled")
-        expect(result.filledQuantity).toBe(0.02)
-        expect(result.fillPrice).toBe(4718.75)
+        expect(result.filledQuantity).toBe(0.01)
+        expect(result.fillPrice).toBe(4719)
     })
 
     it("fails closed before MT5 close mutation without canonical identity", async () => {
@@ -655,10 +797,26 @@ describe("MT5VenueAdapter", () => {
         expect(client.closePosition).not.toHaveBeenCalled()
     })
 
+    it("fails closed before broad MT5 close without provider position identity", async () => {
+        const client = createClient()
+        client.getPositions = vi.fn(async () => [createPosition(1588140268, "XAUUSD", 4715.5)])
+        client.closePosition = vi.fn(async () => createOrderResult({}))
+
+        const adapter = new MT5VenueAdapter(client, credentials)
+        const result = await adapter.closePosition("XAUUSD", undefined, {
+            identity: createIdentityContext("vmtc01abcde23456", "close"),
+        })
+
+        expect(result.status).toBe("rejected")
+        expect(result.errorDetail?.code).toBe("MISSING_PROVIDER_POSITION_ID")
+        expect(client.getPositions).not.toHaveBeenCalled()
+        expect(client.closePosition).not.toHaveBeenCalled()
+    })
+
     it("passes canonical close identity when closing a provider position by ticket", async () => {
         const client = createClient()
         let closeComment = ""
-        client.closePosition = async ({ comment }): Promise<MT5OrderResult> => {
+        client.closePosition = async (_credentials, { comment }): Promise<MT5OrderResult> => {
             closeComment = comment ?? ""
             return createOrderResult({
                 orderId: "1607003001",
@@ -727,6 +885,83 @@ describe("MT5VenueAdapter", () => {
                 providerAccountingSource: "mt5_deal",
             },
         }])
+    })
+
+    it("ingests MT5 entry charges and balance deals as account PnL events", async () => {
+        const client = createClient()
+        client.getAccountPnlEvents = async (): Promise<MT5AccountPnlEvent[]> => [
+            {
+                providerEventId: "mt5-deal:1607001002:entry-charges",
+                eventType: "fee",
+                instrument: "US30",
+                amount: -0.42,
+                currency: "USD",
+                occurredAt: 1_714_240_001_000,
+                metadata: {
+                    source: "mt5_history_deals",
+                    dealTicket: 1607001002,
+                    commission: -0.12,
+                    fee: -0.3,
+                    swap: 0,
+                },
+            },
+            {
+                providerEventId: "mt5-deal:1607001003:balance",
+                eventType: "adjustment",
+                amount: 5,
+                currency: "USD",
+                occurredAt: 1_714_240_002_000,
+                metadata: {
+                    source: "mt5_history_deals",
+                    dealTicket: 1607001003,
+                },
+            },
+        ]
+
+        const adapter = new MT5VenueAdapter(client, credentials)
+        await expect(adapter.getAccountPnlEvents()).resolves.toEqual([
+            {
+                providerEventId: "mt5-deal:1607001002:entry-charges",
+                eventType: "fee",
+                instrument: "US30",
+                amount: -0.42,
+                currency: "USD",
+                occurredAt: 1_714_240_001_000,
+                metadata: {
+                    source: "mt5_history_deals",
+                    dealTicket: 1607001002,
+                    commission: -0.12,
+                    fee: -0.3,
+                    swap: 0,
+                },
+            },
+            {
+                providerEventId: "mt5-deal:1607001003:balance",
+                eventType: "adjustment",
+                amount: 5,
+                currency: "USD",
+                occurredAt: 1_714_240_002_000,
+                metadata: {
+                    source: "mt5_history_deals",
+                    dealTicket: 1607001003,
+                },
+            },
+        ])
+    })
+
+    it("fails closed when MT5 account PnL events are not USD-denominated", async () => {
+        const client = createClient()
+        client.getAccountPnlEvents = async (): Promise<MT5AccountPnlEvent[]> => [{
+            providerEventId: "mt5-deal:1607001003:balance",
+            eventType: "adjustment",
+            amount: 5,
+            currency: "EUR",
+            occurredAt: 1_714_240_002_000,
+        }]
+
+        const adapter = new MT5VenueAdapter(client, credentials)
+
+        await expect(adapter.getAccountPnlEvents()).rejects.toThrow("MT5 account currency EUR is unsupported")
     })
 
     it("clamps impossible future MT5 position and working-order timestamps to the observation time", async () => {

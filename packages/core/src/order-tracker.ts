@@ -41,6 +41,7 @@ export class OrderLifecycleManager {
     private tradeEventLogger?: TradeEventLogger
     private runId: string
     private strategyId: string
+    private accountId?: string
     private venueName: string
     private onSnapshotUpdate?: (previousSnapshot: OrderSnapshot, currentSnapshot: OrderSnapshot) => void
     private trackedOrders = new Map<string, TrackedOrderState>()
@@ -53,6 +54,7 @@ export class OrderLifecycleManager {
         tradeEventLogger?: TradeEventLogger,
         runId: string = "",
         strategyId: string = "",
+        accountId: string | undefined = undefined,
         venueName: string = "unknown",
         onSnapshotUpdate?: (previousSnapshot: OrderSnapshot, currentSnapshot: OrderSnapshot) => void
     ) {
@@ -64,6 +66,7 @@ export class OrderLifecycleManager {
         this.tradeEventLogger = tradeEventLogger
         this.runId = runId
         this.strategyId = strategyId
+        this.accountId = accountId
         this.venueName = venueName
         this.onSnapshotUpdate = onSnapshotUpdate
     }
@@ -77,6 +80,7 @@ export class OrderLifecycleManager {
         const snapshot = createOrderSnapshot({
             strategyId: this.strategyId,
             runId: this.runId,
+            accountId: this.accountId,
             venue: this.venueName,
             action,
             intent,
@@ -605,6 +609,5 @@ function buildTransitionDetails(
 
 function shouldPollSnapshot(snapshot: OrderSnapshot): boolean {
     return !isTerminalOrderStatus(snapshot.status) &&
-        snapshot.commitOutcome !== "commit_unknown" &&
         snapshot.providerOrderId.trim().length > 0
 }

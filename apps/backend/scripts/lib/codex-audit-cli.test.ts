@@ -233,7 +233,7 @@ describe("Codex audit CLI helpers", () => {
                 liveOne,
                 liveTwo,
             ],
-        })).toThrow("Multiple live polymarket strategies")
+        })).toThrow("Multiple live polymarket:test-account strategies")
         expect(resolveProviderSyncRefreshStrategy({
             targetStrategy,
             allStrategies: [
@@ -280,9 +280,10 @@ function createStrategy(
 ): StoredStrategy {
     return {
         _id: id as Id<"strategies">,
-        _creationTime: 1,
-        app: options.app ?? "polymarket",
-        name,
+            _creationTime: 1,
+            app: options.app ?? "polymarket",
+            accountId: "test-account",
+            name,
         enabled: true,
         schedule: "*/30 * * * *",
         policy: {

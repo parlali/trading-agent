@@ -1,10 +1,11 @@
 import { describe, expect, it, vi } from "vitest"
-import { createExecutionError } from "@valiq-trading/core"
+import { createExecutionError, type OrderIntent } from "@valiq-trading/core"
 import type { PolymarketClient, PolymarketMarket } from "./polymarket-client.ts"
 import {
-    POLYMARKET_SEARCH_MARKETS_MAX_LIVE_PRICE_TOKENS,
+    buildPolymarketFeeMetadata,
     PolymarketVenueAdapter,
 } from "./venue-adapter.ts"
+import { POLYMARKET_SEARCH_MARKETS_MAX_LIVE_PRICE_TOKENS } from "./venue-adapter-market-metadata.ts"
 
 function createMarket(id: string): PolymarketMarket {
     return {
@@ -65,8 +66,10 @@ function createClient() {
     const createOrder = vi.fn()
     const getOrder = vi.fn()
     const getOpenOrders = vi.fn()
-    const getTrades = vi.fn()
+    const getTrades = vi.fn().mockResolvedValue([])
     const cancelOrder = vi.fn()
+    const getFeeRateBps = vi.fn()
+    const getBalance = vi.fn()
 
     return {
         client: {
@@ -85,6 +88,8 @@ function createClient() {
             getOpenOrders,
             getTrades,
             cancelOrder,
+            getFeeRateBps,
+            getBalance,
         } as unknown as PolymarketClient,
         getTopLiquidMarketsForCategory,
         searchMarkets,
@@ -101,10 +106,16 @@ function createClient() {
         getOpenOrders,
         getTrades,
         cancelOrder,
+        getFeeRateBps,
+        getBalance,
     }
 }
 
-function createIdentityContext(canonicalOrderId: string, signedOrderFingerprint?: string) {
+function createIdentityContext(
+    canonicalOrderId: string,
+    signedOrderFingerprint?: string,
+    signedOrderMetadata?: Record<string, unknown>
+) {
     return {
         identity: {
             canonicalOrderId,
@@ -114,6 +125,7 @@ function createIdentityContext(canonicalOrderId: string, signedOrderFingerprint?
             submitAttemptSequence: 1,
             commitOutcome: "accepted" as const,
             signedOrderFingerprint,
+            signedOrderMetadata,
             venue: "polymarket",
             role: "close" as const,
             sequence: 1,
@@ -176,6 +188,38 @@ describe("PolymarketVenueAdapter.simulateDryRunOrder", () => {
             limitPrice: 0.52,
             timeInForce: "gtc",
         })).rejects.toThrow("canonical tokenId")
+    })
+
+    it("rejects unsupported stop and day semantics in dry-run before pricing", async () => {
+        const client = createClient()
+        const venue = new PolymarketVenueAdapter(client.client)
+        const context = createIdentityContext("vpmc01dryreject")
+
+        await expect(venue.simulateDryRunOrder({
+            ...createPolymarketIntent({
+                orderType: "stop_limit",
+                stopPrice: 0.45,
+                metadata: createCanonicalOrderMetadata(),
+            }),
+        }, context)).rejects.toMatchObject({
+            executionError: {
+                code: "POLYMARKET_UNSUPPORTED_ORDER_SEMANTICS",
+                retryable: false,
+            },
+        })
+        await expect(venue.simulateDryRunOrder({
+            ...createPolymarketIntent({
+                timeInForce: "day",
+                metadata: createCanonicalOrderMetadata(),
+            }),
+        }, context)).rejects.toMatchObject({
+            executionError: {
+                code: "POLYMARKET_UNSUPPORTED_ORDER_SEMANTICS",
+                retryable: false,
+            },
+        })
+        expect(client.getPrice).not.toHaveBeenCalled()
+        expect(client.getOrderBook).not.toHaveBeenCalled()
     })
 })
 
@@ -243,6 +287,8 @@ describe("PolymarketVenueAdapter.closePosition", () => {
         client.postPreparedOrder.mockResolvedValue({
             orderID: "close-order-1",
             status: "matched",
+            makingAmount: "10000000",
+            takingAmount: "5900000",
             signedOrderFingerprint: "signed-fingerprint",
         })
 
@@ -262,9 +308,134 @@ describe("PolymarketVenueAdapter.closePosition", () => {
             canonicalOrderId: "vpmc01close12345",
             side: "sell",
             size: 10,
-            price: 0.59,
+            price: 0.5782,
         }))
         expect(client.postPreparedOrder).toHaveBeenCalled()
+    })
+
+    it("records partial matched FAK fills from provider post amounts", async () => {
+        const client = createClient()
+        client.prepareOrder.mockImplementation(async (params: { price: number; size: number }) => ({
+            orderBody: {
+                order: {},
+            },
+            signedOrderFingerprint: "signed-fingerprint",
+            signedOrderMetadata: {
+                price: params.price,
+                size: params.size,
+                feeRateBps: 0,
+                signedOrderFingerprint: "signed-fingerprint",
+            },
+        }))
+        client.postPreparedOrder.mockResolvedValue({
+            orderID: "entry-order-partial",
+            status: "matched",
+            makingAmount: "1500000",
+            takingAmount: "3000000",
+            signedOrderFingerprint: "signed-fingerprint",
+        })
+
+        const venue = new PolymarketVenueAdapter(client.client)
+        const intent = {
+            instrument: "token-active",
+            side: "buy" as const,
+            quantity: 10,
+            orderType: "limit" as const,
+            limitPrice: 0.42,
+            timeInForce: "ioc" as const,
+            metadata: {
+                tokenId: "token-active",
+                conditionId: "condition-active",
+                marketSlug: "will-it-happen",
+                question: "Will it happen?",
+                outcome: "Yes",
+            },
+        }
+        const context = createIdentityContext("vpmc01entrypart")
+        await venue.prepareOrderIdentity(intent, context)
+        const result = await venue.submitOrder(intent, context)
+
+        expect(result.status).toBe("partially_filled")
+        expect(result.filledQuantity).toBe(3)
+        expect(result.fillPrice).toBe(0.5)
+        expect(result.intentUpdates?.metadata).toMatchObject({
+            providerAccountingSource: "polymarket_post_order_amounts",
+            providerMakingAmount: "1500000",
+            providerTakingAmount: "3000000",
+        })
+    })
+
+    it("maps terminal unmatched and unknown post statuses to non-pending results", async () => {
+        const client = createClient()
+        client.prepareOrder.mockImplementation(async (params: { price: number; size: number }) => ({
+            orderBody: {
+                order: {},
+            },
+            signedOrderFingerprint: `signed-fingerprint-${params.size}`,
+            signedOrderMetadata: {
+                price: params.price,
+                size: params.size,
+                feeRateBps: 0,
+                signedOrderFingerprint: `signed-fingerprint-${params.size}`,
+            },
+        }))
+        client.postPreparedOrder
+            .mockResolvedValueOnce({
+                orderID: "order-unmatched",
+                status: "unmatched",
+                signedOrderFingerprint: "signed-fingerprint-10",
+            })
+            .mockResolvedValueOnce({
+                orderID: "order-unknown",
+                status: "mystery-status",
+                signedOrderFingerprint: "signed-fingerprint-11",
+            })
+
+        const venue = new PolymarketVenueAdapter(client.client)
+        const firstIntent = createPolymarketIntent({
+            quantity: 10,
+            metadata: createCanonicalOrderMetadata(),
+        })
+        const secondIntent = createPolymarketIntent({
+            quantity: 11,
+            metadata: createCanonicalOrderMetadata(),
+        })
+        const firstContext = createIdentityContext("vpmc01unmatched1")
+        const secondContext = createIdentityContext("vpmc01unknown01")
+
+        await venue.prepareOrderIdentity(firstIntent, firstContext)
+        await venue.prepareOrderIdentity(secondIntent, secondContext)
+
+        await expect(venue.submitOrder(firstIntent, firstContext)).resolves.toMatchObject({
+            orderId: "order-unmatched",
+            status: "cancelled",
+            filledQuantity: 0,
+        })
+        await expect(venue.submitOrder(secondIntent, secondContext)).resolves.toMatchObject({
+            orderId: "order-unknown",
+            status: "rejected",
+            filledQuantity: 0,
+        })
+    })
+
+    it("rejects unsupported live order semantics before provider preparation", async () => {
+        const client = createClient()
+        const venue = new PolymarketVenueAdapter(client.client)
+
+        await expect(venue.prepareOrderIdentity(
+            createPolymarketIntent({
+                orderType: "limit",
+                stopPrice: 0.45,
+                metadata: createCanonicalOrderMetadata(),
+            }),
+            createIdentityContext("vpmc01livereject")
+        )).rejects.toMatchObject({
+            executionError: {
+                code: "POLYMARKET_UNSUPPORTED_ORDER_SEMANTICS",
+                retryable: false,
+            },
+        })
+        expect(client.prepareOrder).not.toHaveBeenCalled()
     })
 
     it("fails closed when token balance falls below the prepared close quantity", async () => {
@@ -407,38 +578,35 @@ describe("PolymarketVenueAdapter.modifyOrder", () => {
     })
 })
 
+describe("PolymarketVenueAdapter.cancelOrder", () => {
+    it("fails commit-unknown when cancel status cannot be confirmed after provider cancel", async () => {
+        const client = createClient()
+        client.cancelOrder.mockResolvedValue(undefined)
+        client.getOrder.mockRejectedValue(new Error("not found"))
+
+        const venue = new PolymarketVenueAdapter(client.client)
+
+        await expect(venue.cancelOrder("order-cancel-1")).rejects.toMatchObject({
+            executionError: {
+                code: "POLYMARKET_CANCEL_STATUS_UNCONFIRMED",
+                retryable: true,
+            },
+        })
+    })
+})
+
 describe("PolymarketVenueAdapter.recoverSubmittedOrder", () => {
-    it("recovers duplicated posts only from an exact signed-order fingerprint match", async () => {
+    it("recovers duplicated posts from exact signed-order salt on open orders", async () => {
         const client = createClient()
         client.getOpenOrders.mockResolvedValue([
             createOpenOrder({
                 id: "wrong-order",
-                signedOrderFingerprint: "fingerprint-wrong",
+                salt: "salt-wrong",
+                signedOrderFingerprint: undefined,
             }),
             createOpenOrder({
                 id: "matching-order",
-                signedOrderFingerprint: "fingerprint-correct",
-            }),
-        ])
-        client.getTrades.mockResolvedValue([])
-        const venue = new PolymarketVenueAdapter(client.client)
-
-        const recovery = await venue.recoverSubmittedOrder(
-            createPolymarketIntent(),
-            createIdentityContext("vpme01abcde23456", "fingerprint-correct"),
-            createDuplicateOrderError("fingerprint-correct")
-        )
-
-        expect(recovery.outcome).toBe("accepted")
-        expect(recovery.outcome === "accepted" ? recovery.result.orderId : undefined).toBe("matching-order")
-        expect(recovery.outcome === "accepted" ? recovery.result.signedOrderFingerprint : undefined).toBe("fingerprint-correct")
-    })
-
-    it("does not recover a geometry match when the provider cannot prove the fingerprint", async () => {
-        const client = createClient()
-        client.getOpenOrders.mockResolvedValue([
-            createOpenOrder({
-                id: "geometry-only-order",
+                salt: "salt-correct",
                 signedOrderFingerprint: undefined,
             }),
         ])
@@ -447,7 +615,33 @@ describe("PolymarketVenueAdapter.recoverSubmittedOrder", () => {
 
         const recovery = await venue.recoverSubmittedOrder(
             createPolymarketIntent(),
-            createIdentityContext("vpme01abcde23456", "fingerprint-correct"),
+            createIdentityContext("vpme01abcde23456", "fingerprint-correct", { salt: "salt-correct" }),
+            createDuplicateOrderError("fingerprint-correct")
+        )
+
+        expect(recovery.outcome).toBe("accepted")
+        expect(recovery.outcome === "accepted" ? recovery.result.orderId : undefined).toBe("matching-order")
+        expect(recovery.outcome === "accepted" ? recovery.result.signedOrderFingerprint : undefined).toBe("fingerprint-correct")
+        expect(recovery.outcome === "accepted" ? recovery.result.signedOrderMetadata : undefined).toMatchObject({
+            salt: "salt-correct",
+        })
+    })
+
+    it("does not recover a geometry match when the provider cannot prove the signed-order salt", async () => {
+        const client = createClient()
+        client.getOpenOrders.mockResolvedValue([
+            createOpenOrder({
+                id: "geometry-only-order",
+                salt: undefined,
+                signedOrderFingerprint: undefined,
+            }),
+        ])
+        client.getTrades.mockResolvedValue([])
+        const venue = new PolymarketVenueAdapter(client.client)
+
+        const recovery = await venue.recoverSubmittedOrder(
+            createPolymarketIntent(),
+            createIdentityContext("vpme01abcde23456", "fingerprint-correct", { salt: "salt-correct" }),
             createDuplicateOrderError("fingerprint-correct")
         )
 
@@ -456,29 +650,31 @@ describe("PolymarketVenueAdapter.recoverSubmittedOrder", () => {
             details: {
                 exactOpenMatchCount: 0,
                 openCandidateCount: 1,
+                salt: "salt-correct",
             },
         })
     })
 
-    it("uses recent matched activity plus provider order lookup for terminal duplicate proof", async () => {
+    it("uses recent matched activity plus provider order lookup for terminal salt proof", async () => {
         const client = createClient()
         client.getOpenOrders.mockResolvedValue([])
         client.getTrades.mockResolvedValue([
             createTrade({
                 maker_order_id: "terminal-order",
-                signedOrderFingerprint: "fingerprint-correct",
+                signedOrderFingerprint: undefined,
             }),
         ])
         client.getOrder.mockResolvedValue(createOpenOrder({
             id: "terminal-order",
             status: "matched",
-            signedOrderFingerprint: "fingerprint-correct",
+            salt: "salt-correct",
+            signedOrderFingerprint: undefined,
         }))
         const venue = new PolymarketVenueAdapter(client.client)
 
         const recovery = await venue.recoverSubmittedOrder(
             createPolymarketIntent(),
-            createIdentityContext("vpme01abcde23456", "fingerprint-correct"),
+            createIdentityContext("vpme01abcde23456", "fingerprint-correct", { salt: "salt-correct" }),
             createDuplicateOrderError("fingerprint-correct")
         )
 
@@ -487,12 +683,13 @@ describe("PolymarketVenueAdapter.recoverSubmittedOrder", () => {
         expect(recovery.outcome === "accepted" ? recovery.result.orderId : undefined).toBe("terminal-order")
     })
 
-    it("probes persisted signed fingerprints for retryable non-duplicate submit failures", async () => {
+    it("probes persisted signed salts for retryable non-duplicate submit failures", async () => {
         const client = createClient()
         client.getOpenOrders.mockResolvedValue([
             createOpenOrder({
                 id: "matching-order",
-                signedOrderFingerprint: "fingerprint-correct",
+                salt: "salt-correct",
+                signedOrderFingerprint: undefined,
             }),
         ])
         client.getTrades.mockResolvedValue([])
@@ -500,13 +697,20 @@ describe("PolymarketVenueAdapter.recoverSubmittedOrder", () => {
 
         const recovery = await venue.recoverSubmittedOrder(
             createPolymarketIntent(),
-            createIdentityContext("vpme01abcde23456", "fingerprint-correct"),
+            createIdentityContext("vpme01abcde23456", "fingerprint-correct", { salt: "salt-correct" }),
             createRetryablePostError()
         )
 
         expect(client.getOpenOrders).toHaveBeenCalled()
         expect(recovery.outcome).toBe("accepted")
         expect(recovery.outcome === "accepted" ? recovery.result.orderId : undefined).toBe("matching-order")
+    })
+
+    it("classifies unknown submit errors as commit-unknown for recovery", async () => {
+        const client = createClient()
+        const venue = new PolymarketVenueAdapter(client.client)
+
+        expect(venue.classifySubmitError(new Error("socket closed after post"))).toBe("commit_unknown")
     })
 
     it("dedupes a partial fill seen in both open orders and trades by provider order id", async () => {
@@ -516,20 +720,21 @@ describe("PolymarketVenueAdapter.recoverSubmittedOrder", () => {
                 id: "partial-order",
                 status: "live",
                 size_matched: "3",
-                signedOrderFingerprint: "fingerprint-correct",
+                salt: "salt-correct",
+                signedOrderFingerprint: undefined,
             }),
         ])
         client.getTrades.mockResolvedValue([
             createTrade({
                 maker_order_id: "partial-order",
-                signedOrderFingerprint: "fingerprint-correct",
+                signedOrderFingerprint: undefined,
             }),
         ])
         const venue = new PolymarketVenueAdapter(client.client)
 
         const recovery = await venue.recoverSubmittedOrder(
             createPolymarketIntent(),
-            createIdentityContext("vpme01abcde23456", "fingerprint-correct"),
+            createIdentityContext("vpme01abcde23456", "fingerprint-correct", { salt: "salt-correct" }),
             createDuplicateOrderError("fingerprint-correct")
         )
 
@@ -569,7 +774,13 @@ describe("PolymarketVenueAdapter.getPositions", () => {
                 conditionId: "condition-active",
                 size: 64.5161,
                 avgPrice: 0.3099,
+                initialValue: 20,
+                currentValue: 10.6451565,
                 cashPnl: -9.3548,
+                totalBought: 64.5161,
+                realizedPnl: 1.25,
+                percentRealizedPnl: 6.25,
+                percentPnl: -46.774,
                 curPrice: 0.165,
                 redeemable: false,
                 mergeable: false,
@@ -629,6 +840,10 @@ describe("PolymarketVenueAdapter.getPositions", () => {
                     question: "Will the synthetic external market resolve yes?",
                     outcome: "Yes",
                     slug: "synthetic-external-market-2026",
+                    cashPnl: -9.3548,
+                    realizedPnl: 1.25,
+                    percentRealizedPnl: 6.25,
+                    totalBought: 64.5161,
                     redeemable: false,
                     mergeable: false,
                     endDate: "2026-12-31",
@@ -636,13 +851,182 @@ describe("PolymarketVenueAdapter.getPositions", () => {
             },
         ])
     })
+
+    it("emits settlement closures for redeemable and mergeable positions while preserving their account equity value", async () => {
+        const client = createClient()
+        client.getBalance.mockResolvedValue(100)
+        client.getCurrentPositions.mockResolvedValue([
+            {
+                asset: "token-active",
+                conditionId: "condition-active",
+                size: 10,
+                avgPrice: 0.4,
+                initialValue: 4,
+                currentValue: 6,
+                cashPnl: 2,
+                totalBought: 10,
+                realizedPnl: 0,
+                percentRealizedPnl: 0,
+                percentPnl: 50,
+                curPrice: 0.6,
+                redeemable: false,
+                mergeable: false,
+                title: "Active position",
+                slug: "active-position",
+                outcome: "Yes",
+                endDate: "2026-12-31",
+            },
+            {
+                asset: "token-redeemable",
+                conditionId: "condition-redeemable",
+                size: 5,
+                avgPrice: 0.3,
+                initialValue: 1.5,
+                currentValue: 5,
+                cashPnl: 3.5,
+                totalBought: 5,
+                realizedPnl: 0,
+                percentRealizedPnl: 0,
+                percentPnl: 233.3333,
+                curPrice: 1,
+                redeemable: true,
+                mergeable: false,
+                title: "Redeemable position",
+                slug: "redeemable-position",
+                outcome: "Yes",
+                endDate: "2026-02-11",
+            },
+            {
+                asset: "token-mergeable",
+                conditionId: "condition-mergeable",
+                size: 2,
+                avgPrice: 0.5,
+                initialValue: 1,
+                currentValue: 1,
+                cashPnl: 0,
+                totalBought: 2,
+                realizedPnl: 0,
+                percentRealizedPnl: 0,
+                percentPnl: 0,
+                curPrice: 0.5,
+                redeemable: false,
+                mergeable: true,
+                title: "Mergeable position",
+                slug: "mergeable-position",
+                outcome: "No",
+                endDate: "2026-02-11",
+            },
+        ])
+
+        const venue = new PolymarketVenueAdapter(client.client)
+        const [positions, closures, accountState] = await Promise.all([
+            venue.getPositions(),
+            venue.getRecentPositionClosures(),
+            venue.getAccountState(),
+        ])
+
+        expect(client.getCurrentPositions).toHaveBeenCalledOnce()
+        expect(positions.map((position) => position.instrument)).toEqual(["token-active"])
+        expect(closures).toEqual([
+            expect.objectContaining({
+                instrument: "token-redeemable",
+                providerPositionId: "token-redeemable",
+                side: "long",
+                quantity: 5,
+                fillPrice: 1,
+                metadata: expect.objectContaining({
+                    providerAccountingSource: "polymarket_position_settlement",
+                    tokenId: "token-redeemable",
+                    fillPnl: 3.5,
+                    fee: 0,
+                    feeCcy: "USDC",
+                }),
+            }),
+            expect.objectContaining({
+                instrument: "token-mergeable",
+                providerPositionId: "token-mergeable",
+                quantity: 2,
+                fillPrice: 0.5,
+                metadata: expect.objectContaining({
+                    tokenId: "token-mergeable",
+                    fillPnl: 0,
+                }),
+            }),
+        ])
+        expect(accountState).toMatchObject({
+            balance: 100,
+            equity: 112,
+            marginUsed: 12,
+            openPnl: 2,
+        })
+    })
+})
+
+describe("PolymarketVenueAdapter.getWorkingOrders", () => {
+    it("maps partial live fills from data trades instead of inheriting the order limit", async () => {
+        const client = createClient()
+        client.getOpenOrders.mockResolvedValue([
+            createOpenOrder({
+                id: "partial-order",
+                status: "live",
+                original_size: "10",
+                size_matched: "3",
+                price: "0.52",
+            }),
+        ])
+        client.getTrades.mockResolvedValue([
+            createTrade({
+                id: "trade-partial-1",
+                maker_order_id: "partial-order",
+                size: "1",
+                price: "0.46",
+                fee_rate_bps: "20",
+            }),
+            createTrade({
+                id: "trade-partial-2",
+                maker_order_id: "partial-order",
+                size: "2",
+                price: "0.49",
+                fee_rate_bps: "20",
+            }),
+        ])
+
+        const venue = new PolymarketVenueAdapter(client.client)
+        const orders = await venue.getWorkingOrders()
+
+        expect(client.getTrades).toHaveBeenCalledWith({ assetId: "token-1-yes" })
+        expect(orders).toEqual([
+            expect.objectContaining({
+                orderId: "partial-order",
+                status: "partially_filled",
+                filledQuantity: 3,
+                remainingQuantity: 7,
+                limitPrice: 0.52,
+                avgFillPrice: 0.48,
+                metadata: expect.objectContaining({
+                    providerAccountingSource: "polymarket_data_trades",
+                    providerTradeIds: ["trade-partial-1", "trade-partial-2"],
+                    feeCcy: "USDC",
+                    providerFeeFree: false,
+                }),
+            }),
+        ])
+        expect(orders[0]?.metadata?.fee).toBeCloseTo((20 / 10_000) * (1 * 0.46 + 2 * 0.49), 12)
+    })
 })
 
 function countEnrichedTokens(markets: Awaited<ReturnType<PolymarketVenueAdapter["searchMarkets"]>>): number {
     return markets.flatMap((market) => market.tokens).filter((token) => token.midpoint !== undefined).length
 }
 
-function createPolymarketIntent() {
+function createPolymarketIntent(overrides: Partial<OrderIntent> = {}): OrderIntent {
+    return {
+        ...basePolymarketIntent(),
+        ...overrides,
+    }
+}
+
+function basePolymarketIntent(): OrderIntent {
     return {
         instrument: "token-1-yes",
         side: "buy" as const,
@@ -650,6 +1034,17 @@ function createPolymarketIntent() {
         orderType: "limit" as const,
         limitPrice: 0.52,
         timeInForce: "gtc" as const,
+    }
+}
+
+function createCanonicalOrderMetadata(overrides: Record<string, unknown> = {}) {
+    return {
+        tokenId: "token-1-yes",
+        conditionId: "condition-1",
+        marketSlug: "will-it-happen-1",
+        question: "Will it happen 1?",
+        outcome: "Yes",
+        ...overrides,
     }
 }
 
@@ -708,3 +1103,192 @@ function createTrade(overrides: Record<string, unknown> = {}) {
         ...overrides,
     }
 }
+
+describe("buildPolymarketFeeMetadata", () => {
+    it("marks fills explicitly fee-free only when the provider reports a zero fee rate", () => {
+        expect(buildPolymarketFeeMetadata({
+            feeRateBps: 0,
+            size: 10,
+            price: 0.42,
+        })).toEqual({
+            fee: 0,
+            feeCcy: "USDC",
+            providerFeeRateBps: 0,
+            providerFeeFree: true,
+            providerAccountingSource: "polymarket_fee_rate",
+        })
+    })
+
+    it("computes a nonzero USDC fee from the fill size and price for fee-bearing rates", () => {
+        const metadata = buildPolymarketFeeMetadata({
+            feeRateBps: 20,
+            size: 10,
+            price: 0.42,
+        })
+
+        expect(metadata.fee).toBeCloseTo((20 / 10_000) * 0.42 * 10, 12)
+        expect(metadata).toMatchObject({
+            feeCcy: "USDC",
+            providerFeeRateBps: 20,
+            providerFeeFree: false,
+            providerAccountingSource: "polymarket_fee_rate",
+        })
+    })
+
+    it("uses the complement price when the fill price is above one half", () => {
+        const metadata = buildPolymarketFeeMetadata({
+            feeRateBps: 20,
+            size: 10,
+            price: 0.8,
+        })
+
+        expect(metadata.fee).toBeCloseTo((20 / 10_000) * 0.2 * 10, 12)
+    })
+
+    it("persists an explicit missing-accounting marker when the fee rate is unknown", () => {
+        expect(buildPolymarketFeeMetadata({
+            size: 10,
+            price: 0.42,
+        })).toEqual({
+            providerAccountingMissing: true,
+        })
+    })
+
+    it("persists an explicit missing-accounting marker when a fee-bearing fill lacks size or price", () => {
+        expect(buildPolymarketFeeMetadata({
+            feeRateBps: 20,
+        })).toEqual({
+            providerAccountingMissing: true,
+            providerFeeRateBps: 20,
+        })
+        expect(buildPolymarketFeeMetadata({
+            feeRateBps: 20,
+            size: 10,
+        })).toEqual({
+            providerAccountingMissing: true,
+            providerFeeRateBps: 20,
+        })
+    })
+})
+
+describe("PolymarketVenueAdapter fee accounting stamps", () => {
+    function buildEntryIntent() {
+        return {
+            instrument: "token-active",
+            side: "buy" as const,
+            quantity: 10,
+            orderType: "limit" as const,
+            limitPrice: 0.42,
+            timeInForce: "ioc" as const,
+            metadata: {
+                tokenId: "token-active",
+                conditionId: "condition-active",
+                marketSlug: "will-it-happen",
+                question: "Will it happen?",
+                outcome: "Yes",
+            },
+        }
+    }
+
+    it("stamps the signed-order fee rate into live fill accounting metadata", async () => {
+        const client = createClient()
+        client.prepareOrder.mockImplementation(async (params: { price: number; size: number }) => ({
+            orderBody: {
+                order: {},
+            },
+            signedOrderFingerprint: "signed-fingerprint",
+            signedOrderMetadata: {
+                price: params.price,
+                size: params.size,
+                feeRateBps: 20,
+                signedOrderFingerprint: "signed-fingerprint",
+            },
+        }))
+        client.postPreparedOrder.mockResolvedValue({
+            orderID: "entry-order-1",
+            status: "matched",
+            makingAmount: "4200000",
+            takingAmount: "10000000",
+            signedOrderFingerprint: "signed-fingerprint",
+        })
+
+        const venue = new PolymarketVenueAdapter(client.client)
+        const intent = buildEntryIntent()
+        const context = createIdentityContext("vpmc01entry1234")
+        await venue.prepareOrderIdentity(intent, context)
+        const result = await venue.submitOrder(intent, context)
+
+        expect(result.status).toBe("filled")
+        expect(result.intentUpdates?.metadata).toMatchObject({
+            feeCcy: "USDC",
+            providerFeeRateBps: 20,
+            providerFeeFree: false,
+            providerAccountingSource: "polymarket_post_order_amounts",
+            providerMakingAmount: "4200000",
+            providerTakingAmount: "10000000",
+        })
+        expect(result.intentUpdates?.metadata?.fee).toBeCloseTo((20 / 10_000) * 0.42 * 10, 12)
+    })
+
+    it("stamps dry-run fills with the provider fee rate fetched from the venue", async () => {
+        const client = createClient()
+        client.getFeeRateBps.mockResolvedValue(0)
+
+        const venue = new PolymarketVenueAdapter(client.client)
+        const result = await venue.simulateDryRunOrder(
+            buildEntryIntent(),
+            createIdentityContext("vpmc01entry1234")
+        )
+
+        expect(result.status).toBe("filled")
+        expect(result.intentUpdates?.metadata).toEqual({
+            fee: 0,
+            feeCcy: "USDC",
+            providerFeeRateBps: 0,
+            providerFeeFree: true,
+            providerAccountingSource: "polymarket_fee_rate",
+        })
+    })
+
+    it("ignores agent-supplied fee metadata and uses the provider fee rate for dry-run fills", async () => {
+        const client = createClient()
+        client.getFeeRateBps.mockResolvedValue(20)
+
+        const venue = new PolymarketVenueAdapter(client.client)
+        const result = await venue.simulateDryRunOrder(
+            {
+                ...buildEntryIntent(),
+                metadata: {
+                    ...buildEntryIntent().metadata,
+                    feeRateBps: 0,
+                },
+            },
+            createIdentityContext("vpmc01entry1234")
+        )
+
+        expect(result.status).toBe("filled")
+        expect(result.intentUpdates?.metadata).toMatchObject({
+            feeCcy: "USDC",
+            providerFeeRateBps: 20,
+            providerFeeFree: false,
+            providerAccountingSource: "polymarket_fee_rate",
+        })
+        expect(result.intentUpdates?.metadata?.fee).toBeCloseTo((20 / 10_000) * 0.42 * 10, 12)
+    })
+
+    it("stamps dry-run fills with an explicit missing-accounting marker when the fee rate is unavailable", async () => {
+        const client = createClient()
+        client.getFeeRateBps.mockRejectedValue(new Error("fee-rate endpoint unavailable"))
+
+        const venue = new PolymarketVenueAdapter(client.client)
+        const result = await venue.simulateDryRunOrder(
+            buildEntryIntent(),
+            createIdentityContext("vpmc01entry1234")
+        )
+
+        expect(result.status).toBe("filled")
+        expect(result.intentUpdates?.metadata).toEqual({
+            providerAccountingMissing: true,
+        })
+    })
+})

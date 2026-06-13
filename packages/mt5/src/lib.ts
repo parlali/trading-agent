@@ -1,5 +1,5 @@
 export { MT5Client } from "./mt5-client"
-export type { MT5WorkerCredentials, MT5SymbolInfo } from "./mt5-client"
+export type { MT5WorkerCredentials, MT5SymbolInfo, MT5AccountPnlEvent } from "./mt5-client"
 export { mt5RiskValidators } from "./risk-rules"
 export {
     MT5_RUNTIME_SECRET_KEYS,

@@ -252,6 +252,7 @@ export function resolveRuntimeStrategySafetyPolicy(args: {
 
 export const strategyConfigSchema = z.object({
     app: z.enum(["alpaca-options", "polymarket", "mt5", "okx-swap"]),
+    accountId: z.string().trim().min(1),
     name: z.string().min(1),
     enabled: z.boolean(),
     schedule: z.string().min(1),
@@ -260,6 +261,21 @@ export const strategyConfigSchema = z.object({
 })
 
 export type StrategyConfig = z.infer<typeof strategyConfigSchema>
+
+export const accountConfigSchema = z.object({
+    app: strategyConfigSchema.shape.app,
+    accountId: z.string().trim().min(1),
+    label: z.string().trim().min(1),
+    credentialEnvPrefix: z.string().trim().min(1),
+    status: z.enum(["active", "disabled"]).default("active"),
+    notes: z.string().trim().optional(),
+})
+
+export type AccountConfig = z.infer<typeof accountConfigSchema>
+
+export function validateAccountConfig(raw: unknown): AccountConfig {
+    return accountConfigSchema.parse(raw)
+}
 
 export const alpacaOptionsPolicySchema = baseStrategyPolicySchema.extend({
     maxLossPerPlay: z.number().positive(),

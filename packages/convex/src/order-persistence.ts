@@ -55,6 +55,7 @@ export const createConvexOrderPersistenceAdapter = (
                     signedOrderMetadata: snapshot.signedOrderMetadata,
                     runId: snapshot.runId as Id<"strategy_runs">,
                     strategyId: snapshot.strategyId as Id<"strategies">,
+                    accountId: snapshot.accountId,
                     venue: snapshot.venue,
                     instrument: snapshot.instrument,
                     status: snapshot.status,
@@ -92,7 +93,13 @@ export const createConvexOrderPersistenceAdapter = (
         async getOrder(orderId: string): Promise<OrderSnapshot | null> {
             const order = await runWithTimeout(
                 "Convex query getOrderById",
-                async () => await client.query(api.queries.getOrderById, { ...requireMachineAuth(), orderId })
+                async () => await client.query(api.queries.getOrderById, {
+                    ...requireMachineAuth(),
+                    orderId,
+                    app: config.orderLookupScope?.app,
+                    accountId: config.orderLookupScope?.accountId,
+                    strategyId: config.orderLookupScope?.strategyId as Id<"strategies"> | undefined,
+                })
             )
             return normalizeOrderSnapshot(order as OrderSnapshot | null)
         },

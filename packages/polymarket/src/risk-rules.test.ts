@@ -51,6 +51,56 @@ function createIntent(overrides: Partial<OrderIntent> = {}): OrderIntent {
 }
 
 describe("polymarketRiskValidators", () => {
+    it("rejects unsupported stop and day order semantics before execution", () => {
+        const cases: Array<{
+            name: string
+            intent: Partial<OrderIntent>
+            reason: string
+        }> = [
+            {
+                name: "stop order",
+                intent: {
+                    orderType: "stop",
+                    stopPrice: 0.45,
+                    timeInForce: "gtc",
+                },
+                reason: "supports only market and limit",
+            },
+            {
+                name: "stop-limit order",
+                intent: {
+                    orderType: "stop_limit",
+                    limitPrice: 0.5,
+                    stopPrice: 0.45,
+                    timeInForce: "gtc",
+                },
+                reason: "supports only market and limit",
+            },
+            {
+                name: "day time in force",
+                intent: {
+                    orderType: "limit",
+                    limitPrice: 0.5,
+                    timeInForce: "day",
+                },
+                reason: "timeInForce=day",
+            },
+        ]
+
+        for (const testCase of cases) {
+            const validation = validateIntent(
+                createIntent(testCase.intent),
+                basePolicy,
+                account,
+                [],
+                polymarketRiskValidators
+            )
+
+            expect(validation.allowed, testCase.name).toBe(false)
+            expect(validation.reason).toContain(testCase.reason)
+        }
+    })
+
     it("does not block sell-side exits because stale entry constraints are now violated", () => {
         const position: Position = {
             instrument: "token-yes",
@@ -63,7 +113,9 @@ describe("polymarketRiskValidators", () => {
             createIntent({
                 side: "sell",
                 quantity: 10,
+                orderType: "limit",
                 limitPrice: 0.5,
+                timeInForce: "ioc",
                 metadata: {
                     tokenId: "token-yes",
                     conditionId: "condition-1",

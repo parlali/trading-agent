@@ -1,7 +1,7 @@
 "use client"
 
 import { useState } from "react"
-import { useMutation } from "convex/react"
+import { useMutation, useQuery } from "convex/react"
 import { api } from "@valiq-trading/convex"
 import type { Id } from "@valiq-trading/convex"
 import { useRouter } from "next/navigation"
@@ -37,6 +37,7 @@ import { Loader2, Plus, X } from "lucide-react"
 
 type StrategyFormData = {
     app: ActiveVenueApp
+    accountId: string
     name: string
     enabled: boolean
     schedule: string
@@ -114,9 +115,11 @@ function readLlmPolicy(policy: PolicyFields): LlmPolicy {
 export function StrategyForm({ mode, initialData }: StrategyFormProps) {
     const router = useRouter()
     const upsertStrategy = useMutation(api.mutations.upsertStrategy)
+    const accounts = useQuery(api.queries.getAccounts, {}) ?? []
     const [saving, setSaving] = useState(false)
 
     const [app, setApp] = useState<ActiveVenueApp>(initialData?.app ?? "alpaca-options")
+    const [accountId, setAccountId] = useState(initialData?.accountId ?? "")
     const [name, setName] = useState(initialData?.name ?? "")
     const [enabled, setEnabled] = useState(initialData?.enabled ?? false)
     const [schedule, setSchedule] = useState(initialData?.schedule ?? "")
@@ -127,11 +130,16 @@ export function StrategyForm({ mode, initialData }: StrategyFormProps) {
 
     function handleVenueChange(newApp: ActiveVenueApp) {
         setApp(newApp)
+        setAccountId("")
         if (mode === "create") {
             setPolicy(getDefaultPolicy(newApp))
             setContext(getDefaultContext(newApp))
         }
     }
+
+    const venueAccounts = accounts.filter((account) =>
+        account.app === app && account.status === "active"
+    )
 
     function handlePolicyFieldChange(fieldKey: string, value: unknown) {
         setPolicy((prev) => setNestedValue(prev, fieldKey, value))
@@ -189,6 +197,11 @@ export function StrategyForm({ mode, initialData }: StrategyFormProps) {
             return
         }
 
+        if (!accountId.trim()) {
+            toast.error("Account is required")
+            return
+        }
+
         const llm = readLlmPolicy(policy)
         const model = typeof llm.model === "string" ? llm.model.trim() : ""
         if (!model) {
@@ -222,6 +235,7 @@ export function StrategyForm({ mode, initialData }: StrategyFormProps) {
             const strategyId = await upsertStrategy({
                 id: mode === "edit" ? initialData?.id : undefined,
                 app,
+                accountId: accountId.trim(),
                 name: name.trim(),
                 enabled,
                 schedule: schedule.trim(),
@@ -268,6 +282,27 @@ export function StrategyForm({ mode, initialData }: StrategyFormProps) {
                                         </SelectItem>
                                     )
                                 )}
+                            </SelectContent>
+                        </Select>
+                    </div>
+
+                    <div className="space-y-1.5">
+                        <Label className="text-sm">
+                            Account<span className="text-signal-danger ml-0.5">*</span>
+                        </Label>
+                        <Select
+                            value={accountId}
+                            onValueChange={setAccountId}
+                        >
+                            <SelectTrigger className="w-full">
+                                <SelectValue placeholder="Select account" />
+                            </SelectTrigger>
+                            <SelectContent>
+                                {venueAccounts.map((account) => (
+                                    <SelectItem key={`${account.app}:${account.accountId}`} value={account.accountId}>
+                                        {account.label}
+                                    </SelectItem>
+                                ))}
                             </SelectContent>
                         </Select>
                     </div>

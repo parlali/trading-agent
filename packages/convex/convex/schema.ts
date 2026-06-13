@@ -34,6 +34,7 @@ export default defineSchema({
 
     strategies: defineTable({
         app: venueAppV,
+        accountId: v.string(),
         name: v.string(),
         enabled: v.boolean(),
         schedule: v.string(),
@@ -43,7 +44,22 @@ export default defineSchema({
         updatedAt: v.number(),
     })
         .index("by_app", ["app"])
+        .index("by_app_account", ["app", "accountId"])
         .index("by_app_enabled", ["app", "enabled"]),
+
+    accounts: defineTable({
+        app: venueAppV,
+        accountId: v.string(),
+        label: v.string(),
+        credentialEnvPrefix: v.string(),
+        status: v.union(v.literal("active"), v.literal("disabled")),
+        notes: v.optional(v.string()),
+        createdAt: v.number(),
+        updatedAt: v.number(),
+    })
+        .index("by_app", ["app"])
+        .index("by_app_account", ["app", "accountId"])
+        .index("by_status", ["status"]),
 
     codex_chatgpt_auth: defineTable({
         key: v.literal("chatgpt"),
@@ -57,6 +73,7 @@ export default defineSchema({
     strategy_runs: defineTable({
         strategyId: v.id("strategies"),
         app: venueAppV,
+        accountId: v.optional(v.string()),
         status: v.union(
             v.literal("running"),
             v.literal("completed"),
@@ -126,6 +143,7 @@ export default defineSchema({
         runId: v.id("strategy_runs"),
         strategyId: v.id("strategies"),
         app: v.optional(venueAppV),
+        accountId: v.optional(v.string()),
         eventType: eventTypeV,
         payload: v.string(),
         timestamp: v.number(),
@@ -143,6 +161,7 @@ export default defineSchema({
         .index("by_signed_order_fingerprint", ["signedOrderFingerprint"])
         .index("by_strategy_status", ["strategyId", "status"])
         .index("by_app_status", ["app", "status"])
+        .index("by_app_account", ["app", "accountId"])
         .index("by_run", ["runId"]),
 
     order_transitions: defineTable({
@@ -154,6 +173,7 @@ export default defineSchema({
     positions: defineTable({
         strategyId: v.id("strategies"),
         app: venueAppV,
+        accountId: v.string(),
         positionKey: v.optional(v.string()),
         providerPositionId: v.optional(v.string()),
         ...positionValueFieldsV,
@@ -167,6 +187,7 @@ export default defineSchema({
     instrument_claims: defineTable({
         strategyId: v.id("strategies"),
         app: venueAppV,
+        accountId: v.string(),
         instrument: v.string(),
         source: claimSourceV,
         sourceId: v.string(),
@@ -175,11 +196,13 @@ export default defineSchema({
         .index("by_strategy", ["strategyId"])
         .index("by_strategy_source", ["strategyId", "source"])
         .index("by_strategy_source_source_id", ["strategyId", "source", "sourceId"])
-        .index("by_app", ["app"]),
+        .index("by_app", ["app"])
+        .index("by_app_account", ["app", "accountId"]),
 
     position_syncs: defineTable({
         strategyId: v.id("strategies"),
         app: venueAppV,
+        accountId: v.string(),
         syncedAt: v.number(),
         positionCount: v.number(),
         snapshotHash: v.optional(v.string()),
@@ -243,16 +266,39 @@ export default defineSchema({
 
     account_snapshots: defineTable({
         app: appV,
+        accountId: v.optional(v.string()),
         venue: v.string(),
         ...accountSnapshotValueFieldsV,
         timestamp: v.number(),
     })
         .index("by_app", ["app"])
+        .index("by_app_account", ["app", "accountId"])
         .index("by_app_timestamp", ["app", "timestamp"]),
+
+    account_pnl_events: defineTable({
+        app: venueAppV,
+        accountId: v.string(),
+        venue: v.string(),
+        providerEventId: v.string(),
+        eventType: v.union(v.literal("funding_fee"), v.literal("fee"), v.literal("adjustment")),
+        instrument: v.optional(v.string()),
+        amount: v.number(),
+        currency: v.string(),
+        occurredAt: v.number(),
+        metadata: v.optional(v.string()),
+        syncedAt: v.number(),
+    })
+        .index("by_app", ["app"])
+        .index("by_app_account", ["app", "accountId"])
+        .index("by_provider_event_id", ["providerEventId"])
+        .index("by_app_provider_event_id", ["app", "providerEventId"])
+        .index("by_app_account_provider_event_id", ["app", "accountId", "providerEventId"])
+        .index("by_app_occurred_at", ["app", "occurredAt"]),
 
     provider_sync_state: defineTable({
         app: venueAppV,
-        accountScope: v.literal("single-account-per-venue"),
+        accountId: v.string(),
+        accountScope: v.literal("account"),
         lastSyncedAt: v.optional(v.number()),
         lastVerifiedAt: v.optional(v.number()),
         providerStatus: portfolioProviderStatusV,
@@ -268,10 +314,13 @@ export default defineSchema({
         positionCount: v.number(),
         pendingOrderCount: v.number(),
         updatedAt: v.number(),
-    }).index("by_app", ["app"]),
+    })
+        .index("by_app", ["app"])
+        .index("by_app_account", ["app", "accountId"]),
 
     provider_positions: defineTable({
         app: venueAppV,
+        accountId: v.string(),
         positionKey: v.string(),
         providerPositionId: v.optional(v.string()),
         strategyId: v.optional(v.id("strategies")),
@@ -282,10 +331,12 @@ export default defineSchema({
         syncedAt: v.number(),
     })
         .index("by_app", ["app"])
+        .index("by_app_account", ["app", "accountId"])
         .index("by_app_strategy", ["app", "strategyId"]),
 
     provider_working_orders: defineTable({
         app: venueAppV,
+        accountId: v.string(),
         orderId: v.string(),
         canonicalOrderId: v.optional(v.string()),
         providerOrderId: v.optional(v.string()),
@@ -314,6 +365,7 @@ export default defineSchema({
         syncedAt: v.number(),
     })
         .index("by_app", ["app"])
+        .index("by_app_account", ["app", "accountId"])
         .index("by_provider_order_id", ["providerOrderId"])
         .index("by_provider_client_order_id", ["providerClientOrderId"])
         .index("by_app_strategy", ["app", "strategyId"])
@@ -346,6 +398,7 @@ export default defineSchema({
     execution_safety_faults: defineTable({
         strategyId: v.id("strategies"),
         app: venueAppV,
+        accountId: v.string(),
         instrument: v.string(),
         category: executionSafetyFaultCategoryV,
         message: v.string(),
@@ -367,7 +420,8 @@ export default defineSchema({
     })
         .index("by_strategy", ["strategyId"])
         .index("by_strategy_blocked", ["strategyId", "blocked"])
-        .index("by_app_blocked", ["app", "blocked"]),
+        .index("by_app_blocked", ["app", "blocked"])
+        .index("by_app_account_blocked", ["app", "accountId", "blocked"]),
 
     manual_run_requests: defineTable({
         strategyId: v.id("strategies"),

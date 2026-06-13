@@ -2,6 +2,7 @@ import {
     ToolPool,
     createAlpacaGetOptionsChainTool,
     createAlpacaGetQuoteTool,
+    createAlpacaProposeCloseTool,
     createOKXGetMarketPriceTool,
     createOKXGetOrderBookTool,
     createOKXProposeAdjustmentTool,
@@ -19,12 +20,9 @@ import {
     createModifyOrderTool,
     createPolymarketGetMarketPriceTool,
     createPolymarketGetOrderBookTool,
-    createPolymarketProposeAdjustmentTool,
     createPolymarketProposeCloseTool,
     createPolymarketProposeOrderTool,
     createPolymarketSearchMarketsTool,
-    createProposeAdjustmentTool,
-    createProposeCloseTool,
     createProposeOrderTool,
     createWaitForOrderUpdateTool,
     createWebFetchTool,
@@ -164,7 +162,7 @@ export function buildToolPool(config: BuildToolPoolConfig): ToolPool {
     })
     registerCanonicalTool(toolPool, {
         name: "modify_order",
-        compatibleVenues: ["alpaca-options", "mt5", "polymarket"],
+        compatibleVenues: ["alpaca-options", "mt5"],
         create: () => {
             if (app === "alpaca-options") {
                 return createModifyOrderTool(pipeline, { mode: "alpaca-options" })
@@ -172,10 +170,6 @@ export function buildToolPool(config: BuildToolPoolConfig): ToolPool {
 
             if (app === "mt5") {
                 return createMT5ModifyOrderTool(pipeline)
-            }
-
-            if (app === "polymarket") {
-                return createModifyOrderTool(pipeline)
             }
 
             return null
@@ -212,9 +206,7 @@ export function buildToolPool(config: BuildToolPoolConfig): ToolPool {
                     return null
                 }
 
-                return createProposeOrderTool(pipeline, {
-                    mode: "alpaca-options",
-                })
+                return createProposeOrderTool(pipeline)
             }
 
             if (app === "polymarket") {
@@ -300,7 +292,7 @@ export function buildToolPool(config: BuildToolPoolConfig): ToolPool {
     })
     registerCanonicalTool(toolPool, {
         name: "propose_adjustment",
-        compatibleVenues: VENUE_APPS,
+        compatibleVenues: ["mt5", "okx-swap"],
         create: () => {
             if (app === "mt5") {
                 if (!(venue instanceof MT5VenueAdapter)) {
@@ -313,19 +305,6 @@ export function buildToolPool(config: BuildToolPoolConfig): ToolPool {
                     venue,
                     mt5PolicySchema.parse(policy)
                 )
-            }
-
-            if (app === "alpaca-options") {
-                return createProposeAdjustmentTool(pipeline)
-            }
-
-            if (app === "polymarket") {
-                if (!(venue instanceof PolymarketVenueAdapter)) {
-                    logVenueToolMismatch(runLogger, app, "propose_adjustment", "PolymarketVenueAdapter", venue)
-                    return null
-                }
-
-                return createPolymarketProposeAdjustmentTool(pipeline, venue)
             }
 
             if (app === "okx-swap") {
@@ -397,7 +376,12 @@ export function buildToolPool(config: BuildToolPoolConfig): ToolPool {
             }
 
             if (app === "alpaca-options") {
-                return createProposeCloseTool(pipeline)
+                if (!(venue instanceof AlpacaOptionsVenueAdapter)) {
+                    logVenueToolMismatch(runLogger, app, "propose_close", "AlpacaOptionsVenueAdapter", venue)
+                    return null
+                }
+
+                return createAlpacaProposeCloseTool(pipeline, venue)
             }
 
             if (app === "polymarket") {

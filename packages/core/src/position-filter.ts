@@ -26,7 +26,13 @@ export function filterPositionsByOwnershipScope(
     scope: ProviderOwnershipScope
 ): Position[] {
     if (scope.positionKeys.size > 0) {
-        return positions.filter((position) => scope.positionKeys.has(buildProviderPositionKey(position)))
+        return positions.filter((position) =>
+            scope.positionKeys.has(buildProviderPositionKey(position)) ||
+            (
+                scope.instruments.has(position.instrument) &&
+                !hasScopedPositionKeyForInstrument(scope, position.instrument)
+            )
+        )
     }
 
     return filterPositionsByOwnership(positions, scope.instruments)
@@ -37,8 +43,47 @@ export function filterWorkingOrdersByOwnershipScope(
     scope: ProviderOwnershipScope
 ): WorkingOrder[] {
     if (scope.workingOrderIds.size > 0) {
-        return orders.filter((order) => scope.workingOrderIds.has(buildProviderWorkingOrderKey(order)))
+        return orders.filter((order) =>
+            scope.workingOrderIds.has(buildProviderWorkingOrderKey(order)) ||
+            (
+                scope.instruments.has(order.instrument) &&
+                !hasScopedWorkingOrderIdForInstrument(scope, order.instrument)
+            )
+        )
     }
 
     return filterWorkingOrdersByOwnership(orders, scope.instruments)
+}
+
+function hasScopedPositionKeyForInstrument(
+    scope: ProviderOwnershipScope,
+    instrument: string
+): boolean {
+    const prefix = `${instrument}:`
+    for (const key of scope.positionKeys) {
+        if (key.startsWith(prefix)) {
+            return true
+        }
+    }
+
+    return false
+}
+
+function hasScopedWorkingOrderIdForInstrument(
+    scope: ProviderOwnershipScope,
+    instrument: string
+): boolean {
+    const prefixes = [
+        `${instrument}:`,
+        `order:${instrument}:`,
+        `algo:${instrument}:`,
+    ]
+
+    for (const key of scope.workingOrderIds) {
+        if (prefixes.some((prefix) => key.startsWith(prefix))) {
+            return true
+        }
+    }
+
+    return false
 }

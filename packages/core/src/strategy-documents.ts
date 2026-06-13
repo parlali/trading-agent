@@ -1,11 +1,18 @@
 import { z } from "zod/v4"
-import { strategyConfigSchema, validateStrategyConfig, type StrategyConfig } from "./config"
+import {
+    accountConfigSchema,
+    strategyConfigSchema,
+    validateStrategyConfig,
+    type AccountConfig,
+    type StrategyConfig,
+} from "./config"
 
 export const STRATEGY_MARKDOWN_VERSION = 1
 export const STRATEGY_MARKDOWN_VERSION_MARKER = `<!-- strategy-doc:v${STRATEGY_MARKDOWN_VERSION} -->`
 
 const strategyMarkdownConfigSchema = z.object({
     app: strategyConfigSchema.shape.app,
+    accountId: strategyConfigSchema.shape.accountId,
     enabled: strategyConfigSchema.shape.enabled,
     schedule: strategyConfigSchema.shape.schedule,
     policy: strategyConfigSchema.shape.policy,
@@ -15,6 +22,7 @@ export type StrategyMarkdownConfig = z.infer<typeof strategyMarkdownConfigSchema
 
 export interface StrategyMarkdownDocument {
     version: typeof STRATEGY_MARKDOWN_VERSION
+    accounts: AccountConfig[]
     strategies: StrategyConfig[]
 }
 
@@ -27,6 +35,7 @@ export function parseStrategyMarkdownDocument(markdown: string): StrategyMarkdow
         )
     }
 
+    const accounts = parseAccountConfigs(normalized)
     const strategies: StrategyConfig[] = []
     const names = new Set<string>()
     const headings = Array.from(normalized.matchAll(/^(#{1,2})\s+(.+)$/gm)).map((match) => ({
@@ -78,6 +87,7 @@ export function parseStrategyMarkdownDocument(markdown: string): StrategyMarkdow
         }
 
         const config = strategyMarkdownConfigSchema.parse(parsedConfig)
+        assertStrategyAccountDeclared(config, accounts, name)
         const contextMarker = "\n### Context\n"
         const contextIndex = section.indexOf(contextMarker)
 
@@ -103,6 +113,60 @@ export function parseStrategyMarkdownDocument(markdown: string): StrategyMarkdow
 
     return {
         version: STRATEGY_MARKDOWN_VERSION,
+        accounts,
         strategies,
     }
+}
+
+function parseAccountConfigs(markdown: string): AccountConfig[] {
+    const accounts: AccountConfig[] = []
+    const seen = new Set<string>()
+
+    for (const match of markdown.matchAll(/```account\n([\s\S]*?)\n```/g)) {
+        const raw = match[1]
+        if (!raw) {
+            continue
+        }
+
+        let parsed: unknown
+        try {
+            parsed = JSON.parse(raw)
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error)
+            throw new Error(`Invalid account config JSON: ${message}`)
+        }
+
+        const entries = Array.isArray(parsed) ? parsed : [parsed]
+        for (const entry of entries) {
+            const account = accountConfigSchema.parse(entry)
+            const key = buildAccountKey(account.app, account.accountId)
+            if (seen.has(key)) {
+                throw new Error(`Duplicate account declaration: ${key}`)
+            }
+
+            seen.add(key)
+            accounts.push(account)
+        }
+    }
+
+    return accounts
+}
+
+function assertStrategyAccountDeclared(
+    strategy: StrategyMarkdownConfig,
+    accounts: AccountConfig[],
+    name: string
+): void {
+    const key = buildAccountKey(strategy.app, strategy.accountId)
+    const declared = accounts.some((account) =>
+        account.app === strategy.app && account.accountId === strategy.accountId
+    )
+
+    if (!declared) {
+        throw new Error(`Strategy "${name}" references undeclared account ${key}`)
+    }
+}
+
+function buildAccountKey(app: string, accountId: string): string {
+    return `${app}:${accountId}`
 }

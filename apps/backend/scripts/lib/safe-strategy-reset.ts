@@ -8,8 +8,10 @@ import {
     type TradingBackendClient,
 } from "@valiq-trading/convex"
 import {
+    buildAccountSecretKeyMap,
     createLogger,
     ExecutionPipeline,
+    resolveAccountScopedSecretKeys,
     validatePolicy,
     type Position,
     type VenueAdapter,
@@ -92,9 +94,9 @@ export async function resetStrategySafely(
         throw new Error(`Strategy not found: ${strategyId}`)
     }
 
-    const trackedPositions = await client.getPortfolioPositions(strategy.app, strategy._id)
-    const trackedOrders = await client.getPortfolioPendingOrders(strategy.app, strategy._id)
-    const freshness = await getFreshness(client, strategy.app)
+    const trackedPositions = await client.getPortfolioPositions(strategy.app, strategy._id, strategy.accountId)
+    const trackedOrders = await client.getPortfolioPendingOrders(strategy.app, strategy._id, strategy.accountId)
+    const freshness = await getFreshness(client, strategy.app, strategy.accountId)
 
     assertResetPreconditions(strategy, freshness, trackedPositions, trackedOrders)
 
@@ -177,14 +179,38 @@ export async function createVenue(
     }
 
     const policy = validatePolicy(strategy.app, strategy.policy)
-    const secretKeys = new Set([
+    const account = await client.getAccountByAppAndId(strategy.app, strategy.accountId)
+    if (!account) {
+        throw new Error(`Strategy ${strategy.name} (${strategy._id}) references missing account ${strategy.app}:${strategy.accountId}`)
+    }
+    if (account.status !== "active") {
+        throw new Error(`Strategy ${strategy.name} (${strategy._id}) references inactive account ${strategy.app}:${strategy.accountId}`)
+    }
+
+    const canonicalSecretKeys = [
         ...plugin.resolveSecretKeys(),
         ...(plugin.resolveAdditionalSecretKeys?.(policy) ?? []),
+    ]
+    const accountScopedKeys = resolveAccountScopedSecretKeys(strategy.app, canonicalSecretKeys)
+    const accountSecretKeyMap = buildAccountSecretKeyMap(account, accountScopedKeys)
+    const accountScopedKeySet = new Set(accountScopedKeys)
+    const sharedSecretKeys = canonicalSecretKeys.filter((key) => !accountScopedKeySet.has(key))
+    const [sharedSecrets, prefixedAccountSecrets] = await Promise.all([
+        sharedSecretKeys.length > 0 ? client.resolveSecrets(sharedSecretKeys) : Promise.resolve({}),
+        accountSecretKeyMap.size > 0 ? client.resolveSecrets(Array.from(accountSecretKeyMap.values())) : Promise.resolve({}),
     ])
-    const secrets = await client.resolveSecrets(Array.from(secretKeys))
+    const accountSecrets = Object.fromEntries(
+        Array.from(accountSecretKeyMap.entries()).map(([canonicalKey, prefixedKey]) => [
+            canonicalKey,
+            prefixedAccountSecrets[prefixedKey] ?? null,
+        ])
+    )
 
     return {
-        venue: plugin.createVenueAdapter(policy, secrets),
+        venue: plugin.createVenueAdapter(policy, {
+            ...sharedSecrets,
+            ...accountSecrets,
+        }),
         venueName: plugin.venueName,
         policy,
     }
@@ -195,7 +221,11 @@ export async function createResetExecutionContext(
     strategy: StoredStrategy
 ): Promise<ResetExecutionContext> {
     const context = await createVenue(strategy, client)
-    const orderPersistence = createOrderPersistenceAdapter()
+    const orderPersistence = createOrderPersistenceAdapter({
+        app: strategy.app,
+        accountId: strategy.accountId,
+        strategyId: strategy._id,
+    })
     const runId = await client.createRun(strategy._id, strategy.app, "manual")
     const logger = createLogger({
         app: strategy.app,
@@ -312,8 +342,8 @@ export async function resolveResetFlattenExposure(
     await refreshProviderPortfolioState(client, strategy)
 
     const [reconciledPositions, reconciledWorkingOrders] = await Promise.all([
-        client.getPortfolioPositions(strategy.app),
-        client.getPortfolioPendingOrders(strategy.app),
+        client.getPortfolioPositions(strategy.app, undefined, strategy.accountId),
+        client.getPortfolioPendingOrders(strategy.app, undefined, strategy.accountId),
     ])
     const liveProviderPositions = reconciledPositions.filter((position) =>
         !isDryRunVirtualProviderPosition(position)
@@ -506,9 +536,9 @@ export async function reconcileAndVerifyReset(
     for (let attempt = 0; attempt < RESET_VERIFICATION_ATTEMPTS; attempt++) {
         await refreshProviderPortfolioState(client, strategy)
         const verificationState = await Promise.all([
-            getFreshness(client, strategy.app),
-            client.getPortfolioPositions(strategy.app, strategyId),
-            client.getPortfolioPendingOrders(strategy.app, strategyId),
+            getFreshness(client, strategy.app, strategy.accountId),
+            client.getPortfolioPositions(strategy.app, strategyId, strategy.accountId),
+            client.getPortfolioPendingOrders(strategy.app, strategyId, strategy.accountId),
         ])
         lastFreshness = verificationState[0]
         lastRemainingPositions = verificationState[1]
@@ -565,6 +595,7 @@ export async function refreshProviderPortfolioState(
 
     await client.reconcileProviderPortfolio(
         strategy.app,
+        strategy.accountId,
         venueName,
         "periodic_sync",
         accountState,
@@ -575,9 +606,10 @@ export async function refreshProviderPortfolioState(
 
 async function getFreshness(
     client: TradingBackendClient,
-    app: VenueApp
+    app: VenueApp,
+    accountId: string
 ): Promise<PortfolioFreshnessRow | null> {
-    const rows = await client.getPortfolioFreshness(app)
+    const rows = await client.getPortfolioFreshness(app, accountId)
     return rows[0] ?? null
 }
 
@@ -586,9 +618,9 @@ function uniqueStrings(values: string[]): string[] {
 }
 
 function resolveWorkingOrderCancelId(order: ProviderPendingOrderRow | WorkingOrder): string {
-    return order.providerOrderId ??
+    return order.canonicalOrderId ??
         order.orderId ??
-        order.canonicalOrderId ??
+        order.providerOrderId ??
         order.providerClientOrderId ??
         order.signedOrderFingerprint
 }

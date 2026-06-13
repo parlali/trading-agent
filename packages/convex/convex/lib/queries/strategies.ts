@@ -1,8 +1,8 @@
-import { query } from "../../_generated/server"
+import { internalQuery, query } from "../../_generated/server"
 import { v } from "convex/values"
 import { requireServiceToken, requireUserOrServiceToken } from "../authGuards"
 import {
-    getOwnedInstrumentsByApp,
+    getOwnedInstrumentsByAppAccount,
     getOwnedInstrumentsForStrategy,
 } from "../instrumentClaims"
 import { venueAppV } from "../validators"
@@ -20,6 +20,57 @@ export const getStrategyConfigs = query({
                 q.eq("app", args.app).eq("enabled", true)
             )
             .collect()
+    },
+})
+
+export const getAccounts = query({
+    args: {
+        serviceToken: v.optional(v.string()),
+        app: v.optional(venueAppV),
+    },
+    handler: async (ctx, args) => {
+        await requireUserOrServiceToken(ctx, args.serviceToken)
+
+        if (args.app) {
+            return await ctx.db
+                .query("accounts")
+                .withIndex("by_app", (q) => q.eq("app", args.app!))
+                .collect()
+        }
+
+        return await ctx.db.query("accounts").collect()
+    },
+})
+
+export const getAccountByAppAndId = query({
+    args: {
+        serviceToken: v.string(),
+        app: venueAppV,
+        accountId: v.string(),
+    },
+    handler: async (ctx, args) => {
+        requireServiceToken(args.serviceToken)
+        return await ctx.db
+            .query("accounts")
+            .withIndex("by_app_account", (q) =>
+                q.eq("app", args.app).eq("accountId", args.accountId)
+            )
+            .first()
+    },
+})
+
+export const getAccountByAppAndIdInternal = internalQuery({
+    args: {
+        app: venueAppV,
+        accountId: v.string(),
+    },
+    handler: async (ctx, args) => {
+        return await ctx.db
+            .query("accounts")
+            .withIndex("by_app_account", (q) =>
+                q.eq("app", args.app).eq("accountId", args.accountId)
+            )
+            .first()
     },
 })
 
@@ -162,10 +213,11 @@ export const getAllOwnedInstrumentsByApp = query({
     args: {
         serviceToken: v.string(),
         app: venueAppV,
+        accountId: v.string(),
     },
     handler: async (ctx, args) => {
         requireServiceToken(args.serviceToken)
-        return await getOwnedInstrumentsByApp(ctx, args.app)
+        return await getOwnedInstrumentsByAppAccount(ctx, args.app, args.accountId)
     },
 })
 

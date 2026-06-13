@@ -1,5 +1,9 @@
 import type { OrderAction, OrderStatus } from "@valiq-trading/core"
-import { isActiveEntryOrderStatus } from "@valiq-trading/core"
+import {
+    buildPolymarketConditionInstrumentAlias,
+    isActiveEntryOrderStatus,
+    readPolymarketConditionId,
+} from "@valiq-trading/core"
 import type { Id, Doc } from "../_generated/dataModel"
 import type { MutationCtx, QueryCtx } from "../_generated/server"
 
@@ -58,6 +62,7 @@ async function upsertClaim(
     args: {
         strategyId: Id<"strategies">
         app: VenueApp
+        accountId: string
         instrument: string
         source: ClaimSource
         sourceId: string
@@ -69,6 +74,7 @@ async function upsertClaim(
     if (existing) {
         if (
             existing.app === args.app &&
+            existing.accountId === args.accountId &&
             existing.instrument === args.instrument
         ) {
             return
@@ -76,6 +82,7 @@ async function upsertClaim(
 
         await ctx.db.patch(existing._id, {
             app: args.app,
+            accountId: args.accountId,
             instrument: args.instrument,
             updatedAt: args.updatedAt,
         })
@@ -85,6 +92,7 @@ async function upsertClaim(
     await ctx.db.insert("instrument_claims", {
         strategyId: args.strategyId,
         app: args.app,
+        accountId: args.accountId,
         instrument: args.instrument,
         source: args.source,
         sourceId: args.sourceId,
@@ -121,24 +129,59 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 export function getClaimInstrumentsForOrder(instrument: string, intent?: unknown): string[] {
     const structureAliases = getAlpacaStructureAliases(instrument)
+    const intentRecord = isRecord(intent) ? intent : undefined
+    const conditionAlias = buildPolymarketConditionInstrumentAlias(
+        readPolymarketConditionId(readClaimMetadataRecord(intentRecord?.metadata))
+    )
+    const conditionAliases = conditionAlias !== undefined ? [conditionAlias] : []
 
-    if (!isRecord(intent) || !Array.isArray(intent.legs)) {
-        return uniqueInstruments([instrument, ...structureAliases])
+    if (!intentRecord || !Array.isArray(intentRecord.legs)) {
+        return uniqueInstruments([instrument, ...structureAliases, ...conditionAliases])
     }
 
-    const legInstruments = intent.legs
+    const legInstruments = intentRecord.legs
         .filter(isRecord)
         .map((leg) => typeof leg.instrument === "string" ? leg.instrument : "")
 
-    return uniqueInstruments([instrument, ...structureAliases, ...legInstruments])
+    return uniqueInstruments([instrument, ...structureAliases, ...conditionAliases, ...legInstruments])
 }
 
-export function getProviderInstrumentClaimAliases(app: VenueApp, instrument: string): string[] {
+export function getProviderInstrumentClaimAliases(
+    app: VenueApp,
+    instrument: string,
+    metadata?: unknown
+): string[] {
+    if (app === "polymarket") {
+        const conditionAlias = buildPolymarketConditionInstrumentAlias(
+            readPolymarketConditionId(readClaimMetadataRecord(metadata))
+        )
+        return uniqueInstruments(
+            conditionAlias !== undefined ? [instrument, conditionAlias] : [instrument]
+        )
+    }
+
     if (app !== "alpaca-options") {
         return uniqueInstruments([instrument])
     }
 
     return uniqueInstruments([instrument, ...getAlpacaStructureAliases(instrument)])
+}
+
+function readClaimMetadataRecord(metadata: unknown): Record<string, unknown> | undefined {
+    if (isRecord(metadata)) {
+        return metadata
+    }
+
+    if (typeof metadata !== "string" || metadata.trim().length === 0) {
+        return undefined
+    }
+
+    try {
+        const parsed = JSON.parse(metadata)
+        return isRecord(parsed) ? parsed : undefined
+    } catch {
+        return undefined
+    }
 }
 
 export function resolveAlpacaClaimedStructureForProviderLeg(args: {
@@ -366,7 +409,7 @@ export async function getOwnedInstrumentsForStrategy(
         return []
     }
 
-    const appOwnedInstruments = await getOwnedInstrumentsByApp(ctx, strategy.app)
+    const appOwnedInstruments = await getOwnedInstrumentsByAppAccount(ctx, strategy.app, strategy.accountId)
     return uniqueInstruments(
         appOwnedInstruments
             .filter((entry) => entry.strategyId === strategyId)
@@ -374,18 +417,19 @@ export async function getOwnedInstrumentsForStrategy(
     )
 }
 
-export async function getOwnedInstrumentsByApp(
+export async function getOwnedInstrumentsByAppAccount(
     ctx: QueryDbCtx,
-    app: VenueApp
-): Promise<Array<{ instrument: string; strategyId: Id<"strategies"> }>> {
+    app: VenueApp,
+    accountId: string
+): Promise<Array<{ instrument: string; strategyId: Id<"strategies">; accountId: string }>> {
     const [strategies, claims] = await Promise.all([
         ctx.db
             .query("strategies")
-            .withIndex("by_app", (q) => q.eq("app", app))
+            .withIndex("by_app_account", (q) => q.eq("app", app).eq("accountId", accountId))
             .collect(),
         ctx.db
             .query("instrument_claims")
-            .withIndex("by_app", (q) => q.eq("app", app))
+            .withIndex("by_app_account", (q) => q.eq("app", app).eq("accountId", accountId))
             .collect(),
     ])
 
@@ -398,29 +442,79 @@ export async function getOwnedInstrumentsByApp(
     }
 
     const reservedInstruments = new Set(claims.map((claim) => claim.instrument))
-    const owned: Array<{ instrument: string; strategyId: Id<"strategies"> }> = []
+    const owned: Array<{ instrument: string; strategyId: Id<"strategies">; accountId: string }> = []
     const orderedStrategies = [...strategies].sort(compareStrategiesForBootstrap)
     for (const strategy of orderedStrategies) {
         const claimed = claimedByStrategy.get(String(strategy._id))
         if (claimed && claimed.length > 0) {
-            for (const instrument of uniqueInstruments(claimed)) {
-                owned.push({ instrument, strategyId: strategy._id })
+            const claimedInstruments = uniqueInstruments(claimed)
+            const conditionAliases = app === "polymarket"
+                ? await getPolymarketConditionAliasesForStrategy(ctx, strategy._id, claimedInstruments)
+                : []
+            for (const instrument of uniqueInstruments([...claimedInstruments, ...conditionAliases])) {
+                owned.push({ instrument, strategyId: strategy._id, accountId: strategy.accountId })
             }
             continue
         }
 
         const positions = await getLatestPositionsForStrategy(ctx, strategy._id)
-        for (const instrument of uniqueInstruments(positions.map((position) => position.instrument))) {
+        const positionInstruments = uniqueInstruments(positions.map((position) => position.instrument))
+        const ownedPositionInstruments: string[] = []
+        for (const instrument of positionInstruments) {
             if (reservedInstruments.has(instrument)) {
                 continue
             }
 
-            owned.push({ instrument, strategyId: strategy._id })
+            owned.push({ instrument, strategyId: strategy._id, accountId: strategy.accountId })
             reservedInstruments.add(instrument)
+            ownedPositionInstruments.push(instrument)
+        }
+
+        if (app === "polymarket") {
+            const conditionAliases = collectPolymarketConditionAliases(positions, ownedPositionInstruments)
+            for (const alias of conditionAliases) {
+                if (reservedInstruments.has(alias)) {
+                    continue
+                }
+
+                owned.push({ instrument: alias, strategyId: strategy._id, accountId: strategy.accountId })
+                reservedInstruments.add(alias)
+            }
         }
     }
 
     return owned
+}
+
+async function getPolymarketConditionAliasesForStrategy(
+    ctx: QueryDbCtx,
+    strategyId: Id<"strategies">,
+    claimedInstruments: string[]
+): Promise<string[]> {
+    const positions = await getLatestPositionsForStrategy(ctx, strategyId)
+    return collectPolymarketConditionAliases(positions, claimedInstruments)
+}
+
+function collectPolymarketConditionAliases(
+    positions: Array<{ instrument: string; metadata?: unknown }>,
+    ownedInstruments: string[]
+): string[] {
+    const ownedSet = new Set(ownedInstruments)
+    const aliases: string[] = []
+
+    for (const position of positions) {
+        if (!ownedSet.has(position.instrument)) {
+            continue
+        }
+
+        for (const alias of getProviderInstrumentClaimAliases("polymarket", position.instrument, position.metadata)) {
+            if (alias !== position.instrument) {
+                aliases.push(alias)
+            }
+        }
+    }
+
+    return uniqueInstruments(aliases)
 }
 
 export async function replacePositionClaims(
@@ -428,6 +522,7 @@ export async function replacePositionClaims(
     args: {
         strategyId: Id<"strategies">
         app: VenueApp
+        accountId: string
         instruments?: string[]
         positionClaims?: Array<{
             instrument: string
@@ -473,6 +568,7 @@ export async function replacePositionClaims(
         await upsertClaim(ctx, {
             strategyId: args.strategyId,
             app: args.app,
+            accountId: args.accountId,
             instrument: claim.instrument,
             source: POSITION_CLAIM_SOURCE,
             sourceId: claim.sourceId,
@@ -486,6 +582,7 @@ export async function upsertPositionInstrumentClaims(
     args: {
         strategyId: Id<"strategies">
         app: VenueApp
+        accountId: string
         instruments: string[]
         updatedAt: number
     }
@@ -494,6 +591,7 @@ export async function upsertPositionInstrumentClaims(
         await upsertClaim(ctx, {
             strategyId: args.strategyId,
             app: args.app,
+            accountId: args.accountId,
             instrument,
             source: POSITION_CLAIM_SOURCE,
             sourceId: instrument,
@@ -507,6 +605,7 @@ export async function reconcileOrderInstrumentClaim(
     args: {
         strategyId: Id<"strategies">
         app: VenueApp
+        accountId: string
         orderId: string
         instrument: string
         claimInstruments?: string[]
@@ -524,6 +623,7 @@ export async function reconcileOrderInstrumentClaim(
                 await upsertClaim(ctx, {
                     strategyId: args.strategyId,
                     app: args.app,
+                    accountId: args.accountId,
                     instrument,
                     source: ORDER_CLAIM_SOURCE,
                     sourceId: buildOrderClaimSourceId(args.orderId, instrument),
@@ -539,6 +639,7 @@ export async function reconcileOrderInstrumentClaim(
             await upsertPositionInstrumentClaims(ctx, {
                 strategyId: args.strategyId,
                 app: args.app,
+                accountId: args.accountId,
                 instruments,
                 updatedAt: args.updatedAt,
             })

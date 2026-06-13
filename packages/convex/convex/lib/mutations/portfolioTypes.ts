@@ -55,6 +55,16 @@ export interface ProviderPositionClosureInput {
     metadata?: string
 }
 
+export interface AccountPnlEventInput {
+    providerEventId: string
+    eventType: "funding_fee" | "fee" | "adjustment"
+    instrument?: string
+    amount: number
+    currency: string
+    occurredAt: number
+    metadata?: string
+}
+
 export interface ReconciliationWriteStats {
     inserted: number
     patched: number

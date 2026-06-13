@@ -64,11 +64,12 @@ const PROVIDER_WORKING_ORDER_PATCH_FIELDS = [
 export async function upsertProviderPositionRows(
     ctx: PortfolioMutationCtx,
     app: Doc<"strategies">["app"],
+    accountId: string,
     rows: ProviderPositionRow[]
 ): Promise<ReconciliationWriteStats> {
     const existing = await ctx.db
         .query("provider_positions")
-        .withIndex("by_app", (q) => q.eq("app", app))
+        .withIndex("by_app_account", (q) => q.eq("app", app).eq("accountId", accountId))
         .collect()
 
     const existingByKey = new Map(existing.map((row) => [row.positionKey, row]))
@@ -108,11 +109,12 @@ export async function upsertProviderPositionRows(
 export async function upsertProviderWorkingOrderRows(
     ctx: PortfolioMutationCtx,
     app: Doc<"strategies">["app"],
+    accountId: string,
     rows: ProviderWorkingOrderRow[]
 ): Promise<ReconciliationWriteStats> {
     const existing = await ctx.db
         .query("provider_working_orders")
-        .withIndex("by_app", (q) => q.eq("app", app))
+        .withIndex("by_app_account", (q) => q.eq("app", app).eq("accountId", accountId))
         .collect()
 
     const existingByKey = new Map(existing.map((row) => [row.orderId, row]))
@@ -153,6 +155,7 @@ export async function resolveExecutionSafetyFaultsFromProviderTruth(
     ctx: PortfolioMutationCtx,
     args: {
         app: Doc<"strategies">["app"]
+        accountId: string
         positions: Array<Pick<Doc<"provider_positions">, "instrument" | "ownershipStatus">>
         workingOrders: Array<Pick<
             Doc<"provider_working_orders">,
@@ -169,7 +172,9 @@ export async function resolveExecutionSafetyFaultsFromProviderTruth(
 ): Promise<void> {
     const openFaults = await ctx.db
         .query("execution_safety_faults")
-        .withIndex("by_app_blocked", (q) => q.eq("app", args.app).eq("blocked", true))
+        .withIndex("by_app_account_blocked", (q) =>
+            q.eq("app", args.app).eq("accountId", args.accountId).eq("blocked", true)
+        )
         .collect()
 
     if (openFaults.length === 0) {
@@ -186,6 +191,10 @@ export async function resolveExecutionSafetyFaultsFromProviderTruth(
 
     for (const fault of openFaults) {
         if (fault.resolvedAt !== undefined || fault.instrument === "*") {
+            continue
+        }
+
+        if (!isProviderTruthResolvableFault(fault.category)) {
             continue
         }
 

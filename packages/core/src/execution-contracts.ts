@@ -1,5 +1,6 @@
 import type {
     AccountState,
+    AccountPnlEvent,
     ExecutionResult,
     ExecutionSafetyFaultCategory,
     OrderIntent,
@@ -39,6 +40,7 @@ export interface VenueAdapter {
     getAccountState(): Promise<AccountState>
     getWorkingOrders?(): Promise<WorkingOrder[]>
     getRecentPositionClosures?(): Promise<ProviderPositionClosure[]>
+    getAccountPnlEvents?(): Promise<AccountPnlEvent[]>
     submitOrder(intent: OrderIntent, context?: SubmitOrderContext): Promise<ExecutionResult>
     cancelOrder(orderId: string, context?: OrderOperationContext): Promise<ExecutionResult>
     modifyOrder(orderId: string, changes: Partial<OrderIntent>, context?: OrderOperationContext): Promise<ExecutionResult>
@@ -112,6 +114,7 @@ export interface ExecutionPipelineConfig {
     executionSafetyFaultRecorder?: ExecutionSafetyFaultRecorder
     runId: string
     strategyId: string
+    accountId?: string
     lifecycle?: OrderLifecycleConfig
     ownedInstruments?: Set<string>
     ownershipScope?: ProviderOwnershipScope

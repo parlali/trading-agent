@@ -7,12 +7,23 @@ import {
     assertWithinRunEvidenceRowLimit,
     MAX_RUN_EVIDENCE_ROWS,
 } from "./evidenceBounds"
+import { venueAppV } from "../validators"
 
 export const getOrderById = query({
-    args: { serviceToken: v.optional(v.string()), orderId: v.string() },
+    args: {
+        serviceToken: v.optional(v.string()),
+        orderId: v.string(),
+        app: v.optional(venueAppV),
+        accountId: v.optional(v.string()),
+        strategyId: v.optional(v.id("strategies")),
+    },
     handler: async (ctx, args) => {
         await requireUserOrServiceToken(ctx, args.serviceToken)
-        return await findOrderRowByIdentity(ctx.db, args.orderId)
+        return await findOrderRowByIdentity(ctx.db, args.orderId, {
+            app: args.app,
+            accountId: args.accountId,
+            strategyId: args.strategyId,
+        })
     },
 })
 

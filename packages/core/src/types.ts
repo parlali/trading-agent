@@ -89,6 +89,8 @@ export const EXECUTION_SAFETY_FAULT_CATEGORIES = [
     "invalid_params",
     "commit_unknown",
     "duplicate_exposure",
+    "unattributed_closure",
+    "accounting_mismatch",
     "unknown",
 ] as const
 export type ExecutionSafetyFaultCategory = typeof EXECUTION_SAFETY_FAULT_CATEGORIES[number]
@@ -133,6 +135,16 @@ export interface ProviderPositionClosure {
     quantity: number
     fillPrice: number
     closedAt: number
+    metadata?: Record<string, unknown>
+}
+
+export interface AccountPnlEvent {
+    providerEventId: string
+    eventType: "funding_fee" | "fee" | "adjustment"
+    instrument?: string
+    amount: number
+    currency: string
+    occurredAt: number
     metadata?: Record<string, unknown>
 }
 
@@ -263,7 +275,8 @@ export type PortfolioProviderStatus = typeof PORTFOLIO_PROVIDER_STATUSES[number]
 
 export interface PortfolioFreshness {
     app: VenueApp
-    accountScope: "single-account-per-venue"
+    accountId: string
+    accountScope: "account"
     lastSyncedAt?: number
     lastVerifiedAt?: number
     providerStatus: PortfolioProviderStatus
@@ -277,6 +290,7 @@ export interface PortfolioFreshness {
 
 export interface PortfolioPosition extends Position {
     app: VenueApp
+    accountId: string
     positionKey?: string
     strategyId?: string
     strategyName?: string
@@ -287,6 +301,7 @@ export interface PortfolioPosition extends Position {
 
 export interface PortfolioPendingOrder {
     app: VenueApp
+    accountId: string
     strategyId?: string
     strategyName?: string
     ownershipStatus: ProviderOwnershipStatus

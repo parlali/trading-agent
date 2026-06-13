@@ -1,4 +1,5 @@
 import type { AccountState, ExecutionResult, Position } from "./types"
+import { resolveOptionContractMultiplier } from "./option-multiplier"
 import { readFiniteNumber } from "./value-readers"
 
 export const DRY_RUN_ACCOUNT_LEDGER_INSTRUMENT = "__DRY_RUN_ACCOUNT_LEDGER__"
@@ -55,14 +56,16 @@ export function buildDryRunAccountState(args: {
 
     for (const position of args.positions) {
         const mark = position.currentPrice ?? position.entryPrice
-        const marketValue = position.quantity * mark
+        const multiplier = resolveDryRunNotionalMultiplier(position.instrument, position.metadata)
+        const marketValue = position.quantity * mark * multiplier
         currentValue += position.side === "short" ? -marketValue : marketValue
         marginUsed += Math.abs(marketValue)
         openPnl += position.unrealizedPnl ?? resolveDryRunUnrealizedPnl(
             position.side,
             position.quantity,
             position.entryPrice,
-            mark
+            mark,
+            multiplier
         ) ?? 0
     }
 
@@ -138,30 +141,32 @@ export function resolveDryRunUnrealizedPnl(
     side: Position["side"],
     quantity: number,
     entryPrice: number,
-    currentPrice?: number
+    currentPrice?: number,
+    multiplier = 1
 ): number | undefined {
     if (currentPrice === undefined) {
         return undefined
     }
 
     if (side === "short") {
-        return quantity * (entryPrice - currentPrice)
+        return quantity * (entryPrice - currentPrice) * multiplier
     }
 
-    return quantity * (currentPrice - entryPrice)
+    return quantity * (currentPrice - entryPrice) * multiplier
 }
 
 export function resolveDryRunOpeningCashDelta(position: Position): number {
-    const notional = position.quantity * position.entryPrice
+    const notional = position.quantity * position.entryPrice * resolveDryRunNotionalMultiplier(position.instrument, position.metadata)
     return position.side === "short" ? notional : -notional
 }
 
 export function resolveDryRunCashDelta(
     side: "buy" | "sell",
     quantity: number,
-    fillPrice: number
+    fillPrice: number,
+    multiplier = 1
 ): number {
-    const notional = quantity * fillPrice
+    const notional = quantity * fillPrice * multiplier
     return side === "buy" ? -notional : notional
 }
 
@@ -171,13 +176,21 @@ export function resolveDryRunRealizedPnl(
     closedQty: number,
     fillPrice: number
 ): number {
+    const multiplier = resolveDryRunNotionalMultiplier(existing.instrument, existing.metadata)
     if (existing.side === "long" && closeSide === "sell") {
-        return closedQty * (fillPrice - existing.entryPrice)
+        return closedQty * (fillPrice - existing.entryPrice) * multiplier
     }
 
     if (existing.side === "short" && closeSide === "buy") {
-        return closedQty * (existing.entryPrice - fillPrice)
+        return closedQty * (existing.entryPrice - fillPrice) * multiplier
     }
 
     return 0
+}
+
+export function resolveDryRunNotionalMultiplier(
+    instrument: string,
+    metadata?: Record<string, unknown>
+): number {
+    return resolveOptionContractMultiplier(instrument, metadata)
 }

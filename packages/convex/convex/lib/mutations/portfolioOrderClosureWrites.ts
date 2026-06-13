@@ -1,3 +1,4 @@
+import { isSettlementCurrency } from "@valiq-trading/core"
 import type { Doc, Id } from "../../_generated/dataModel"
 import type {
     PortfolioMutationCtx,
@@ -9,7 +10,11 @@ import {
     buildProviderCloseOrderId,
     isRetiredProviderCloseOrder,
     isSyntheticProviderCloseOrder,
+    orderBelongsToAccount,
+    readIdentifier,
     readOrderIntentMetadata,
+    resolveProviderClosureDealId,
+    resolveProviderClosureDealIdFromMetadata,
     resolveProviderCloseOrderProviderId,
     type ProviderClosePositionCandidate,
 } from "./portfolioCloseIdentity"
@@ -23,11 +28,41 @@ export async function attachClosureToCanonicalCloseOrder(
         updatedAt: number
     }
 ): Promise<void> {
+    if (!args.order.accountId) {
+        throw new Error(`Cannot attach provider closure to order without accountId: ${args.order.orderId}`)
+    }
+
+    await recordNonSettlementFeeFaultIfNeeded(ctx, {
+        app: args.order.app ?? args.order.venue as Doc<"strategies">["app"],
+        accountId: args.order.accountId,
+        strategyId: args.order.strategyId,
+        runId: args.order.runId,
+        instrument: args.order.instrument,
+        orderId: args.order.orderId,
+        providerOrderId: resolveProviderCloseOrderProviderId(args.closure),
+        closure: args.closure,
+        updatedAt: args.updatedAt,
+    })
+    await recordProviderClosureMissingAccountingFaultIfNeeded(ctx, {
+        app: args.order.app ?? args.order.venue as Doc<"strategies">["app"],
+        accountId: args.order.accountId,
+        strategyId: args.order.strategyId,
+        runId: args.order.runId,
+        instrument: args.order.instrument,
+        orderId: args.order.orderId,
+        providerOrderId: resolveProviderCloseOrderProviderId(args.closure),
+        closure: args.closure,
+        updatedAt: args.updatedAt,
+    })
+
     if (args.order.status !== "filled" || canonicalCloseNeedsProviderClosureAttach(args.order, args.closure)) {
         await attachProviderClosureToCanonicalCloseOrder(ctx, args)
     }
 
+    const app = args.order.app ?? args.order.venue as Doc<"strategies">["app"]
     const duplicateSynthetic = await resolveExistingProviderCloseOrder(ctx, {
+        app,
+        accountId: args.order.accountId,
         syntheticOrderId: args.position && args.order.app
             ? buildProviderCloseOrderId(args.order.app, args.position, args.closure)
             : undefined,
@@ -35,6 +70,8 @@ export async function attachClosureToCanonicalCloseOrder(
     })
     if (duplicateSynthetic && duplicateSynthetic.orderId !== args.order.orderId && duplicateSynthetic.status !== "cancelled") {
         await retireDuplicateProviderCloseOrder(ctx, {
+            app,
+            accountId: args.order.accountId,
             order: duplicateSynthetic,
             canonicalOrderId: args.order.orderId,
             closure: args.closure,
@@ -57,6 +94,8 @@ export async function importSyntheticProviderClose(
     const syntheticOrderId = buildProviderCloseOrderId(app, position, closure)
     const providerOrderId = resolveProviderCloseOrderProviderId(closure)
     const existingOrder = await resolveExistingProviderCloseOrder(ctx, {
+        app,
+        accountId: position.accountId,
         syntheticOrderId,
         providerOrderId,
     })
@@ -67,6 +106,28 @@ export async function importSyntheticProviderClose(
 
     const orderId = existingOrder?.orderId ?? syntheticOrderId
     const runId = existingOrder?.runId ?? args.runId
+    await recordNonSettlementFeeFaultIfNeeded(ctx, {
+        app,
+        accountId: position.accountId,
+        strategyId: position.strategyId,
+        runId,
+        instrument: position.instrument,
+        orderId,
+        providerOrderId,
+        closure,
+        updatedAt: args.updatedAt,
+    })
+    await recordProviderClosureMissingAccountingFaultIfNeeded(ctx, {
+        app,
+        accountId: position.accountId,
+        strategyId: position.strategyId,
+        runId,
+        instrument: position.instrument,
+        orderId,
+        providerOrderId,
+        closure,
+        updatedAt: args.updatedAt,
+    })
 
     await upsertOrderRow(ctx, {
         orderId,
@@ -81,6 +142,7 @@ export async function importSyntheticProviderClose(
         signedOrderMetadata: undefined,
         runId,
         strategyId: position.strategyId,
+        accountId: position.accountId,
         venue: app,
         instrument: position.instrument,
         status: "filled",
@@ -129,6 +191,7 @@ export async function importSyntheticProviderClose(
         runId,
         strategyId: position.strategyId,
         app,
+        accountId: position.accountId,
         eventType: "filled",
         payload: JSON.stringify({
             providerReconciledClose: true,
@@ -141,6 +204,149 @@ export async function importSyntheticProviderClose(
         }),
         timestamp: closure.closedAt,
     })
+}
+
+async function recordProviderClosureMissingAccountingFaultIfNeeded(
+    ctx: PortfolioMutationCtx,
+    args: {
+        app: Doc<"strategies">["app"]
+        accountId: string
+        strategyId: Id<"strategies">
+        runId: Id<"strategy_runs">
+        instrument: string
+        orderId: string
+        providerOrderId?: string
+        closure: ProviderPositionClosureInput
+        updatedAt: number
+    }
+): Promise<void> {
+    const metadata = parseJson<Record<string, unknown>>(args.closure.metadata)
+    if (metadata?.providerAccountingMissing !== true) {
+        return
+    }
+
+    const reason = typeof metadata.providerAccountingMissingReason === "string"
+        ? metadata.providerAccountingMissingReason
+        : "provider_closure_without_accounting_metadata"
+    const message = `Provider closure for ${args.instrument} did not include complete provider accounting metadata`
+    const existing = await ctx.db
+        .query("execution_safety_faults")
+        .withIndex("by_strategy_blocked", (q) => q.eq("strategyId", args.strategyId).eq("blocked", true))
+        .collect()
+    if (existing.some((fault) =>
+        fault.category === "accounting_mismatch" &&
+        fault.instrument === args.instrument &&
+        fault.canonicalOrderId === args.orderId &&
+        fault.message === message
+    )) {
+        return
+    }
+
+    await ctx.db.insert("execution_safety_faults", {
+        strategyId: args.strategyId,
+        app: args.app,
+        accountId: args.accountId,
+        instrument: args.instrument,
+        category: "accounting_mismatch",
+        message,
+        providerPayload: JSON.stringify({
+            closure: args.closure,
+            metadata,
+            reason,
+        }),
+        canonicalOrderId: args.orderId,
+        providerOrderId: args.providerOrderId,
+        runId: args.runId,
+        blocked: true,
+        occurredAt: args.updatedAt,
+        resolvedAt: undefined,
+        resolutionNote: undefined,
+    })
+    await ctx.db.insert("alerts", {
+        strategyId: args.strategyId,
+        app: args.app,
+        severity: "critical",
+        message,
+        acknowledged: false,
+        timestamp: args.updatedAt,
+    })
+}
+
+async function recordNonSettlementFeeFaultIfNeeded(
+    ctx: PortfolioMutationCtx,
+    args: {
+        app: Doc<"strategies">["app"]
+        accountId: string
+        strategyId: Id<"strategies">
+        runId: Id<"strategy_runs">
+        instrument: string
+        orderId: string
+        providerOrderId?: string
+        closure: ProviderPositionClosureInput
+        updatedAt: number
+    }
+): Promise<void> {
+    const metadata = parseJson<Record<string, unknown>>(args.closure.metadata)
+    const fee = readFiniteMetadataNumber(metadata?.fee)
+    const feeCcy = typeof metadata?.feeCcy === "string" ? metadata.feeCcy.trim().toUpperCase() : undefined
+    if (fee === undefined || fee === 0 || !feeCcy || isSettlementCurrency(feeCcy)) {
+        return
+    }
+
+    const message = `Provider reported ${feeCcy} fee for ${args.instrument}; realized PnL cannot silently treat it as settlement currency`
+    const existing = await ctx.db
+        .query("execution_safety_faults")
+        .withIndex("by_strategy_blocked", (q) => q.eq("strategyId", args.strategyId).eq("blocked", true))
+        .collect()
+    if (existing.some((fault) =>
+        fault.category === "accounting_mismatch" &&
+        fault.instrument === args.instrument &&
+        fault.canonicalOrderId === args.orderId &&
+        fault.message === message
+    )) {
+        return
+    }
+
+    await ctx.db.insert("execution_safety_faults", {
+        strategyId: args.strategyId,
+        app: args.app,
+        accountId: args.accountId,
+        instrument: args.instrument,
+        category: "accounting_mismatch",
+        message,
+        providerPayload: JSON.stringify({
+            closure: args.closure,
+            metadata,
+        }),
+        canonicalOrderId: args.orderId,
+        providerOrderId: args.providerOrderId,
+        runId: args.runId,
+        blocked: true,
+        occurredAt: args.updatedAt,
+        resolvedAt: undefined,
+        resolutionNote: undefined,
+    })
+    await ctx.db.insert("alerts", {
+        strategyId: args.strategyId,
+        app: args.app,
+        severity: "critical",
+        message,
+        acknowledged: false,
+        timestamp: args.updatedAt,
+    })
+}
+
+function readFiniteMetadataNumber(value: unknown): number | undefined {
+    if (typeof value === "number" && Number.isFinite(value)) {
+        return value
+    }
+
+    if (typeof value === "string" && value.trim()) {
+        const parsed = Number(value)
+        return Number.isFinite(parsed) ? parsed : undefined
+    }
+
+    return undefined
 }
 
 export async function repairMT5EntryOrderFromProviderClosure(
@@ -232,15 +438,28 @@ async function attachProviderClosureToCanonicalCloseOrder(
 ): Promise<void> {
     const previousStatus = args.order.status
     const promoteToFilled = previousStatus !== "filled"
+    const accounting = buildAccumulatedClosureAccounting(readOrderIntentMetadata(args.order) ?? {}, args.closure)
+    const attachedQuantity = readFiniteMetadataNumber(accounting?.attachedQuantity)
+    const filledQuantity = attachedQuantity !== undefined
+        ? promoteToFilled
+            ? attachedQuantity
+            : Math.max(args.order.filledQuantity, attachedQuantity)
+        : promoteToFilled
+            ? args.closure.quantity
+            : args.order.filledQuantity
     await patchOrderRowFromDoc(ctx, args.order, {
+        providerOrderId: args.order.providerOrderId ?? resolveProviderCloseOrderProviderId(args.closure),
+        providerOrderAliases: mergeClosureAliases(args.order, args.closure),
         status: "filled",
-        filledQuantity: promoteToFilled ? args.closure.quantity : args.order.filledQuantity,
-        remainingQuantity: promoteToFilled ? 0 : args.order.remainingQuantity,
+        filledQuantity,
+        remainingQuantity: promoteToFilled || attachedQuantity !== undefined
+            ? Math.max(args.order.quantity - filledQuantity, 0)
+            : args.order.remainingQuantity,
         avgFillPrice: promoteToFilled
             ? args.closure.fillPrice
             : args.order.avgFillPrice ?? args.closure.fillPrice,
         updatedAt: args.closure.closedAt,
-        intent: buildCanonicalCloseIntentWithProviderClosure(args.order, args.position, args.closure),
+        intent: buildCanonicalCloseIntentWithProviderClosure(args.order, args.position, args.closure, accounting),
         polling: {
             ...args.order.polling,
             lastCheckedAt: args.updatedAt,
@@ -269,6 +488,43 @@ async function attachProviderClosureToCanonicalCloseOrder(
     })
 }
 
+function mergeClosureAliases(
+    order: Pick<Doc<"orders">, "orderId" | "providerOrderId" | "providerClientOrderId" | "providerOrderAliases">,
+    closure: ProviderPositionClosureInput
+): string[] {
+    const metadata = parseJson<Record<string, unknown>>(closure.metadata)
+    const aliases = new Set<string>(order.providerOrderAliases ?? [])
+
+    addAlias(aliases, order.providerOrderId)
+    addAlias(aliases, order.providerClientOrderId)
+    addAlias(aliases, metadata?.orderId)
+    addAlias(aliases, metadata?.triggeredOrderId)
+    addAlias(aliases, metadata?.clientOrderId)
+    addAlias(aliases, metadata?.algoId)
+    addAlias(aliases, metadata?.algoClOrdId)
+    addAlias(aliases, metadata?.actualOrdId)
+    if (Array.isArray(metadata?.providerOrderAliases)) {
+        for (const alias of metadata.providerOrderAliases) {
+            addAlias(aliases, alias)
+        }
+    }
+
+    aliases.delete(order.orderId)
+    if (order.providerClientOrderId) {
+        aliases.delete(order.providerClientOrderId)
+    }
+
+    return Array.from(aliases).sort((left, right) => left.localeCompare(right))
+}
+
+function addAlias(aliases: Set<string>, value: unknown): void {
+    if (typeof value === "string" && value.trim()) {
+        aliases.add(value.trim())
+    }
+}
+
+const ACCUMULATED_PROVIDER_DEAL_FIELDS = ["fillPnl", "profit", "commission", "swap", "fee"] as const
+
 function canonicalCloseNeedsProviderClosureAttach(
     order: Doc<"orders">,
     closure: ProviderPositionClosureInput
@@ -278,6 +534,11 @@ function canonicalCloseNeedsProviderClosureAttach(
         return true
     }
 
+    const dealId = resolveProviderClosureDealId(closure)
+    if (dealId) {
+        return !readAttachedProviderDealIds(metadata).includes(dealId)
+    }
+
     const closureMetadata = parseJson<Record<string, unknown>>(closure.metadata)
     const closurePnl = typeof closureMetadata?.fillPnl === "number"
         ? closureMetadata.fillPnl
@@ -285,9 +546,72 @@ function canonicalCloseNeedsProviderClosureAttach(
     return typeof closurePnl === "number" && metadata.fillPnl !== closurePnl
 }
 
+function readAttachedProviderDealIds(metadata: Record<string, unknown>): string[] {
+    const raw = metadata.attachedProviderDealIds
+    if (Array.isArray(raw)) {
+        const dealIds: string[] = []
+        for (const value of raw) {
+            const dealId = readIdentifier(value)
+            if (dealId) {
+                dealIds.push(dealId)
+            }
+        }
+        return dealIds
+    }
+
+    if (metadata.providerReconciledClose === true) {
+        const legacyDealId = resolveProviderClosureDealIdFromMetadata(metadata)
+        return legacyDealId ? [legacyDealId] : []
+    }
+
+    return []
+}
+
+function buildAccumulatedClosureAccounting(
+    currentMetadata: Record<string, unknown>,
+    closure: ProviderPositionClosureInput
+): Record<string, unknown> | undefined {
+    const dealId = resolveProviderClosureDealId(closure)
+    if (!dealId) {
+        return undefined
+    }
+
+    const attachedDealIds = readAttachedProviderDealIds(currentMetadata)
+    if (attachedDealIds.includes(dealId)) {
+        const preserved: Record<string, unknown> = {
+            attachedProviderDealIds: attachedDealIds,
+        }
+        for (const field of [...ACCUMULATED_PROVIDER_DEAL_FIELDS, "attachedQuantity"]) {
+            if (currentMetadata[field] !== undefined) {
+                preserved[field] = currentMetadata[field]
+            }
+        }
+        return preserved
+    }
+
+    const closureMetadata = parseJson<Record<string, unknown>>(closure.metadata)
+    const accumulated: Record<string, unknown> = {
+        attachedProviderDealIds: [...attachedDealIds, dealId],
+        attachedQuantity: (readFiniteMetadataNumber(currentMetadata.attachedQuantity) ?? 0) + closure.quantity,
+    }
+    for (const field of ACCUMULATED_PROVIDER_DEAL_FIELDS) {
+        const prior = attachedDealIds.length > 0
+            ? readFiniteMetadataNumber(currentMetadata[field])
+            : undefined
+        const incoming = readFiniteMetadataNumber(closureMetadata?.[field])
+        if (prior !== undefined || incoming !== undefined) {
+            accumulated[field] = (prior ?? 0) + (incoming ?? 0)
+        }
+    }
+
+    return accumulated
+}
+
 async function resolveExistingProviderCloseOrder(
     ctx: PortfolioMutationCtx,
     args: {
+        app: Doc<"strategies">["app"]
+        accountId: string
         syntheticOrderId?: string
         providerOrderId?: string
     }
@@ -296,9 +620,10 @@ async function resolveExistingProviderCloseOrder(
         const bySyntheticOrderId = await ctx.db
             .query("orders")
             .withIndex("by_order_id", (q) => q.eq("orderId", args.syntheticOrderId!))
-            .first()
-        if (bySyntheticOrderId) {
-            return bySyntheticOrderId
+            .collect()
+        const owned = bySyntheticOrderId.find((order) => orderBelongsToAccount(order, args.app, args.accountId))
+        if (owned) {
+            return owned
         }
     }
 
@@ -310,17 +635,19 @@ async function resolveExistingProviderCloseOrder(
     const byProviderOrderId = await ctx.db
         .query("orders")
         .withIndex("by_provider_order_id", (q) => q.eq("providerOrderId", providerOrderId))
-        .first()
+        .collect()
 
-    return byProviderOrderId && isSyntheticProviderCloseOrder(byProviderOrderId)
-        ? byProviderOrderId
-        : null
+    return byProviderOrderId.find((order) =>
+        orderBelongsToAccount(order, args.app, args.accountId) &&
+        isSyntheticProviderCloseOrder(order)
+    ) ?? null
 }
 
 function buildCanonicalCloseIntentWithProviderClosure(
     order: Doc<"orders">,
     position: ProviderClosePositionCandidate | undefined,
-    closure: ProviderPositionClosureInput
+    closure: ProviderPositionClosureInput,
+    accounting: Record<string, unknown> | undefined
 ): Record<string, unknown> {
     const intent = readOrderIntentRecord(order.intent) ?? {}
     const currentMetadata = readOrderIntentMetadata(order) ?? {}
@@ -328,6 +655,7 @@ function buildCanonicalCloseIntentWithProviderClosure(
         ...currentMetadata,
         ...readMetadataRecord(position?.metadata),
         ...parseJson<Record<string, unknown>>(closure.metadata),
+        ...accounting,
         providerReconciledClose: true,
         providerPositionId: currentMetadata.providerPositionId ?? position?.providerPositionId,
         providerPositionKey: currentMetadata.providerPositionKey ?? position?.positionKey,
@@ -345,12 +673,18 @@ function buildCanonicalCloseIntentWithProviderClosure(
 async function retireDuplicateProviderCloseOrder(
     ctx: PortfolioMutationCtx,
     args: {
+        app: Doc<"strategies">["app"]
+        accountId: string
         order: Doc<"orders">
         canonicalOrderId: string
         closure: ProviderPositionClosureInput
         updatedAt: number
     }
 ): Promise<void> {
+    if (!orderBelongsToAccount(args.order, args.app, args.accountId)) {
+        return
+    }
+
     const previousStatus = args.order.status
     await patchOrderRowFromDoc(ctx, args.order, {
         canonicalOrderId: args.canonicalOrderId,

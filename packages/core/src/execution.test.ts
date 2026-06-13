@@ -659,6 +659,112 @@ describe("ExecutionPipeline commit-unknown safety", () => {
     })
 })
 
+describe("ExecutionPipeline missing-accounting safety", () => {
+    it("records a blocking accounting fault when a live submit fill has explicit missing provider accounting", async () => {
+        const faultRecorder = vi.fn(async () => {})
+        const venue = {
+            ...createVenue(),
+            submitOrder: vi.fn(async (_intent: OrderIntent, context?: SubmitOrderContext) => ({
+                orderId: context?.identity.canonicalOrderId ?? "canonical",
+                canonicalOrderId: context?.identity.canonicalOrderId,
+                providerOrderId: "order:BTC-USDT-SWAP:9000000000000000003",
+                providerClientOrderId: context?.identity.providerClientOrderId,
+                submitAttemptId: context?.identity.submitAttemptId,
+                submitAttemptSequence: context?.identity.submitAttemptSequence,
+                status: "filled" as const,
+                filledQuantity: 0.5,
+                fillPrice: 78000.125,
+                timestamp: Date.now(),
+                intentUpdates: {
+                    metadata: {
+                        providerAccountingSource: "okx_order",
+                        providerAccountingMissing: true,
+                        providerAccountingMissingReason: "okx_order_fee_and_pnl_unparseable",
+                    },
+                },
+            })),
+        }
+        const pipeline = createPipeline({
+            venue,
+            venueName: "okx-swap",
+            executionSafetyFaultRecorder: faultRecorder,
+        })
+
+        await pipeline.executeIntent({
+            instrument: "BTC-USDT-SWAP",
+            side: "buy",
+            quantity: 0.5,
+            orderType: "market",
+            timeInForce: "gtc",
+        }, account, [])
+
+        expect(faultRecorder).toHaveBeenCalledWith(expect.objectContaining({
+            venue: "okx-swap",
+            instrument: "BTC-USDT-SWAP",
+            category: "accounting_mismatch",
+            commitOutcome: "accepted",
+            message: "Provider accepted a filled entry order without provider accounting metadata",
+            providerOrderId: "order:BTC-USDT-SWAP:9000000000000000003",
+        }))
+    })
+
+    it("records a blocking accounting fault when order-status polling returns a fill with missing provider accounting", async () => {
+        const faultRecorder = vi.fn(async () => {})
+        const venue = {
+            ...createVenue(),
+            submitOrder: vi.fn(async (_intent: OrderIntent, context?: SubmitOrderContext) => ({
+                orderId: context?.identity.canonicalOrderId ?? "canonical",
+                canonicalOrderId: context?.identity.canonicalOrderId,
+                providerOrderId: "order:BTC-USDT-SWAP:9000000000000000004",
+                providerClientOrderId: context?.identity.providerClientOrderId,
+                submitAttemptId: context?.identity.submitAttemptId,
+                submitAttemptSequence: context?.identity.submitAttemptSequence,
+                status: "pending" as const,
+                filledQuantity: 0,
+                timestamp: Date.now(),
+            })),
+            getOrderStatus: vi.fn(async () => ({
+                orderId: "order:BTC-USDT-SWAP:9000000000000000004",
+                providerOrderId: "order:BTC-USDT-SWAP:9000000000000000004",
+                status: "filled" as const,
+                filledQuantity: 0.5,
+                fillPrice: 78000.125,
+                timestamp: Date.now(),
+                intentUpdates: {
+                    metadata: {
+                        providerAccountingSource: "okx_order",
+                        providerAccountingMissing: true,
+                        providerAccountingMissingReason: "okx_order_fee_and_pnl_unparseable",
+                    },
+                },
+            })),
+        }
+        const pipeline = createPipeline({
+            venue,
+            venueName: "okx-swap",
+            executionSafetyFaultRecorder: faultRecorder,
+        })
+
+        const submitted = await pipeline.executeIntent({
+            instrument: "BTC-USDT-SWAP",
+            side: "buy",
+            quantity: 0.5,
+            orderType: "market",
+            timeInForce: "gtc",
+        }, account, [])
+        await pipeline.getOrderStatus(submitted.result.orderId)
+
+        expect(faultRecorder).toHaveBeenCalledWith(expect.objectContaining({
+            venue: "okx-swap",
+            instrument: "BTC-USDT-SWAP",
+            category: "accounting_mismatch",
+            commitOutcome: "accepted",
+            message: "Provider accepted a filled entry order without provider accounting metadata",
+            providerOrderId: "order:BTC-USDT-SWAP:9000000000000000004",
+        }))
+    })
+})
+
 describe("ExecutionPipeline dry-run accounting", () => {
     it("does not call provider identity preparation for dry-run submissions", async () => {
         const prepareOrderIdentity = vi.fn(async () => {
@@ -695,6 +801,32 @@ describe("ExecutionPipeline dry-run accounting", () => {
 
         expect(result.status).toBe("filled")
         expect(prepareOrderIdentity).not.toHaveBeenCalled()
+    })
+
+    it("rejects generic dry-run submissions without a positive limit or estimated price", async () => {
+        const pipeline = createPipeline({
+            policy: {
+                dryRun: true,
+                virtualCash: 1000,
+            },
+            runId: "run-dry-price-required",
+        })
+
+        const { result } = await pipeline.executeIntent(
+            {
+                instrument: "SPY260619C00520000",
+                side: "buy",
+                quantity: 1,
+                orderType: "market",
+                timeInForce: "day",
+            },
+            account,
+            []
+        )
+
+        expect(result.status).toBe("rejected")
+        expect(result.errorDetail?.code).toBe("DRY_RUN_PRICE_REQUIRED")
+        expect(result.filledQuantity).toBe(0)
     })
 
     it("keeps deterministic cash and realized PnL after closing a virtual position", async () => {
@@ -762,6 +894,59 @@ describe("ExecutionPipeline dry-run accounting", () => {
             question: "Will it happen?",
             outcome: "Yes",
             action: "close",
+        })
+    })
+
+    it("applies explicit dry-run fill fees to cash, equity, and day PnL", async () => {
+        const venue = {
+            ...createVenue(),
+            simulateDryRunOrder: vi.fn(async (_intent: OrderIntent, context?: SubmitOrderContext) => ({
+                orderId: context?.identity.canonicalOrderId ?? "dry-run-order",
+                canonicalOrderId: context?.identity.canonicalOrderId,
+                providerClientOrderId: context?.identity.providerClientOrderId,
+                commitOutcome: "accepted" as const,
+                status: "filled" as const,
+                filledQuantity: 10,
+                fillPrice: 0.5,
+                timestamp: Date.now(),
+                intentUpdates: {
+                    metadata: {
+                        fee: -0.1,
+                        feeCcy: "USDT",
+                        providerAccountingSource: "test_dry_run_simulator",
+                    },
+                },
+            })),
+        }
+        const pipeline = createPipeline({
+            venue,
+            policy: {
+                dryRun: true,
+                virtualCash: 1000,
+            },
+            runId: "run-dry-fee",
+        })
+
+        await pipeline.executeIntent({
+            instrument: "token-yes",
+            side: "buy",
+            quantity: 10,
+            orderType: "limit",
+            limitPrice: 0.5,
+            timeInForce: "gtc",
+        }, account, [])
+
+        const state = await pipeline.getAccountState()
+        expect(state.balance).toBeCloseTo(994.9)
+        expect(state.equity).toBeCloseTo(999.9)
+        expect(state.dayPnl).toBeCloseTo(-0.1)
+
+        const ledger = pipeline.getDryRunPositionsForSync().find((position) =>
+            position.instrument === DRY_RUN_ACCOUNT_LEDGER_INSTRUMENT
+        )
+        expect(ledger?.metadata).toMatchObject({
+            cashAdjustment: -5.1,
+            realizedPnl: -0.1,
         })
     })
 

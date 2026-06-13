@@ -20,7 +20,6 @@ export class AlpacaPlugin implements VenuePlugin {
     readonly app = "alpaca-options"
     readonly venueName = "alpaca"
 
-    private environment?: "paper" | "live"
     private readonly executionCostTracker = new ExecutionCostTracker()
 
     resolveSecretKeys(): string[] {
@@ -33,7 +32,6 @@ export class AlpacaPlugin implements VenuePlugin {
 
     async validateEnvironment(secrets: Record<string, string | null>): Promise<void> {
         const runtimeConfig = resolveAlpacaRuntimeConfig(secrets)
-        this.environment = runtimeConfig.environment
 
         const client = new AlpacaClient(runtimeConfig)
         await client.getAccount()
@@ -62,9 +60,5 @@ export class AlpacaPlugin implements VenuePlugin {
             research: true,
             data: true,
         })
-    }
-
-    getEnvironment(): "paper" | "live" | undefined {
-        return this.environment
     }
 }

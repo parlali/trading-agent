@@ -45,6 +45,7 @@ function createClientMock() {
                 ],
             },
         ]),
+        getAccountActivities: vi.fn().mockResolvedValue([]),
         createOrder: vi.fn().mockResolvedValue({
             orderId: "order-close-structure",
             status: "pending",
@@ -226,6 +227,7 @@ describe("AlpacaOptionsVenueAdapter", () => {
             },
             {
                 id: "order-live",
+                symbol: "SPY260424P00650000",
                 order_class: "mleg",
                 side: "sell",
                 status: "new",
@@ -244,6 +246,58 @@ describe("AlpacaOptionsVenueAdapter", () => {
         expect(orders).toHaveLength(1)
         expect(orders[0]?.orderId).toBe("order-live")
         expect(orders[0]?.status).toBe("pending")
+    })
+
+    it("marks filled Alpaca working orders as missing provider accounting until activities reconcile fees", async () => {
+        const client = createClientMock()
+        client.getOpenOrders.mockResolvedValueOnce([{
+            id: "order-partial",
+            symbol: "SPY260424P00650000",
+            order_class: "mleg",
+            side: "sell",
+            status: "partially_filled",
+            qty: "2",
+            filled_qty: "1",
+            filled_avg_price: "1.20",
+            limit_price: "-1.10",
+            submitted_at: "2026-04-10T10:00:00Z",
+            updated_at: "2026-04-10T10:00:01Z",
+            legs: [],
+        }])
+
+        const adapter = new AlpacaOptionsVenueAdapter(client as never)
+        const orders = await adapter.getWorkingOrders()
+
+        expect(orders[0]?.metadata).toMatchObject({
+            providerAccountingSource: "alpaca_order",
+            providerAccountingMissing: true,
+            providerAccountingMissingReason: "alpaca_working_order_fill_requires_account_activity_fee_reconciliation",
+            providerOrderId: "order-partial",
+        })
+    })
+
+    it("fails closed when an Alpaca working order has neither legs nor option symbol", async () => {
+        const client = createClientMock()
+        client.getOpenOrders.mockResolvedValueOnce([{
+            id: "order-legless",
+            order_class: "simple",
+            side: "sell",
+            status: "new",
+            qty: "1",
+            filled_qty: "0",
+            limit_price: "1.10",
+            submitted_at: "2026-04-10T10:00:00Z",
+            updated_at: "2026-04-10T10:00:01Z",
+            legs: [],
+        }])
+
+        const adapter = new AlpacaOptionsVenueAdapter(client as never)
+
+        await expect(adapter.getWorkingOrders()).rejects.toMatchObject({
+            executionError: {
+                code: "ALPACA_WORKING_ORDER_INSTRUMENT_MISSING",
+            },
+        })
     })
 
     it("does not synthesize account-wide iron condors from raw provider legs", async () => {
@@ -266,6 +320,74 @@ describe("AlpacaOptionsVenueAdapter", () => {
 
         expect(positions).toHaveLength(2)
         expect(positions.some((position) => position.instrument.startsWith("VS:"))).toBe(false)
+        expect(positions[0]?.providerPositionId).toBe(positions[0]?.instrument)
+    })
+
+    it("maps Alpaca option expiry activities into provider closures", async () => {
+        const client = createClientMock()
+        client.getAccountActivities.mockResolvedValueOnce([{
+            id: "activity-expiry-1",
+            activity_type: "OPEXP",
+            date: "2026-05-01",
+            net_amount: "0",
+            description: "Option Expiry",
+            symbol: "SPY260501C00720000",
+            qty: "2",
+            status: "executed",
+        }])
+
+        const adapter = new AlpacaOptionsVenueAdapter(client as never)
+        const closures = await adapter.getRecentPositionClosures()
+
+        expect(client.getAccountActivities).toHaveBeenCalledWith(["OPEXP", "OPEXC", "OPASN"])
+        expect(closures).toEqual([
+            expect.objectContaining({
+                instrument: "SPY260501C00720000",
+                providerPositionId: "SPY260501C00720000",
+                side: "short",
+                quantity: 2,
+                fillPrice: 0,
+                closedAt: Date.parse("2026-05-01"),
+                metadata: expect.objectContaining({
+                    providerAccountingSource: "alpaca_account_activity",
+                    providerActivityId: "activity-expiry-1",
+                    activityType: "OPEXP",
+                    fillPnl: 0,
+                }),
+            }),
+        ])
+    })
+
+    it("maps Alpaca fee activities into account PnL events", async () => {
+        const client = createClientMock()
+        client.getAccountActivities.mockResolvedValueOnce([{
+            id: "activity-fee-1",
+            activity_type: "FEE",
+            transaction_time: "2026-05-01T20:15:00Z",
+            net_amount: "-0.13",
+            description: "Options regulatory fee",
+            symbol: "SPY260501C00720000",
+            status: "executed",
+        }])
+
+        const adapter = new AlpacaOptionsVenueAdapter(client as never)
+        const events = await adapter.getAccountPnlEvents()
+
+        expect(client.getAccountActivities).toHaveBeenCalledWith(["FEE"])
+        expect(events).toEqual([
+            expect.objectContaining({
+                providerEventId: "alpaca-activity:activity-fee-1",
+                eventType: "fee",
+                instrument: "SPY260501C00720000",
+                amount: -0.13,
+                currency: "USD",
+                occurredAt: Date.parse("2026-05-01T20:15:00Z"),
+                metadata: expect.objectContaining({
+                    providerAccountingSource: "alpaca_account_activity",
+                    activityType: "FEE",
+                }),
+            }),
+        ])
     })
 
     it("keeps invalid non-credit spread geometry as residual legs instead of grouping it", async () => {
@@ -446,21 +568,38 @@ describe("AlpacaOptionsVenueAdapter", () => {
         expect(client.createOrder).not.toHaveBeenCalled()
     })
 
-    it("fails closed instead of sending raw no-leg provider closes to Alpaca", async () => {
+    it("submits raw leftover provider legs as single-leg close orders", async () => {
         const client = createClientMock()
         const adapter = new AlpacaOptionsVenueAdapter(client as never)
 
-        await expect(adapter.closeProviderPosition({
+        await adapter.closeProviderPosition({
             instrument: "SPY260424P00650000",
             side: "short",
             quantity: 1,
             entryPrice: 2.1,
-        })).rejects.toMatchObject({
-            executionError: {
-                code: "ALPACA_CLOSE_CLAIM_REQUIRED",
-            },
+            currentPrice: 1.5,
         })
-        expect(client.createOrder).not.toHaveBeenCalled()
+
+        expect(client.createOrder).toHaveBeenCalledTimes(1)
+        const payload = client.createOrder.mock.calls[0]?.[0]
+        expect(payload).toMatchObject({
+            instrument: "SPY260424P00650000",
+            side: "buy",
+            quantity: 1,
+            orderType: "limit",
+            limitPrice: 1.5,
+            timeInForce: "day",
+            legs: [{
+                instrument: "SPY260424P00650000",
+                side: "buy_to_close",
+                quantity: 1,
+            }],
+            metadata: expect.objectContaining({
+                action: "close",
+                positionSide: "short",
+                structureType: "single_option",
+            }),
+        })
     })
 
     it("fails closed instead of pricing structure close orders from entry prices", async () => {

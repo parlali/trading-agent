@@ -33,6 +33,14 @@ export const createRun = mutation({
     },
     handler: async (ctx, args) => {
         requireServiceToken(args.serviceToken)
+        const strategy = await ctx.db.get(args.strategyId)
+        if (!strategy) {
+            throw new Error(`Strategy not found: ${args.strategyId}`)
+        }
+        if (strategy.app !== args.app) {
+            throw new Error(`Run app mismatch for strategy ${args.strategyId}: ${args.app} !== ${strategy.app}`)
+        }
+
         const activeRuns = await ctx.db
             .query("strategy_runs")
             .withIndex("by_strategy_status", (q) =>
@@ -64,6 +72,7 @@ export const createRun = mutation({
         return await ctx.db.insert("strategy_runs", {
             strategyId: args.strategyId,
             app: args.app,
+            accountId: strategy.accountId,
             status: "running",
             trigger: args.trigger ?? "cron",
             startedAt: Date.now(),
@@ -315,6 +324,7 @@ export const logTradeEvent = mutation({
             runId: args.runId,
             strategyId: args.strategyId,
             app: strategy?.app,
+            accountId: strategy?.accountId,
             eventType: args.eventType,
             payload: args.payload,
             timestamp: Date.now(),
@@ -357,6 +367,7 @@ type UpsertOrderArgs = {
     signedOrderMetadata?: unknown
     runId: Id<"strategy_runs">
     strategyId: Id<"strategies">
+    accountId?: string
     venue: string
     instrument: string
     status: Doc<"orders">["status"]
@@ -393,8 +404,15 @@ export async function upsertOrderRow(
     if (!strategy) {
         throw new Error(`Strategy not found: ${args.strategyId}`)
     }
+    if (args.accountId !== undefined && args.accountId !== strategy.accountId) {
+        throw new Error(`Order account mismatch for strategy ${args.strategyId}: ${args.accountId} !== ${strategy.accountId}`)
+    }
 
-    const existing = await findOrderRowByIdentity(ctx.db, args.orderId)
+    const existing = await findOrderRowByIdentity(ctx.db, args.orderId, {
+        app: strategy.app,
+        accountId: strategy.accountId,
+        strategyId: args.strategyId,
+    })
     if (existing && isStaleTerminalOrderRegression(existing, args.status)) {
         await incrementControlPlaneMetric(ctx, {
             metric: "upsert_order.terminal_regression_blocked",
@@ -416,6 +434,7 @@ export async function upsertOrderRow(
         signedOrderMetadata: args.signedOrderMetadata,
         runId: args.runId,
         strategyId: args.strategyId,
+        accountId: strategy.accountId,
         app: strategy.app,
         venue: args.venue,
         instrument: args.instrument,
@@ -438,6 +457,7 @@ export async function upsertOrderRow(
         await reconcileOrderInstrumentClaim(ctx, {
             strategyId: args.strategyId,
             app: strategy.app,
+            accountId: strategy.accountId,
             orderId: args.orderId,
             instrument: args.instrument,
             claimInstruments: getClaimInstrumentsForOrder(args.instrument, args.intent),
@@ -452,6 +472,7 @@ export async function upsertOrderRow(
     await reconcileOrderInstrumentClaim(ctx, {
         strategyId: args.strategyId,
         app: strategy.app,
+        accountId: strategy.accountId,
         orderId: args.orderId,
         instrument: args.instrument,
         claimInstruments: getClaimInstrumentsForOrder(args.instrument, args.intent),
@@ -480,6 +501,7 @@ export async function patchOrderRowFromDoc(
         signedOrderMetadata: order.signedOrderMetadata,
         runId: order.runId,
         strategyId: order.strategyId,
+        accountId: order.accountId,
         venue: order.venue,
         instrument: order.instrument,
         status: order.status,
@@ -502,7 +524,16 @@ export async function appendOrderTransition(
     ctx: { db: DatabaseWriter },
     args: OrderTransitionInsertArgs
 ): Promise<number> {
-    const order = await findOrderRowByIdentity(ctx.db, args.orderId)
+    const strategy = await ctx.db.get(args.strategyId)
+    if (!strategy) {
+        throw new Error(`Strategy not found: ${args.strategyId}`)
+    }
+
+    const order = await findOrderRowByIdentity(ctx.db, args.orderId, {
+        app: strategy.app,
+        accountId: strategy.accountId,
+        strategyId: args.strategyId,
+    })
     if (!order) {
         throw new Error(`Cannot append transition for unknown order ${args.orderId}`)
     }

@@ -7,36 +7,27 @@ import type { ToolBinding } from "../tool-registry"
 import {
     alpacaOrderParamsSchema,
     createToolBinding,
-    genericOrderParamsSchema,
 } from "../tool-contracts"
 import { executeToolIntent } from "./execution-response"
-
-interface CreateProposeOrderToolOptions {
-    mode?: "default" | "alpaca-options"
-}
+import { sanitizeModelIntentMetadata } from "./model-intent-metadata"
 
 export function createProposeOrderTool(
-    pipeline: ExecutionPipeline,
-    options: CreateProposeOrderToolOptions = {}
+    pipeline: ExecutionPipeline
 ): ToolBinding {
-    const isAlpacaOptions = options.mode === "alpaca-options"
-    const orderParamsSchema = isAlpacaOptions ? alpacaOrderParamsSchema : genericOrderParamsSchema
-
     return createToolBinding({
         name: "propose_order",
-        venue: isAlpacaOptions ? "alpaca-options" : "polymarket",
+        venue: "alpaca-options",
         handler: async (params, context) => {
-            const validated = params as z.infer<typeof orderParamsSchema>
+            const validated = params as z.infer<typeof alpacaOrderParamsSchema>
             const intent: OrderIntent = {
                 instrument: validated.instrument,
                 side: validated.side,
                 quantity: validated.quantity,
                 orderType: validated.orderType,
                 limitPrice: validated.limitPrice,
-                stopPrice: "stopPrice" in validated ? validated.stopPrice : undefined,
                 timeInForce: validated.timeInForce,
                 legs: validated.legs,
-                metadata: validated.metadata,
+                metadata: sanitizeModelIntentMetadata(validated.metadata),
             }
 
             return await executeToolIntent(pipeline, intent, { action: "entry" }, {

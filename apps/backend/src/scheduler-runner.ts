@@ -77,18 +77,20 @@ export async function runStrategy(
     scheduler?: Scheduler,
     trigger: RunTrigger = "cron"
 ): Promise<void> {
-    if (healthState.venues[app]?.validated !== true) {
+    const accountHealth = healthState.venues[app]?.accounts?.[strategy.accountId]
+    if (accountHealth?.validated !== true) {
         logger.warn("Run skipped because venue environment is not validated", {
             strategyId: strategy._id,
             app,
+            accountId: strategy.accountId,
             trigger,
-            validationError: healthState.venues[app]?.error,
+            validationError: accountHealth?.error ?? healthState.venues[app]?.error,
         })
         await backend.createAlert({
             strategyId: strategy._id,
             app,
             severity: "warning",
-            message: `Strategy run skipped: ${app} environment not validated${healthState.venues[app]?.error ? ` (${healthState.venues[app]?.error})` : ""}`,
+            message: `Strategy run skipped: ${app}:${strategy.accountId} environment not validated${accountHealth?.error ? ` (${accountHealth.error})` : ""}`,
         })
         return
     }
@@ -116,7 +118,7 @@ export async function runStrategy(
         storedPositions,
     ] = await Promise.all([
         backend.getStrategyOwnershipScope(strategy._id),
-        backend.getAllOwnedInstrumentsByApp(app),
+        backend.getAllOwnedInstrumentsByApp(app, strategy.accountId),
         storedPositionsPromise,
     ])
     let initialPositions: Position[]
@@ -191,6 +193,11 @@ export async function runStrategy(
             machineAuth: {
                 serviceToken: backendServiceToken,
             },
+            orderLookupScope: {
+                app,
+                accountId: strategy.accountId,
+                strategyId: strategy._id,
+            },
         })
         const guardedVenue = createKillSwitchGuardedVenue(venue, app, strategy._id)
 
@@ -207,6 +214,7 @@ export async function runStrategy(
             },
             runId,
             strategyId: strategy._id,
+            accountId: strategy.accountId,
             ownedInstruments,
             ownershipScope,
             strategyRealizedPnl: 0,
@@ -279,6 +287,7 @@ export async function runStrategy(
                 if (hookResult.providerStateChanged && !isDryRun) {
                     const reconciliation = await reconcileProviderPortfolio({
                         app,
+                        accountId: strategy.accountId,
                         venueName: plugin.venueName,
                         source: "post_run_sync",
                         venue,
@@ -493,6 +502,7 @@ export async function runStrategy(
             } else {
                 await reconcileProviderPortfolio({
                     app,
+                    accountId: strategy.accountId,
                     venueName: plugin.venueName,
                     source: "post_run_sync",
                     venue,
@@ -584,6 +594,7 @@ export async function runStrategy(
             } else if (!Boolean(policy.dryRun)) {
                 await reconcileProviderPortfolio({
                     app,
+                    accountId: strategy.accountId,
                     venueName: plugin.venueName,
                     source: "post_run_sync",
                     venue,
@@ -592,7 +603,7 @@ export async function runStrategy(
         } catch (syncError) {
             const syncMessage = syncError instanceof Error ? syncError.message : String(syncError)
             if (!Boolean(policy.dryRun)) {
-                await recordProviderSyncFailure(app, syncMessage)
+                await recordProviderSyncFailure(app, strategy.accountId, syncMessage)
             }
         }
 

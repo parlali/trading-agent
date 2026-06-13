@@ -69,7 +69,7 @@ export const genericOrderJsonSchema = {
                 required: ["instrument", "side", "quantity"],
             },
         },
-        metadata: { type: "object", description: "Optional metadata for deterministic processing" },
+        metadata: { type: "object", description: "Optional metadata for deterministic processing. Reserved lifecycle, identity, and accounting keys such as action, riskReducing, and contract multipliers are stripped and set deterministically by the system." },
     },
     required: ["instrument", "side", "quantity", "orderType"],
 } satisfies Record<string, unknown>
@@ -241,35 +241,9 @@ export const alpacaOrderJsonSchema = {
                 required: ["instrument", "side", "quantity"],
             },
         },
-        metadata: { type: "object", description: "Optional metadata for deterministic processing" },
+        metadata: { type: "object", description: "Optional metadata for deterministic processing. Reserved lifecycle, identity, and accounting keys such as action, riskReducing, and contract multipliers are stripped and set deterministically by the system." },
     },
     required: ["instrument", "side", "quantity", "orderType", "limitPrice", "timeInForce", "legs"],
-} satisfies Record<string, unknown>
-
-export const genericAdjustmentParamsSchema = z.object({
-    instrument: z.string(),
-    side: z.enum(["buy", "sell"]),
-    quantity: z.number().positive(),
-    orderType: z.enum(["market", "limit", "stop", "stop_limit"]),
-    limitPrice: z.number().optional(),
-    stopPrice: z.number().optional(),
-    timeInForce: z.enum(["day", "gtc", "ioc", "fok"]).default("day"),
-    reason: z.string(),
-})
-
-export const genericAdjustmentJsonSchema = {
-    type: "object",
-    properties: {
-        instrument: { type: "string", description: "The instrument to adjust" },
-        side: { type: "string", enum: ["buy", "sell"], description: "Direction of the adjustment" },
-        quantity: { type: "number", description: "Quantity to add or reduce" },
-        orderType: { type: "string", enum: ["market", "limit", "stop", "stop_limit"] },
-        limitPrice: { type: "number" },
-        stopPrice: { type: "number" },
-        timeInForce: { type: "string", enum: ["day", "gtc", "ioc", "fok"], default: "day" },
-        reason: { type: "string", description: "Why this adjustment is being made" },
-    },
-    required: ["instrument", "side", "quantity", "orderType", "reason"],
 } satisfies Record<string, unknown>
 
 export const okxAdjustmentParamsSchema = z.object({
@@ -302,26 +276,6 @@ export const closeJsonSchema = {
         reason: { type: "string", description: "Why the position is being closed" },
     },
     required: ["instrument", "reason"],
-} satisfies Record<string, unknown>
-
-export const defaultModifyOrderParamsSchema = z.object({
-    orderId: z.string(),
-    limitPrice: z.number().optional(),
-    stopPrice: z.number().optional(),
-    quantity: z.number().positive().optional(),
-    reason: z.string().optional(),
-})
-
-export const defaultModifyOrderJsonSchema = {
-    type: "object",
-    properties: {
-        orderId: { type: "string", description: "The order ID to modify" },
-        limitPrice: { type: "number", description: "New limit price" },
-        stopPrice: { type: "number", description: "New stop price" },
-        quantity: { type: "number", description: "New quantity" },
-        reason: { type: "string", description: "Why the order is being modified" },
-    },
-    required: ["orderId"],
 } satisfies Record<string, unknown>
 
 export const alpacaModifyOrderParamsSchema = z.object({

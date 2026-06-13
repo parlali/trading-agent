@@ -1,5 +1,5 @@
 import { z } from "zod"
-import type { OKXVenueAdapter } from "@valiq-trading/okx"
+import { OKX_ESTIMATED_ONE_WAY_FEE_RATE, type OKXVenueAdapter } from "@valiq-trading/okx"
 import {
     getRiskBudgetBase,
     type ExecutionSafetyFaultCategory,
@@ -15,8 +15,6 @@ import {
 import { computeImpliedRR, computeTakeProfitFromRR } from "@valiq-trading/mt5"
 import { createRejectedExecutionToolResult } from "./execution-response"
 import { assertToolNotAborted, createToolAbortError } from "../tool-registry"
-
-const OKX_ESTIMATED_ONE_WAY_FEE_RATE = 0.0025
 
 export const okxOrderParamsSchema = z.object({
     instrument: z.string(),
