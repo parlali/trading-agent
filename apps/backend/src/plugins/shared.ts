@@ -1,83 +1,47 @@
-import type { ToolBinding } from "@valiq-trading/agent"
 import {
-    createOAuthTokenProvider,
-    createValiqBreakingNewsTool,
-    createValiqDataTool,
-    createValiqResearchTool,
-    getMissingValiqDataApiSecrets,
-    resolveValiqDataApiConfig,
-    VALIQ_DATA_SECRET_KEYS,
-    ValiqClient,
-    ValiqDataAdapter,
-    ValiqDataClient,
-    ValiqResearchAdapter,
-} from "@valiq-trading/valiq"
+    createHttpMcpToolBindings,
+    type HttpMcpProviderConfig,
+} from "@valiq-trading/agent"
 import {
+    VENUE_APPS,
     isWithinSessionFlatWindow,
     type App,
 } from "@valiq-trading/core"
 import type { ExtraToolsConfig, PreRunHookConfig } from "../types"
 
-export const VALIQ_RESEARCH_SECRET_KEYS = [
-    "VALIQ_API_URL",
-    "VALIQ_AUTH_URL",
-    "VALIQ_OAUTH_CLIENT_ID",
-    "VALIQ_OAUTH_CLIENT_SECRET",
-    "VALIQ_OAUTH_USER_UUID",
+const NUMBERED_MCP_PROVIDER_COUNT = 5
+
+export const MCP_STANDARD_TOOL_SECRET_KEYS = [
+    "MCP_PROVIDER_CONFIGS",
+    "MCP_SERVER_URL",
+    "MCP_SERVER_TOKEN",
+    ...Array.from({ length: NUMBERED_MCP_PROVIDER_COUNT }, (_, index) => [
+        `MCP_PROVIDER_${index + 1}_ID`,
+        `MCP_PROVIDER_${index + 1}_URL`,
+        `MCP_PROVIDER_${index + 1}_TOKEN`,
+        `MCP_PROVIDER_${index + 1}_CATEGORY`,
+        `MCP_PROVIDER_${index + 1}_TIMEOUT_MS`,
+        `MCP_PROVIDER_${index + 1}_MAX_TOOLS`,
+    ]).flat(),
 ] as const
 
-export const VALIQ_STANDARD_TOOL_SECRET_KEYS = [
-    ...VALIQ_RESEARCH_SECRET_KEYS,
-    ...VALIQ_DATA_SECRET_KEYS,
-] as const
-
-interface ValiqToolsOptions {
-    research?: boolean
-    data?: boolean
-    breakingNews?: boolean
-    missingDataLogMessage?: string
-}
-
-export function createValiqTools(
-    config: ExtraToolsConfig,
-    options: ValiqToolsOptions
-): ToolBinding[] {
-    const tools: ToolBinding[] = []
-
-    if (options.research) {
-        const researchTool = createResearchTool(config)
-        if (researchTool) {
-            tools.push(researchTool)
-        }
-    }
-
-    if (options.data || options.breakingNews) {
-        const data = createDataAdapter(config, options.missingDataLogMessage)
-        if (data) {
-            if (options.data) {
-                tools.push(createValiqDataTool(data))
-            }
-            if (options.breakingNews) {
-                tools.push(createValiqBreakingNewsTool(data))
-            }
-        }
-    }
-
-    return tools
-}
-
-export function appendValiqSecretKeys(keys: readonly string[]): string[] {
+export function appendMcpSecretKeys(keys: readonly string[]): string[] {
     return Array.from(new Set([
         ...keys,
-        ...VALIQ_STANDARD_TOOL_SECRET_KEYS,
+        ...MCP_STANDARD_TOOL_SECRET_KEYS,
     ]))
 }
 
-export function appendValiqDataSecretKeys(keys: readonly string[]): string[] {
-    return Array.from(new Set([
-        ...keys,
-        ...VALIQ_DATA_SECRET_KEYS,
-    ]))
+export async function createMcpTools(config: ExtraToolsConfig) {
+    const providers = resolveMcpProviderConfigs(config)
+    if (providers.length === 0) {
+        return []
+    }
+
+    return await createHttpMcpToolBindings({
+        providers,
+        logger: config.runLogger,
+    })
 }
 
 interface SessionFlatPolicy {
@@ -163,65 +127,163 @@ export async function executeSessionFlatIfNeeded(
     return true
 }
 
-function createResearchTool(config: ExtraToolsConfig): ToolBinding | null {
-    const valiqUrl = config.secrets.VALIQ_API_URL
-    const authUrl = config.secrets.VALIQ_AUTH_URL
-    const clientId = config.secrets.VALIQ_OAUTH_CLIENT_ID
-    const clientSecret = config.secrets.VALIQ_OAUTH_CLIENT_SECRET
-    const userUuid = config.secrets.VALIQ_OAUTH_USER_UUID
-
-    if (!valiqUrl || !authUrl || !clientId || !clientSecret || !userUuid) {
-        const missing = VALIQ_RESEARCH_SECRET_KEYS.filter((key) => !config.secrets[key])
-        const configured = VALIQ_RESEARCH_SECRET_KEYS.length - missing.length
-        if (configured > 0) {
-            config.runLogger.warn(
-                "Valiq research tool NOT registered: missing secrets",
-                { missing }
-            )
-        }
-        return null
-    }
-
-    const tokenProvider = createOAuthTokenProvider({
-        authUrl,
-        clientId,
-        clientSecret,
-        userUuid,
-        logger: config.runLogger,
-    })
-
-    const valiqClient = new ValiqClient({
-        apiUrl: valiqUrl,
-        tokenProvider,
-        logger: config.runLogger,
-    })
-    const research = new ValiqResearchAdapter(valiqClient, config.runLogger)
-
-    return createValiqResearchTool(research)
+function resolveMcpProviderConfigs(config: ExtraToolsConfig): HttpMcpProviderConfig[] {
+    return dedupeMcpProviders([
+        ...resolveJsonMcpProviders(config),
+        ...resolveSingleMcpProvider(config),
+        ...resolveNumberedMcpProviders(config),
+    ])
 }
 
-function createDataAdapter(
-    config: ExtraToolsConfig,
-    missingDataLogMessage: string = "Valiq data tools NOT registered: missing secrets"
-): ValiqDataAdapter | null {
-    const dataApi = resolveValiqDataApiConfig(config.secrets)
-
-    if (!dataApi) {
-        const missing = getMissingValiqDataApiSecrets(config.secrets)
-        if (missing.length > 0) {
-            config.runLogger.warn(
-                missingDataLogMessage,
-                { missing }
-            )
-        }
-        return null
+function resolveJsonMcpProviders(config: ExtraToolsConfig): HttpMcpProviderConfig[] {
+    const raw = config.secrets.MCP_PROVIDER_CONFIGS
+    if (!raw) {
+        return []
     }
 
-    const dataClient = new ValiqDataClient({
-        apiUrl: dataApi.apiUrl,
-        apiKey: dataApi.apiKey,
-        logger: config.runLogger,
-    })
+    let parsed: unknown
+    try {
+        parsed = JSON.parse(raw)
+    } catch (error) {
+        throw new Error(`MCP_PROVIDER_CONFIGS is not valid JSON: ${error instanceof Error ? error.message : String(error)}`)
+    }
 
-    return new ValiqDataAdapter(dataClient)
+    if (!Array.isArray(parsed)) {
+        throw new Error("MCP_PROVIDER_CONFIGS must be a JSON array")
+    }
+
+    return parsed.map((entry, index) =>
+        normalizeMcpProviderConfig(entry, `MCP_PROVIDER_CONFIGS[${index}]`)
+    )
+}
+
+function resolveSingleMcpProvider(config: ExtraToolsConfig): HttpMcpProviderConfig[] {
+    const url = config.secrets.MCP_SERVER_URL
+    const token = config.secrets.MCP_SERVER_TOKEN ?? undefined
+    if (!url) {
+        if (token) {
+            config.runLogger.warn("MCP server token ignored because MCP_SERVER_URL is not configured")
+        }
+        return []
+    }
+
+    return [{
+        id: "default",
+        url,
+        token,
+        category: "research",
+        compatibleVenues: VENUE_APPS,
+    }]
+}
+
+function resolveNumberedMcpProviders(config: ExtraToolsConfig): HttpMcpProviderConfig[] {
+    const providers: HttpMcpProviderConfig[] = []
+
+    for (let index = 1; index <= NUMBERED_MCP_PROVIDER_COUNT; index++) {
+        const id = config.secrets[`MCP_PROVIDER_${index}_ID`]
+        const url = config.secrets[`MCP_PROVIDER_${index}_URL`]
+        const token = config.secrets[`MCP_PROVIDER_${index}_TOKEN`] ?? undefined
+        const category = config.secrets[`MCP_PROVIDER_${index}_CATEGORY`]
+        const timeoutMs = config.secrets[`MCP_PROVIDER_${index}_TIMEOUT_MS`]
+        const maxTools = config.secrets[`MCP_PROVIDER_${index}_MAX_TOOLS`]
+
+        if (!url) {
+            const configured = [id, token, category, timeoutMs, maxTools].some(Boolean)
+            if (configured) {
+                config.runLogger.warn("MCP provider ignored because URL is missing", {
+                    providerIndex: index,
+                })
+            }
+            continue
+        }
+
+        providers.push(normalizeMcpProviderConfig({
+            id: id || `provider_${index}`,
+            url,
+            token,
+            category,
+            timeoutMs,
+            maxTools,
+        }, `MCP_PROVIDER_${index}`))
+    }
+
+    return providers
+}
+
+function normalizeMcpProviderConfig(value: unknown, source: string): HttpMcpProviderConfig {
+    if (!value || typeof value !== "object") {
+        throw new Error(`${source} must be an object`)
+    }
+
+    const record = value as Record<string, unknown>
+    const id = readRequiredString(record.id, `${source}.id`)
+    const url = readRequiredString(record.url, `${source}.url`)
+    const category = readOptionalCategory(record.category, `${source}.category`)
+    const timeoutMs = readOptionalPositiveInteger(record.timeoutMs, `${source}.timeoutMs`)
+    const maxTools = readOptionalPositiveInteger(record.maxTools, `${source}.maxTools`)
+
+    return {
+        id,
+        url,
+        token: readOptionalString(record.token),
+        category: category ?? "research",
+        timeoutMs,
+        maxTools,
+        compatibleVenues: VENUE_APPS,
+    }
+}
+
+function dedupeMcpProviders(providers: HttpMcpProviderConfig[]): HttpMcpProviderConfig[] {
+    const seen = new Set<string>()
+    const deduped: HttpMcpProviderConfig[] = []
+
+    for (const provider of providers) {
+        if (seen.has(provider.id)) {
+            throw new Error(`Duplicate MCP provider id configured: ${provider.id}`)
+        }
+
+        seen.add(provider.id)
+        deduped.push(provider)
+    }
+
+    return deduped
+}
+
+function readRequiredString(value: unknown, label: string): string {
+    if (typeof value !== "string" || value.trim().length === 0) {
+        throw new Error(`${label} must be a non-empty string`)
+    }
+
+    return value.trim()
+}
+
+function readOptionalString(value: unknown): string | undefined {
+    return typeof value === "string" && value.trim().length > 0
+        ? value.trim()
+        : undefined
+}
+
+function readOptionalCategory(value: unknown, label: string): HttpMcpProviderConfig["category"] | undefined {
+    if (value === undefined || value === null || value === "") {
+        return undefined
+    }
+
+    if (value === "research" || value === "market-data") {
+        return value
+    }
+
+    throw new Error(`${label} must be research or market-data`)
+}
+
+function readOptionalPositiveInteger(value: unknown, label: string): number | undefined {
+    if (value === undefined || value === null || value === "") {
+        return undefined
+    }
+
+    const parsed = typeof value === "number" ? value : Number(value)
+    if (!Number.isInteger(parsed) || parsed <= 0) {
+        throw new Error(`${label} must be a positive integer`)
+    }
+
+    return parsed
 }

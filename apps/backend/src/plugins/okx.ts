@@ -20,8 +20,8 @@ import type {
     VenuePlugin,
 } from "../types"
 import {
-    appendValiqSecretKeys,
-    createValiqTools,
+    appendMcpSecretKeys,
+    createMcpTools,
     executeSessionFlatIfNeeded,
 } from "./shared"
 
@@ -31,7 +31,7 @@ export class OKXPlugin implements VenuePlugin {
     private readonly executionCostTracker = new ExecutionCostTracker()
 
     resolveSecretKeys(): string[] {
-        return appendValiqSecretKeys(OKX_RUNTIME_SECRET_KEYS)
+        return appendMcpSecretKeys(OKX_RUNTIME_SECRET_KEYS)
     }
 
     resolveAdditionalSecretKeys(_policy: Record<string, unknown>): string[] {
@@ -76,12 +76,8 @@ export class OKXPlugin implements VenuePlugin {
         return okxRiskValidators
     }
 
-    getExtraTools(config: ExtraToolsConfig) {
-        return createValiqTools(config, {
-            research: true,
-            data: true,
-            breakingNews: true,
-        })
+    async getExtraTools(config: ExtraToolsConfig) {
+        return await createMcpTools(config)
     }
 
     async preRunHooks(config: PreRunHookConfig): Promise<PreRunHookResult> {

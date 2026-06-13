@@ -203,7 +203,7 @@ function createPlugin(events: string[]): VenuePlugin {
         validateEnvironment: async () => undefined,
         createVenueAdapter: () => venue,
         getRiskValidators: () => [],
-        getExtraTools: () => [],
+        getExtraTools: async () => [],
         postRunHooks: async () => {
             events.push("post-run-hooks")
         },

@@ -27,8 +27,8 @@ describe("buildCodexRunAuditArtifact", () => {
                 createAgentLog({
                     role: "tool",
                     sequence: 2,
-                    toolName: "get_breaking_news",
-                    toolInput: "{\"window\":\"24h\"}",
+                    toolName: "mcp_default_research",
+                    toolInput: "{\"query\":\"market news\"}",
                     toolOutput: "{\"articles\":[]}",
                 }),
             ],
@@ -54,7 +54,7 @@ describe("buildCodexRunAuditArtifact", () => {
         })
         expect(artifact.evidence).toMatchObject({
             toolLogCount: 2,
-            toolNames: ["get_account", "get_breaking_news"],
+            toolNames: ["get_account", "mcp_default_research"],
             nonCanonicalToolNames: [],
             hasDryRunLedger: true,
             dryRunLedgerSourceRunId: "run-1",

@@ -66,6 +66,10 @@ function resolveExtraToolCategory(
     runLogger: Logger,
     app: VenueApp
 ): ToolCategory {
+    if (tool.category) {
+        return tool.category
+    }
+
     const category = SCHEDULER_EXTRA_TOOL_CATEGORIES[tool.name as keyof typeof SCHEDULER_EXTRA_TOOL_CATEGORIES]
     if (category) {
         return category

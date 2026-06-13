@@ -371,7 +371,7 @@ export async function runStrategy(
             env: process.env,
         })
 
-        const extraTools = plugin.getExtraTools({
+        const extraTools = await plugin.getExtraTools({
             secrets: strategySecrets,
             runLogger,
         })

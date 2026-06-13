@@ -69,6 +69,10 @@ export type {
 } from "./providers/codex/codex-json-rpc-client"
 export { startRunToolServer } from "./mcp/run-tool-server"
 export type { RunToolServer, RunToolServerConfig } from "./mcp/run-tool-server"
+export { HttpMcpClient } from "./mcp/http-client"
+export type { HttpMcpClientConfig, HttpMcpTool, ToolsCallResult } from "./mcp/http-client"
+export { createHttpMcpToolBindings } from "./mcp/http-tools"
+export type { HttpMcpProviderConfig, CreateHttpMcpToolBindingsConfig } from "./mcp/http-tools"
 export type {
     AgentModelProvider,
     AgentModelProviderName,

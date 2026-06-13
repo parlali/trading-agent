@@ -84,15 +84,6 @@ type ValidToolCall = {
 
 const DEFAULT_TOOL_TIMEOUT_MS = 120_000
 const DEFAULT_MAX_REPEATED_TOOL_ERRORS = 3
-const RESEARCH_TOOL_NAMES = new Set([
-    "query_valiq_research",
-    "query_valiq_data",
-    "get_breaking_news",
-    "search_markets",
-    "web_search",
-    "web_fetch",
-])
-
 const PROPOSAL_TOOL_NAMES = new Set([
     "propose_order",
     "propose_adjustment",
@@ -234,7 +225,7 @@ export class ToolExecutionEngine {
 
         const content = this.resolveExecutionResultContent(entry, result)
         const modelContent = truncateToolResult(content)
-        recordOpportunityCoverage(toolName, content, this.opportunityCoverage)
+        recordOpportunityCoverage(validation.toolBinding, content, this.opportunityCoverage)
         await this.logMcpToolResult(toolName, modelContent, rawInput)
 
         return {
@@ -304,6 +295,7 @@ export class ToolExecutionEngine {
             })
             const degradedWarning = this.recordValidationFailure(
                 args.toolName,
+                toolBinding,
                 normalizeToolErrorSignature(content),
                 "parameter validation loop",
                 content
@@ -320,16 +312,22 @@ export class ToolExecutionEngine {
 
     private recordValidationFailure(
         toolName: string,
-        signature: string,
-        repeatedReason: string,
-        fatalContent = signature
+        toolBindingOrSignature: ToolBinding | string,
+        signatureOrReason: string,
+        repeatedReasonOrFatalContent?: string,
+        fatalContentOverride?: string
     ): string | undefined {
+        const hasToolBinding = typeof toolBindingOrSignature !== "string"
+        const toolBinding = hasToolBinding ? toolBindingOrSignature : undefined
+        const signature = hasToolBinding ? signatureOrReason : toolBindingOrSignature
+        const repeatedReason = hasToolBinding ? repeatedReasonOrFatalContent ?? "" : signatureOrReason
+        const fatalContent = hasToolBinding ? fatalContentOverride ?? signature : repeatedReasonOrFatalContent ?? signature
         const repeatedError = recordRepeatedToolError(this.repeatedToolErrors, toolName, signature)
         if (repeatedError < this.maxRepeatedToolErrors) {
             return undefined
         }
 
-        if (RESEARCH_TOOL_NAMES.has(toolName)) {
+        if (toolBinding && isResearchTool(toolBinding)) {
             this.degradedResearchToolFailureCount++
             this.degradedResearchRetryCount += repeatedError
             this.degradedResearchReasons.add(`${toolName}: ${repeatedReason}`)
@@ -369,7 +367,7 @@ export class ToolExecutionEngine {
             return content
         }
 
-        if (RESEARCH_TOOL_NAMES.has(entry.toolName)) {
+        if (isResearchTool(entry.toolBinding)) {
             this.degradedResearchToolFailureCount++
             this.degradedResearchRetryCount += repeatedError
             this.degradedResearchReasons.add(`${entry.toolName}: execution failure loop`)
@@ -440,7 +438,7 @@ export class ToolExecutionEngine {
         const content = this.resolveExecutionResultContent(entry, result)
         const modelContent = truncateToolResult(content)
 
-        recordOpportunityCoverage(entry.toolName, content, this.opportunityCoverage)
+        recordOpportunityCoverage(entry.toolBinding, content, this.opportunityCoverage)
 
         await callbacks.onToolResult({
             toolCallId: entry.toolCallId,
@@ -598,16 +596,21 @@ function isSafetyCriticalToolBoundary(toolBinding: ToolBinding): boolean {
         toolBinding.contractBoundary === "venue-owned"
 }
 
+function isResearchTool(toolBinding: ToolBinding): boolean {
+    return toolBinding.category === "research" ||
+        toolBinding.category === "web"
+}
+
 function recordOpportunityCoverage(
-    toolName: string,
+    toolBinding: ToolBinding,
     toolResult: string,
     metrics: OpportunityCoverageMetrics
 ): void {
-    if (RESEARCH_TOOL_NAMES.has(toolName)) {
+    if (isResearchTool(toolBinding)) {
         metrics.researched++
     }
 
-    if (!PROPOSAL_TOOL_NAMES.has(toolName)) {
+    if (!PROPOSAL_TOOL_NAMES.has(toolBinding.name)) {
         return
     }
 
@@ -631,7 +634,7 @@ function recordOpportunityCoverage(
 
     if (status === "filled" || status === "partially_filled") {
         metrics.filled++
-        if (CLOSE_TOOL_NAMES.has(toolName)) {
+        if (CLOSE_TOOL_NAMES.has(toolBinding.name)) {
             metrics.closed++
         }
     }

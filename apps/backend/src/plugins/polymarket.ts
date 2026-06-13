@@ -19,8 +19,8 @@ import type {
     PreRunHookResult,
 } from "../types"
 import {
-    appendValiqDataSecretKeys,
-    createValiqTools,
+    appendMcpSecretKeys,
+    createMcpTools,
 } from "./shared"
 
 export class PolymarketPlugin implements VenuePlugin {
@@ -29,7 +29,7 @@ export class PolymarketPlugin implements VenuePlugin {
     private readonly executionCostTracker = new ExecutionCostTracker()
 
     resolveSecretKeys(): string[] {
-        return appendValiqDataSecretKeys(POLYMARKET_RUNTIME_SECRET_KEYS)
+        return appendMcpSecretKeys(POLYMARKET_RUNTIME_SECRET_KEYS)
     }
 
     resolveAdditionalSecretKeys(_policy: Record<string, unknown>): string[] {
@@ -56,11 +56,8 @@ export class PolymarketPlugin implements VenuePlugin {
         return [...BASE_RISK_VALIDATORS, ...polymarketRiskValidators]
     }
 
-    getExtraTools(config: ExtraToolsConfig) {
-        return createValiqTools(config, {
-            breakingNews: true,
-            missingDataLogMessage: "Valiq tools NOT registered: missing secrets",
-        })
+    async getExtraTools(config: ExtraToolsConfig) {
+        return await createMcpTools(config)
     }
 
     async preRunHooks(config: PreRunHookConfig): Promise<PreRunHookResult> {

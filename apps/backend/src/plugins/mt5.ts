@@ -21,8 +21,8 @@ import type {
     PreRunHookResult,
 } from "../types"
 import {
-    appendValiqSecretKeys,
-    createValiqTools,
+    appendMcpSecretKeys,
+    createMcpTools,
     executeSessionFlatIfNeeded,
 } from "./shared"
 
@@ -33,7 +33,7 @@ export class MT5Plugin implements VenuePlugin {
     private readonly executionCostTracker = new ExecutionCostTracker()
 
     resolveSecretKeys(): string[] {
-        return appendValiqSecretKeys(MT5_RUNTIME_SECRET_KEYS)
+        return appendMcpSecretKeys(MT5_RUNTIME_SECRET_KEYS)
     }
 
     resolveAdditionalSecretKeys(_policy: Record<string, unknown>): string[] {
@@ -73,11 +73,8 @@ export class MT5Plugin implements VenuePlugin {
         return mt5RiskValidators
     }
 
-    getExtraTools(config: ExtraToolsConfig) {
-        return createValiqTools(config, {
-            research: true,
-            data: true,
-        })
+    async getExtraTools(config: ExtraToolsConfig) {
+        return await createMcpTools(config)
     }
 
     async preRunHooks(config: PreRunHookConfig): Promise<PreRunHookResult> {

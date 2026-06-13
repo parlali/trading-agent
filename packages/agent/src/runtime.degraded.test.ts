@@ -109,6 +109,7 @@ describe("executeAgentRun degraded research", () => {
         tools.register({
             name: "search_markets",
             description: "Discovery tool",
+            category: "research",
             parameters: z.object({
                 category: z.string(),
             }),
@@ -220,6 +221,7 @@ describe("executeAgentRun degraded research", () => {
         tools.register({
             name: "search_markets",
             description: "Discovery tool",
+            category: "research",
             parameters: z.object({
                 category: z.string(),
             }),

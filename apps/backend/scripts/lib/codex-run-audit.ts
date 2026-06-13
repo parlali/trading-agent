@@ -134,6 +134,10 @@ const CANONICAL_RUN_TOOL_NAMES = new Set([
     ...listSchedulerExtraToolNames(),
 ])
 
+function isCanonicalRunToolName(toolName: string): boolean {
+    return CANONICAL_RUN_TOOL_NAMES.has(toolName) || toolName.startsWith("mcp_")
+}
+
 export function buildCodexRunAuditArtifact(input: CodexRunAuditInput): CodexRunAuditArtifact {
     const llm = resolveStrategyLlmConfig(input.strategy.policy)
     const toolLogs = input.agentLogs.filter((log) => log.role === "tool")
@@ -141,7 +145,7 @@ export function buildCodexRunAuditArtifact(input: CodexRunAuditInput): CodexRunA
         new Set(toolLogs.map((log) => log.toolName).filter((toolName): toolName is string => Boolean(toolName)))
     ).sort((left, right) => left.localeCompare(right))
     const forbiddenToolNames = toolNames.filter((toolName) => FORBIDDEN_CODEX_TOOL_NAMES.has(toolName))
-    const nonCanonicalToolNames = toolNames.filter((toolName) => !CANONICAL_RUN_TOOL_NAMES.has(toolName))
+    const nonCanonicalToolNames = toolNames.filter((toolName) => !isCanonicalRunToolName(toolName))
     const ledger = input.positions.find((position) => isDryRunAccountLedgerPosition(position))
     const dryRunPositions = input.positions.filter((position) => !isDryRunAccountLedgerPosition(position))
     const providerSync = input.portfolioFreshness.find((row) => row.app === input.run.app)

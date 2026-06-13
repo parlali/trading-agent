@@ -185,10 +185,8 @@ export default function TestPage() {
     const testAlpaca = useAction(api.connectionTests.testAlpacaConnection)
     const testPolymarket = useAction(api.connectionTests.testPolymarketConnection)
     const testOKX = useAction(api.connectionTests.testOKXConnection)
-    const testValiq = useAction(api.connectionTests.testValiqConnection)
+    const testMcp = useAction(api.connectionTests.testMcpConnection)
     const accounts = useQuery(api.queries.getAccounts, {})
-
-    const [valiqPrompt, setValiqPrompt] = useState("")
 
     const venueTests = {
         "mt5": { run: testMT5, icon: BarChart3, description: "Runtime-aligned worker health, MT5 account, positions, and working orders" },
@@ -243,22 +241,11 @@ export default function TestPage() {
                 )}
 
                 <TestCard
-                    title="Val-iQ"
-                    description="Research pipeline: create chat, send prompt, receive analysis"
+                    title="MCP Research"
+                    description="Generic MCP endpoint: initialize and list configured research/data tools"
                     icon={Sparkles}
-                    onRun={() => {
-                        const prompt = valiqPrompt.trim() || "What is the current S&P 500 level and market sentiment?"
-                        return testValiq({ prompt })
-                    }}
-                >
-                    <input
-                        type="text"
-                        placeholder="Research prompt (optional, default provided)"
-                        value={valiqPrompt}
-                        onChange={(e) => setValiqPrompt(e.target.value)}
-                        className="flex-1 rounded-md border border-input bg-background px-3 py-1.5 text-xs ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                    />
-                </TestCard>
+                    onRun={() => testMcp({})}
+                />
             </div>
         </div>
     )
