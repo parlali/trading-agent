@@ -3,6 +3,7 @@ import {
     executeAgentRun,
     withMcpToolCallBudget,
     type ToolBinding,
+    type ToolManifestEntry,
 } from "@valiq-trading/agent"
 import { createConvexOrderPersistenceAdapter } from "@valiq-trading/convex"
 import type {
@@ -177,6 +178,7 @@ export async function runStrategy(
     let latestStoredPositions: Position[] | undefined
     let currentAccountState: AccountState | undefined
     let runtimeContextLines: string[] | undefined
+    let registeredToolManifest: ToolManifestEntry[] = []
 
     try {
         latestStoredPositions = storedPositions
@@ -398,6 +400,7 @@ export async function runStrategy(
             for (const tool of toolPool.forVenue(app)) {
                 tools.register(tool)
             }
+            registeredToolManifest = tools.getManifest()
 
             const isDryRun = Boolean(policy.dryRun)
             const {
@@ -581,7 +584,7 @@ export async function runStrategy(
                 "failed",
                 undefined,
                 message,
-                buildFailureRunDiagnostics(llmConfig, runSystemContextDigest)
+                buildFailureRunDiagnostics(llmConfig, runSystemContextDigest, registeredToolManifest)
             ),
             backend.createAlert({
                 strategyId: strategy._id,
@@ -659,7 +662,8 @@ function applyMcpResearchBudget(tool: ToolBinding, isCallback: boolean): ToolBin
 
 function buildFailureRunDiagnostics(
     llmConfig: StrategyLlmConfig,
-    systemContextDigest?: RunSystemContextDigest
+    systemContextDigest?: RunSystemContextDigest,
+    toolManifest: ToolManifestEntry[] = []
 ): RunDiagnostics {
     const diagnostics: RunDiagnostics = {
         llmProvider: llmConfig.provider,
@@ -679,6 +683,7 @@ function buildFailureRunDiagnostics(
     if (systemContextDigest) {
         diagnostics.systemContextDigest = systemContextDigest
     }
+    diagnostics.toolManifest = toolManifest
 
     return diagnostics
 }

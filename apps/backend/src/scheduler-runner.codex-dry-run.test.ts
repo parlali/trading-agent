@@ -40,7 +40,7 @@ describe("scheduler runner Codex dry-run side effects", () => {
         vi.doMock("@valiq-trading/agent", () => ({
             ToolRegistry: FakeToolRegistry,
             executeAgentRun,
-            withCallBudget: (tool: unknown) => tool,
+            withMcpToolCallBudget: (tool: unknown) => tool,
         }))
         vi.doMock("./scheduler-tool-pool", () => ({
             buildToolPool: () => ({
@@ -139,6 +139,10 @@ class FakeToolRegistry {
     }
 
     getDescriptions(): unknown[] {
+        return this.tools
+    }
+
+    getManifest(): unknown[] {
         return this.tools
     }
 }

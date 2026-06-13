@@ -114,6 +114,7 @@ describe("ToolExecutionEngine", () => {
         }
         const engine = createEngine(async () => ({ accepted: true }), {
             agentLogger,
+            nextTranscriptSequence: () => 3,
         })
 
         const result = await engine.executeMcpCall(
@@ -152,6 +153,19 @@ describe("ToolExecutionEngine", () => {
         await engine.executeMcpCall("fake_tool", { value: "valid" }, "call-sequence")
 
         expect(agentLogger.log.mock.calls[0]?.[2]).toBe(3)
+    })
+
+    it("fails closed when transcript logging is configured without a sequence allocator", () => {
+        expect(() => new ToolExecutionEngine({
+            tools: new ToolRegistry(),
+            context: createContext(),
+            logger: createLogger({ minLevel: "fatal" }),
+            agentLogger: {
+                log: vi.fn(async () => undefined),
+            },
+            runStartedAt: Date.now(),
+            runTimeoutMs: 60_000,
+        })).toThrow("requires nextTranscriptSequence")
     })
 
     it("returns validation errors before invoking the handler on both transports", async () => {

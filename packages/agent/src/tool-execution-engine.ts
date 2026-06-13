@@ -106,6 +106,10 @@ export class ToolExecutionEngine {
     private fatalFault: ToolExecutionFatalFault | undefined
 
     constructor(private readonly config: ToolExecutionEngineConfig) {
+        if (config.agentLogger && !config.nextTranscriptSequence) {
+            throw new Error("ToolExecutionEngine requires nextTranscriptSequence when agentLogger is configured")
+        }
+
         this.maxRepeatedToolErrors = config.maxRepeatedToolErrors ?? DEFAULT_MAX_REPEATED_TOOL_ERRORS
         this.maxToolTimeoutMs = config.maxToolTimeoutMs ?? DEFAULT_TOOL_TIMEOUT_MS
     }
@@ -481,9 +485,7 @@ export class ToolExecutionEngine {
         content: string,
         rawInput: string
     ): Promise<void> {
-        const sequence = this.config.nextTranscriptSequence
-            ? this.config.nextTranscriptSequence()
-            : 1
+        const sequence = this.config.nextTranscriptSequence?.() ?? 0
         await safeLogAgentMessage({
             agentLogger: this.config.agentLogger,
             logger: this.config.logger,
