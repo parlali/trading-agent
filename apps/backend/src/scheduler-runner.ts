@@ -3,6 +3,7 @@ import {
     type ToolManifestEntry,
 } from "@valiq-trading/agent"
 import type {
+    CreateRunMetadata,
     RunDiagnostics,
     RunTrigger,
     StoredStrategy,
@@ -47,6 +48,20 @@ import {
     type ScheduledRunRuntime,
 } from "./scheduled-run-runtime"
 
+interface RunStrategyOptions {
+    userMessage?: string
+    abortSignal?: AbortSignal
+    createRunMetadata?: CreateRunMetadata
+    failOnSkippedStart?: boolean
+}
+
+export interface StrategyRunOutcome {
+    runId?: string
+    status: "completed" | "failed" | "skipped"
+    summary?: string
+    error?: string
+}
+
 export async function runStrategy(
     app: VenueApp,
     plugin: VenuePlugin,
@@ -54,10 +69,12 @@ export async function runStrategy(
     policy: Record<string, unknown>,
     strategySecrets: Record<string, string | null>,
     scheduler?: Scheduler,
-    trigger: RunTrigger = "cron"
-): Promise<void> {
+    trigger: RunTrigger = "cron",
+    options: RunStrategyOptions = {}
+): Promise<StrategyRunOutcome | undefined> {
     const accountHealth = healthState.venues[app]?.accounts?.[strategy.accountId]
     if (accountHealth?.validated !== true) {
+        const message = `${app}:${strategy.accountId} environment not validated${accountHealth?.error ? ` (${accountHealth.error})` : ""}`
         logger.warn("Run skipped because venue environment is not validated", {
             strategyId: strategy._id,
             app,
@@ -69,12 +86,19 @@ export async function runStrategy(
             strategyId: strategy._id,
             app,
             severity: "warning",
-            message: `Strategy run skipped: ${app}:${strategy.accountId} environment not validated${accountHealth?.error ? ` (${accountHealth.error})` : ""}`,
+            message: `Strategy run skipped: ${message}`,
         })
-        return
+        if (options.failOnSkippedStart) {
+            throw new Error(`Strategy run skipped: ${message}`)
+        }
+        return {
+            status: "skipped",
+            error: message,
+        }
     }
 
     if (await checkKillSwitch(app, `pre-run:${strategy._id}`)) {
+        const message = "kill switch active"
         logger.warn("Run skipped due to active kill switch", { strategyId: strategy._id, app })
         await backend.createAlert({
             strategyId: strategy._id,
@@ -82,11 +106,17 @@ export async function runStrategy(
             severity: "warning",
             message: "Strategy run skipped: kill switch active",
         })
-        return
+        if (options.failOnSkippedStart) {
+            throw new Error(`Strategy run skipped: ${message}`)
+        }
+        return {
+            status: "skipped",
+            error: message,
+        }
     }
 
     const llmConfig = resolveStrategyLlmConfig(policy)
-    const runId = await backend.createRun(strategy._id, app, trigger)
+    const runId = await backend.createRun(strategy._id, app, trigger, options.createRunMetadata)
     const runLogger = logger.child({
         runId,
         strategyId: strategy._id,
@@ -190,7 +220,11 @@ export async function runStrategy(
                 const summary = hookResult.reason ?? "Strategy skipped by pre-run hook"
                 await backend.updateRun(runId, "completed", summary)
                 updateHealth("completed", summary)
-                return
+                return {
+                    runId,
+                    status: "completed",
+                    summary,
+                }
             }
 
             runtimeContextLines = hookResult.runtimeContextLines
@@ -206,7 +240,7 @@ export async function runStrategy(
         const isCallback = trigger === "callback"
         const strategyRunStartedAt = Date.now()
 
-        await withTimeout(async () => {
+        return await withTimeout(async (): Promise<StrategyRunOutcome> => {
             const preparedTurn = await prepareScheduledRunAgentTurn(activeRuntime, {
                 trigger,
                 isCallback,
@@ -227,6 +261,8 @@ export async function runStrategy(
                     agentLogger: backend,
                     killSwitchChecker: () => checkKillSwitch(app, `mid-run:${strategy._id}`),
                     runTimeoutMs: Math.max(1, STRATEGY_RUN_TIMEOUT_MS - (Date.now() - strategyRunStartedAt)),
+                    userMessage: options.userMessage,
+                    abortSignal: options.abortSignal,
                 }
             )
 
@@ -276,7 +312,12 @@ export async function runStrategy(
                     }),
                 ])
                 updateHealth("failed", cleanSummary, result.error)
-                return
+                return {
+                    runId,
+                    status: "failed",
+                    summary: cleanSummary,
+                    error: result.error,
+                }
             }
 
             await backend.updateRun(runId, "completed", cleanSummary, undefined, runDiagnostics)
@@ -305,6 +346,12 @@ export async function runStrategy(
                         )
                     }
                 }
+            }
+
+            return {
+                runId,
+                status: "completed",
+                summary: cleanSummary,
             }
         }, STRATEGY_RUN_TIMEOUT_MS, `strategy run ${strategy._id}`)
     } catch (error) {

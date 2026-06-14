@@ -1,7 +1,8 @@
 "use client"
 
-import { FormEvent, useEffect, useMemo, useRef, useState } from "react"
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useChat } from "@ai-sdk/react"
+import { useAuthToken } from "@convex-dev/auth/react"
 import {
     DefaultChatTransport,
     getToolName,
@@ -48,6 +49,7 @@ type ToolInventoryResponse = {
 type MessagePart = UIMessage["parts"][number]
 
 export default function AgentChatPage() {
+    const authToken = useAuthToken()
     const [input, setInput] = useState("")
     const [strategyId, setStrategyId] = useState<string>("")
     const [inventory, setInventory] = useState<ToolInventoryResponse | null>(null)
@@ -57,16 +59,24 @@ export default function AgentChatPage() {
     const previousStrategyRef = useRef<string>("")
     const chatTransport = useMemo(() => new DefaultChatTransport({
         api: "/api/agent-chat",
-        prepareSendMessagesRequest({ messages, body }) {
+        prepareSendMessagesRequest({ messages, id, messageId }) {
+            if (!authToken) {
+                throw new Error("Dashboard authentication is not ready")
+            }
+
             return {
+                headers: {
+                    "authorization": `Bearer ${authToken}`,
+                },
                 body: {
-                    ...body,
-                    messages,
                     strategyId,
+                    message: readLatestUserText(messages),
+                    chatSessionId: id,
+                    chatMessageId: messageId ?? messages[messages.length - 1]?.id,
                 },
             }
         },
-    }), [strategyId])
+    }), [authToken, strategyId])
 
     const {
         messages,
@@ -94,16 +104,27 @@ export default function AgentChatPage() {
         [inventory]
     )
     const selectedStrategy = runtimeStrategies.find((strategy) => strategy.id === strategyId)
-    const canSubmit = input.trim().length > 0 && !isRunning && Boolean(strategyId)
+    const canSubmit = input.trim().length > 0 && !isRunning && Boolean(strategyId) && Boolean(authToken)
 
     const runtimeStrategyCount = inventory?.strategies?.length ?? 0
 
-    async function loadInventory() {
+    const loadInventory = useCallback(async () => {
+        if (!authToken) {
+            setInventory(null)
+            setInventoryError("Dashboard authentication is not ready")
+            return
+        }
+
         setInventoryLoading(true)
         setInventoryError(null)
 
         try {
-            const response = await fetch("/api/agent-chat")
+            const response = await fetch("/api/agent-chat", {
+                headers: {
+                    "authorization": `Bearer ${authToken}`,
+                },
+                cache: "no-store",
+            })
             const payload = await response.json() as ToolInventoryResponse
             if (!response.ok || !payload.ok) {
                 throw new Error(payload.error || `Inventory request failed with HTTP ${response.status}`)
@@ -116,11 +137,11 @@ export default function AgentChatPage() {
         } finally {
             setInventoryLoading(false)
         }
-    }
+    }, [authToken])
 
     useEffect(() => {
         void loadInventory()
-    }, [])
+    }, [loadInventory])
 
     useEffect(() => {
         if (runtimeStrategies.length === 0) {
@@ -251,7 +272,7 @@ export default function AgentChatPage() {
                             }}
                             placeholder="Ask the agent anything or request work with the configured MCP tools"
                             className="max-h-40 min-h-20 resize-none text-sm"
-                            disabled={isRunning}
+                            disabled={isRunning || !authToken}
                         />
                         <Button type="submit" size="icon" disabled={!canSubmit} aria-label="Send message">
                             {isRunning ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
@@ -271,7 +292,7 @@ export default function AgentChatPage() {
                         variant="outline"
                         size="icon-sm"
                         onClick={() => void loadInventory()}
-                        disabled={inventoryLoading}
+                        disabled={inventoryLoading || !authToken}
                         aria-label="Refresh MCP inventory"
                     >
                         <RefreshCw className={cn("h-3.5 w-3.5", inventoryLoading && "animate-spin")} />
@@ -307,6 +328,27 @@ export default function AgentChatPage() {
             </aside>
         </div>
     )
+}
+
+function readLatestUserText(messages: UIMessage[]): string {
+    for (let i = messages.length - 1; i >= 0; i--) {
+        const message = messages[i]
+        if (message?.role !== "user") {
+            continue
+        }
+
+        const text = message.parts
+            .filter((part) => part.type === "text")
+            .map((part) => part.text)
+            .join("\n")
+            .trim()
+
+        if (text) {
+            return text
+        }
+    }
+
+    throw new Error("No user text message to send")
 }
 
 function EmptyChat() {

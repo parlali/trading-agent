@@ -92,7 +92,13 @@ export interface StoredAccount {
     updatedAt?: number
 }
 
-export type RunTrigger = "cron" | "manual" | "callback"
+export type RunTrigger = "cron" | "manual" | "callback" | "chat"
+
+export interface CreateRunMetadata {
+    chatSource?: "dashboard"
+    chatSessionId?: string
+    chatMessageId?: string
+}
 
 export interface RunDiagnostics {
     degradedResearch?: boolean
@@ -133,6 +139,9 @@ export interface StoredRun extends RunDiagnostics {
     app: App
     status: "running" | "completed" | "failed"
     trigger?: RunTrigger
+    chatSource?: "dashboard"
+    chatSessionId?: string
+    chatMessageId?: string
     startedAt: number
     endedAt?: number
     summary?: string
@@ -473,7 +482,7 @@ export interface TradingBackendClient extends TradeEventLogger, AgentMessageLogg
     getLastCompletedRunSummary(strategyId: Id<"strategies">): Promise<LastCompletedRunSummary | null>
     recoverRunningRuns(): Promise<number>
     recoverStaleRunningRuns(olderThanMs?: number): Promise<number>
-    createRun(strategyId: Id<"strategies">, app: App, trigger?: RunTrigger): Promise<Id<"strategy_runs">>
+    createRun(strategyId: Id<"strategies">, app: App, trigger?: RunTrigger, metadata?: CreateRunMetadata): Promise<Id<"strategy_runs">>
     updateRun(
         runId: Id<"strategy_runs">,
         status: StoredRun["status"],

@@ -82,8 +82,12 @@ export default defineSchema({
         trigger: v.optional(v.union(
             v.literal("cron"),
             v.literal("manual"),
-            v.literal("callback")
+            v.literal("callback"),
+            v.literal("chat")
         )),
+        chatSource: v.optional(v.literal("dashboard")),
+        chatSessionId: v.optional(v.string()),
+        chatMessageId: v.optional(v.string()),
         startedAt: v.number(),
         endedAt: v.optional(v.number()),
         summary: v.optional(v.string()),

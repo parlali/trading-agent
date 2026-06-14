@@ -99,7 +99,7 @@ function startHealthServer(scheduler: Scheduler): void {
             lastRunSummary: healthState.lastRunSummary,
             lastRunError: healthState.lastRunError,
         }),
-        handleRequest: createBackendControlHandler(createCodexOAuthControlHandler({
+        handleRequest: createBackendControlHandler(scheduler, createCodexOAuthControlHandler({
             serviceToken: backendServiceToken,
             logger,
             persistChatGptAuth: async (auth) => {
@@ -114,10 +114,11 @@ function startHealthServer(scheduler: Scheduler): void {
 }
 
 function createBackendControlHandler(
+    scheduler: Scheduler,
     codexOAuthHandler: (request: Request) => Response | Promise<Response | undefined> | undefined
 ) {
     return async (request: Request) =>
-        await handleAgentChatRequest(request) ??
+        await handleAgentChatRequest(request, scheduler) ??
         await codexOAuthHandler(request)
 }
 

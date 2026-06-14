@@ -28,8 +28,12 @@ export const createRun = mutation({
         trigger: v.optional(v.union(
             v.literal("cron"),
             v.literal("manual"),
-            v.literal("callback")
+            v.literal("callback"),
+            v.literal("chat")
         )),
+        chatSource: v.optional(v.literal("dashboard")),
+        chatSessionId: v.optional(v.string()),
+        chatMessageId: v.optional(v.string()),
     },
     handler: async (ctx, args) => {
         requireServiceToken(args.serviceToken)
@@ -75,6 +79,9 @@ export const createRun = mutation({
             accountId: strategy.accountId,
             status: "running",
             trigger: args.trigger ?? "cron",
+            chatSource: args.chatSource,
+            chatSessionId: args.chatSessionId,
+            chatMessageId: args.chatMessageId,
             startedAt: Date.now(),
         })
     },

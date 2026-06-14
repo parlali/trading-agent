@@ -25,6 +25,7 @@ import type {
     ClaimManualRunRequestsResult,
     ControlPlaneMetricRow,
     CreateAlertArgs,
+    CreateRunMetadata,
     DeleteAllStrategiesResult,
     DeleteOrphanedStrategyHistoryBatchResult,
     DeleteStrategyBatchResult,
@@ -240,7 +241,12 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
 
             return result.recovered
         },
-        async createRun(strategyId: Id<"strategies">, app: App, trigger?: RunTrigger): Promise<Id<"strategy_runs">> {
+        async createRun(
+            strategyId: Id<"strategies">,
+            app: App,
+            trigger?: RunTrigger,
+            metadata?: CreateRunMetadata
+        ): Promise<Id<"strategy_runs">> {
             return await runWithTimeout(
                 "Convex mutation createRun",
                 async () => await client.mutation(api.mutations.createRun, {
@@ -248,6 +254,9 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
                     strategyId,
                     app,
                     trigger,
+                    chatSource: metadata?.chatSource,
+                    chatSessionId: metadata?.chatSessionId,
+                    chatMessageId: metadata?.chatMessageId,
                 } as never) as Id<"strategy_runs">
             )
         },

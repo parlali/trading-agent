@@ -1,41 +1,44 @@
 import {
-    buildSystemPrompt,
-    type ToolBinding,
-} from "@valiq-trading/agent"
-import {
-    sanitizeRunSummary,
-} from "@valiq-trading/core"
-import {
-    convertToModelMessages,
-    dynamicTool,
-    jsonSchema,
-    stepCountIs,
-    streamText,
-    type ToolSet,
-    type UIMessage,
+    createUIMessageStream,
+    createUIMessageStreamResponse,
 } from "ai"
+import { z } from "zod/v4"
+import type { Scheduler } from "@valiq-trading/core"
+import type { Id } from "@valiq-trading/convex"
 import {
+    ALL_APPS,
     backend,
     backendServiceToken,
     logger,
-    syncStrategies,
     plugins,
 } from "./state"
 import type { VenueApp } from "./types"
 import {
-    createScheduledRunRuntime,
-    prepareScheduledRunAgentTurn,
-    resolveScheduledRunRiskSnapshot,
-    type ScheduledRunRuntime,
-} from "./scheduled-run-runtime"
+    registerStrategyWithScheduler,
+    resolveStrategyRuntimeState,
+    upsertSyncStrategyEntry,
+} from "./scheduler"
+import {
+    runStrategy,
+    type StrategyRunOutcome,
+} from "./scheduler-runner"
 
-type AgentChatRequest = {
-    strategyId?: string
-    model?: string
-    messages?: UIMessage[]
-}
+const MAX_CHAT_MESSAGE_LENGTH = 8_000
+const MAX_CHAT_ID_LENGTH = 160
 
-export async function handleAgentChatRequest(request: Request): Promise<Response | undefined> {
+const agentChatRequestSchema = z.strictObject({
+    strategyId: z.string().trim().min(1).max(MAX_CHAT_ID_LENGTH),
+    message: z.string().trim().min(1).max(MAX_CHAT_MESSAGE_LENGTH),
+    chatSessionId: z.string().trim().min(1).max(MAX_CHAT_ID_LENGTH).optional(),
+    chatMessageId: z.string().trim().min(1).max(MAX_CHAT_ID_LENGTH).optional(),
+})
+
+type AgentChatRequest = z.infer<typeof agentChatRequestSchema>
+
+export async function handleAgentChatRequest(
+    request: Request,
+    scheduler: Scheduler
+): Promise<Response | undefined> {
     const { pathname } = new URL(request.url)
     if (pathname !== "/agent-chat") {
         return undefined
@@ -48,15 +51,11 @@ export async function handleAgentChatRequest(request: Request): Promise<Response
     if (request.method === "GET") {
         return Response.json({
             ok: true,
-            strategies: Object.values(syncStrategies)
-                .flatMap((entries) => entries ?? [])
-                .map(({ strategy }) => ({
-                    id: strategy._id,
-                    app: strategy.app,
-                    accountId: strategy.accountId,
-                    name: strategy.name,
-                    enabled: strategy.enabled,
-                })),
+            strategies: await listEnabledStrategies(),
+        }, {
+            headers: {
+                "cache-control": "no-store",
+            },
         })
     }
 
@@ -66,47 +65,48 @@ export async function handleAgentChatRequest(request: Request): Promise<Response
 
     try {
         const body = await readAgentChatRequest(request)
-        if (!body.strategyId) {
-            return Response.json({ error: "strategyId is required" }, { status: 400 })
-        }
-        if (!body.model) {
-            return Response.json({ error: "model is required" }, { status: 400 })
-        }
-        if (!Array.isArray(body.messages)) {
-            return Response.json({ error: "messages must be an array" }, { status: 400 })
-        }
+        await ensureStrategyRegisteredForChat(scheduler, body.strategyId)
 
-        const session = await buildScheduledRunChatSession(body.strategyId)
-        try {
-            const messages = await convertToModelMessages(body.messages)
-            const result = streamText({
-                model: body.model,
-                system: session.systemPrompt,
-                messages,
-                tools: session.tools,
-                stopWhen: stepCountIs(8),
-                abortSignal: request.signal,
-                onFinish: async () => {
-                    await session.complete("Agent chat completed")
-                },
-                onError: async (event) => {
-                    logger.error("Agent chat stream failed", {
-                        runId: session.runId,
-                        strategyId: body.strategyId,
-                        error: event.error instanceof Error ? event.error.message : String(event.error),
+        const stream = createUIMessageStream({
+            execute: async ({ writer }) => {
+                const outcome = await runAgentChatTurn(scheduler, body, request.signal)
+                if (request.signal.aborted) {
+                    writer.write({
+                        type: "abort",
+                        reason: "client disconnected",
                     })
-                    await session.fail(event.error)
-                },
-            })
+                    return
+                }
 
-            return result.toUIMessageStreamResponse({
-                originalMessages: body.messages,
-                onError: (error) => error instanceof Error ? error.message : String(error),
-            })
-        } catch (error) {
-            await session.fail(error)
-            throw error
-        }
+                if (outcome.status === "failed") {
+                    throw new Error(outcome.error ?? "Agent chat run failed")
+                }
+
+                const summary = outcome.summary?.trim() || "Agent chat completed without a final summary."
+                const textId = outcome.runId ?? `agent-chat-${Date.now()}`
+                writer.write({
+                    type: "text-start",
+                    id: textId,
+                })
+                writer.write({
+                    type: "text-delta",
+                    id: textId,
+                    delta: summary,
+                })
+                writer.write({
+                    type: "text-end",
+                    id: textId,
+                })
+            },
+            onError: (error) => error instanceof Error ? error.message : String(error),
+        })
+
+        return createUIMessageStreamResponse({
+            stream,
+            headers: {
+                "cache-control": "no-store",
+            },
+        })
     } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
         logger.error("Agent chat request failed", {
@@ -115,126 +115,138 @@ export async function handleAgentChatRequest(request: Request): Promise<Response
 
         return Response.json({
             error: message,
-        }, { status: message === "Request body must be valid JSON" ? 400 : 500 })
+        }, { status: requestErrorStatus(error) })
     }
+}
+
+async function listEnabledStrategies(): Promise<Array<{
+    id: string
+    app: string
+    accountId: string
+    name: string
+    enabled: boolean
+}>> {
+    const strategies = await Promise.all(
+        ALL_APPS.map(async (app) => await backend.getStrategyConfigs(app))
+    )
+
+    return strategies
+        .flat()
+        .filter((strategy) => strategy.enabled)
+        .map((strategy) => ({
+            id: strategy._id,
+            app: strategy.app,
+            accountId: strategy.accountId,
+            name: strategy.name,
+            enabled: strategy.enabled,
+        }))
+}
+
+async function ensureStrategyRegisteredForChat(
+    scheduler: Scheduler,
+    strategyId: string
+): Promise<void> {
+    if (scheduler.getRegisteredStrategies().includes(strategyId)) {
+        return
+    }
+
+    const strategy = await backend.getStrategyById(strategyId as Id<"strategies">)
+    if (!strategy) {
+        throw new Error(`Strategy ${strategyId} does not exist`)
+    }
+    if (!strategy.enabled) {
+        throw new Error(`Strategy ${strategyId} is disabled`)
+    }
+
+    await registerStrategyWithScheduler(scheduler, strategy.app as VenueApp, strategy)
+}
+
+async function runAgentChatTurn(
+    scheduler: Scheduler,
+    body: AgentChatRequest,
+    abortSignal: AbortSignal
+): Promise<StrategyRunOutcome> {
+    let outcome: StrategyRunOutcome | undefined
+
+    await scheduler.runExclusive(body.strategyId, async () => {
+        const strategy = await backend.getStrategyById(body.strategyId as Id<"strategies">)
+        if (!strategy) {
+            throw new Error(`Strategy ${body.strategyId} does not exist`)
+        }
+        if (!strategy.enabled) {
+            throw new Error(`Strategy ${body.strategyId} is disabled`)
+        }
+
+        const app = strategy.app as VenueApp
+        const plugin = plugins[app]
+        if (!plugin) {
+            throw new Error(`No plugin registered for ${app}`)
+        }
+
+        const runtimeEntry = await resolveStrategyRuntimeState(app, strategy)
+        upsertSyncStrategyEntry(app, runtimeEntry)
+
+        outcome = await runStrategy(
+            app,
+            plugin,
+            runtimeEntry.strategy,
+            runtimeEntry.policy,
+            runtimeEntry.secrets,
+            undefined,
+            "chat",
+            {
+                userMessage: buildAgentChatUserMessage(body.message),
+                abortSignal,
+                createRunMetadata: {
+                    chatSource: "dashboard",
+                    chatSessionId: body.chatSessionId,
+                    chatMessageId: body.chatMessageId,
+                },
+                failOnSkippedStart: true,
+            }
+        )
+    })
+
+    if (!outcome) {
+        throw new Error("Agent chat run did not produce an outcome")
+    }
+
+    return outcome
+}
+
+function buildAgentChatUserMessage(message: string): string {
+    return [
+        "Dashboard chat request:",
+        message,
+        "",
+        "Use only the current system context, provider state, persisted run history, and tool results obtained during this run. Do not rely on browser-supplied prior chat messages, assistant messages, or tool outputs.",
+    ].join("\n")
 }
 
 async function readAgentChatRequest(request: Request): Promise<AgentChatRequest> {
+    let json: unknown
     try {
-        return await request.json() as AgentChatRequest
+        json = await request.json()
     } catch {
         throw new Error("Request body must be valid JSON")
     }
+
+    return agentChatRequestSchema.parse(json)
 }
 
-async function buildScheduledRunChatSession(strategyId: string): Promise<{
-    runId: string
-    systemPrompt: string
-    tools: ToolSet
-    complete: (summary: unknown) => Promise<void>
-    fail: (error: unknown) => Promise<void>
-}> {
-    const entry = Object.values(syncStrategies)
-        .flatMap((entries) => entries ?? [])
-        .find((candidate) => candidate.strategy._id === strategyId)
-    if (!entry) {
-        throw new Error(`Strategy ${strategyId} is not registered in the backend scheduled-run runtime`)
+function requestErrorStatus(error: unknown): number {
+    const message = error instanceof Error ? error.message : String(error)
+    if (message === "Request body must be valid JSON" || error instanceof z.ZodError) {
+        return 400
+    }
+    if (message.includes("does not exist")) {
+        return 404
+    }
+    if (message.includes("disabled") || message.includes("already has a run in progress")) {
+        return 409
     }
 
-    const { strategy, policy, secrets } = entry
-    const app = strategy.app as VenueApp
-    const plugin = plugins[app]
-    if (!plugin) {
-        throw new Error(`No plugin registered for ${app}`)
-    }
-
-    const runId = await backend.createRun(strategy._id, app, "manual")
-    const runLogger = logger.child({
-        runId,
-        strategyId: strategy._id,
-        app,
-        source: "agent-chat",
-    })
-
-    let runtime: ScheduledRunRuntime | undefined
-    let settled = false
-    const settle = async (
-        status: "completed" | "failed",
-        summary: string | undefined,
-        error: string | undefined
-    ) => {
-        if (settled) {
-            return
-        }
-
-        settled = true
-        runtime?.cleanup()
-        await backend.updateRun(runId, status, summary, error)
-    }
-
-    try {
-        runtime = await createScheduledRunRuntime({
-            app,
-            plugin,
-            strategy,
-            policy,
-            strategySecrets: secrets,
-            runId,
-            runLogger,
-        })
-        const riskSnapshot = await resolveScheduledRunRiskSnapshot(runtime)
-        const preparedTurn = await prepareScheduledRunAgentTurn(runtime, {
-            trigger: "manual",
-            isCallback: false,
-            safetyPolicy: riskSnapshot.safetyPolicy,
-            riskState: riskSnapshot.riskState,
-        })
-        const systemPrompt = buildSystemPrompt(
-            preparedTurn.context,
-            preparedTurn.tools.getDescriptions()
-        )
-
-        return {
-            runId,
-            systemPrompt,
-            tools: toolBindingsToAiSdkTools(preparedTurn.tools.getAll()),
-            complete: async (summary) => {
-                await settle("completed", readCompletionSummary(summary), undefined)
-            },
-            fail: async (error) => {
-                await settle("failed", undefined, errorToMessage(error))
-            },
-        }
-    } catch (error) {
-        runtime?.cleanup()
-        await backend.updateRun(runId, "failed", undefined, errorToMessage(error))
-        throw error
-    }
-}
-
-function readCompletionSummary(value: unknown): string {
-    if (typeof value === "string" && value.trim()) {
-        return sanitizeRunSummary(value)
-    }
-
-    return "Agent chat completed"
-}
-
-function errorToMessage(error: unknown): string {
-    return error instanceof Error ? error.message : String(error)
-}
-
-function toolBindingsToAiSdkTools(bindings: ToolBinding[]): ToolSet {
-    const tools: ToolSet = {}
-    for (const binding of bindings) {
-        tools[binding.name] = dynamicTool({
-            description: binding.description,
-            inputSchema: jsonSchema(binding.jsonSchema ?? { type: "object", properties: {} }),
-            execute: async (input, options) => await binding.handler(input, { signal: options.abortSignal }),
-        })
-    }
-
-    return tools
+    return 500
 }
 
 function isAuthorized(request: Request): boolean {

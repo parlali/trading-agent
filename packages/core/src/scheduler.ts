@@ -159,6 +159,10 @@ export class Scheduler {
         return this.triggerStrategy(strategyId)
     }
 
+    async runExclusive(strategyId: string, handler: () => Promise<void>): Promise<void> {
+        return this.triggerStrategy(strategyId, handler, "throw")
+    }
+
     async shutdown(): Promise<void> {
         this.shuttingDown = true
         this.logger.info("Scheduler shutting down", { inFlightRuns: this.inFlightRuns.size })
@@ -285,11 +289,18 @@ export class Scheduler {
         }
     }
 
-    private async triggerStrategy(strategyId: string): Promise<void> {
+    private async triggerStrategy(
+        strategyId: string,
+        handlerOverride?: () => Promise<void>,
+        busyBehavior: "skip" | "throw" = "skip"
+    ): Promise<void> {
         if (this.shuttingDown) return
 
         const tracked = this.strategies.get(strategyId)
         if (!tracked) {
+            if (busyBehavior === "throw") {
+                throw new Error(`Strategy ${strategyId} is not registered`)
+            }
             this.logger.warn("Trigger for unknown strategy", { strategyId })
             return
         }
@@ -305,6 +316,9 @@ export class Scheduler {
                 tracked.running = false
                 this.inFlightRuns.delete(strategyId)
             } else {
+                if (busyBehavior === "throw") {
+                    throw new Error(`Strategy ${strategyId} already has a run in progress`)
+                }
                 this.logger.warn("Skipping -- strategy already running", {
                     strategyId,
                     elapsedMs: elapsed,
@@ -319,13 +333,16 @@ export class Scheduler {
 
         const runPromise = (async () => {
             try {
-                await tracked.config.handler()
+                await (handlerOverride ?? tracked.config.handler)()
                 this.logger.info("Strategy run completed", { strategyId })
             } catch (error) {
                 this.logger.error("Strategy run failed", {
                     strategyId,
                     error: error instanceof Error ? error.message : String(error),
                 })
+                if (busyBehavior === "throw") {
+                    throw error
+                }
             } finally {
                 tracked.running = false
                 this.inFlightRuns.delete(strategyId)
