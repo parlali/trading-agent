@@ -52,7 +52,7 @@ export interface McpToolExecutionResult {
 
 export interface ToolExecutionEngineConfig {
     tools: ToolRegistry
-    context: StrategyRunContext
+    context?: StrategyRunContext
     logger: Logger
     agentLogger?: AgentMessageLogger
     runStartedAt: number
@@ -108,6 +108,9 @@ export class ToolExecutionEngine {
     constructor(private readonly config: ToolExecutionEngineConfig) {
         if (config.agentLogger && !config.nextTranscriptSequence) {
             throw new Error("ToolExecutionEngine requires nextTranscriptSequence when agentLogger is configured")
+        }
+        if (config.agentLogger && !config.context) {
+            throw new Error("ToolExecutionEngine requires context when agentLogger is configured")
         }
 
         this.maxRepeatedToolErrors = config.maxRepeatedToolErrors ?? DEFAULT_MAX_REPEATED_TOOL_ERRORS
@@ -165,7 +168,7 @@ export class ToolExecutionEngine {
         this.config.logger.info(executeSequentially ? "Executing tools sequentially" : "Executing tools in parallel", {
             tools: valid.map((entry) => entry.toolName),
             count: valid.length,
-            runId: this.config.context.runId,
+            runId: this.config.context?.runId,
         })
 
         if (executeSequentially) {
@@ -502,6 +505,9 @@ export class ToolExecutionEngine {
         const nextTranscriptSequence = this.config.nextTranscriptSequence
         if (!nextTranscriptSequence) {
             throw new Error("ToolExecutionEngine requires nextTranscriptSequence when agentLogger is configured")
+        }
+        if (!this.config.context) {
+            throw new Error("ToolExecutionEngine requires context when agentLogger is configured")
         }
 
         const sequence = nextTranscriptSequence()

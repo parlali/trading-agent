@@ -14,6 +14,12 @@ export interface HttpMcpTool {
     name: string
     description?: string
     inputSchema?: Record<string, unknown>
+    annotations?: {
+        readOnlyHint?: boolean
+        destructiveHint?: boolean
+        openWorldHint?: boolean
+        [key: string]: unknown
+    }
 }
 
 interface JsonRpcSuccess<T> {
@@ -342,11 +348,15 @@ function validateMcpTool(providerId: string, value: unknown, index: number): Htt
     if (record.inputSchema !== undefined && (!record.inputSchema || typeof record.inputSchema !== "object" || Array.isArray(record.inputSchema))) {
         throw new Error(`MCP provider ${providerId} returned tool ${record.name} with malformed inputSchema`)
     }
+    if (record.annotations !== undefined && (!record.annotations || typeof record.annotations !== "object" || Array.isArray(record.annotations))) {
+        throw new Error(`MCP provider ${providerId} returned tool ${record.name} with malformed annotations`)
+    }
 
     return {
         name: record.name,
         description: record.description,
         inputSchema: record.inputSchema as Record<string, unknown> | undefined,
+        annotations: record.annotations as HttpMcpTool["annotations"],
     }
 }
 

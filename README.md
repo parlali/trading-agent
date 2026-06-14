@@ -125,13 +125,19 @@ Configure the backend runtime with:
 - `BACKEND_SERVICE_TOKEN`
 - `AGENT_CHAT_MODEL`
 - `AI_GATEWAY_API_KEY`
-- MCP config through Convex/backend secrets: `MCP_PROVIDER_CONFIGS` or `MCP_SERVER_URL`/`MCP_SERVER_TOKEN`
+- MCP config through Convex/backend secrets: `MCP_PROVIDER_CONFIGS` or `MCP_SERVER_URL`/`MCP_SERVER_TOKEN` plus `MCP_SERVER_ALLOWED_TOOLS`
 
 The backend resolves the model server-side through the Vercel AI SDK AI Gateway provider. The browser must not send model ids, raw UI message history, or tool outputs as trusted execution state. Backend `/agent-chat` accepts only the user message, optional chat/session ids, and optional visible mode/scope.
 
+The backend persists a trusted server-side chat transcript and audit trail for user prompts, assistant responses, tool inputs, tool results, tool errors, and cancelled turns. Follow-up prompts are built from that server transcript, not from browser-supplied assistant/tool history.
+
 The backend streams AI SDK UI messages directly to the dashboard, including assistant text, reasoning parts when the provider supports them, tool input lifecycle, tool results, and tool errors. Stop generation aborts provider streaming and tool execution without creating strategy-run failures.
 
-Chat tools are separate from scheduled strategy runtime. The current chat registry exposes read-only operational, account, portfolio, run, alert, provider-health, and configured MCP tools. MCP bearer tokens stay on the backend and are never returned to the browser. Execution-capable manual trading tools are intentionally not exposed until a chat-specific typed path preserves adapter identity, Convex persistence, deterministic accounting, safety fault recording, and provider-truth reconciliation.
+Chat tools are separate from scheduled strategy runtime. The current chat registry exposes read-only operational, account, portfolio, run, alert, provider-health, and configured MCP tools. MCP bearer tokens stay on the backend and are never returned to the browser.
+
+MCP exposure fails closed. Each MCP provider must explicitly allow upstream read-only tool names through `allowedTools` in `MCP_PROVIDER_CONFIGS`, or through comma-separated `MCP_SERVER_ALLOWED_TOOLS` for the single `MCP_SERVER_URL` provider. Tools annotated by the provider as destructive or open-world are blocked even when named in the allowlist. A failing MCP provider is marked unavailable in chat inventory while local account and portfolio read tools remain available.
+
+Execution-capable manual trading tools are intentionally not exposed until a chat-specific typed path preserves adapter identity, Convex persistence, deterministic accounting, safety fault recording, and provider-truth reconciliation.
 
 Run the same app-server and MCP path used by scheduled dry-run strategies before enabling any Codex strategy:
 

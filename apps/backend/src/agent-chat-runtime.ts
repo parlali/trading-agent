@@ -4,11 +4,14 @@ import {
     stepCountIs,
     streamText,
     type LanguageModel,
+    type ModelMessage,
     type UIMessageChunk,
 } from "ai"
 import {
+    backend,
     logger,
 } from "./state"
+import type { TradingBackendClient } from "@valiq-trading/convex"
 import type { AgentChatRequest } from "./agent-chat"
 import {
     buildAgentChatToolRuntime,
@@ -22,7 +25,10 @@ declare const Bun: {
 
 export interface AgentChatRuntimeDependencies {
     model?: LanguageModel
+    modelId?: string
+    modelProvider?: string
     env?: Record<string, string | undefined>
+    tradingBackend?: TradingBackendClient
     toolRuntime?: AgentChatToolRuntime
     buildToolRuntime?: typeof buildAgentChatToolRuntime
     logInfo?: (message: string, fields?: Record<string, unknown>) => void
@@ -38,11 +44,14 @@ export interface AgentChatInventory {
     model: {
         provider: "ai-gateway"
         configured: boolean
+        modelId?: string
     }
     tools: ReturnType<typeof listAgentChatTools>
     mcpProviders: Array<{
         id: string
         toolCount: number
+        status: "available" | "unavailable"
+        error?: string
     }>
     manualTrading: {
         enabled: false
@@ -52,53 +61,138 @@ export interface AgentChatInventory {
 
 const CHAT_MAX_STEPS = 8
 const CHAT_TIMEOUT_MS = 120_000
+const CHAT_TRANSCRIPT_LIMIT = 24
 
 export async function createAgentChatUiMessageStream(
     args: CreateAgentChatStreamArgs
 ): Promise<ReadableStream<UIMessageChunk>> {
     const logInfo = args.logInfo ?? ((message, fields) => logger.info(message, fields))
     const logError = args.logError ?? ((message, fields) => logger.error(message, fields))
-    const model = args.model ?? resolveAgentChatModel(args.env)
+    const resolvedModel = args.model
+        ? {
+            model: args.model,
+            provider: args.modelProvider ?? "injected",
+            modelId: args.modelId ?? "injected",
+        }
+        : resolveAgentChatModelRuntime(args.env)
+    const tradingBackend = args.tradingBackend ?? backend
 
     return createUIMessageStream({
         execute: async ({ writer }) => {
+            const chatIds = resolveChatIds(args.request)
+            await tradingBackend.recordAgentChatUserMessage({
+                sessionId: chatIds.sessionId,
+                messageId: chatIds.userMessageId,
+                content: args.request.message,
+                mode: args.request.mode,
+            })
+            const transcript = await tradingBackend.getAgentChatMessages(chatIds.sessionId, CHAT_TRANSCRIPT_LIMIT)
             const toolRuntime = args.toolRuntime ?? await (args.buildToolRuntime ?? buildAgentChatToolRuntime)({
                 abortSignal: args.abortSignal,
+                tradingBackend,
             })
+            const assistantText: string[] = []
+            const reasoningText: string[] = []
 
             logInfo("Agent chat turn started", {
-                chatSessionId: args.request.chatSessionId,
-                chatMessageId: args.request.chatMessageId,
+                chatSessionId: chatIds.sessionId,
+                chatMessageId: chatIds.userMessageId,
                 mode: args.request.mode ?? "general",
                 tools: Object.keys(toolRuntime.tools),
             })
 
             const result = streamText({
-                model,
+                model: resolvedModel.model,
                 system: buildAgentChatSystemPrompt(args.request, toolRuntime),
-                prompt: args.request.message,
+                messages: buildTranscriptMessages(transcript, {
+                    messageId: chatIds.userMessageId,
+                    content: args.request.message,
+                }),
                 tools: toolRuntime.tools,
                 stopWhen: stepCountIs(CHAT_MAX_STEPS),
                 abortSignal: args.abortSignal,
                 timeout: CHAT_TIMEOUT_MS,
                 maxRetries: 0,
+                onChunk: async (event) => {
+                    const chunk = event.chunk as Record<string, unknown>
+                    if (chunk.type === "text-delta" && typeof chunk.text === "string") {
+                        assistantText.push(chunk.text)
+                        return
+                    }
+                    if (chunk.type === "reasoning-delta" && typeof chunk.text === "string") {
+                        reasoningText.push(chunk.text)
+                        return
+                    }
+                    if (chunk.type === "tool-call") {
+                        await tradingBackend.recordAgentChatToolEvent({
+                            sessionId: chatIds.sessionId,
+                            messageId: chatIds.assistantMessageId,
+                            toolCallId: readToolCallId(chunk),
+                            toolName: readToolName(chunk),
+                            state: "input",
+                            input: chunk.input,
+                        })
+                        return
+                    }
+                    if (chunk.type === "tool-result") {
+                        await tradingBackend.recordAgentChatToolEvent({
+                            sessionId: chatIds.sessionId,
+                            messageId: chatIds.assistantMessageId,
+                            toolCallId: readToolCallId(chunk),
+                            toolName: readToolName(chunk),
+                            state: "result",
+                            input: chunk.input,
+                            output: chunk.output,
+                        })
+                        return
+                    }
+                    if (chunk.type === "tool-error") {
+                        await tradingBackend.recordAgentChatToolEvent({
+                            sessionId: chatIds.sessionId,
+                            messageId: chatIds.assistantMessageId,
+                            toolCallId: readToolCallId(chunk),
+                            toolName: readToolName(chunk),
+                            state: "error",
+                            input: chunk.input,
+                            error: stringifyError(chunk.error),
+                        })
+                    }
+                },
                 onError: (event) => {
                     logError("Agent chat stream error", {
                         error: event.error instanceof Error ? event.error.message : String(event.error),
-                        chatSessionId: args.request.chatSessionId,
-                        chatMessageId: args.request.chatMessageId,
+                        chatSessionId: chatIds.sessionId,
+                        chatMessageId: chatIds.userMessageId,
                     })
                 },
-                onAbort: () => {
+                onAbort: async () => {
+                    await tradingBackend.recordAgentChatAssistantMessage({
+                        sessionId: chatIds.sessionId,
+                        messageId: chatIds.assistantMessageId,
+                        content: buildAssistantAuditContent(assistantText, reasoningText),
+                        status: "cancelled",
+                        modelProvider: resolvedModel.provider,
+                        modelId: resolvedModel.modelId,
+                        finishReason: "abort",
+                    })
                     logInfo("Agent chat stream aborted", {
-                        chatSessionId: args.request.chatSessionId,
-                        chatMessageId: args.request.chatMessageId,
+                        chatSessionId: chatIds.sessionId,
+                        chatMessageId: chatIds.userMessageId,
                     })
                 },
-                onFinish: (event) => {
+                onFinish: async (event) => {
+                    await tradingBackend.recordAgentChatAssistantMessage({
+                        sessionId: chatIds.sessionId,
+                        messageId: chatIds.assistantMessageId,
+                        content: buildAssistantAuditContent(assistantText.length > 0 ? assistantText : [event.text], reasoningText),
+                        status: event.finishReason === "error" ? "failed" : "completed",
+                        modelProvider: resolvedModel.provider,
+                        modelId: resolvedModel.modelId,
+                        finishReason: event.finishReason,
+                    })
                     logInfo("Agent chat turn finished", {
-                        chatSessionId: args.request.chatSessionId,
-                        chatMessageId: args.request.chatMessageId,
+                        chatSessionId: chatIds.sessionId,
+                        chatMessageId: chatIds.userMessageId,
                         finishReason: event.finishReason,
                         toolCalls: event.toolCalls.length,
                     })
@@ -117,6 +211,7 @@ export async function createAgentChatUiMessageStream(
 
 export async function getAgentChatInventory(args: {
     abortSignal: AbortSignal
+    env?: Record<string, string | undefined>
 }): Promise<AgentChatInventory> {
     const toolRuntime = await buildAgentChatToolRuntime({
         abortSignal: args.abortSignal,
@@ -125,7 +220,8 @@ export async function getAgentChatInventory(args: {
     return {
         model: {
             provider: "ai-gateway",
-            configured: Boolean(readTrimmedEnv(Bun.env, "AGENT_CHAT_MODEL")),
+            configured: Boolean(readTrimmedEnv(args.env ?? Bun.env, "AGENT_CHAT_MODEL")),
+            modelId: readTrimmedEnv(args.env ?? Bun.env, "AGENT_CHAT_MODEL"),
         },
         tools: listAgentChatTools(toolRuntime.registry),
         mcpProviders: toolRuntime.mcpProviders,
@@ -139,6 +235,16 @@ export async function getAgentChatInventory(args: {
 export function resolveAgentChatModel(
     env: Record<string, string | undefined> = Bun.env
 ): LanguageModel {
+    return resolveAgentChatModelRuntime(env).model
+}
+
+function resolveAgentChatModelRuntime(
+    env: Record<string, string | undefined> = Bun.env
+): {
+    provider: "ai-gateway"
+    modelId: string
+    model: LanguageModel
+} {
     const modelId = readTrimmedEnv(env, "AGENT_CHAT_MODEL")
     if (!modelId) {
         throw new Error("AGENT_CHAT_MODEL is not configured for backend agent chat")
@@ -149,7 +255,11 @@ export function resolveAgentChatModel(
         throw new Error("AI_GATEWAY_API_KEY is not configured for backend agent chat model provider ai-gateway")
     }
 
-    return createGateway({ apiKey })(modelId)
+    return {
+        provider: "ai-gateway",
+        modelId,
+        model: createGateway({ apiKey })(modelId),
+    }
 }
 
 function buildAgentChatSystemPrompt(
@@ -180,6 +290,81 @@ function buildAgentChatSystemPrompt(
         "",
         "Use read-only portfolio, account, run, alert, provider health, and MCP tools when they are needed to answer factual operational questions.",
     ].join("\n")
+}
+
+function resolveChatIds(request: AgentChatRequest): {
+    sessionId: string
+    userMessageId: string
+    assistantMessageId: string
+} {
+    const sessionId = request.chatSessionId ?? `chat-${crypto.randomUUID()}`
+    const userMessageId = request.chatMessageId ?? `user-${crypto.randomUUID()}`
+    return {
+        sessionId,
+        userMessageId,
+        assistantMessageId: `${userMessageId}:assistant`,
+    }
+}
+
+function buildTranscriptMessages(
+    rows: Awaited<ReturnType<TradingBackendClient["getAgentChatMessages"]>>,
+    currentUserMessage: {
+        messageId: string
+        content: string
+    }
+): ModelMessage[] {
+    const trustedRows = rows.some((row) => row.messageId === currentUserMessage.messageId)
+        ? rows
+        : [
+            ...rows,
+            {
+                role: "user" as const,
+                content: currentUserMessage.content,
+                messageId: currentUserMessage.messageId,
+                status: "received" as const,
+            },
+        ]
+
+    return trustedRows
+        .filter((row) => row.content.trim().length > 0)
+        .map((row) => ({
+            role: row.role,
+            content: row.content,
+        }))
+}
+
+function buildAssistantAuditContent(
+    textParts: string[],
+    reasoningParts: string[]
+): string {
+    const text = textParts.join("")
+    const reasoning = reasoningParts.join("")
+    if (reasoning.trim().length === 0) {
+        return text
+    }
+
+    return [
+        text,
+        "",
+        "Reasoning summary:",
+        reasoning,
+    ].join("\n")
+}
+
+function readToolCallId(chunk: Record<string, unknown>): string {
+    return typeof chunk.toolCallId === "string"
+        ? chunk.toolCallId
+        : typeof chunk.id === "string"
+            ? chunk.id
+            : "unknown"
+}
+
+function readToolName(chunk: Record<string, unknown>): string {
+    return typeof chunk.toolName === "string" ? chunk.toolName : "unknown"
+}
+
+function stringifyError(error: unknown): string {
+    return error instanceof Error ? error.message : String(error)
 }
 
 function readTrimmedEnv(

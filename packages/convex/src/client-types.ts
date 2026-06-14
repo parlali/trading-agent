@@ -165,6 +165,52 @@ export interface AgentLogRow {
     timestamp: number
 }
 
+export type AgentChatMode = "general" | "portfolio" | "operations" | "mcp"
+
+export interface AgentChatMessageRow {
+    id: string
+    sessionId: string
+    messageId: string
+    role: "user" | "assistant"
+    content: string
+    mode?: AgentChatMode
+    status: "received" | "completed" | "cancelled" | "failed"
+    modelProvider?: string
+    modelId?: string
+    finishReason?: string
+    createdAt: number
+    updatedAt: number
+}
+
+export interface RecordAgentChatUserMessageArgs {
+    sessionId: string
+    messageId: string
+    content: string
+    mode?: AgentChatMode
+}
+
+export interface RecordAgentChatAssistantMessageArgs {
+    sessionId: string
+    messageId: string
+    content: string
+    status: "completed" | "cancelled" | "failed"
+    modelProvider: string
+    modelId: string
+    finishReason?: string
+}
+
+export interface RecordAgentChatToolEventArgs {
+    sessionId: string
+    messageId: string
+    toolCallId: string
+    toolName: string
+    state: "input" | "result" | "error"
+    input?: unknown
+    output?: unknown
+    error?: string
+    durationMs?: number
+}
+
 export interface TradeEventRow {
     _id: Id<"trade_events">
     _creationTime: number
@@ -501,6 +547,10 @@ export interface TradingBackendClient extends TradeEventLogger, AgentMessageLogg
     getRunHistory(strategyId: Id<"strategies">, limit?: number, beforeStartedAt?: number, beforeCreationTime?: number): Promise<StoredRun[]>
     getRunById(runId: Id<"strategy_runs">): Promise<StoredRun | null>
     getAgentLogs(runId: Id<"strategy_runs">): Promise<AgentLogRow[]>
+    getAgentChatMessages(sessionId: string, limit?: number): Promise<AgentChatMessageRow[]>
+    recordAgentChatUserMessage(args: RecordAgentChatUserMessageArgs): Promise<void>
+    recordAgentChatAssistantMessage(args: RecordAgentChatAssistantMessageArgs): Promise<void>
+    recordAgentChatToolEvent(args: RecordAgentChatToolEventArgs): Promise<void>
     getTradeEvents(runId: Id<"strategy_runs">): Promise<TradeEventRow[]>
     getLastCompletedRunSummary(strategyId: Id<"strategies">): Promise<LastCompletedRunSummary | null>
     recoverRunningRuns(): Promise<number>

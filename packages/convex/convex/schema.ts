@@ -149,6 +149,51 @@ export default defineSchema({
         .index("by_run", ["runId"])
         .index("by_run_sequence", ["runId", "sequence"]),
 
+    agent_chat_messages: defineTable({
+        sessionId: v.string(),
+        messageId: v.string(),
+        role: v.union(v.literal("user"), v.literal("assistant")),
+        content: v.string(),
+        mode: v.optional(v.union(
+            v.literal("general"),
+            v.literal("portfolio"),
+            v.literal("operations"),
+            v.literal("mcp")
+        )),
+        status: v.union(
+            v.literal("received"),
+            v.literal("completed"),
+            v.literal("cancelled"),
+            v.literal("failed")
+        ),
+        modelProvider: v.optional(v.string()),
+        modelId: v.optional(v.string()),
+        finishReason: v.optional(v.string()),
+        createdAt: v.number(),
+        updatedAt: v.number(),
+    })
+        .index("by_session_created_at", ["sessionId", "createdAt"])
+        .index("by_session_message", ["sessionId", "messageId"]),
+
+    agent_chat_tool_events: defineTable({
+        sessionId: v.string(),
+        messageId: v.string(),
+        toolCallId: v.string(),
+        toolName: v.string(),
+        state: v.union(
+            v.literal("input"),
+            v.literal("result"),
+            v.literal("error")
+        ),
+        input: v.optional(v.any()),
+        output: v.optional(v.any()),
+        error: v.optional(v.string()),
+        durationMs: v.optional(v.number()),
+        createdAt: v.number(),
+    })
+        .index("by_session_created_at", ["sessionId", "createdAt"])
+        .index("by_session_tool_call", ["sessionId", "toolCallId"]),
+
     trade_events: defineTable({
         runId: v.id("strategy_runs"),
         strategyId: v.id("strategies"),

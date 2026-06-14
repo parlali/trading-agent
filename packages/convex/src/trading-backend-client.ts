@@ -19,6 +19,7 @@ import type {
     AdoptProviderPositionsResult,
     AckManualRunRequestArgs,
     AckManualRunRequestResult,
+    AgentChatMessageRow,
     AlertRow,
     CascadeDeleteCounts,
     ClearFullResetStateBatchResult,
@@ -48,6 +49,9 @@ import type {
     RecordExecutionSafetyFaultArgs,
     ReplaceAllStrategiesResult,
     RefreshStrategyRiskStateArgs,
+    RecordAgentChatAssistantMessageArgs,
+    RecordAgentChatToolEventArgs,
+    RecordAgentChatUserMessageArgs,
     ReportHeartbeatSnapshotArgs,
     ReportHeartbeatSnapshotResult,
     ResolveExecutionSafetyFaultsArgs,
@@ -206,6 +210,60 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
                     ...requireMachineAuth(),
                     runId,
                 } as never) as AgentLogRow[]
+            )
+        },
+        async getAgentChatMessages(sessionId: string, limit?: number): Promise<AgentChatMessageRow[]> {
+            return await runWithTimeout(
+                "Convex query getAgentChatMessages",
+                async () => await client.query(api.queries.getAgentChatMessages, {
+                    ...requireMachineAuth(),
+                    sessionId,
+                    limit,
+                } as never) as AgentChatMessageRow[]
+            )
+        },
+        async recordAgentChatUserMessage(args: RecordAgentChatUserMessageArgs): Promise<void> {
+            await runWithTimeout(
+                "Convex mutation recordAgentChatUserMessage",
+                async () => await client.mutation(api.mutations.recordAgentChatUserMessage, {
+                    ...requireMachineAuth(),
+                    sessionId: args.sessionId,
+                    messageId: args.messageId,
+                    content: args.content,
+                    mode: args.mode,
+                } as never)
+            )
+        },
+        async recordAgentChatAssistantMessage(args: RecordAgentChatAssistantMessageArgs): Promise<void> {
+            await runWithTimeout(
+                "Convex mutation recordAgentChatAssistantMessage",
+                async () => await client.mutation(api.mutations.recordAgentChatAssistantMessage, {
+                    ...requireMachineAuth(),
+                    sessionId: args.sessionId,
+                    messageId: args.messageId,
+                    content: args.content,
+                    status: args.status,
+                    modelProvider: args.modelProvider,
+                    modelId: args.modelId,
+                    finishReason: args.finishReason,
+                } as never)
+            )
+        },
+        async recordAgentChatToolEvent(args: RecordAgentChatToolEventArgs): Promise<void> {
+            await runWithTimeout(
+                "Convex mutation recordAgentChatToolEvent",
+                async () => await client.mutation(api.mutations.recordAgentChatToolEvent, {
+                    ...requireMachineAuth(),
+                    sessionId: args.sessionId,
+                    messageId: args.messageId,
+                    toolCallId: args.toolCallId,
+                    toolName: args.toolName,
+                    state: args.state,
+                    input: args.input,
+                    output: args.output,
+                    error: args.error,
+                    durationMs: args.durationMs,
+                } as never)
             )
         },
         async getTradeEvents(runId: Id<"strategy_runs">): Promise<TradeEventRow[]> {

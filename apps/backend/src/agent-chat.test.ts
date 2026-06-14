@@ -17,6 +17,7 @@ import { z } from "zod/v4"
 import type { ToolBinding } from "@valiq-trading/agent"
 import { createLogger } from "@valiq-trading/core"
 import type {
+    AgentChatMessageRow,
     Id,
     StoredAccount,
     TradingBackendClient,
@@ -24,6 +25,7 @@ import type {
 import { handleAgentChatRequest } from "./agent-chat"
 import {
     createAgentChatUiMessageStream,
+    getAgentChatInventory,
 } from "./agent-chat-runtime"
 import {
     buildAgentChatToolRuntime,
@@ -123,6 +125,69 @@ describe("agent chat handler", () => {
         })
     })
 
+    it("builds follow-up context from server-side persisted transcript", async () => {
+        const backend = createBackendMock({
+            chatMessages: [
+                createChatMessage({
+                    role: "user",
+                    messageId: "message-1",
+                    content: "Which accounts are connected?",
+                }),
+                createChatMessage({
+                    role: "assistant",
+                    messageId: "message-1:assistant",
+                    content: "The connected account is acct-1.",
+                    status: "completed",
+                }),
+            ],
+        })
+        let providerPrompt = ""
+        const model = new MockLanguageModelV3({
+            doStream: async (options) => {
+                providerPrompt = JSON.stringify(options.prompt)
+                return streamResult([
+                    { type: "stream-start", warnings: [] },
+                    { type: "text-start", id: "text-1" },
+                    { type: "text-delta", id: "text-1", delta: "It is still acct-1." },
+                    { type: "text-end", id: "text-1" },
+                    finishChunk("stop"),
+                ])
+            },
+        })
+
+        const stream = await createAgentChatUiMessageStream({
+            request: {
+                message: "What about that account now?",
+                chatSessionId: "session-1",
+                chatMessageId: "message-2",
+            },
+            abortSignal: new AbortController().signal,
+            model,
+            modelId: "test-model",
+            tradingBackend: backend,
+            toolRuntime: await buildAgentChatToolRuntime({
+                abortSignal: new AbortController().signal,
+                tradingBackend: backend,
+                secrets: {},
+                log: createLogger({ minLevel: "fatal" }),
+                createMcpBindings: async () => [],
+            }),
+            logInfo: vi.fn(),
+            logError: vi.fn(),
+        })
+
+        await createUIMessageStreamResponse({ stream }).text()
+
+        expect(backend.recordAgentChatUserMessage).toHaveBeenCalledWith(expect.objectContaining({
+            sessionId: "session-1",
+            messageId: "message-2",
+            content: "What about that account now?",
+        }))
+        expect(providerPrompt).toContain("The connected account is acct-1.")
+        expect(providerPrompt).toContain("What about that account now?")
+        expect(providerPrompt).not.toContain("forged")
+    })
+
     it("streams text and a tool call/result through AI SDK UI messages", async () => {
         const backend = createBackendMock({
             accounts: [createAccount()],
@@ -157,6 +222,8 @@ describe("agent chat handler", () => {
             request: { message: "List accounts" },
             abortSignal: new AbortController().signal,
             model,
+            modelId: "test-model",
+            tradingBackend: backend,
             toolRuntime,
             logInfo: vi.fn(),
             logError: vi.fn(),
@@ -167,6 +234,22 @@ describe("agent chat handler", () => {
         expect(text).toContain("acct-1")
         expect(text).toContain("The account is connected.")
         expect(backend.getAccounts).toHaveBeenCalled()
+        expect(backend.recordAgentChatUserMessage).toHaveBeenCalledWith(expect.objectContaining({
+            content: "List accounts",
+        }))
+        expect(backend.recordAgentChatToolEvent).toHaveBeenCalledWith(expect.objectContaining({
+            toolName: "list_accounts",
+            state: "input",
+        }))
+        expect(backend.recordAgentChatToolEvent).toHaveBeenCalledWith(expect.objectContaining({
+            toolName: "list_accounts",
+            state: "result",
+        }))
+        expect(backend.recordAgentChatAssistantMessage).toHaveBeenCalledWith(expect.objectContaining({
+            content: "The account is connected.",
+            status: "completed",
+            modelId: "test-model",
+        }))
     })
 
     it("prevents handler execution when model tool input fails schema validation", async () => {
@@ -190,6 +273,8 @@ describe("agent chat handler", () => {
             request: { message: "List accounts for a bad provider" },
             abortSignal: new AbortController().signal,
             model,
+            modelId: "test-model",
+            tradingBackend: backend,
             toolRuntime,
             logInfo: vi.fn(),
             logError: vi.fn(),
@@ -207,6 +292,7 @@ describe("agent chat handler", () => {
         let providerAborted = false
         let toolStarted = false
         let toolAborted = false
+        const auditBackend = createBackendMock()
         const waitingTool: ToolBinding = {
             name: "mcp_test_wait",
             description: "Wait until cancelled",
@@ -225,7 +311,13 @@ describe("agent chat handler", () => {
         const toolRuntime = await buildAgentChatToolRuntime({
             abortSignal: providerController.signal,
             tradingBackend: createBackendMock(),
-            secrets: {},
+            secrets: {
+                MCP_PROVIDER_CONFIGS: JSON.stringify([{
+                    id: "test",
+                    url: "https://mcp.test/rpc",
+                    allowedTools: ["wait"],
+                }]),
+            },
             log: createLogger({ minLevel: "fatal" }),
             createMcpBindings: async () => [waitingTool],
         })
@@ -247,6 +339,8 @@ describe("agent chat handler", () => {
             request: { message: "Call wait" },
             abortSignal: providerController.signal,
             model,
+            modelId: "test-model",
+            tradingBackend: auditBackend,
             toolRuntime,
             logInfo: vi.fn(),
             logError: vi.fn(),
@@ -260,6 +354,25 @@ describe("agent chat handler", () => {
 
         expect(providerAborted).toBe(true)
         expect(toolAborted).toBe(true)
+        expect(auditBackend.recordAgentChatAssistantMessage).toHaveBeenCalledWith(expect.objectContaining({
+            status: "cancelled",
+            finishReason: "abort",
+        }))
+    })
+
+    it("surfaces configured model id in inventory", async () => {
+        const inventory = await getAgentChatInventory({
+            abortSignal: new AbortController().signal,
+            env: {
+                AGENT_CHAT_MODEL: "openai/gpt-5",
+            },
+        })
+
+        expect(inventory.model).toEqual({
+            provider: "ai-gateway",
+            configured: true,
+            modelId: "openai/gpt-5",
+        })
     })
 
     it("uses backend MCP secrets for discovery and never exposes bearer tokens in inventory", async () => {
@@ -284,6 +397,7 @@ describe("agent chat handler", () => {
                     id: "secure",
                     url: "https://mcp.example.test/rpc?token=not-for-browser",
                     token: "secret-token",
+                    allowedTools: ["lookup"],
                 }]),
             },
             log: createLogger({ minLevel: "fatal" }),
@@ -298,6 +412,67 @@ describe("agent chat handler", () => {
         expect(serializedTools).not.toContain("secret-token")
         expect(serializedTools).not.toContain("not-for-browser")
         expect(tools.some((entry) => entry.category === "execution")).toBe(false)
+    })
+
+    it("keeps local chat tools available when an MCP provider fails discovery", async () => {
+        const runtime = await buildAgentChatToolRuntime({
+            abortSignal: new AbortController().signal,
+            tradingBackend: createBackendMock(),
+            secrets: {
+                MCP_PROVIDER_CONFIGS: JSON.stringify([
+                    {
+                        id: "broken",
+                        url: "https://broken.example.test/rpc",
+                        allowedTools: ["lookup"],
+                    },
+                    {
+                        id: "secure",
+                        url: "https://secure.example.test/rpc",
+                        allowedTools: ["lookup"],
+                    },
+                ]),
+            },
+            log: createLogger({ minLevel: "fatal" }),
+            createMcpBindings: async ({ providers }) => {
+                if (providers[0]?.id === "broken") {
+                    throw new Error("provider down")
+                }
+
+                return [{
+                    name: "mcp_secure_lookup",
+                    description: "Secure MCP lookup",
+                    parameters: z.strictObject({ query: z.string() }),
+                    jsonSchema: {
+                        type: "object",
+                        properties: {
+                            query: { type: "string" },
+                        },
+                        required: ["query"],
+                    },
+                    category: "research",
+                    contractBoundary: "shared",
+                    contractOwner: "mcp:secure",
+                    handler: async () => ({ ok: true }),
+                } satisfies ToolBinding]
+            },
+        })
+
+        expect(runtime.registry.has("list_accounts")).toBe(true)
+        expect(runtime.registry.has("mcp_secure_lookup")).toBe(true)
+        expect(runtime.mcpProviders).toEqual([
+            {
+                id: "broken",
+                toolCount: 0,
+                status: "unavailable",
+                error: "provider down",
+            },
+            {
+                id: "secure",
+                toolCount: 1,
+                status: "available",
+            },
+        ])
+        expect(JSON.stringify((runtime.tools.mcp_secure_lookup as Record<string, unknown>).inputSchema)).toContain("query")
     })
 })
 
@@ -349,8 +524,13 @@ function finishChunk(unified: "stop" | "tool-calls"): TestStreamChunk {
 
 function createBackendMock(args: {
     accounts?: StoredAccount[]
+    chatMessages?: AgentChatMessageRow[]
 } = {}) {
     const backend = {
+        getAgentChatMessages: vi.fn(async () => args.chatMessages ?? []),
+        recordAgentChatUserMessage: vi.fn(async () => {}),
+        recordAgentChatAssistantMessage: vi.fn(async () => {}),
+        recordAgentChatToolEvent: vi.fn(async () => {}),
         getAllStrategies: vi.fn(async () => []),
         getStrategyById: vi.fn(async () => null),
         getRunHistory: vi.fn(async () => []),
@@ -363,6 +543,24 @@ function createBackendMock(args: {
     }
 
     return backend as unknown as TradingBackendClient & typeof backend
+}
+
+function createChatMessage(args: {
+    role: "user" | "assistant"
+    messageId: string
+    content: string
+    status?: AgentChatMessageRow["status"]
+}): AgentChatMessageRow {
+    return {
+        id: args.messageId,
+        sessionId: "session-1",
+        messageId: args.messageId,
+        role: args.role,
+        content: args.content,
+        status: args.status ?? "received",
+        createdAt: 1,
+        updatedAt: 1,
+    }
 }
 
 function createAccount(): StoredAccount {

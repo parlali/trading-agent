@@ -50,12 +50,13 @@ describe("dashboard agent chat API route", () => {
             },
         }))
 
-        const response = await POST(createRequest({
+        const request = createRequest({
             message: "hello",
             chatSessionId: "session-1",
             chatMessageId: "message-1",
             mode: "mcp",
-        }))
+        })
+        const response = await POST(request)
 
         expect(response.status).toBe(200)
         expect(fetchSpy).toHaveBeenCalledWith(new URL("/agent-chat", "http://backend.test"), expect.objectContaining({
@@ -66,6 +67,7 @@ describe("dashboard agent chat API route", () => {
                 chatMessageId: "message-1",
                 mode: "mcp",
             }),
+            signal: request.signal,
         }))
     })
 })

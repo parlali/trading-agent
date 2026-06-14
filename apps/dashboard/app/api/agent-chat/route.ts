@@ -19,7 +19,7 @@ export async function GET(request: Request) {
 
         return await proxyBackendRequest("/agent-chat", {
             method: "GET",
-        })
+        }, request.signal)
     } catch (error) {
         return Response.json({
             ok: false,
@@ -45,7 +45,7 @@ export async function POST(request: Request) {
                 chatMessageId: body.chatMessageId,
                 mode: body.mode,
             }),
-        })
+        }, request.signal)
     } catch (error) {
         return Response.json({
             error: error instanceof Error ? error.message : String(error),
@@ -107,7 +107,7 @@ function readBoundedString(value: unknown, field: string, maxLength: number): st
     return trimmed
 }
 
-async function proxyBackendRequest(path: string, init: RequestInit): Promise<Response> {
+async function proxyBackendRequest(path: string, init: RequestInit, signal: AbortSignal): Promise<Response> {
     const backendUrl = process.env.BACKEND_URL?.trim()
     if (!backendUrl) {
         throw new Error("BACKEND_URL is not configured for dashboard agent chat proxy")
@@ -120,6 +120,7 @@ async function proxyBackendRequest(path: string, init: RequestInit): Promise<Res
 
     const response = await fetch(new URL(path, backendUrl), {
         ...init,
+        signal,
         headers: {
             "Content-Type": "application/json",
             Authorization: `Bearer ${serviceToken}`,

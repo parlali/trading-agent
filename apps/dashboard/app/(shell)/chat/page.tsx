@@ -33,6 +33,7 @@ type ToolInventoryResponse = {
     model?: {
         provider: "ai-gateway"
         configured: boolean
+        modelId?: string
     }
     tools?: Array<{
         name: string
@@ -46,6 +47,8 @@ type ToolInventoryResponse = {
     mcpProviders?: Array<{
         id: string
         toolCount: number
+        status: "available" | "unavailable"
+        error?: string
     }>
     manualTrading?: {
         enabled: false
@@ -275,7 +278,7 @@ export default function AgentChatPage() {
                                     Model resolution, MCP credentials, broker/account reads, and portfolio tools stay on the backend.
                                 </p>
                                 <div className="mt-3 grid grid-cols-2 gap-2">
-                                    <RuntimeStat label="Model" value={inventory.model?.configured ? inventory.model.provider : "unconfigured"} />
+                                    <RuntimeStat label="Model" value={inventory.model?.configured ? `${inventory.model.provider}:${inventory.model.modelId ?? "unknown"}` : "unconfigured"} />
                                     <RuntimeStat label="MCP" value={`${mcpProviders.length} provider${mcpProviders.length === 1 ? "" : "s"}`} />
                                 </div>
                             </div>
@@ -287,8 +290,16 @@ export default function AgentChatPage() {
                                         <p className="text-muted-foreground">No MCP providers configured.</p>
                                     ) : mcpProviders.map((provider) => (
                                         <div key={provider.id} className="rounded-md bg-muted/30 p-2">
-                                            <div className="font-medium">{provider.id}</div>
+                                            <div className="flex items-center gap-2">
+                                                <span className="min-w-0 truncate font-medium">{provider.id}</span>
+                                                <Badge variant={provider.status === "available" ? "outline" : "secondary"} className="ml-auto text-[10px]">
+                                                    {provider.status}
+                                                </Badge>
+                                            </div>
                                             <div className="mt-1 text-muted-foreground">{provider.toolCount} tool{provider.toolCount === 1 ? "" : "s"}</div>
+                                            {provider.error ? (
+                                                <div className="mt-1 line-clamp-2 text-signal-danger">{provider.error}</div>
+                                            ) : null}
                                         </div>
                                     ))}
                                 </div>

@@ -37,7 +37,7 @@ export const getPortfolioFreshness = query({
                 .query("provider_sync_state")
                 .withIndex("by_app_account", (q) => q.eq("app", args.app!).eq("accountId", args.accountId!))
                 .first()
-            return [buildFreshnessDto(args.app, row)]
+            return [buildFreshnessDto(args.app, row, args.accountId)]
         }
 
         const rows = args.app
@@ -134,6 +134,9 @@ export const getPortfolioPositions = query({
                 return false
             }
             if (args.strategyId && strategy._id !== args.strategyId) {
+                return false
+            }
+            if (args.accountId && strategy.accountId !== args.accountId) {
                 return false
             }
             return Boolean((strategy.policy as Record<string, unknown>).dryRun)
@@ -511,7 +514,8 @@ function aggregateEquityBuckets(
 
 function buildFreshnessDto(
     app: typeof VENUE_APPS[number],
-    row: Doc<"provider_sync_state"> | null
+    row: Doc<"provider_sync_state"> | null,
+    requestedAccountId?: string
 ) {
     const stale = isStale(row?.lastVerifiedAt)
     const providerStatus = stale
@@ -520,7 +524,7 @@ function buildFreshnessDto(
 
     return {
         app,
-        accountId: row?.accountId ?? "unassigned",
+        accountId: row?.accountId ?? requestedAccountId ?? "unassigned",
         accountScope: "account" as const,
         lastSyncedAt: row?.lastSyncedAt,
         lastVerifiedAt: row?.lastVerifiedAt,

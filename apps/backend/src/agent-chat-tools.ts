@@ -1,4 +1,5 @@
 import {
+    jsonSchema,
     tool,
     type ToolSet,
 } from "ai"
@@ -11,9 +12,7 @@ import {
     type ToolManifestEntry,
 } from "@valiq-trading/agent"
 import type {
-    App,
     Logger,
-    StrategyRunContext,
     VenueApp,
 } from "@valiq-trading/core"
 import type {
@@ -43,6 +42,8 @@ export interface AgentChatToolRuntime {
     mcpProviders: Array<{
         id: string
         toolCount: number
+        status: "available" | "unavailable"
+        error?: string
     }>
 }
 
@@ -72,24 +73,24 @@ export async function buildAgentChatToolRuntime(
         registry.register(binding)
     }
 
-    const mcpProviders = resolveMcpProviderConfigs({
+    const mcpProviderResolution = resolveAgentChatMcpProviderConfigs({
         secrets,
         logger: log,
         compatibleVenues: ALL_APPS,
     })
-    const mcpBindings = await (args.createMcpBindings ?? createHttpMcpToolBindings)({
-        providers: mcpProviders,
+    const mcpDiscovery = await discoverAgentChatMcpBindings({
+        providers: mcpProviderResolution.providers,
         logger: log,
         signal: args.abortSignal,
+        createMcpBindings: args.createMcpBindings ?? createHttpMcpToolBindings,
     })
 
-    for (const binding of mcpBindings) {
+    for (const binding of mcpDiscovery.bindings) {
         registry.register(binding)
     }
 
     const engine = new ToolExecutionEngine({
         tools: registry,
-        context: createChatRunContext(),
         logger: log,
         runStartedAt: Date.now(),
         runTimeoutMs: CHAT_RUN_TIMEOUT_MS,
@@ -99,10 +100,10 @@ export async function buildAgentChatToolRuntime(
     return {
         registry,
         tools: createAiSdkTools(registry, engine),
-        mcpProviders: mcpProviders.map((provider) => ({
-            id: provider.id,
-            toolCount: mcpBindings.filter((binding) => binding.contractOwner === `mcp:${provider.id}`).length,
-        })),
+        mcpProviders: [
+            ...mcpProviderResolution.unavailable,
+            ...mcpDiscovery.providers,
+        ],
     }
 }
 
@@ -132,7 +133,7 @@ function createAiSdkTools(
         binding.name,
         tool({
             description: binding.description,
-            inputSchema: binding.parameters,
+            inputSchema: binding.jsonSchema ? jsonSchema(binding.jsonSchema as never) : binding.parameters,
             execute: async (input, options) => {
                 const result = await engine.executeMcpCall(binding.name, input, options.toolCallId, {
                     signal: options.abortSignal,
@@ -354,18 +355,24 @@ function createReadOnlyChatTools(
             description: "List server-side MCP providers and exposed MCP tools without returning MCP bearer tokens.",
             parameters: z.strictObject({}),
             handler: async () => {
-                const providers = resolveMcpProviderConfigs({
+                const providerResolution = resolveAgentChatMcpProviderConfigs({
                     secrets,
                     logger: log,
                     compatibleVenues: ALL_APPS,
                 })
                 return {
-                    providers: providers.map((provider) => ({
-                        id: provider.id,
-                        url: redactUrl(provider.url),
-                        category: provider.category ?? "research",
-                        hasBearerToken: Boolean(provider.token),
-                    })),
+                    providers: [
+                        ...providerResolution.unavailable,
+                        ...providerResolution.providers.map((provider) => ({
+                            id: provider.id,
+                            url: redactUrl(provider.url),
+                            category: provider.category ?? "research",
+                            hasBearerToken: Boolean(provider.token),
+                            allowedTools: provider.allowedTools ?? [],
+                            blockedTools: provider.blockedTools ?? [],
+                            status: "configured" as const,
+                        })),
+                    ],
                 }
             },
         }),
@@ -388,28 +395,6 @@ function createChatTool(config: {
         outputDescription: "Returns bounded backend read-model data for dashboard chat.",
         errorSemantics: "Input validation and handler errors fail closed and are surfaced as AI SDK tool errors.",
         handler: config.handler,
-    }
-}
-
-function createChatRunContext(): StrategyRunContext {
-    return {
-        runId: `agent-chat-${Date.now()}`,
-        strategyId: "agent-chat",
-        app: "backend" as App,
-        timestamp: Date.now(),
-        trigger: "chat",
-        positions: [],
-        accountState: {
-            balance: 0,
-            equity: 0,
-            buyingPower: 0,
-            marginUsed: 0,
-            marginAvailable: 0,
-            openPnl: 0,
-            dayPnl: 0,
-        },
-        policy: {},
-        context: "Dashboard agent chat",
     }
 }
 
@@ -453,4 +438,80 @@ function redactUrl(value: string): string {
 
 function isNonNullable<T>(value: T): value is NonNullable<T> {
     return value !== null && value !== undefined
+}
+
+function resolveAgentChatMcpProviderConfigs(args: {
+    secrets: Record<string, string | null | undefined>
+    logger: Logger
+    compatibleVenues: readonly VenueApp[]
+}): {
+    providers: ReturnType<typeof resolveMcpProviderConfigs>
+    unavailable: AgentChatToolRuntime["mcpProviders"]
+} {
+    try {
+        return {
+            providers: resolveMcpProviderConfigs(args),
+            unavailable: [],
+        }
+    } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        args.logger.error("MCP provider configuration unavailable for agent chat", {
+            error: message,
+        })
+        return {
+            providers: [],
+            unavailable: [{
+                id: "mcp_configuration",
+                toolCount: 0,
+                status: "unavailable",
+                error: message,
+            }],
+        }
+    }
+}
+
+async function discoverAgentChatMcpBindings(args: {
+    providers: ReturnType<typeof resolveMcpProviderConfigs>
+    logger: Logger
+    signal: AbortSignal
+    createMcpBindings: typeof createHttpMcpToolBindings
+}): Promise<{
+    bindings: ToolBinding[]
+    providers: AgentChatToolRuntime["mcpProviders"]
+}> {
+    const bindings: ToolBinding[] = []
+    const providers: AgentChatToolRuntime["mcpProviders"] = []
+
+    for (const provider of args.providers) {
+        try {
+            const providerBindings = await args.createMcpBindings({
+                providers: [provider],
+                logger: args.logger,
+                signal: args.signal,
+            })
+            bindings.push(...providerBindings)
+            providers.push({
+                id: provider.id,
+                toolCount: providerBindings.length,
+                status: "available",
+            })
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error)
+            args.logger.error("MCP provider unavailable for agent chat", {
+                providerId: provider.id,
+                error: message,
+            })
+            providers.push({
+                id: provider.id,
+                toolCount: 0,
+                status: "unavailable",
+                error: message,
+            })
+        }
+    }
+
+    return {
+        bindings,
+        providers,
+    }
 }

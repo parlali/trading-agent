@@ -1,4 +1,10 @@
 export {
+    recordAgentChatUserMessage,
+    recordAgentChatAssistantMessage,
+    recordAgentChatToolEvent,
+} from "./lib/mutations/agentChat"
+
+export {
     createRun,
     recoverRunningRuns,
     recoverStaleRunningRuns,
