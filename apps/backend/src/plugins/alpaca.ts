@@ -12,8 +12,8 @@ import {
 } from "@valiq-trading/core"
 import type { VenuePlugin, ExtraToolsConfig } from "../types"
 import {
-    appendValiqSecretKeys,
-    createValiqTools,
+    appendMcpSecretKeys,
+    createMcpTools,
 } from "./shared"
 
 export class AlpacaPlugin implements VenuePlugin {
@@ -23,7 +23,7 @@ export class AlpacaPlugin implements VenuePlugin {
     private readonly executionCostTracker = new ExecutionCostTracker()
 
     resolveSecretKeys(): string[] {
-        return appendValiqSecretKeys(ALPACA_RUNTIME_SECRET_KEYS)
+        return appendMcpSecretKeys(ALPACA_RUNTIME_SECRET_KEYS)
     }
 
     resolveAdditionalSecretKeys(_policy: Record<string, unknown>): string[] {
@@ -55,10 +55,7 @@ export class AlpacaPlugin implements VenuePlugin {
         return alpacaRiskValidators
     }
 
-    getExtraTools(config: ExtraToolsConfig) {
-        return createValiqTools(config, {
-            research: true,
-            data: true,
-        })
+    async getExtraTools(config: ExtraToolsConfig) {
+        return await createMcpTools(config)
     }
 }

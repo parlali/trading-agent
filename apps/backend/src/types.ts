@@ -21,7 +21,7 @@ export interface VenuePlugin {
 
     getRiskValidators(): readonly RiskValidator[]
 
-    getExtraTools(config: ExtraToolsConfig): ToolBinding[]
+    getExtraTools(config: ExtraToolsConfig): Promise<ToolBinding[]>
 
     preRunHooks?(config: PreRunHookConfig): Promise<PreRunHookResult>
 

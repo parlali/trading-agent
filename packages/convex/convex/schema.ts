@@ -118,6 +118,12 @@ export default defineSchema({
         opportunityClosed: v.optional(v.number()),
         opportunityRealizedPnl: v.optional(v.number()),
         systemContextDigest: v.optional(runSystemContextDigestV),
+        toolManifest: v.optional(v.array(v.object({
+            name: v.string(),
+            category: v.optional(v.string()),
+            contractBoundary: v.optional(v.string()),
+            contractOwner: v.optional(v.string()),
+        }))),
     })
         .index("by_strategy", ["strategyId"])
         .index("by_strategy_started_at", ["strategyId", "startedAt"])

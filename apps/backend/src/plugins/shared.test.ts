@@ -1,11 +1,28 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 import type { Logger, Position, WorkingOrder } from "@valiq-trading/core"
 import {
-    appendValiqDataSecretKeys,
-    appendValiqSecretKeys,
-    createValiqTools,
+    appendMcpSecretKeys,
+    createMcpTools,
     executeSessionFlatIfNeeded,
 } from "./shared"
+
+vi.mock("@valiq-trading/agent", async (importOriginal) => {
+    const actual = await importOriginal<typeof import("@valiq-trading/agent")>()
+    return {
+        ...actual,
+        createHttpMcpToolBindings: vi.fn(async ({ providers }: {
+            providers: Array<{ id: string; category?: string }>
+        }) =>
+            providers.map((provider: { id: string; category?: string }) => ({
+                name: `mcp_${provider.id}_research`,
+                description: "Remote research",
+                parameters: { safeParse: (value: unknown) => ({ success: true, data: value }) },
+                category: provider.category ?? "research",
+                handler: vi.fn(),
+            }))
+        ),
+    }
+})
 
 function createTestLogger(): Logger {
     const logger = {
@@ -21,18 +38,6 @@ function createTestLogger(): Logger {
     childMock.mockReturnValue(logger)
 
     return logger
-}
-
-function createStandardValiqSecrets(): Record<string, string | null> {
-    return {
-        VALIQ_API_URL: "https://valiq.example",
-        VALIQ_AUTH_URL: "https://auth.example",
-        VALIQ_OAUTH_CLIENT_ID: "client-id",
-        VALIQ_OAUTH_CLIENT_SECRET: "client-secret",
-        VALIQ_OAUTH_USER_UUID: "user-uuid",
-        VALIQ_DATA_API_URL: "https://data.example",
-        VALIQ_DATA_API: "data-api-key",
-    }
 }
 
 function createSessionFlatPolicy() {
@@ -77,75 +82,73 @@ describe("backend plugin shared helpers", () => {
         vi.restoreAllMocks()
     })
 
-    it("appends canonical Valiq secret keys once while preserving venue keys", () => {
-        expect(appendValiqSecretKeys([
+    it("appends canonical MCP secret keys once while preserving venue keys", () => {
+        expect(appendMcpSecretKeys([
             "OKX_API_KEY",
-            "VALIQ_API_URL",
+            "MCP_SERVER_URL",
         ])).toEqual([
             "OKX_API_KEY",
-            "VALIQ_API_URL",
-            "VALIQ_AUTH_URL",
-            "VALIQ_OAUTH_CLIENT_ID",
-            "VALIQ_OAUTH_CLIENT_SECRET",
-            "VALIQ_OAUTH_USER_UUID",
-            "VALIQ_DATA_API_URL",
-            "VALIQ_DATA_API",
-        ])
-
-        expect(appendValiqDataSecretKeys([
-            "POLYMARKET_PRIVATE_KEY",
-            "VALIQ_DATA_API",
-        ])).toEqual([
-            "POLYMARKET_PRIVATE_KEY",
-            "VALIQ_DATA_API",
-            "VALIQ_DATA_API_URL",
+            "MCP_SERVER_URL",
+            "MCP_PROVIDER_CONFIGS",
+            "MCP_SERVER_TOKEN",
         ])
     })
 
-    it("registers requested Valiq tools only from complete canonical credentials", () => {
+    it("returns no MCP tools when no generic provider is configured", async () => {
         const runLogger = createTestLogger()
 
-        const tools = createValiqTools({
-            secrets: createStandardValiqSecrets(),
+        const tools = await createMcpTools({
+            secrets: {},
             runLogger,
-        }, {
-            research: true,
-            data: true,
-            breakingNews: true,
-        })
-
-        expect(tools.map((tool) => tool.name)).toEqual([
-            "query_valiq_research",
-            "query_valiq_data",
-            "get_breaking_news",
-        ])
-        expect(runLogger.warn).not.toHaveBeenCalled()
-    })
-
-    it("logs bounded missing-secret reasons instead of partially registering Valiq tools", () => {
-        const runLogger = createTestLogger()
-
-        const tools = createValiqTools({
-            secrets: {
-                ...createStandardValiqSecrets(),
-                VALIQ_OAUTH_CLIENT_SECRET: null,
-                VALIQ_DATA_API: null,
-            },
-            runLogger,
-        }, {
-            research: true,
-            data: true,
         })
 
         expect(tools).toEqual([])
-        expect(runLogger.warn).toHaveBeenCalledWith(
-            "Valiq research tool NOT registered: missing secrets",
-            { missing: ["VALIQ_OAUTH_CLIENT_SECRET"] }
-        )
-        expect(runLogger.warn).toHaveBeenCalledWith(
-            "Valiq data tools NOT registered: missing secrets",
-            { missing: ["VALIQ_DATA_API"] }
-        )
+        expect(runLogger.warn).not.toHaveBeenCalled()
+    })
+
+    it("registers MCP tools from generic single-provider config", async () => {
+        const runLogger = createTestLogger()
+
+        const tools = await createMcpTools({
+            secrets: {
+                MCP_SERVER_URL: "https://mcp.example",
+                MCP_SERVER_TOKEN: "token",
+            },
+            runLogger,
+        })
+
+        expect(tools.map((tool) => tool.name)).toEqual(["mcp_default_research"])
+        expect(tools[0]?.category).toBe("research")
+    })
+
+    it("rejects duplicate MCP provider ids instead of choosing a silent fallback", async () => {
+        const runLogger = createTestLogger()
+
+        await expect(createMcpTools({
+            secrets: {
+                MCP_SERVER_URL: "https://mcp.example",
+                MCP_PROVIDER_CONFIGS: JSON.stringify([{
+                    id: "default",
+                    url: "https://other.example",
+                }]),
+            },
+            runLogger,
+        })).rejects.toThrow("Duplicate MCP provider id configured: default")
+    })
+
+    it("rejects MCP market-data category because remote providers are advisory research", async () => {
+        const runLogger = createTestLogger()
+
+        await expect(createMcpTools({
+            secrets: {
+                MCP_PROVIDER_CONFIGS: JSON.stringify([{
+                    id: "macro",
+                    url: "https://mcp.example",
+                    category: "market-data",
+                }]),
+            },
+            runLogger,
+        })).rejects.toThrow("MCP_PROVIDER_CONFIGS[0].category must be research")
     })
 
     it("fails closed when session-flat triggers without the audited executor", async () => {

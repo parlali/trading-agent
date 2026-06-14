@@ -19,6 +19,15 @@ describe("buildCodexRunAuditArtifact", () => {
             run: createRun(),
             agentLogs: [
                 createAgentLog({
+                    role: "system",
+                    content: [
+                        "## Available Tools",
+                        "",
+                        "- **get_account**: Get account state",
+                        "- **mcp_default_research**: Provider: default. Upstream tool: research.",
+                    ].join("\n"),
+                }),
+                createAgentLog({
                     role: "tool",
                     toolName: "get_account",
                     toolInput: "{}",
@@ -27,8 +36,8 @@ describe("buildCodexRunAuditArtifact", () => {
                 createAgentLog({
                     role: "tool",
                     sequence: 2,
-                    toolName: "get_breaking_news",
-                    toolInput: "{\"window\":\"24h\"}",
+                    toolName: "mcp_default_research",
+                    toolInput: "{\"query\":\"market news\"}",
                     toolOutput: "{\"articles\":[]}",
                 }),
             ],
@@ -54,7 +63,7 @@ describe("buildCodexRunAuditArtifact", () => {
         })
         expect(artifact.evidence).toMatchObject({
             toolLogCount: 2,
-            toolNames: ["get_account", "get_breaking_news"],
+            toolNames: ["get_account", "mcp_default_research"],
             nonCanonicalToolNames: [],
             hasDryRunLedger: true,
             dryRunLedgerSourceRunId: "run-1",
@@ -167,6 +176,40 @@ describe("buildCodexRunAuditArtifact", () => {
         expect(artifact.failures).toEqual(expect.arrayContaining([
             expect.stringContaining("Non-canonical Codex tool names appeared in agent logs: codex_apps__github"),
         ]))
+    })
+
+    it("fails closed when an MCP-looking tool was not in the run manifest", () => {
+        const artifact = buildCodexRunAuditArtifact({
+            exportedAt: "2026-06-08T12:00:00.000Z",
+            strategy: createStrategy(),
+            run: createRun(),
+            agentLogs: [
+                createAgentLog({
+                    role: "system",
+                    content: [
+                        "## Available Tools",
+                        "",
+                        "- **get_account**: Get account state",
+                    ].join("\n"),
+                }),
+                createAgentLog({
+                    role: "tool",
+                    sequence: 2,
+                    toolName: "mcp_typo_research",
+                    toolInput: "{}",
+                    toolOutput: "{}",
+                }),
+            ],
+            tradeEvents: [createTradeEvent()],
+            positions: [
+                createPosition("TOKEN-YES"),
+                createLedgerPosition("run-1"),
+            ],
+            portfolioFreshness: [createFreshness()],
+        })
+
+        expect(artifact.gates.canonicalRunToolsOnly).toBe(false)
+        expect(artifact.evidence.nonCanonicalToolNames).toEqual(["mcp_typo_research"])
     })
 
     it("fails closed when run and evidence rows do not belong together", () => {
@@ -361,6 +404,10 @@ function createRun(): StoredRun {
         codexTurnIds: ["turn-1"],
         llmRateLimitSnapshotBefore: { before: true },
         llmRateLimitSnapshotAfter: { after: true },
+        toolManifest: [
+            { name: "get_account", category: "account" },
+            { name: "mcp_default_research", category: "research", contractOwner: "mcp:default" },
+        ],
     }
 }
 

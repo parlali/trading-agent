@@ -1,6 +1,6 @@
 export { ToolRegistry } from "./tool-registry"
 export { TOOL_CATEGORIES } from "./tool-registry"
-export type { ToolBinding, ToolCategory } from "./tool-registry"
+export type { ToolBinding, ToolCategory, ToolManifestEntry } from "./tool-registry"
 export {
     createToolContractCatalog,
     createToolBinding,
@@ -69,6 +69,15 @@ export type {
 } from "./providers/codex/codex-json-rpc-client"
 export { startRunToolServer } from "./mcp/run-tool-server"
 export type { RunToolServer, RunToolServerConfig } from "./mcp/run-tool-server"
+export { HttpMcpClient } from "./mcp/http-client"
+export type { HttpMcpClientConfig, HttpMcpTool, ToolsCallResult } from "./mcp/http-client"
+export { createHttpMcpToolBindings, withMcpToolCallBudget } from "./mcp/http-tools"
+export type { HttpMcpProviderConfig, CreateHttpMcpToolBindingsConfig } from "./mcp/http-tools"
+export {
+    MCP_PROVIDER_SECRET_KEYS,
+    resolveMcpProviderConfigs,
+} from "./mcp/provider-config"
+export type { ResolveMcpProviderConfigsInput } from "./mcp/provider-config"
 export type {
     AgentModelProvider,
     AgentModelProviderName,

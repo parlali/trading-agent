@@ -204,6 +204,12 @@ export const runDiagnosticsV = v.object({
     opportunityClosed: v.optional(v.number()),
     opportunityRealizedPnl: v.optional(v.number()),
     systemContextDigest: v.optional(runSystemContextDigestV),
+    toolManifest: v.optional(v.array(v.object({
+        name: v.string(),
+        category: v.optional(v.string()),
+        contractBoundary: v.optional(v.string()),
+        contractOwner: v.optional(v.string()),
+    }))),
 })
 
 const RUN_DIAGNOSTIC_PATCH_FIELDS = [
@@ -235,6 +241,7 @@ const RUN_DIAGNOSTIC_PATCH_FIELDS = [
     "opportunityClosed",
     "opportunityRealizedPnl",
     "systemContextDigest",
+    "toolManifest",
 ] as const
 
 export function buildRunDiagnosticsPatch(

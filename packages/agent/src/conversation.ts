@@ -42,6 +42,11 @@ export class ConversationManager {
         return this.sequence
     }
 
+    reserveSequence(): number {
+        this.sequence++
+        return this.sequence
+    }
+
     getLastAssistantContent(): string | null {
         for (let i = this.messages.length - 1; i >= 0; i--) {
             const msg = this.messages[i]

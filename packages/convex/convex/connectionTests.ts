@@ -6,9 +6,18 @@ import { v } from "convex/values"
 import { requireUser } from "./lib/authGuards"
 import {
     buildAccountSecretKeyMap,
+    createLogger,
     resolveAccountScopedSecretKeys,
     type VenueApp,
 } from "@valiq-trading/core"
+import {
+    MCP_PROVIDER_SECRET_KEYS,
+    ToolExecutionEngine,
+    ToolRegistry,
+    createHttpMcpToolBindings,
+    resolveMcpProviderConfigs,
+    withMcpToolCallBudget,
+} from "@valiq-trading/agent"
 import {
     ALPACA_RUNTIME_SECRET_KEYS,
     AlpacaClient,
@@ -490,146 +499,99 @@ export const testOKXConnection = action({
     },
 })
 
-async function acquireValiqToken(
-    authUrl: string,
-    clientId: string,
-    clientSecret: string,
-    userUuid: string
-): Promise<{ ok: boolean; token?: string; expiresIn?: number; error?: string; errorCode?: string }> {
-    try {
-        const res = await fetch(`${authUrl}/oauth/token`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-                client_id: clientId,
-                client_secret: clientSecret,
-                grant_type: "client_credentials",
-                uuid: userUuid,
-            }),
-            signal: AbortSignal.timeout(15_000),
-        })
-
-        if (!res.ok) {
-            const body = await res.json().catch(() => ({})) as {
-                error?: string
-                error_description?: string
-            }
-            const errorCode = body.error ?? "unknown"
-            const descriptions: Record<string, string> = {
-                invalid_client: "Organization not found, inactive, or invalid secret",
-                invalid_grant: "User not found, inactive, or does not belong to organization",
-                invalid_request: "Missing or invalid request fields",
-                server_error: "Val-iQ auth server error",
-            }
-            const errorDesc = body.error_description ?? descriptions[errorCode] ?? `HTTP ${res.status}`
-            return { ok: false, error: errorDesc, errorCode }
-        }
-
-        const data = await res.json() as { access_token: string; token_type: string; expires_in: number }
-        return { ok: true, token: data.access_token, expiresIn: data.expires_in }
-    } catch (error: unknown) {
-        return { ok: false, error: getErrorMessage(error) }
-    }
-}
-
-export const testValiqConnection = action({
+export const testMcpConnection = action({
     args: {
-        prompt: v.string(),
+        toolName: v.optional(v.string()),
     },
     handler: async (ctx, args) => {
         await requireUser(ctx)
-        const apiUrl = env("VALIQ_API_URL")?.replace(/\/+$/, "")
-        const authUrl = env("VALIQ_AUTH_URL")?.replace(/\/+$/, "")
-        const clientId = env("VALIQ_OAUTH_CLIENT_ID")
-        const clientSecret = env("VALIQ_OAUTH_CLIENT_SECRET")
-        const userUuid = env("VALIQ_OAUTH_USER_UUID")
+        const providers = resolveMcpProviderConfigs({
+            secrets: readMcpConnectionSecrets(),
+        })
 
-        if (!apiUrl) {
-            return { ok: false, error: "VALIQ_API_URL not configured in Convex environment variables", steps: [] }
-        }
-
-        if (!authUrl || !clientId || !clientSecret || !userUuid) {
-            return {
-                ok: false,
-                error: "Val-iQ OAuth credentials not configured (VALIQ_AUTH_URL, VALIQ_OAUTH_CLIENT_ID, VALIQ_OAUTH_CLIENT_SECRET, VALIQ_OAUTH_USER_UUID)",
-                steps: [],
-            }
+        if (providers.length === 0) {
+            return { ok: false, error: "No MCP provider configured. Set MCP_PROVIDER_CONFIGS or MCP_SERVER_URL in Convex environment variables", steps: [] }
         }
 
         const steps: StepResult[] = []
 
-        const authResult = await acquireValiqToken(authUrl, clientId, clientSecret, userUuid)
-        if (!authResult.ok || !authResult.token) {
-            steps.push({ name: "Auth", ok: false, error: authResult.error })
-            return { ok: false, steps }
-        }
-        steps.push({ name: "Auth", ok: true, data: { expiresIn: authResult.expiresIn } })
-
-        const authToken = authResult.token
-        const headers: Record<string, string> = {
-            Authorization: `Bearer ${authToken}`,
-            "Content-Type": "application/json",
-        }
-
-        const chat = await fetchJson(`${apiUrl}/chats`, {
-            method: "POST",
-            headers,
-            body: JSON.stringify({ title: "Connection Test" }),
-        })
-        if (!chat.ok) {
-            steps.push({ name: "Create Chat", ok: false, error: chat.error })
-            return { ok: false, steps }
-        }
-        const chatId = (chat.data as { id: string }).id
-        steps.push({ name: "Create Chat", ok: true, data: { chatId } })
-
         try {
-            const controller = new AbortController()
-            const timeoutId = setTimeout(() => controller.abort(), 120_000)
-
-            const res = await fetch(`${apiUrl}/chats/${chatId}/messages`, {
-                method: "POST",
-                headers: { ...headers, Accept: "text/event-stream" },
-                body: JSON.stringify({ content: args.prompt }),
-                signal: controller.signal,
+            steps.push({
+                name: "Runtime Config",
+                ok: true,
+                data: {
+                    providerIds: providers.map((provider) => provider.id),
+                },
             })
-            clearTimeout(timeoutId)
 
-            if (!res.ok) {
-                const body = await res.text().catch(() => "")
-                steps.push({
-                    name: "Send Prompt",
-                    ok: false,
-                    error: `HTTP ${res.status}: ${body.slice(0, 500)}`,
-                })
-                return { ok: false, steps }
+            const toolBindings = await createHttpMcpToolBindings({
+                providers,
+            })
+            const registry = new ToolRegistry()
+            for (const tool of toolBindings) {
+                registry.register(withMcpToolCallBudget(tool, 4))
             }
 
-            const text = await res.text()
-            const lines = text
-                .split("\n")
-                .map((line) => line.trim())
-                .filter(Boolean)
+            const toolNames = registry.getAll().map((tool) => tool.name).sort((left, right) => left.localeCompare(right))
+            steps.push({ name: "List Tools", ok: true, data: { toolNames } })
 
-            const dataLines = lines
-                .filter((line) => line.startsWith("data:"))
-                .map((line) => line.slice(5).trim())
-                .filter((line) => line && line !== "[DONE]")
+            if (args.toolName) {
+                if (!registry.has(args.toolName)) {
+                    steps.push({ name: "Call Tool", ok: false, error: `Tool ${args.toolName} is not registered in runtime ToolRegistry` })
+                    return { ok: false, steps }
+                }
 
-            steps.push({
-                name: "Send Prompt",
-                ok: dataLines.length > 0,
-                data: {
-                    prompt: args.prompt,
-                    events: dataLines.slice(0, 5),
-                    totalEvents: dataLines.length,
-                },
-                error: dataLines.length > 0 ? undefined : "No SSE data events received",
-            })
+                const engine = new ToolExecutionEngine({
+                    tools: registry,
+                    context: createMcpConnectionRunContext(),
+                    logger: createLogger({ minLevel: "fatal" }),
+                    runStartedAt: Date.now(),
+                    runTimeoutMs: 60_000,
+                    maxRepeatedToolErrors: 1,
+                })
+                const result = await engine.executeMcpCall(args.toolName, {}, "connection-test-call")
+                const outcome = engine.getOutcome()
+                steps.push({
+                    name: "Call Tool",
+                    ok: !result.isError && !outcome.fatalFault,
+                    data: result,
+                    error: result.isError ? result.content : outcome.fatalFault?.reason,
+                })
+            }
         } catch (error: unknown) {
-            steps.push({ name: "Send Prompt", ok: false, error: getErrorMessage(error) })
+            steps.push({ name: "MCP Request", ok: false, error: getErrorMessage(error) })
         }
 
         return { ok: steps.every((s) => s.ok), steps }
     },
 })
+
+function readMcpConnectionSecrets(): Record<string, string | null> {
+    const secrets: Record<string, string | null> = {}
+    for (const key of MCP_PROVIDER_SECRET_KEYS) {
+        secrets[key] = env(key)
+    }
+    return secrets
+}
+
+function createMcpConnectionRunContext() {
+    return {
+        runId: "connection-test",
+        strategyId: "connection-test",
+        app: "polymarket" as const,
+        timestamp: Date.now(),
+        trigger: "manual" as const,
+        positions: [],
+        accountState: {
+            balance: 0,
+            equity: 0,
+            buyingPower: 0,
+            marginUsed: 0,
+            marginAvailable: 0,
+            openPnl: 0,
+            dayPnl: 0,
+        },
+        policy: {},
+        context: "MCP connection test",
+    }
+}

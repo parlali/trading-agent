@@ -24,6 +24,13 @@ import type {
     ValidationResult,
 } from "@valiq-trading/core"
 
+export interface ToolManifestEntry {
+    name: string
+    category?: string
+    contractBoundary?: string
+    contractOwner?: string
+}
+
 export interface ConvexOrderPersistenceConfig {
     url: string
     machineAuth?: {
@@ -116,6 +123,7 @@ export interface RunDiagnostics {
     opportunityClosed?: number
     opportunityRealizedPnl?: number
     systemContextDigest?: RunSystemContextDigest
+    toolManifest?: ToolManifestEntry[]
 }
 
 export interface StoredRun extends RunDiagnostics {

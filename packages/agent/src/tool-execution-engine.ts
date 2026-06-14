@@ -59,6 +59,7 @@ export interface ToolExecutionEngineConfig {
     runTimeoutMs: number
     maxToolTimeoutMs?: number
     maxRepeatedToolErrors?: number
+    nextTranscriptSequence?: () => number
 }
 
 interface OpenRouterToolExecutionCallbacks {
@@ -84,15 +85,6 @@ type ValidToolCall = {
 
 const DEFAULT_TOOL_TIMEOUT_MS = 120_000
 const DEFAULT_MAX_REPEATED_TOOL_ERRORS = 3
-const RESEARCH_TOOL_NAMES = new Set([
-    "query_valiq_research",
-    "query_valiq_data",
-    "get_breaking_news",
-    "search_markets",
-    "web_search",
-    "web_fetch",
-])
-
 const PROPOSAL_TOOL_NAMES = new Set([
     "propose_order",
     "propose_adjustment",
@@ -112,9 +104,12 @@ export class ToolExecutionEngine {
     private degradedResearchToolFailureCount = 0
     private degradedResearchRetryCount = 0
     private fatalFault: ToolExecutionFatalFault | undefined
-    private mcpLogSequence = 0
 
     constructor(private readonly config: ToolExecutionEngineConfig) {
+        if (config.agentLogger && !config.nextTranscriptSequence) {
+            throw new Error("ToolExecutionEngine requires nextTranscriptSequence when agentLogger is configured")
+        }
+
         this.maxRepeatedToolErrors = config.maxRepeatedToolErrors ?? DEFAULT_MAX_REPEATED_TOOL_ERRORS
         this.maxToolTimeoutMs = config.maxToolTimeoutMs ?? DEFAULT_TOOL_TIMEOUT_MS
     }
@@ -234,13 +229,13 @@ export class ToolExecutionEngine {
 
         const content = this.resolveExecutionResultContent(entry, result)
         const modelContent = truncateToolResult(content)
-        recordOpportunityCoverage(toolName, content, this.opportunityCoverage)
+        recordOpportunityCoverage(validation.toolBinding, content, this.opportunityCoverage)
         await this.logMcpToolResult(toolName, modelContent, rawInput)
 
         return {
             toolName,
             content: modelContent,
-            isError: result.status === "rejected" || Boolean(this.fatalFault),
+            isError: result.status === "rejected" || isToolLevelErrorContent(content) || Boolean(this.fatalFault),
             fatal: Boolean(this.fatalFault),
         }
     }
@@ -276,7 +271,7 @@ export class ToolExecutionEngine {
         if (!toolBinding) {
             const content = JSON.stringify({ error: `Unknown tool: ${args.toolName}` })
             this.config.logger.warn("Agent called unknown tool", { toolName: args.toolName })
-            const degradedWarning = this.recordValidationFailure(args.toolName, content, "unknown tool")
+            const degradedWarning = this.recordValidationFailureWithoutBinding(args.toolName, content, "unknown tool")
             return { status: "invalid", content, degradedWarning }
         }
 
@@ -291,7 +286,7 @@ export class ToolExecutionEngine {
                 toolName: args.toolName,
                 raw: args.rawInput,
             })
-            const degradedWarning = this.recordValidationFailure(args.toolName, content, "invalid arguments loop")
+            const degradedWarning = this.recordValidationFailureWithoutBinding(args.toolName, content, "invalid arguments loop")
             return { status: "invalid", content, degradedWarning }
         }
 
@@ -302,8 +297,9 @@ export class ToolExecutionEngine {
                 toolName: args.toolName,
                 error: validation.error,
             })
-            const degradedWarning = this.recordValidationFailure(
+            const degradedWarning = this.recordValidationFailureWithBinding(
                 args.toolName,
+                toolBinding,
                 normalizeToolErrorSignature(content),
                 "parameter validation loop",
                 content
@@ -318,7 +314,7 @@ export class ToolExecutionEngine {
         }
     }
 
-    private recordValidationFailure(
+    private recordValidationFailureWithoutBinding(
         toolName: string,
         signature: string,
         repeatedReason: string,
@@ -329,7 +325,23 @@ export class ToolExecutionEngine {
             return undefined
         }
 
-        if (RESEARCH_TOOL_NAMES.has(toolName)) {
+        this.setFatalFault(toolName, fatalContent, `repeated identical ${toolName} tool error`)
+        return undefined
+    }
+
+    private recordValidationFailureWithBinding(
+        toolName: string,
+        toolBinding: ToolBinding,
+        signature: string,
+        repeatedReason: string,
+        fatalContent = signature
+    ): string | undefined {
+        const repeatedError = recordRepeatedToolError(this.repeatedToolErrors, toolName, signature)
+        if (repeatedError < this.maxRepeatedToolErrors) {
+            return undefined
+        }
+
+        if (isResearchTool(toolBinding)) {
             this.degradedResearchToolFailureCount++
             this.degradedResearchRetryCount += repeatedError
             this.degradedResearchReasons.add(`${toolName}: ${repeatedReason}`)
@@ -347,6 +359,34 @@ export class ToolExecutionEngine {
     ): string {
         if (result.status === "fulfilled") {
             const value = result.value
+            const toolLevelError = readToolLevelError(value)
+            if (toolLevelError) {
+                this.config.logger.error("Tool returned error result", {
+                    toolName: entry.toolName,
+                    error: toolLevelError,
+                })
+                let content = JSON.stringify(value)
+                const repeatedError = recordRepeatedToolError(this.repeatedToolErrors, entry.toolName, content)
+
+                if (repeatedError < this.maxRepeatedToolErrors) {
+                    return content
+                }
+
+                if (isResearchTool(entry.toolBinding)) {
+                    this.degradedResearchToolFailureCount++
+                    this.degradedResearchRetryCount += repeatedError
+                    this.degradedResearchReasons.add(`${entry.toolName}: tool-level error loop`)
+                    clearRepeatedToolErrors(this.repeatedToolErrors, entry.toolName)
+                    content = JSON.stringify({
+                        warning: `Degraded research mode active: ${entry.toolName} returned repeated tool-level errors and has been bounded for this run.`,
+                    })
+                    return content
+                }
+
+                this.setFatalFault(entry.toolName, content, `repeated identical ${entry.toolName} tool error`)
+                return content
+            }
+
             clearRepeatedToolErrors(this.repeatedToolErrors, entry.toolName)
             return typeof value === "string" ? value : JSON.stringify(value)
         }
@@ -369,7 +409,7 @@ export class ToolExecutionEngine {
             return content
         }
 
-        if (RESEARCH_TOOL_NAMES.has(entry.toolName)) {
+        if (isResearchTool(entry.toolBinding)) {
             this.degradedResearchToolFailureCount++
             this.degradedResearchRetryCount += repeatedError
             this.degradedResearchReasons.add(`${entry.toolName}: execution failure loop`)
@@ -440,7 +480,7 @@ export class ToolExecutionEngine {
         const content = this.resolveExecutionResultContent(entry, result)
         const modelContent = truncateToolResult(content)
 
-        recordOpportunityCoverage(entry.toolName, content, this.opportunityCoverage)
+        recordOpportunityCoverage(entry.toolBinding, content, this.opportunityCoverage)
 
         await callbacks.onToolResult({
             toolCallId: entry.toolCallId,
@@ -455,13 +495,22 @@ export class ToolExecutionEngine {
         content: string,
         rawInput: string
     ): Promise<void> {
-        this.mcpLogSequence++
+        if (!this.config.agentLogger) {
+            return
+        }
+
+        const nextTranscriptSequence = this.config.nextTranscriptSequence
+        if (!nextTranscriptSequence) {
+            throw new Error("ToolExecutionEngine requires nextTranscriptSequence when agentLogger is configured")
+        }
+
+        const sequence = nextTranscriptSequence()
         await safeLogAgentMessage({
             agentLogger: this.config.agentLogger,
             logger: this.config.logger,
             runId: this.config.context.runId,
             strategyId: this.config.context.strategyId,
-            sequence: this.mcpLogSequence,
+            sequence,
             role: "tool",
             content,
             toolName,
@@ -598,16 +647,22 @@ function isSafetyCriticalToolBoundary(toolBinding: ToolBinding): boolean {
         toolBinding.contractBoundary === "venue-owned"
 }
 
+function isResearchTool(toolBinding: ToolBinding): boolean {
+    return toolBinding.category === "research" ||
+        toolBinding.category === "web" ||
+        toolBinding.contractOwner?.startsWith("mcp:") === true
+}
+
 function recordOpportunityCoverage(
-    toolName: string,
+    toolBinding: ToolBinding,
     toolResult: string,
     metrics: OpportunityCoverageMetrics
 ): void {
-    if (RESEARCH_TOOL_NAMES.has(toolName)) {
+    if (isResearchTool(toolBinding)) {
         metrics.researched++
     }
 
-    if (!PROPOSAL_TOOL_NAMES.has(toolName)) {
+    if (!PROPOSAL_TOOL_NAMES.has(toolBinding.name)) {
         return
     }
 
@@ -631,7 +686,7 @@ function recordOpportunityCoverage(
 
     if (status === "filled" || status === "partially_filled") {
         metrics.filled++
-        if (CLOSE_TOOL_NAMES.has(toolName)) {
+        if (CLOSE_TOOL_NAMES.has(toolBinding.name)) {
             metrics.closed++
         }
     }
@@ -662,4 +717,26 @@ function readRecord(value: unknown): Record<string, unknown> | undefined {
     return value && typeof value === "object" && !Array.isArray(value)
         ? value as Record<string, unknown>
         : undefined
+}
+
+function readToolLevelError(value: unknown): string | undefined {
+    const record = readRecord(value)
+    if (record?.isError !== true) {
+        return undefined
+    }
+
+    if (typeof record.error === "string" && record.error.length > 0) {
+        return record.error
+    }
+
+    if (typeof record.message === "string" && record.message.length > 0) {
+        return record.message
+    }
+
+    return "tool returned isError=true"
+}
+
+function isToolLevelErrorContent(content: string): boolean {
+    const parsed = parseToolResult(content)
+    return parsed?.isError === true
 }

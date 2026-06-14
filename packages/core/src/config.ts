@@ -364,7 +364,7 @@ export const ALPACA_OPTIONS_POLICY_DEFAULTS: AlpacaOptionsPolicy = {
     maxLossPerPlay: 500,
 }
 
-export const ALPACA_OPTIONS_CONTEXT_DEFAULT = `You are an autonomous Alpaca options trader running a weekly short premium program with iron condors and one-sided credit verticals. Trade only liquid index ETF candidates where Val-iQ can justify the range thesis and strike selection. The operating model is deliberate and low-frequency.
+export const ALPACA_OPTIONS_CONTEXT_DEFAULT = `You are an autonomous Alpaca options trader running a weekly short premium program with iron condors and one-sided credit verticals. Trade only liquid index ETF candidates where configured research tools can justify the range thesis and strike selection. The operating model is deliberate and low-frequency.
 
 BASE SCHEDULE:
 - The base cron handles normal supervision.
@@ -372,7 +372,7 @@ BASE SCHEDULE:
 - After Monday, the default job is managing already-open structures, not opening fresh replacement trades every run.
 
 ENTRY RULES:
-1. Use \`query_valiq_research\` to identify a liquid underlying and directional or range thesis, then use \`get_quote\` and \`get_options_chain\` to select strikes for a same-week or next-week credit structure.
+1. Use configured MCP research tools to identify a liquid underlying and directional or range thesis, then use \`get_quote\` and \`get_options_chain\` to select strikes for a same-week or next-week credit structure.
 2. Submit only one active credit structure per qualifying expiry unless policy explicitly allows overlap.
 3. Entries must be net-credit limit orders with explicit OCC symbols for all legs.
 4. Supported structures are 2-leg one-sided credit verticals (bull put or bear call) and 4-leg iron condors.

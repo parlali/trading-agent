@@ -1,83 +1,36 @@
-import type { ToolBinding } from "@valiq-trading/agent"
 import {
-    createOAuthTokenProvider,
-    createValiqBreakingNewsTool,
-    createValiqDataTool,
-    createValiqResearchTool,
-    getMissingValiqDataApiSecrets,
-    resolveValiqDataApiConfig,
-    VALIQ_DATA_SECRET_KEYS,
-    ValiqClient,
-    ValiqDataAdapter,
-    ValiqDataClient,
-    ValiqResearchAdapter,
-} from "@valiq-trading/valiq"
+    MCP_PROVIDER_SECRET_KEYS,
+    createHttpMcpToolBindings,
+    resolveMcpProviderConfigs as resolveCanonicalMcpProviderConfigs,
+} from "@valiq-trading/agent"
 import {
+    VENUE_APPS,
     isWithinSessionFlatWindow,
     type App,
 } from "@valiq-trading/core"
 import type { ExtraToolsConfig, PreRunHookConfig } from "../types"
 
-export const VALIQ_RESEARCH_SECRET_KEYS = [
-    "VALIQ_API_URL",
-    "VALIQ_AUTH_URL",
-    "VALIQ_OAUTH_CLIENT_ID",
-    "VALIQ_OAUTH_CLIENT_SECRET",
-    "VALIQ_OAUTH_USER_UUID",
+export const MCP_STANDARD_TOOL_SECRET_KEYS = [
+    ...MCP_PROVIDER_SECRET_KEYS,
 ] as const
 
-export const VALIQ_STANDARD_TOOL_SECRET_KEYS = [
-    ...VALIQ_RESEARCH_SECRET_KEYS,
-    ...VALIQ_DATA_SECRET_KEYS,
-] as const
-
-interface ValiqToolsOptions {
-    research?: boolean
-    data?: boolean
-    breakingNews?: boolean
-    missingDataLogMessage?: string
-}
-
-export function createValiqTools(
-    config: ExtraToolsConfig,
-    options: ValiqToolsOptions
-): ToolBinding[] {
-    const tools: ToolBinding[] = []
-
-    if (options.research) {
-        const researchTool = createResearchTool(config)
-        if (researchTool) {
-            tools.push(researchTool)
-        }
-    }
-
-    if (options.data || options.breakingNews) {
-        const data = createDataAdapter(config, options.missingDataLogMessage)
-        if (data) {
-            if (options.data) {
-                tools.push(createValiqDataTool(data))
-            }
-            if (options.breakingNews) {
-                tools.push(createValiqBreakingNewsTool(data))
-            }
-        }
-    }
-
-    return tools
-}
-
-export function appendValiqSecretKeys(keys: readonly string[]): string[] {
+export function appendMcpSecretKeys(keys: readonly string[]): string[] {
     return Array.from(new Set([
         ...keys,
-        ...VALIQ_STANDARD_TOOL_SECRET_KEYS,
+        ...MCP_STANDARD_TOOL_SECRET_KEYS,
     ]))
 }
 
-export function appendValiqDataSecretKeys(keys: readonly string[]): string[] {
-    return Array.from(new Set([
-        ...keys,
-        ...VALIQ_DATA_SECRET_KEYS,
-    ]))
+export async function createMcpTools(config: ExtraToolsConfig) {
+    const providers = resolvePluginMcpProviderConfigs(config)
+    if (providers.length === 0) {
+        return []
+    }
+
+    return await createHttpMcpToolBindings({
+        providers,
+        logger: config.runLogger,
+    })
 }
 
 interface SessionFlatPolicy {
@@ -163,65 +116,10 @@ export async function executeSessionFlatIfNeeded(
     return true
 }
 
-function createResearchTool(config: ExtraToolsConfig): ToolBinding | null {
-    const valiqUrl = config.secrets.VALIQ_API_URL
-    const authUrl = config.secrets.VALIQ_AUTH_URL
-    const clientId = config.secrets.VALIQ_OAUTH_CLIENT_ID
-    const clientSecret = config.secrets.VALIQ_OAUTH_CLIENT_SECRET
-    const userUuid = config.secrets.VALIQ_OAUTH_USER_UUID
-
-    if (!valiqUrl || !authUrl || !clientId || !clientSecret || !userUuid) {
-        const missing = VALIQ_RESEARCH_SECRET_KEYS.filter((key) => !config.secrets[key])
-        const configured = VALIQ_RESEARCH_SECRET_KEYS.length - missing.length
-        if (configured > 0) {
-            config.runLogger.warn(
-                "Valiq research tool NOT registered: missing secrets",
-                { missing }
-            )
-        }
-        return null
-    }
-
-    const tokenProvider = createOAuthTokenProvider({
-        authUrl,
-        clientId,
-        clientSecret,
-        userUuid,
+function resolvePluginMcpProviderConfigs(config: ExtraToolsConfig) {
+    return resolveCanonicalMcpProviderConfigs({
+        secrets: config.secrets,
         logger: config.runLogger,
+        compatibleVenues: VENUE_APPS,
     })
-
-    const valiqClient = new ValiqClient({
-        apiUrl: valiqUrl,
-        tokenProvider,
-        logger: config.runLogger,
-    })
-    const research = new ValiqResearchAdapter(valiqClient, config.runLogger)
-
-    return createValiqResearchTool(research)
-}
-
-function createDataAdapter(
-    config: ExtraToolsConfig,
-    missingDataLogMessage: string = "Valiq data tools NOT registered: missing secrets"
-): ValiqDataAdapter | null {
-    const dataApi = resolveValiqDataApiConfig(config.secrets)
-
-    if (!dataApi) {
-        const missing = getMissingValiqDataApiSecrets(config.secrets)
-        if (missing.length > 0) {
-            config.runLogger.warn(
-                missingDataLogMessage,
-                { missing }
-            )
-        }
-        return null
-    }
-
-    const dataClient = new ValiqDataClient({
-        apiUrl: dataApi.apiUrl,
-        apiKey: dataApi.apiKey,
-        logger: config.runLogger,
-    })
-
-    return new ValiqDataAdapter(dataClient)
 }

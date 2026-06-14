@@ -1,7 +1,9 @@
 import {
     ToolRegistry,
     executeAgentRun,
-    withCallBudget,
+    withMcpToolCallBudget,
+    type ToolBinding,
+    type ToolManifestEntry,
 } from "@valiq-trading/agent"
 import { createConvexOrderPersistenceAdapter } from "@valiq-trading/convex"
 import type {
@@ -176,6 +178,7 @@ export async function runStrategy(
     let latestStoredPositions: Position[] | undefined
     let currentAccountState: AccountState | undefined
     let runtimeContextLines: string[] | undefined
+    let registeredToolManifest: ToolManifestEntry[] = []
 
     try {
         latestStoredPositions = storedPositions
@@ -371,31 +374,34 @@ export async function runStrategy(
             env: process.env,
         })
 
-        const extraTools = plugin.getExtraTools({
-            secrets: strategySecrets,
-            runLogger,
-        })
         const isCallback = trigger === "callback"
-        const budgetedExtraTools = extraTools.map((tool) =>
-            isCallback ? withCallBudget(tool, 2) : tool
-        )
-
-        const toolPool = buildToolPool({
-            app,
-            strategyId: strategy._id,
-            venue,
-            pipeline: activePipeline,
-            policy,
-            extraTools: budgetedExtraTools,
-            isCallback,
-            runLogger,
-        })
-        const tools = new ToolRegistry()
-        for (const tool of toolPool.forVenue(app)) {
-            tools.register(tool)
-        }
+        const strategyRunStartedAt = Date.now()
 
         await withTimeout(async () => {
+            const extraTools = await plugin.getExtraTools({
+                secrets: strategySecrets,
+                runLogger,
+            })
+            const budgetedExtraTools = extraTools.map((tool) =>
+                applyMcpResearchBudget(tool, isCallback)
+            )
+
+            const toolPool = buildToolPool({
+                app,
+                strategyId: strategy._id,
+                venue,
+                pipeline: activePipeline,
+                policy,
+                extraTools: budgetedExtraTools,
+                isCallback,
+                runLogger,
+            })
+            const tools = new ToolRegistry()
+            for (const tool of toolPool.forVenue(app)) {
+                tools.register(tool)
+            }
+            registeredToolManifest = tools.getManifest()
+
             const isDryRun = Boolean(policy.dryRun)
             const {
                 pendingOrders,
@@ -479,6 +485,7 @@ export async function runStrategy(
                     logger: runLogger,
                     agentLogger: backend,
                     killSwitchChecker: () => checkKillSwitch(app, `mid-run:${strategy._id}`),
+                    runTimeoutMs: Math.max(1, STRATEGY_RUN_TIMEOUT_MS - (Date.now() - strategyRunStartedAt)),
                 }
             )
 
@@ -577,7 +584,7 @@ export async function runStrategy(
                 "failed",
                 undefined,
                 message,
-                buildFailureRunDiagnostics(llmConfig, runSystemContextDigest)
+                buildFailureRunDiagnostics(llmConfig, runSystemContextDigest, registeredToolManifest)
             ),
             backend.createAlert({
                 strategyId: strategy._id,
@@ -645,9 +652,18 @@ export async function runStrategy(
     }
 }
 
+function applyMcpResearchBudget(tool: ToolBinding, isCallback: boolean): ToolBinding {
+    if (tool.contractOwner?.startsWith("mcp:") !== true) {
+        return tool
+    }
+
+    return withMcpToolCallBudget(tool, isCallback ? 2 : 4)
+}
+
 function buildFailureRunDiagnostics(
     llmConfig: StrategyLlmConfig,
-    systemContextDigest?: RunSystemContextDigest
+    systemContextDigest?: RunSystemContextDigest,
+    toolManifest: ToolManifestEntry[] = []
 ): RunDiagnostics {
     const diagnostics: RunDiagnostics = {
         llmProvider: llmConfig.provider,
@@ -667,6 +683,7 @@ function buildFailureRunDiagnostics(
     if (systemContextDigest) {
         diagnostics.systemContextDigest = systemContextDigest
     }
+    diagnostics.toolManifest = toolManifest
 
     return diagnostics
 }

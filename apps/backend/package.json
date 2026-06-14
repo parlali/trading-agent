@@ -28,7 +28,6 @@
     "dependencies": {
         "@valiq-trading/core": "workspace:*",
         "@valiq-trading/agent": "workspace:*",
-        "@valiq-trading/valiq": "workspace:*",
         "@valiq-trading/convex": "workspace:*",
         "@valiq-trading/alpaca-options": "workspace:*",
         "@valiq-trading/polymarket": "workspace:*",

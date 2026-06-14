@@ -40,7 +40,7 @@ describe("scheduler runner Codex dry-run side effects", () => {
         vi.doMock("@valiq-trading/agent", () => ({
             ToolRegistry: FakeToolRegistry,
             executeAgentRun,
-            withCallBudget: (tool: unknown) => tool,
+            withMcpToolCallBudget: (tool: unknown) => tool,
         }))
         vi.doMock("./scheduler-tool-pool", () => ({
             buildToolPool: () => ({
@@ -141,6 +141,10 @@ class FakeToolRegistry {
     getDescriptions(): unknown[] {
         return this.tools
     }
+
+    getManifest(): unknown[] {
+        return this.tools
+    }
 }
 
 function createBackendMock(storedPositions: Position[], events: string[]) {
@@ -203,7 +207,7 @@ function createPlugin(events: string[]): VenuePlugin {
         validateEnvironment: async () => undefined,
         createVenueAdapter: () => venue,
         getRiskValidators: () => [],
-        getExtraTools: () => [],
+        getExtraTools: async () => [],
         postRunHooks: async () => {
             events.push("post-run-hooks")
         },
@@ -299,5 +303,6 @@ function createAgentRunResult(): AgentRunResult {
             codexThreadId: "thread-1",
             codexTurnIds: ["turn-1"],
         },
+        toolManifest: [],
     }
 }
