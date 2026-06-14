@@ -16,10 +16,22 @@ describe("HTTP MCP tool bindings", () => {
     })
 
     it("discovers namespaced MCP tools and calls the upstream tool name", async () => {
-        const receivedCalls: Array<Record<string, unknown>> = []
+        const receivedCalls: Array<{
+            body: Record<string, unknown>
+            authorization?: string
+        }> = []
         const server = await startMcpServer(async (request, response) => {
+            if (request.headers.authorization !== "Bearer secret") {
+                response.writeHead(401, { "Content-Type": "text/plain" })
+                response.end("missing bearer token")
+                return
+            }
+
             const body = await readJsonBody(request)
-            receivedCalls.push(body)
+            receivedCalls.push({
+                body,
+                authorization: request.headers.authorization,
+            })
             const method = body.method
 
             if (method === "initialize") {
@@ -88,10 +100,15 @@ describe("HTTP MCP tool bindings", () => {
                 text: "research result",
             }],
         })
-        expect(receivedCalls.find((call) => call.method === "tools/call")).toMatchObject({
-            params: {
-                name: "search",
-                arguments: { query: "rates" },
+        expect(receivedCalls.find((call) => call.body.method === "initialize")?.authorization).toBe("Bearer secret")
+        expect(receivedCalls.find((call) => call.body.method === "tools/list")?.authorization).toBe("Bearer secret")
+        expect(receivedCalls.find((call) => call.body.method === "tools/call")).toMatchObject({
+            authorization: "Bearer secret",
+            body: {
+                params: {
+                    name: "search",
+                    arguments: { query: "rates" },
+                },
             },
         })
     })
@@ -201,6 +218,123 @@ describe("HTTP MCP tool bindings", () => {
         })
     })
 
+    it("skips MCP tools with malformed nested input schema fields", async () => {
+        const server = await startMcpServer(async (request, response) => {
+            const body = await readJsonBody(request)
+
+            if (body.method === "initialize") {
+                writeJsonRpc(response, body.id, {
+                    protocolVersion: "2025-03-26",
+                    capabilities: {},
+                    serverInfo: { name: "bad-schema-server", version: "1.0.0" },
+                })
+                return
+            }
+
+            if (body.method === "notifications/initialized") {
+                response.writeHead(202)
+                response.end()
+                return
+            }
+
+            if (body.method === "tools/list") {
+                writeJsonRpc(response, body.id, {
+                    tools: [
+                        {
+                            name: "bad_properties",
+                            inputSchema: {
+                                type: "object",
+                                properties: "x",
+                            },
+                        },
+                        {
+                            name: "bad_required",
+                            inputSchema: {
+                                type: "object",
+                                required: [1],
+                            },
+                        },
+                        {
+                            name: "bad_additional",
+                            inputSchema: {
+                                type: "object",
+                                additionalProperties: "no",
+                            },
+                        },
+                    ],
+                })
+                return
+            }
+
+            writeJsonRpc(response, body.id, { content: [] })
+        })
+        servers.push(server)
+
+        const tools = await createHttpMcpToolBindings({
+            providers: [{
+                id: "macro",
+                url: server.url,
+            }],
+            logger: createLogger({ minLevel: "fatal" }),
+        })
+
+        expect(tools).toEqual([])
+    })
+
+    it("rejects malformed MCP tools/call content blocks at the transport boundary", async () => {
+        const server = await startMcpServer(async (request, response) => {
+            const body = await readJsonBody(request)
+
+            if (body.method === "initialize") {
+                writeJsonRpc(response, body.id, {
+                    protocolVersion: "2025-03-26",
+                    capabilities: {},
+                    serverInfo: { name: "bad-call-server", version: "1.0.0" },
+                })
+                return
+            }
+
+            if (body.method === "notifications/initialized") {
+                response.writeHead(202)
+                response.end()
+                return
+            }
+
+            if (body.method === "tools/list") {
+                writeJsonRpc(response, body.id, {
+                    tools: [{
+                        name: "search",
+                        inputSchema: {
+                            type: "object",
+                            properties: {},
+                        },
+                    }],
+                })
+                return
+            }
+
+            if (body.method === "tools/call") {
+                writeJsonRpc(response, body.id, {
+                    content: [1],
+                })
+                return
+            }
+
+            writeJsonRpc(response, body.id, { content: [] })
+        })
+        servers.push(server)
+
+        const tools = await createHttpMcpToolBindings({
+            providers: [{
+                id: "macro",
+                url: server.url,
+            }],
+            logger: createLogger({ minLevel: "fatal" }),
+        })
+
+        await expect(tools[0]?.handler({})).rejects.toThrow("malformed tools/call content")
+    })
+
     it("does not collide names for remote tools that differ after the old truncation point", async () => {
         const server = await startMcpServer(async (request, response) => {
             const body = await readJsonBody(request)
@@ -251,6 +385,29 @@ describe("HTTP MCP tool bindings", () => {
                 id: "macro",
                 url: server.url,
             }],
+            logger: createLogger({ minLevel: "fatal" }),
+        })
+
+        expect(new Set(tools.map((tool) => tool.name)).size).toBe(2)
+        expect(tools.map((tool) => tool.name).every((name) => name.length <= 64)).toBe(true)
+    })
+
+    it("does not collide names for distinct raw names that sanitize to the same slug", async () => {
+        const firstServer = await createSingleToolServer("search")
+        const secondServer = await createSingleToolServer("search")
+        servers.push(firstServer, secondServer)
+
+        const tools = await createHttpMcpToolBindings({
+            providers: [
+                {
+                    id: "macro.ai",
+                    url: firstServer.url,
+                },
+                {
+                    id: "macro-ai",
+                    url: secondServer.url,
+                },
+            ],
             logger: createLogger({ minLevel: "fatal" }),
         })
 
@@ -399,6 +556,42 @@ describe("HTTP MCP tool bindings", () => {
         })
         servers.push(server)
         return server.url
+    }
+
+    async function createSingleToolServer(toolName: string): Promise<{ url: string; close: () => void }> {
+        return await startMcpServer(async (request, response) => {
+            const body = await readJsonBody(request)
+
+            if (body.method === "initialize") {
+                writeJsonRpc(response, body.id, {
+                    protocolVersion: "2025-03-26",
+                    capabilities: {},
+                    serverInfo: { name: "single-tool-server", version: "1.0.0" },
+                })
+                return
+            }
+
+            if (body.method === "notifications/initialized") {
+                response.writeHead(202)
+                response.end()
+                return
+            }
+
+            if (body.method === "tools/list") {
+                writeJsonRpc(response, body.id, {
+                    tools: [{
+                        name: toolName,
+                        inputSchema: {
+                            type: "object",
+                            properties: {},
+                        },
+                    }],
+                })
+                return
+            }
+
+            writeJsonRpc(response, body.id, { content: [] })
+        })
     }
 })
 

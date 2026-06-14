@@ -271,7 +271,7 @@ export class ToolExecutionEngine {
         if (!toolBinding) {
             const content = JSON.stringify({ error: `Unknown tool: ${args.toolName}` })
             this.config.logger.warn("Agent called unknown tool", { toolName: args.toolName })
-            const degradedWarning = this.recordValidationFailure(args.toolName, content, "unknown tool")
+            const degradedWarning = this.recordValidationFailureWithoutBinding(args.toolName, content, "unknown tool")
             return { status: "invalid", content, degradedWarning }
         }
 
@@ -286,7 +286,7 @@ export class ToolExecutionEngine {
                 toolName: args.toolName,
                 raw: args.rawInput,
             })
-            const degradedWarning = this.recordValidationFailure(args.toolName, content, "invalid arguments loop")
+            const degradedWarning = this.recordValidationFailureWithoutBinding(args.toolName, content, "invalid arguments loop")
             return { status: "invalid", content, degradedWarning }
         }
 
@@ -297,7 +297,7 @@ export class ToolExecutionEngine {
                 toolName: args.toolName,
                 error: validation.error,
             })
-            const degradedWarning = this.recordValidationFailure(
+            const degradedWarning = this.recordValidationFailureWithBinding(
                 args.toolName,
                 toolBinding,
                 normalizeToolErrorSignature(content),
@@ -314,24 +314,34 @@ export class ToolExecutionEngine {
         }
     }
 
-    private recordValidationFailure(
+    private recordValidationFailureWithoutBinding(
         toolName: string,
-        toolBindingOrSignature: ToolBinding | string,
-        signatureOrReason: string,
-        repeatedReasonOrFatalContent?: string,
-        fatalContentOverride?: string
+        signature: string,
+        repeatedReason: string,
+        fatalContent = signature
     ): string | undefined {
-        const hasToolBinding = typeof toolBindingOrSignature !== "string"
-        const toolBinding = hasToolBinding ? toolBindingOrSignature : undefined
-        const signature = hasToolBinding ? signatureOrReason : toolBindingOrSignature
-        const repeatedReason = hasToolBinding ? repeatedReasonOrFatalContent ?? "" : signatureOrReason
-        const fatalContent = hasToolBinding ? fatalContentOverride ?? signature : repeatedReasonOrFatalContent ?? signature
         const repeatedError = recordRepeatedToolError(this.repeatedToolErrors, toolName, signature)
         if (repeatedError < this.maxRepeatedToolErrors) {
             return undefined
         }
 
-        if (toolBinding && isResearchTool(toolBinding)) {
+        this.setFatalFault(toolName, fatalContent, `repeated identical ${toolName} tool error`)
+        return undefined
+    }
+
+    private recordValidationFailureWithBinding(
+        toolName: string,
+        toolBinding: ToolBinding,
+        signature: string,
+        repeatedReason: string,
+        fatalContent = signature
+    ): string | undefined {
+        const repeatedError = recordRepeatedToolError(this.repeatedToolErrors, toolName, signature)
+        if (repeatedError < this.maxRepeatedToolErrors) {
+            return undefined
+        }
+
+        if (isResearchTool(toolBinding)) {
             this.degradedResearchToolFailureCount++
             this.degradedResearchRetryCount += repeatedError
             this.degradedResearchReasons.add(`${toolName}: ${repeatedReason}`)

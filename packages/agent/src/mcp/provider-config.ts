@@ -45,8 +45,8 @@ function resolveJsonMcpProviders(input: ResolveMcpProviderConfigsInput): HttpMcp
 }
 
 function resolveSingleMcpProvider(input: ResolveMcpProviderConfigsInput): HttpMcpProviderConfig[] {
-    const url = input.secrets.MCP_SERVER_URL
-    const token = input.secrets.MCP_SERVER_TOKEN ?? undefined
+    const url = readOptionalString(input.secrets.MCP_SERVER_URL)
+    const token = readOptionalString(input.secrets.MCP_SERVER_TOKEN)
     if (!url) {
         if (token) {
             input.logger?.warn("MCP server token ignored because MCP_SERVER_URL is not configured")

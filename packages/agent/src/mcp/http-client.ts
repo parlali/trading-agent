@@ -359,6 +359,13 @@ function validateToolsCallResult(providerId: string, toolName: string, value: un
     if (record.content !== undefined && !Array.isArray(record.content)) {
         throw new Error(`MCP provider ${providerId} returned malformed tools/call content for ${toolName}`)
     }
+    if (record.content !== undefined) {
+        for (const item of record.content) {
+            if (!item || typeof item !== "object" || Array.isArray(item)) {
+                throw new Error(`MCP provider ${providerId} returned malformed tools/call content for ${toolName}`)
+            }
+        }
+    }
 
     if (record.isError !== undefined && typeof record.isError !== "boolean") {
         throw new Error(`MCP provider ${providerId} returned malformed tools/call isError for ${toolName}`)

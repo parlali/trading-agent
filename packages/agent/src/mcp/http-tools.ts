@@ -143,14 +143,51 @@ function normalizeMcpInputSchema(schema: Record<string, unknown> | undefined): R
         return null
     }
 
-    if (!schema.type) {
-        return {
+    const normalized = schema.type
+        ? schema
+        : {
             ...schema,
             type: "object",
         }
+
+    return hasValidObjectSchemaFields(normalized)
+        ? normalized
+        : null
+}
+
+function hasValidObjectSchemaFields(schema: Record<string, unknown>): boolean {
+    if (schema.properties !== undefined && !isSchemaProperties(schema.properties)) {
+        return false
     }
 
-    return schema
+    if (schema.required !== undefined && !isStringArray(schema.required)) {
+        return false
+    }
+
+    if (schema.additionalProperties !== undefined && !isAdditionalPropertiesSchema(schema.additionalProperties)) {
+        return false
+    }
+
+    return true
+}
+
+function isSchemaProperties(value: unknown): boolean {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+        return false
+    }
+
+    return Object.values(value as Record<string, unknown>).every((entry) =>
+        Boolean(entry) && typeof entry === "object" && !Array.isArray(entry)
+    )
+}
+
+function isStringArray(value: unknown): boolean {
+    return Array.isArray(value) && value.every((entry) => typeof entry === "string")
+}
+
+function isAdditionalPropertiesSchema(value: unknown): boolean {
+    return typeof value === "boolean" ||
+        (Boolean(value) && typeof value === "object" && !Array.isArray(value))
 }
 
 function sanitizeToolNamePart(value: string): string {
@@ -163,7 +200,8 @@ function sanitizeToolNamePart(value: string): string {
 
 function buildMcpToolName(providerPart: string, toolPart: string, rawProviderId: string, rawToolName: string): string {
     const baseName = `mcp_${providerPart}_${toolPart}`
-    if (isValidOpenRouterToolName(baseName)) {
+    const sanitizationChanged = providerPart !== rawProviderId || toolPart !== rawToolName
+    if (!sanitizationChanged && isValidOpenRouterToolName(baseName)) {
         return baseName
     }
 
