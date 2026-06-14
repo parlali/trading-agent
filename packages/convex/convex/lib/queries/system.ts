@@ -2,7 +2,7 @@ import { query } from "../../_generated/server"
 import { v } from "convex/values"
 import { requireUser, requireServiceToken, requireUserOrServiceToken } from "../authGuards"
 import { createDefaultKillSwitchState } from "../killSwitchState"
-import { venueAppV } from "../validators"
+import { severityV, venueAppV } from "../validators"
 
 export const getSystemState = query({
     args: { serviceToken: v.optional(v.string()) },
@@ -67,6 +67,35 @@ export const getControlPlaneMetrics = query({
     handler: async (ctx, args) => {
         requireServiceToken(args.serviceToken)
         return await ctx.db.query("control_plane_metrics").collect()
+    },
+})
+
+export const getRecentAlerts = query({
+    args: {
+        serviceToken: v.string(),
+        severity: v.optional(severityV),
+        acknowledged: v.optional(v.boolean()),
+        limit: v.optional(v.number()),
+    },
+    handler: async (ctx, args) => {
+        requireServiceToken(args.serviceToken)
+
+        const limit = Math.max(1, Math.min(args.limit ?? 20, 100))
+        const alerts = await ctx.db.query("alerts").order("desc").take(limit * 4)
+
+        return alerts
+            .filter((alert) => args.severity === undefined || alert.severity === args.severity)
+            .filter((alert) => args.acknowledged === undefined || alert.acknowledged === args.acknowledged)
+            .slice(0, limit)
+            .map((alert) => ({
+                id: String(alert._id),
+                strategyId: alert.strategyId ? String(alert.strategyId) : undefined,
+                app: alert.app,
+                severity: alert.severity,
+                message: alert.message,
+                acknowledged: alert.acknowledged,
+                timestamp: alert.timestamp,
+            }))
     },
 })
 

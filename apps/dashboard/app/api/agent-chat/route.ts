@@ -7,10 +7,10 @@ const MAX_CHAT_MESSAGE_LENGTH = 8_000
 const MAX_CHAT_ID_LENGTH = 160
 
 type ChatRequestBody = {
-    strategyId?: string
     message?: string
     chatSessionId?: string
     chatMessageId?: string
+    mode?: "general" | "portfolio" | "operations" | "mcp"
 }
 
 export async function GET(request: Request) {
@@ -33,9 +33,6 @@ export async function POST(request: Request) {
         await requireDashboardUser(request)
 
         const body = readChatRequestBody(await request.json())
-        if (!body.strategyId) {
-            return Response.json({ error: "strategyId is required for agent chat" }, { status: 400 })
-        }
         if (!body.message) {
             return Response.json({ error: "message is required for agent chat" }, { status: 400 })
         }
@@ -43,10 +40,10 @@ export async function POST(request: Request) {
         return await proxyBackendRequest("/agent-chat", {
             method: "POST",
             body: JSON.stringify({
-                strategyId: body.strategyId,
                 message: body.message,
                 chatSessionId: body.chatSessionId,
                 chatMessageId: body.chatMessageId,
+                mode: body.mode,
             }),
         })
     } catch (error) {
@@ -62,12 +59,33 @@ function readChatRequestBody(value: unknown): ChatRequestBody {
     }
 
     const body = value as Record<string, unknown>
+    rejectUnknownFields(body, ["message", "chatSessionId", "chatMessageId", "mode"])
+
     return {
-        strategyId: readBoundedString(body.strategyId, "strategyId", MAX_CHAT_ID_LENGTH),
         message: readBoundedString(body.message, "message", MAX_CHAT_MESSAGE_LENGTH),
         chatSessionId: readBoundedString(body.chatSessionId, "chatSessionId", MAX_CHAT_ID_LENGTH),
         chatMessageId: readBoundedString(body.chatMessageId, "chatMessageId", MAX_CHAT_ID_LENGTH),
+        mode: readChatMode(body.mode),
     }
+}
+
+function rejectUnknownFields(body: Record<string, unknown>, allowed: string[]): void {
+    const allowedFields = new Set(allowed)
+    const unknown = Object.keys(body).filter((field) => !allowedFields.has(field))
+    if (unknown.length > 0) {
+        throw new Error(`Unsupported agent chat field(s): ${unknown.join(", ")}`)
+    }
+}
+
+function readChatMode(value: unknown): ChatRequestBody["mode"] {
+    if (value === undefined || value === null || value === "") {
+        return undefined
+    }
+    if (value === "general" || value === "portfolio" || value === "operations" || value === "mcp") {
+        return value
+    }
+
+    throw new Error("mode must be one of general, portfolio, operations, or mcp")
 }
 
 function readBoundedString(value: unknown, field: string, maxLength: number): string | undefined {

@@ -51,6 +51,57 @@ export const getPortfolioFreshness = query({
     },
 })
 
+export const getPortfolioAccountSnapshots = query({
+    args: {
+        serviceToken: v.optional(v.string()),
+        app: v.optional(venueAppV),
+        accountId: v.optional(v.string()),
+    },
+    handler: async (ctx, args) => {
+        await requireUserOrServiceToken(ctx, args.serviceToken)
+
+        const rows = args.app
+            ? await ctx.db
+                .query("account_snapshots")
+                .withIndex(
+                    args.accountId ? "by_app_account" : "by_app",
+                    (q) => args.accountId
+                        ? q.eq("app", args.app!).eq("accountId", args.accountId!)
+                        : q.eq("app", args.app!)
+                )
+                .collect()
+            : await ctx.db.query("account_snapshots").collect()
+
+        const latestByAccount = new Map<string, typeof rows[number]>()
+        for (const row of rows) {
+            const key = `${row.app}:${row.accountId ?? "unassigned"}`
+            const existing = latestByAccount.get(key)
+            if (!existing || row.timestamp > existing.timestamp) {
+                latestByAccount.set(key, row)
+            }
+        }
+
+        return Array.from(latestByAccount.values())
+            .sort((left, right) =>
+                left.app.localeCompare(right.app) ||
+                (left.accountId ?? "unassigned").localeCompare(right.accountId ?? "unassigned")
+            )
+            .map((row) => ({
+                app: row.app,
+                accountId: row.accountId ?? "unassigned",
+                venue: row.venue,
+                balance: row.balance,
+                equity: row.equity ?? (row.balance + row.openPnl),
+                buyingPower: row.buyingPower,
+                marginUsed: row.marginUsed,
+                marginAvailable: row.marginAvailable,
+                openPnl: row.openPnl,
+                dayPnl: row.dayPnl,
+                timestamp: row.timestamp,
+            }))
+    },
+})
+
 export const getPortfolioPositions = query({
     args: {
         serviceToken: v.optional(v.string()),

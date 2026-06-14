@@ -266,9 +266,32 @@ export interface StrategyOwnershipScopeRow {
 
 export type PortfolioFreshnessRow = PortfolioFreshness
 
+export interface PortfolioAccountSnapshotRow extends AccountState {
+    app: Exclude<App, "backend">
+    accountId: string
+    venue: string
+    timestamp: number
+}
+
 export type ProviderPositionRow = PortfolioPosition
 
 export type ProviderPendingOrderRow = PortfolioPendingOrder
+
+export interface AlertRow {
+    id: string
+    strategyId?: string
+    app?: App
+    severity: "critical" | "warning" | "info"
+    message: string
+    acknowledged: boolean
+    timestamp: number
+}
+
+export interface GetRecentAlertsArgs {
+    severity?: AlertRow["severity"]
+    acknowledged?: boolean
+    limit?: number
+}
 
 export interface StrategyRiskStateRow extends StrategyRiskState {
     strategyId: string
@@ -520,6 +543,7 @@ export interface TradingBackendClient extends TradeEventLogger, AgentMessageLogg
     getSystemState(): Promise<KillSwitchState>
     getControlPlaneMetrics(): Promise<ControlPlaneMetricRow[]>
     getPortfolioFreshness(app?: Exclude<App, "backend">, accountId?: string): Promise<PortfolioFreshnessRow[]>
+    getPortfolioAccountSnapshots(app?: Exclude<App, "backend">, accountId?: string): Promise<PortfolioAccountSnapshotRow[]>
     getStrategyRiskState(strategyId: Id<"strategies">): Promise<StrategyRiskStateRow | null>
     getStrategyExecutionSafetyFaults(
         strategyId: Id<"strategies">,
@@ -534,6 +558,7 @@ export interface TradingBackendClient extends TradeEventLogger, AgentMessageLogg
         instruments: string[]
     ): Promise<AdoptProviderPositionsResult>
     getManualRunRequests(app: Exclude<App, "backend">): Promise<ManualRunRequest[]>
+    getRecentAlerts(args?: GetRecentAlertsArgs): Promise<AlertRow[]>
     claimManualRunRequests(args: ClaimManualRunRequestsArgs): Promise<ClaimManualRunRequestsResult>
     ackManualRunRequest(args: AckManualRunRequestArgs): Promise<AckManualRunRequestResult>
     clearManualRunRequest(requestId: Id<"manual_run_requests">): Promise<void>

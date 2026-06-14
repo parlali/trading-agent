@@ -112,13 +112,26 @@ Persist `CODEX_HOME` for backend containers. The backend image defaults to `/var
 
 ### Agent Chat
 
-Dashboard `/chat` proxies chat requests to the backend's scheduled-run runtime. Configure the dashboard server runtime with:
+Dashboard `/chat` is a global owner chat with the trading agent. It does not require a configured strategy, does not accept `strategyId`, and does not call `runStrategy(..., "chat")`. The dashboard API route authenticates the Convex dashboard user first, then proxies the bounded chat request to backend `/agent-chat` with `BACKEND_SERVICE_TOKEN`.
+
+Configure the dashboard server runtime with:
 
 - `BACKEND_URL`
 - `BACKEND_SERVICE_TOKEN`
-- `AGENT_CHAT_MODEL`
 
-The backend executes the chat model through the Vercel AI SDK, so keep the selected model's AI SDK credentials on the backend runtime, for example `AI_GATEWAY_API_KEY` for AI Gateway model ids. It must also use the same runtime config as scheduled strategies: `CONVEX_URL`, `BACKEND_SERVICE_TOKEN`, provider credentials resolved from Convex env vars, and the active Codex ChatGPT login when the selected strategy uses Codex. MCP tools are resolved from Convex/backend runtime secrets through `MCP_PROVIDER_CONFIGS` or `MCP_SERVER_URL`/`MCP_SERVER_TOKEN`; do not put MCP bearer tokens in public or client-side dashboard env. Each assistant turn creates a Convex `manual` run so execution tools, order persistence, and safety faults have a valid audit scope.
+Configure the backend runtime with:
+
+- `CONVEX_URL`
+- `BACKEND_SERVICE_TOKEN`
+- `AGENT_CHAT_MODEL`
+- `AI_GATEWAY_API_KEY`
+- MCP config through Convex/backend secrets: `MCP_PROVIDER_CONFIGS` or `MCP_SERVER_URL`/`MCP_SERVER_TOKEN`
+
+The backend resolves the model server-side through the Vercel AI SDK AI Gateway provider. The browser must not send model ids, raw UI message history, or tool outputs as trusted execution state. Backend `/agent-chat` accepts only the user message, optional chat/session ids, and optional visible mode/scope.
+
+The backend streams AI SDK UI messages directly to the dashboard, including assistant text, reasoning parts when the provider supports them, tool input lifecycle, tool results, and tool errors. Stop generation aborts provider streaming and tool execution without creating strategy-run failures.
+
+Chat tools are separate from scheduled strategy runtime. The current chat registry exposes read-only operational, account, portfolio, run, alert, provider-health, and configured MCP tools. MCP bearer tokens stay on the backend and are never returned to the browser. Execution-capable manual trading tools are intentionally not exposed until a chat-specific typed path preserves adapter identity, Convex persistence, deterministic accounting, safety fault recording, and provider-truth reconciliation.
 
 Run the same app-server and MCP path used by scheduled dry-run strategies before enabling any Codex strategy:
 

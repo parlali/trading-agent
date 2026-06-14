@@ -19,6 +19,7 @@ import type {
     AdoptProviderPositionsResult,
     AckManualRunRequestArgs,
     AckManualRunRequestResult,
+    AlertRow,
     CascadeDeleteCounts,
     ClearFullResetStateBatchResult,
     ClaimManualRunRequestsArgs,
@@ -34,10 +35,12 @@ import type {
     CodexChatGptAuthRecord,
     ExecutionSafetyFaultRow,
     FullResetAudit,
+    GetRecentAlertsArgs,
     KillSwitchState,
     LastCompletedRunSummary,
     ManualRunRequest,
     PortfolioFreshnessRow,
+    PortfolioAccountSnapshotRow,
     ProviderPendingOrderRow,
     ProviderPortfolioReconciliationResult,
     ProviderPositionRow,
@@ -607,6 +610,19 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
                 } as never) as PortfolioFreshnessRow[]
             )
         },
+        async getPortfolioAccountSnapshots(
+            app?: Exclude<App, "backend">,
+            accountId?: string
+        ): Promise<PortfolioAccountSnapshotRow[]> {
+            return await runWithTimeout(
+                "Convex query getPortfolioAccountSnapshots",
+                async () => await client.query(api.queries.getPortfolioAccountSnapshots, {
+                    ...requireMachineAuth(),
+                    app,
+                    accountId,
+                } as never) as PortfolioAccountSnapshotRow[]
+            )
+        },
         async getStrategyRiskState(strategyId: Id<"strategies">): Promise<StrategyRiskStateRow | null> {
             const row = await runWithTimeout(
                 "Convex query getStrategyRiskState",
@@ -692,6 +708,17 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
             return await runWithTimeout(
                 "Convex query getManualRunRequests",
                 async () => await client.query(api.queries.getManualRunRequests, { ...requireMachineAuth(), app } as never) as ManualRunRequest[]
+            )
+        },
+        async getRecentAlerts(args: GetRecentAlertsArgs = {}): Promise<AlertRow[]> {
+            return await runWithTimeout(
+                "Convex query getRecentAlerts",
+                async () => await client.query(api.queries.getRecentAlerts, {
+                    ...requireMachineAuth(),
+                    severity: args.severity,
+                    acknowledged: args.acknowledged,
+                    limit: args.limit,
+                } as never) as AlertRow[]
             )
         },
         async claimManualRunRequests(args: ClaimManualRunRequestsArgs): Promise<ClaimManualRunRequestsResult> {

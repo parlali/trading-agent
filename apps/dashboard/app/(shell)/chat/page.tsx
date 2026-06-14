@@ -24,26 +24,33 @@ import {
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
 import { Badge } from "@/components/ui/badge"
-import {
-    Select,
-    SelectContent,
-    SelectItem,
-    SelectTrigger,
-    SelectValue,
-} from "@/components/ui/select"
 import { MarkdownContent } from "@/components/markdown-content"
 import { cn } from "@/lib/utils"
 
 type ToolInventoryResponse = {
     ok: boolean
     error?: string
-    strategies?: Array<{
-        id: string
-        app: string
-        accountId: string
+    model?: {
+        provider: "ai-gateway"
+        configured: boolean
+    }
+    tools?: Array<{
         name: string
-        enabled: boolean
+        category?: string
+        contractBoundary?: string
+        contractOwner?: string
+        description: string
+        outputDescription?: string
+        errorSemantics?: string
     }>
+    mcpProviders?: Array<{
+        id: string
+        toolCount: number
+    }>
+    manualTrading?: {
+        enabled: false
+        reason: string
+    }
 }
 
 type MessagePart = UIMessage["parts"][number]
@@ -51,12 +58,10 @@ type MessagePart = UIMessage["parts"][number]
 export default function AgentChatPage() {
     const authToken = useAuthToken()
     const [input, setInput] = useState("")
-    const [strategyId, setStrategyId] = useState<string>("")
     const [inventory, setInventory] = useState<ToolInventoryResponse | null>(null)
     const [inventoryLoading, setInventoryLoading] = useState(false)
     const [inventoryError, setInventoryError] = useState<string | null>(null)
     const parentRef = useRef<HTMLDivElement | null>(null)
-    const previousStrategyRef = useRef<string>("")
     const chatTransport = useMemo(() => new DefaultChatTransport({
         api: "/api/agent-chat",
         prepareSendMessagesRequest({ messages, id, messageId }) {
@@ -69,19 +74,18 @@ export default function AgentChatPage() {
                     "authorization": `Bearer ${authToken}`,
                 },
                 body: {
-                    strategyId,
                     message: readLatestUserText(messages),
                     chatSessionId: id,
                     chatMessageId: messageId ?? messages[messages.length - 1]?.id,
+                    mode: "general",
                 },
             }
         },
-    }), [authToken, strategyId])
+    }), [authToken])
 
     const {
         messages,
         sendMessage,
-        setMessages,
         stop,
         status,
         error,
@@ -99,14 +103,12 @@ export default function AgentChatPage() {
 
     const virtualItems = rowVirtualizer.getVirtualItems()
     const isRunning = status === "submitted" || status === "streaming"
-    const runtimeStrategies = useMemo(
-        () => inventory?.strategies ?? [],
+    const runtimeTools = useMemo(
+        () => inventory?.tools ?? [],
         [inventory]
     )
-    const selectedStrategy = runtimeStrategies.find((strategy) => strategy.id === strategyId)
-    const canSubmit = input.trim().length > 0 && !isRunning && Boolean(strategyId) && Boolean(authToken)
-
-    const runtimeStrategyCount = inventory?.strategies?.length ?? 0
+    const mcpProviders = inventory?.mcpProviders ?? []
+    const canSubmit = input.trim().length > 0 && !isRunning && Boolean(authToken)
 
     const loadInventory = useCallback(async () => {
         if (!authToken) {
@@ -144,35 +146,6 @@ export default function AgentChatPage() {
     }, [loadInventory])
 
     useEffect(() => {
-        if (runtimeStrategies.length === 0) {
-            setStrategyId("")
-            return
-        }
-
-        if (!runtimeStrategies.some((strategy) => strategy.id === strategyId)) {
-            setStrategyId(runtimeStrategies[0]!.id)
-        }
-    }, [runtimeStrategies, strategyId])
-
-    useEffect(() => {
-        if (!strategyId) {
-            previousStrategyRef.current = ""
-            return
-        }
-
-        if (!previousStrategyRef.current) {
-            previousStrategyRef.current = strategyId
-            return
-        }
-
-        if (previousStrategyRef.current !== strategyId) {
-            previousStrategyRef.current = strategyId
-            setInput("")
-            setMessages([])
-        }
-    }, [strategyId, setMessages])
-
-    useEffect(() => {
         if (messages.length > 0) {
             rowVirtualizer.scrollToIndex(messages.length - 1, { align: "end" })
         }
@@ -196,22 +169,10 @@ export default function AgentChatPage() {
                     <div className="min-w-0">
                         <h1 className="text-sm font-semibold">Agent Chat</h1>
                         <p className="truncate text-xs text-muted-foreground">
-                            {selectedStrategy ? `${selectedStrategy.name} · ${selectedStrategy.app}:${selectedStrategy.accountId}` : "Select a scheduled strategy"}
+                            Global owner chat across configured broker, portfolio, and MCP read tools
                         </p>
                     </div>
                     <div className="flex items-center gap-2">
-                        <Select value={strategyId} onValueChange={setStrategyId} disabled={isRunning || runtimeStrategies.length === 0}>
-                            <SelectTrigger size="sm" className="w-[260px]">
-                                <SelectValue placeholder="Select strategy" />
-                            </SelectTrigger>
-                            <SelectContent>
-                                {runtimeStrategies.map((strategy) => (
-                                    <SelectItem key={strategy.id} value={strategy.id}>
-                                        {strategy.name}
-                                    </SelectItem>
-                                ))}
-                            </SelectContent>
-                        </Select>
                         <Badge variant={isRunning ? "secondary" : "outline"} className="text-[10px] capitalize">
                             {status}
                         </Badge>
@@ -285,7 +246,7 @@ export default function AgentChatPage() {
                 <div className="flex items-center justify-between gap-2 border-b border-border-subtle px-4 py-3">
                     <div>
                         <h2 className="text-sm font-semibold">Runtime</h2>
-                        <p className="text-xs text-muted-foreground">{runtimeStrategyCount} registered strategies</p>
+                        <p className="text-xs text-muted-foreground">{runtimeTools.length} exposed chat tools</p>
                     </div>
                     <Button
                         type="button"
@@ -309,15 +270,44 @@ export default function AgentChatPage() {
                     {inventory ? (
                         <>
                             <div className="rounded-md border border-border-subtle p-3 text-xs">
-                                <div className="font-medium">Scheduled-run runtime</div>
+                                <div className="font-medium">Agent chat runtime</div>
                                 <p className="mt-1 leading-relaxed text-muted-foreground">
-                                    Each message is assembled in the backend from the selected strategy's scheduled-run context, tool pool, plugin extras, and MCP tools.
+                                    Model resolution, MCP credentials, broker/account reads, and portfolio tools stay on the backend.
                                 </p>
+                                <div className="mt-3 grid grid-cols-2 gap-2">
+                                    <RuntimeStat label="Model" value={inventory.model?.configured ? inventory.model.provider : "unconfigured"} />
+                                    <RuntimeStat label="MCP" value={`${mcpProviders.length} provider${mcpProviders.length === 1 ? "" : "s"}`} />
+                                </div>
+                            </div>
+
+                            <div className="rounded-md border border-border-subtle p-3 text-xs">
+                                <div className="font-medium">MCP Providers</div>
                                 <div className="mt-2 space-y-2">
-                                    {inventory.strategies?.map((strategy) => (
-                                        <div key={strategy.id} className="rounded-md bg-muted/30 p-2">
-                                            <div className="font-medium">{strategy.name}</div>
-                                            <div className="mt-1 text-muted-foreground">{strategy.app}:{strategy.accountId}</div>
+                                    {mcpProviders.length === 0 ? (
+                                        <p className="text-muted-foreground">No MCP providers configured.</p>
+                                    ) : mcpProviders.map((provider) => (
+                                        <div key={provider.id} className="rounded-md bg-muted/30 p-2">
+                                            <div className="font-medium">{provider.id}</div>
+                                            <div className="mt-1 text-muted-foreground">{provider.toolCount} tool{provider.toolCount === 1 ? "" : "s"}</div>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+
+                            <div className="rounded-md border border-border-subtle p-3 text-xs">
+                                <div className="font-medium">Tools</div>
+                                <div className="mt-2 space-y-2">
+                                    {runtimeTools.map((toolEntry) => (
+                                        <div key={toolEntry.name} className="rounded-md bg-muted/30 p-2">
+                                            <div className="flex items-center gap-2">
+                                                <span className="min-w-0 truncate font-medium">{toolEntry.name}</span>
+                                                {toolEntry.category ? (
+                                                    <Badge variant="outline" className="ml-auto text-[10px]">
+                                                        {toolEntry.category}
+                                                    </Badge>
+                                                ) : null}
+                                            </div>
+                                            <p className="mt-1 line-clamp-2 text-muted-foreground">{toolEntry.description}</p>
                                         </div>
                                     ))}
                                 </div>
@@ -326,6 +316,15 @@ export default function AgentChatPage() {
                     ) : null}
                 </div>
             </aside>
+        </div>
+    )
+}
+
+function RuntimeStat({ label, value }: { label: string, value: string }) {
+    return (
+        <div className="rounded-md bg-muted/30 p-2">
+            <div className="text-[10px] font-medium uppercase tracking-normal text-muted-foreground">{label}</div>
+            <div className="mt-1 truncate font-medium">{value}</div>
         </div>
     )
 }
@@ -361,8 +360,8 @@ function EmptyChat() {
                 </div>
                 <div className="mt-3 grid gap-2 text-xs text-muted-foreground sm:grid-cols-3">
                     <PromptChip text="What system prompt and MCP server instructions can you see?" />
-                    <PromptChip text="List every tool available to you with its expected input." />
-                    <PromptChip text="Call a harmless read-only tool and explain the raw result." />
+                    <PromptChip text="List available broker and portfolio read tools." />
+                    <PromptChip text="Inspect MCP inventory and explain what is configured." />
                 </div>
             </div>
         </div>

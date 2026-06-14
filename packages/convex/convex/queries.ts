@@ -45,6 +45,7 @@ export {
 
 export {
     getPortfolioFreshness,
+    getPortfolioAccountSnapshots,
     getPortfolioPositions,
     getPortfolioPendingOrders,
     getPortfolioTradeHistory,
@@ -57,6 +58,7 @@ export {
     assertDashboardUser,
     getManualRunRequests,
     getControlPlaneMetrics,
+    getRecentAlerts,
     getFullResetAudit,
 } from "./lib/queries/system"
 
