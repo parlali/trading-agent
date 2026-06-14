@@ -15,6 +15,7 @@ import { startManualRunPolling, stopManualRunPolling } from "./manual-runs"
 import { performStartupSync, startPeriodicSync, stopPeriodicSync } from "./sync"
 import { writeHeartbeatSnapshot } from "./health-write"
 import { createCodexOAuthControlHandler } from "./codex-oauth"
+import { handleAgentChatRequest } from "./agent-chat"
 import {
     persistCodexChatGptAuthToControlPlane,
     restoreCodexChatGptAuthFromControlPlane,
@@ -98,7 +99,7 @@ function startHealthServer(scheduler: Scheduler): void {
             lastRunSummary: healthState.lastRunSummary,
             lastRunError: healthState.lastRunError,
         }),
-        handleRequest: createCodexOAuthControlHandler({
+        handleRequest: createBackendControlHandler(createCodexOAuthControlHandler({
             serviceToken: backendServiceToken,
             logger,
             persistChatGptAuth: async (auth) => {
@@ -108,8 +109,16 @@ function startHealthServer(scheduler: Scheduler): void {
                     logger,
                 })
             },
-        }),
+        })),
     })
+}
+
+function createBackendControlHandler(
+    codexOAuthHandler: (request: Request) => Response | Promise<Response | undefined> | undefined
+) {
+    return async (request: Request) =>
+        await handleAgentChatRequest(request) ??
+        await codexOAuthHandler(request)
 }
 
 function wireShutdown(scheduler: Scheduler): void {

@@ -26,13 +26,14 @@
         "codex:rollout-audit": "bun scripts/codex-rollout-audit-export.ts"
     },
     "dependencies": {
-        "@valiq-trading/core": "workspace:*",
         "@valiq-trading/agent": "workspace:*",
-        "@valiq-trading/convex": "workspace:*",
         "@valiq-trading/alpaca-options": "workspace:*",
-        "@valiq-trading/polymarket": "workspace:*",
+        "@valiq-trading/convex": "workspace:*",
+        "@valiq-trading/core": "workspace:*",
         "@valiq-trading/mt5": "workspace:*",
         "@valiq-trading/okx": "workspace:*",
+        "@valiq-trading/polymarket": "workspace:*",
+        "ai": "^6.0.205",
         "viem": "^2.21.0",
         "zod": "^4.3.6"
     }

@@ -15,6 +15,7 @@ import {
     LayoutDashboard,
     ListChecks,
     LogOut,
+    MessageCircle,
     Moon,
     Monitor,
     Plug,
@@ -46,6 +47,7 @@ const mainItems = [
     { label: "Strategies", href: "/strategies", icon: Settings2 },
     { label: "Schedule", href: "/schedule", icon: Calendar },
     { label: "Runs", href: "/runs", icon: History },
+    { label: "Chat", href: "/chat", icon: MessageCircle },
     { label: "Integrations", href: "/integrations", icon: Plug },
     { label: "Test", href: "/test", icon: ListChecks },
 ]

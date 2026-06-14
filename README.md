@@ -110,6 +110,16 @@ Scheduled Codex strategies must use `authMode = "chatgpt"`. Open Dashboard > Int
 
 Persist `CODEX_HOME` for backend containers. The backend image defaults to `/var/lib/valiq/codex`; mount that directory to durable storage so restarts keep the ChatGPT login. Do not store ChatGPT OAuth cache files, access tokens, or API keys in Convex strategy config or logs.
 
+### Agent Chat
+
+Dashboard `/chat` proxies chat requests to the backend's scheduled-run runtime. Configure the dashboard server runtime with:
+
+- `BACKEND_URL`
+- `BACKEND_SERVICE_TOKEN`
+- `AGENT_CHAT_MODEL`
+
+The backend executes the chat model through the Vercel AI SDK, so keep the selected model's AI SDK credentials on the backend runtime, for example `AI_GATEWAY_API_KEY` for AI Gateway model ids. It must also use the same runtime config as scheduled strategies: `CONVEX_URL`, `BACKEND_SERVICE_TOKEN`, provider credentials resolved from Convex env vars, and the active Codex ChatGPT login when the selected strategy uses Codex. MCP tools are resolved from Convex/backend runtime secrets through `MCP_PROVIDER_CONFIGS` or `MCP_SERVER_URL`/`MCP_SERVER_TOKEN`; do not put MCP bearer tokens in public or client-side dashboard env. Each assistant turn creates a Convex `manual` run so execution tools, order persistence, and safety faults have a valid audit scope.
+
 Run the same app-server and MCP path used by scheduled dry-run strategies before enabling any Codex strategy:
 
 ```bash
