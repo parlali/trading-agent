@@ -59,11 +59,22 @@ type ToolInventoryResponse = {
         role: "user" | "assistant"
         content: string
         status: "received" | "completed" | "cancelled" | "failed"
+        reasoning?: string
         error?: string
+        toolEvents?: Array<{
+            toolCallId: string
+            toolName: string
+            state: "input" | "result" | "error"
+            input?: unknown
+            output?: unknown
+            error?: string
+        }>
     }>
 }
 
 type MessagePart = UIMessage["parts"][number]
+type ServerChatMessage = NonNullable<ToolInventoryResponse["messages"]>[number]
+type ServerToolEvent = NonNullable<ServerChatMessage["toolEvents"]>[number]
 const CHAT_SESSION_STORAGE_KEY = "dashboard-agent-chat-session-id"
 
 export default function AgentChatPage() {
@@ -74,6 +85,7 @@ export default function AgentChatPage() {
     const [inventoryLoading, setInventoryLoading] = useState(false)
     const [inventoryError, setInventoryError] = useState<string | null>(null)
     const parentRef = useRef<HTMLDivElement | null>(null)
+    const isRunningRef = useRef(false)
     const chatTransport = useMemo(() => new DefaultChatTransport({
         api: "/api/agent-chat",
         prepareSendMessagesRequest({ messages, id, messageId }) {
@@ -124,7 +136,13 @@ export default function AgentChatPage() {
     const mcpProviders = inventory?.mcpProviders ?? []
     const canSubmit = input.trim().length > 0 && !isRunning && Boolean(authToken)
 
-    const loadInventory = useCallback(async () => {
+    useEffect(() => {
+        isRunningRef.current = isRunning
+    }, [isRunning])
+
+    const loadInventory = useCallback(async (options: {
+        hydrateTranscript?: boolean
+    } = {}) => {
         if (!authToken) {
             setInventory(null)
             setInventoryError("Dashboard authentication is not ready")
@@ -135,7 +153,11 @@ export default function AgentChatPage() {
         setInventoryError(null)
 
         try {
-            const response = await fetch(`/api/agent-chat?chatSessionId=${encodeURIComponent(chatSessionId)}`, {
+            const hydrateTranscript = options.hydrateTranscript === true
+            const path = hydrateTranscript
+                ? `/api/agent-chat?chatSessionId=${encodeURIComponent(chatSessionId)}`
+                : "/api/agent-chat"
+            const response = await fetch(path, {
                 headers: {
                     "authorization": `Bearer ${authToken}`,
                 },
@@ -147,7 +169,7 @@ export default function AgentChatPage() {
             }
 
             setInventory(payload)
-            if (payload.messages) {
+            if (hydrateTranscript && payload.messages && !isRunningRef.current) {
                 setMessages(toUiMessages(payload.messages))
             }
         } catch (loadError) {
@@ -159,7 +181,7 @@ export default function AgentChatPage() {
     }, [authToken, chatSessionId, setMessages])
 
     useEffect(() => {
-        void loadInventory()
+        void loadInventory({ hydrateTranscript: true })
     }, [loadInventory])
 
     useEffect(() => {
@@ -270,7 +292,7 @@ export default function AgentChatPage() {
                         variant="outline"
                         size="icon-sm"
                         onClick={() => void loadInventory()}
-                        disabled={inventoryLoading || !authToken}
+                        disabled={inventoryLoading || !authToken || isRunning}
                         aria-label="Refresh MCP inventory"
                     >
                         <RefreshCw className={cn("h-3.5 w-3.5", inventoryLoading && "animate-spin")} />
@@ -369,33 +391,124 @@ function resolveDashboardChatSessionId(): string {
     return generated
 }
 
-function toUiMessages(messages: NonNullable<ToolInventoryResponse["messages"]>): UIMessage[] {
+function toUiMessages(messages: ServerChatMessage[]): UIMessage[] {
     return messages
         .map((message) => {
-            const text = readVisibleServerMessageText(message)
-            if (!text) {
+            const parts = buildServerMessageParts(message)
+            if (parts.length === 0) {
                 return null
             }
 
             return {
                 id: message.messageId,
                 role: message.role,
-                parts: [{
-                    type: "text" as const,
-                    text,
-                }],
+                parts,
             } satisfies UIMessage
         })
         .filter(isNonNullable)
 }
 
-function readVisibleServerMessageText(message: NonNullable<ToolInventoryResponse["messages"]>[number]): string {
+function buildServerMessageParts(message: ServerChatMessage): MessagePart[] {
+    const parts: MessagePart[] = []
+    if (message.role === "assistant" && message.reasoning?.trim()) {
+        parts.push({
+            type: "reasoning",
+            text: message.reasoning.trim(),
+            state: "done",
+        })
+    }
+    if (message.role === "assistant" && message.toolEvents) {
+        parts.push(...toToolParts(message.toolEvents))
+    }
+
+    const text = readVisibleServerMessageText(message)
+    if (text) {
+        parts.push({
+            type: "text",
+            text,
+            state: "done",
+        })
+    }
+
+    return parts
+}
+
+function toToolParts(events: ServerToolEvent[]): MessagePart[] {
+    const byCallId = new Map<string, ServerToolEvent[]>()
+    for (const event of events) {
+        const grouped = byCallId.get(event.toolCallId) ?? []
+        grouped.push(event)
+        byCallId.set(event.toolCallId, grouped)
+    }
+
+    return Array.from(byCallId.entries())
+        .map(([toolCallId, grouped]) => {
+            const inputEvent = findLastToolEvent(grouped, "input")
+            const resultEvent = findLastToolEvent(grouped, "result")
+            const errorEvent = findLastToolEvent(grouped, "error")
+            const latest = grouped[grouped.length - 1]
+            if (!latest) {
+                return null
+            }
+
+            const base = {
+                type: "dynamic-tool" as const,
+                toolCallId,
+                toolName: latest.toolName,
+            }
+
+            if (errorEvent) {
+                return {
+                    ...base,
+                    state: "output-error" as const,
+                    input: errorEvent.input ?? inputEvent?.input,
+                    errorText: errorEvent.error ?? "Tool execution failed",
+                } satisfies MessagePart
+            }
+            if (resultEvent) {
+                return {
+                    ...base,
+                    state: "output-available" as const,
+                    input: resultEvent.input ?? inputEvent?.input,
+                    output: resultEvent.output,
+                } satisfies MessagePart
+            }
+            if (inputEvent) {
+                return {
+                    ...base,
+                    state: "input-available" as const,
+                    input: inputEvent.input,
+                } satisfies MessagePart
+            }
+
+            return null
+        })
+        .filter(isNonNullable)
+}
+
+function findLastToolEvent(events: ServerToolEvent[], state: ServerToolEvent["state"]): ServerToolEvent | undefined {
+    for (let index = events.length - 1; index >= 0; index--) {
+        if (events[index]?.state === state) {
+            return events[index]
+        }
+    }
+
+    return undefined
+}
+
+function readVisibleServerMessageText(message: ServerChatMessage): string {
     const content = message.content.trim()
+    if (message.status === "failed") {
+        const terminal = message.error ? `Agent chat failed: ${message.error}` : "Agent chat failed."
+        return content ? `${content}\n\n${terminal}` : terminal
+    }
+    if (message.status === "cancelled") {
+        const terminal = "Agent chat was cancelled."
+        return content ? `${content}\n\n${terminal}` : terminal
+    }
+
     if (content) {
         return content
-    }
-    if (message.status === "failed" && message.error) {
-        return `Agent chat failed: ${message.error}`
     }
 
     return ""

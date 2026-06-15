@@ -358,6 +358,39 @@ describe("agent chat handler", () => {
         }))
     })
 
+    it("persists failed assistant turns when setup fails after the user prompt is stored", async () => {
+        const backend = createBackendMock({
+            getAgentChatMessages: vi.fn(async () => {
+                throw new Error("transcript unavailable")
+            }),
+        })
+
+        const stream = await createAgentChatUiMessageStream({
+            request: {
+                message: "Will setup fail?",
+                chatSessionId: "session-1",
+                chatMessageId: "message-setup-fail",
+            },
+            abortSignal: new AbortController().signal,
+            model: new MockLanguageModelV3(),
+            modelId: "test-model",
+            tradingBackend: backend,
+            logInfo: vi.fn(),
+            logError: vi.fn(),
+        })
+
+        const text = await createUIMessageStreamResponse({ stream }).text()
+
+        expect(text).toContain("transcript unavailable")
+        expect(backend.recordAgentChatAssistantMessage).toHaveBeenCalledWith(expect.objectContaining({
+            sessionId: "session-1",
+            messageId: "message-setup-fail:assistant",
+            status: "failed",
+            finishReason: "setup-error",
+            error: "transcript unavailable",
+        }))
+    })
+
     it("prevents handler execution when model tool input fails schema validation", async () => {
         const backend = createBackendMock()
         const toolRuntime = await buildAgentChatToolRuntime({
@@ -631,9 +664,10 @@ function finishChunk(unified: "stop" | "tool-calls"): TestStreamChunk {
 function createBackendMock(args: {
     accounts?: StoredAccount[]
     chatMessages?: AgentChatMessageRow[]
+    getAgentChatMessages?: TradingBackendClient["getAgentChatMessages"]
 } = {}) {
     const backend = {
-        getAgentChatMessages: vi.fn(async () => args.chatMessages ?? []),
+        getAgentChatMessages: args.getAgentChatMessages ?? vi.fn(async () => args.chatMessages ?? []),
         recordAgentChatUserMessage: vi.fn(async () => {}),
         recordAgentChatAssistantMessage: vi.fn(async () => {}),
         recordAgentChatToolEvent: vi.fn(async () => {}),

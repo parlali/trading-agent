@@ -180,8 +180,20 @@ export interface AgentChatMessageRow {
     finishReason?: string
     reasoning?: string
     error?: string
+    toolEvents?: AgentChatToolEventRow[]
     createdAt: number
     updatedAt: number
+}
+
+export interface AgentChatToolEventRow {
+    toolCallId: string
+    toolName: string
+    state: "input" | "result" | "error"
+    input?: unknown
+    output?: unknown
+    error?: string
+    durationMs?: number
+    createdAt: number
 }
 
 export interface RecordAgentChatUserMessageArgs {

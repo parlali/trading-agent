@@ -81,20 +81,11 @@ export async function createAgentChatUiMessageStream(
     return createUIMessageStream({
         execute: async ({ writer }) => {
             const chatIds = resolveChatIds(args.request)
-            await tradingBackend.recordAgentChatUserMessage({
-                sessionId: chatIds.sessionId,
-                messageId: chatIds.userMessageId,
-                content: args.request.message,
-                mode: args.request.mode,
-            })
-            const transcript = await tradingBackend.getAgentChatMessages(chatIds.sessionId, CHAT_TRANSCRIPT_LIMIT)
-            const toolRuntime = args.toolRuntime ?? await (args.buildToolRuntime ?? buildAgentChatToolRuntime)({
-                abortSignal: args.abortSignal,
-                tradingBackend,
-            })
             const assistantText: string[] = []
             const reasoningText: string[] = []
             let terminalAssistantRecorded = false
+            let terminalAssistantWrite: Promise<void> | undefined
+            let userMessageRecorded = false
             const recordTerminalAssistant = async (terminal: {
                 status: "completed" | "cancelled" | "failed"
                 finishReason: string
@@ -104,9 +95,18 @@ export async function createAgentChatUiMessageStream(
                 if (terminalAssistantRecorded) {
                     return
                 }
+                if (terminalAssistantWrite) {
+                    try {
+                        await terminalAssistantWrite
+                    } catch (error) {
+                        void error
+                    }
+                    if (terminalAssistantRecorded) {
+                        return
+                    }
+                }
 
-                terminalAssistantRecorded = true
-                await tradingBackend.recordAgentChatAssistantMessage({
+                terminalAssistantWrite = tradingBackend.recordAgentChatAssistantMessage({
                     sessionId: chatIds.sessionId,
                     messageId: chatIds.assistantMessageId,
                     content: terminal.content,
@@ -117,117 +117,159 @@ export async function createAgentChatUiMessageStream(
                     reasoning: joinOptional(reasoningText),
                     error: terminal.error,
                 })
+                    .then(() => {
+                        terminalAssistantRecorded = true
+                    })
+
+                try {
+                    await terminalAssistantWrite
+                } finally {
+                    if (!terminalAssistantRecorded) {
+                        terminalAssistantWrite = undefined
+                    }
+                }
             }
 
-            logInfo("Agent chat turn started", {
-                chatSessionId: chatIds.sessionId,
-                chatMessageId: chatIds.userMessageId,
-                mode: args.request.mode ?? "general",
-                tools: Object.keys(toolRuntime.tools),
-            })
-
-            const result = streamText({
-                model: resolvedModel.model,
-                system: buildAgentChatSystemPrompt(args.request, toolRuntime),
-                messages: buildTranscriptMessages(transcript, {
+            try {
+                await tradingBackend.recordAgentChatUserMessage({
+                    sessionId: chatIds.sessionId,
                     messageId: chatIds.userMessageId,
                     content: args.request.message,
-                }),
-                tools: toolRuntime.tools,
-                stopWhen: stepCountIs(CHAT_MAX_STEPS),
-                abortSignal: args.abortSignal,
-                timeout: CHAT_TIMEOUT_MS,
-                maxRetries: 0,
-                onChunk: async (event) => {
-                    const chunk = event.chunk as Record<string, unknown>
-                    if (chunk.type === "text-delta" && typeof chunk.text === "string") {
-                        assistantText.push(chunk.text)
-                        return
-                    }
-                    if (chunk.type === "reasoning-delta" && typeof chunk.text === "string") {
-                        reasoningText.push(chunk.text)
-                        return
-                    }
-                    if (chunk.type === "tool-call") {
-                        await tradingBackend.recordAgentChatToolEvent({
-                            sessionId: chatIds.sessionId,
-                            messageId: chatIds.assistantMessageId,
-                            toolCallId: readToolCallId(chunk),
-                            toolName: readToolName(chunk),
-                            state: "input",
-                            input: chunk.input,
+                    mode: args.request.mode,
+                })
+                userMessageRecorded = true
+                const transcript = await tradingBackend.getAgentChatMessages(chatIds.sessionId, CHAT_TRANSCRIPT_LIMIT)
+                const toolRuntime = args.toolRuntime ?? await (args.buildToolRuntime ?? buildAgentChatToolRuntime)({
+                    abortSignal: args.abortSignal,
+                    tradingBackend,
+                })
+
+                logInfo("Agent chat turn started", {
+                    chatSessionId: chatIds.sessionId,
+                    chatMessageId: chatIds.userMessageId,
+                    mode: args.request.mode ?? "general",
+                    tools: Object.keys(toolRuntime.tools),
+                })
+
+                const result = streamText({
+                    model: resolvedModel.model,
+                    system: buildAgentChatSystemPrompt(args.request, toolRuntime),
+                    messages: buildTranscriptMessages(transcript, {
+                        messageId: chatIds.userMessageId,
+                        content: args.request.message,
+                    }),
+                    tools: toolRuntime.tools,
+                    stopWhen: stepCountIs(CHAT_MAX_STEPS),
+                    abortSignal: args.abortSignal,
+                    timeout: CHAT_TIMEOUT_MS,
+                    maxRetries: 0,
+                    onChunk: async (event) => {
+                        const chunk = event.chunk as Record<string, unknown>
+                        if (chunk.type === "text-delta" && typeof chunk.text === "string") {
+                            assistantText.push(chunk.text)
+                            return
+                        }
+                        if (chunk.type === "reasoning-delta" && typeof chunk.text === "string") {
+                            reasoningText.push(chunk.text)
+                            return
+                        }
+                        if (chunk.type === "tool-call") {
+                            await tradingBackend.recordAgentChatToolEvent({
+                                sessionId: chatIds.sessionId,
+                                messageId: chatIds.assistantMessageId,
+                                toolCallId: readToolCallId(chunk),
+                                toolName: readToolName(chunk),
+                                state: "input",
+                                input: chunk.input,
+                            })
+                            return
+                        }
+                        if (chunk.type === "tool-result") {
+                            await tradingBackend.recordAgentChatToolEvent({
+                                sessionId: chatIds.sessionId,
+                                messageId: chatIds.assistantMessageId,
+                                toolCallId: readToolCallId(chunk),
+                                toolName: readToolName(chunk),
+                                state: "result",
+                                input: chunk.input,
+                                output: chunk.output,
+                            })
+                            return
+                        }
+                        if (chunk.type === "tool-error") {
+                            await tradingBackend.recordAgentChatToolEvent({
+                                sessionId: chatIds.sessionId,
+                                messageId: chatIds.assistantMessageId,
+                                toolCallId: readToolCallId(chunk),
+                                toolName: readToolName(chunk),
+                                state: "error",
+                                input: chunk.input,
+                                error: stringifyError(chunk.error),
+                            })
+                        }
+                    },
+                    onError: async (event) => {
+                        const errorMessage = stringifyError(event.error)
+                        await recordTerminalAssistant({
+                            status: "failed",
+                            finishReason: "error",
+                            content: assistantText.join(""),
+                            error: errorMessage,
                         })
-                        return
-                    }
-                    if (chunk.type === "tool-result") {
-                        await tradingBackend.recordAgentChatToolEvent({
-                            sessionId: chatIds.sessionId,
-                            messageId: chatIds.assistantMessageId,
-                            toolCallId: readToolCallId(chunk),
-                            toolName: readToolName(chunk),
-                            state: "result",
-                            input: chunk.input,
-                            output: chunk.output,
+                        logError("Agent chat stream error", {
+                            error: errorMessage,
+                            chatSessionId: chatIds.sessionId,
+                            chatMessageId: chatIds.userMessageId,
                         })
-                        return
-                    }
-                    if (chunk.type === "tool-error") {
-                        await tradingBackend.recordAgentChatToolEvent({
-                            sessionId: chatIds.sessionId,
-                            messageId: chatIds.assistantMessageId,
-                            toolCallId: readToolCallId(chunk),
-                            toolName: readToolName(chunk),
-                            state: "error",
-                            input: chunk.input,
-                            error: stringifyError(chunk.error),
+                    },
+                    onAbort: async () => {
+                        await recordTerminalAssistant({
+                            status: "cancelled",
+                            finishReason: "abort",
+                            content: assistantText.join(""),
                         })
-                    }
-                },
-                onError: async (event) => {
-                    const errorMessage = stringifyError(event.error)
+                        logInfo("Agent chat stream aborted", {
+                            chatSessionId: chatIds.sessionId,
+                            chatMessageId: chatIds.userMessageId,
+                        })
+                    },
+                    onFinish: async (event) => {
+                        await recordTerminalAssistant({
+                            status: event.finishReason === "error" ? "failed" : "completed",
+                            finishReason: event.finishReason,
+                            content: assistantText.length > 0 ? assistantText.join("") : event.text,
+                        })
+                        logInfo("Agent chat turn finished", {
+                            chatSessionId: chatIds.sessionId,
+                            chatMessageId: chatIds.userMessageId,
+                            finishReason: event.finishReason,
+                            toolCalls: event.toolCalls.length,
+                        })
+                    },
+                })
+
+                writer.merge(result.toUIMessageStream({
+                    sendReasoning: true,
+                    sendSources: true,
+                    onError: (error) => error instanceof Error ? error.message : String(error),
+                }))
+            } catch (error) {
+                const errorMessage = stringifyError(error)
+                if (userMessageRecorded) {
                     await recordTerminalAssistant({
                         status: "failed",
-                        finishReason: "error",
-                        content: assistantText.join(""),
+                        finishReason: "setup-error",
+                        content: "",
                         error: errorMessage,
                     })
-                    logError("Agent chat stream error", {
-                        error: errorMessage,
-                        chatSessionId: chatIds.sessionId,
-                        chatMessageId: chatIds.userMessageId,
-                    })
-                },
-                onAbort: async () => {
-                    await recordTerminalAssistant({
-                        status: "cancelled",
-                        finishReason: "abort",
-                        content: assistantText.join(""),
-                    })
-                    logInfo("Agent chat stream aborted", {
-                        chatSessionId: chatIds.sessionId,
-                        chatMessageId: chatIds.userMessageId,
-                    })
-                },
-                onFinish: async (event) => {
-                    await recordTerminalAssistant({
-                        status: event.finishReason === "error" ? "failed" : "completed",
-                        finishReason: event.finishReason,
-                        content: assistantText.length > 0 ? assistantText.join("") : event.text,
-                    })
-                    logInfo("Agent chat turn finished", {
-                        chatSessionId: chatIds.sessionId,
-                        chatMessageId: chatIds.userMessageId,
-                        finishReason: event.finishReason,
-                        toolCalls: event.toolCalls.length,
-                    })
-                },
-            })
-
-            writer.merge(result.toUIMessageStream({
-                sendReasoning: true,
-                sendSources: true,
-                onError: (error) => error instanceof Error ? error.message : String(error),
-            }))
+                }
+                logError("Agent chat setup failed", {
+                    error: errorMessage,
+                    chatSessionId: chatIds.sessionId,
+                    chatMessageId: chatIds.userMessageId,
+                })
+                throw error
+            }
         },
         onError: (error) => error instanceof Error ? error.message : String(error),
     })
