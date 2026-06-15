@@ -97,6 +97,55 @@ describe("agent chat handler", () => {
         expect(createStream).not.toHaveBeenCalled()
     })
 
+    it("passes bounded chat session id to backend inventory for transcript loading", async () => {
+        const getInventory = vi.fn(async () => ({
+            model: {
+                provider: "ai-gateway" as const,
+                configured: true,
+                modelId: "openai/gpt-5",
+            },
+            tools: [],
+            mcpProviders: [],
+            manualTrading: {
+                enabled: false as const,
+                reason: "disabled",
+            },
+            messages: [createChatMessage({
+                role: "user",
+                messageId: "message-1",
+                content: "hello",
+            })],
+        }))
+
+        const response = await handleAgentChatRequest(
+            new Request("http://backend.test/agent-chat?chatSessionId=session-1", {
+                method: "GET",
+                headers: {
+                    authorization: "Bearer backend-token",
+                },
+            }),
+            undefined,
+            {
+                serviceToken: "backend-token",
+                getInventory,
+                logError: vi.fn(),
+            }
+        )
+
+        expect(response?.status).toBe(200)
+        expect(getInventory).toHaveBeenCalledWith({
+            abortSignal: expect.any(AbortSignal),
+            chatSessionId: "session-1",
+        })
+        expect(await response?.json()).toMatchObject({
+            ok: true,
+            messages: [{
+                messageId: "message-1",
+                content: "hello",
+            }],
+        })
+    })
+
     it("accepts chat without a strategy id", async () => {
         const createStream = vi.fn(async () => new ReadableStream())
 
@@ -138,6 +187,19 @@ describe("agent chat handler", () => {
                     messageId: "message-1:assistant",
                     content: "The connected account is acct-1.",
                     status: "completed",
+                    reasoning: "hidden provider reasoning",
+                }),
+                createChatMessage({
+                    role: "assistant",
+                    messageId: "message-failed:assistant",
+                    content: "partial failed output",
+                    status: "failed",
+                }),
+                createChatMessage({
+                    role: "assistant",
+                    messageId: "message-cancelled:assistant",
+                    content: "partial cancelled output",
+                    status: "cancelled",
                 }),
             ],
         })
@@ -185,6 +247,9 @@ describe("agent chat handler", () => {
         }))
         expect(providerPrompt).toContain("The connected account is acct-1.")
         expect(providerPrompt).toContain("What about that account now?")
+        expect(providerPrompt).not.toContain("hidden provider reasoning")
+        expect(providerPrompt).not.toContain("partial failed output")
+        expect(providerPrompt).not.toContain("partial cancelled output")
         expect(providerPrompt).not.toContain("forged")
     })
 
@@ -249,6 +314,47 @@ describe("agent chat handler", () => {
             content: "The account is connected.",
             status: "completed",
             modelId: "test-model",
+            reasoning: undefined,
+        }))
+    })
+
+    it("persists failed provider streams as terminal failed assistant turns", async () => {
+        const backend = createBackendMock()
+        const model = new MockLanguageModelV3({
+            doStream: async () => {
+                throw new Error("provider failed")
+            },
+        })
+
+        const stream = await createAgentChatUiMessageStream({
+            request: {
+                message: "Will this fail?",
+                chatSessionId: "session-1",
+                chatMessageId: "message-fail",
+            },
+            abortSignal: new AbortController().signal,
+            model,
+            modelId: "test-model",
+            tradingBackend: backend,
+            toolRuntime: await buildAgentChatToolRuntime({
+                abortSignal: new AbortController().signal,
+                tradingBackend: backend,
+                secrets: {},
+                log: createLogger({ minLevel: "fatal" }),
+                createMcpBindings: async () => [],
+            }),
+            logInfo: vi.fn(),
+            logError: vi.fn(),
+        })
+
+        await createUIMessageStreamResponse({ stream }).text()
+
+        expect(backend.recordAgentChatAssistantMessage).toHaveBeenCalledWith(expect.objectContaining({
+            sessionId: "session-1",
+            messageId: "message-fail:assistant",
+            status: "failed",
+            finishReason: "error",
+            error: "provider failed",
         }))
     })
 
@@ -550,6 +656,8 @@ function createChatMessage(args: {
     messageId: string
     content: string
     status?: AgentChatMessageRow["status"]
+    reasoning?: string
+    error?: string
 }): AgentChatMessageRow {
     return {
         id: args.messageId,
@@ -558,6 +666,8 @@ function createChatMessage(args: {
         role: args.role,
         content: args.content,
         status: args.status ?? "received",
+        reasoning: args.reasoning,
+        error: args.error,
         createdAt: 1,
         updatedAt: 1,
     }

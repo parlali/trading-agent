@@ -100,6 +100,15 @@ class FakeMutationQuery {
         return this.applyFilters()[0] ?? null
     }
 
+    async unique() {
+        const rows = this.applyFilters()
+        if (rows.length > 1) {
+            throw new Error("Fake query expected unique result")
+        }
+
+        return rows[0] ?? null
+    }
+
     async take(limit: number) {
         return this.applyFilters().slice(0, limit)
     }

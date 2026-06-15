@@ -178,6 +178,8 @@ export interface AgentChatMessageRow {
     modelProvider?: string
     modelId?: string
     finishReason?: string
+    reasoning?: string
+    error?: string
     createdAt: number
     updatedAt: number
 }
@@ -197,6 +199,8 @@ export interface RecordAgentChatAssistantMessageArgs {
     modelProvider: string
     modelId: string
     finishReason?: string
+    reasoning?: string
+    error?: string
 }
 
 export interface RecordAgentChatToolEventArgs {

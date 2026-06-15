@@ -169,6 +169,8 @@ export default defineSchema({
         modelProvider: v.optional(v.string()),
         modelId: v.optional(v.string()),
         finishReason: v.optional(v.string()),
+        reasoning: v.optional(v.string()),
+        error: v.optional(v.string()),
         createdAt: v.number(),
         updatedAt: v.number(),
     })

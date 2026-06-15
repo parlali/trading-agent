@@ -54,12 +54,21 @@ type ToolInventoryResponse = {
         enabled: false
         reason: string
     }
+    messages?: Array<{
+        messageId: string
+        role: "user" | "assistant"
+        content: string
+        status: "received" | "completed" | "cancelled" | "failed"
+        error?: string
+    }>
 }
 
 type MessagePart = UIMessage["parts"][number]
+const CHAT_SESSION_STORAGE_KEY = "dashboard-agent-chat-session-id"
 
 export default function AgentChatPage() {
     const authToken = useAuthToken()
+    const [chatSessionId] = useState(resolveDashboardChatSessionId)
     const [input, setInput] = useState("")
     const [inventory, setInventory] = useState<ToolInventoryResponse | null>(null)
     const [inventoryLoading, setInventoryLoading] = useState(false)
@@ -78,21 +87,23 @@ export default function AgentChatPage() {
                 },
                 body: {
                     message: readLatestUserText(messages),
-                    chatSessionId: id,
+                    chatSessionId: id || chatSessionId,
                     chatMessageId: messageId ?? messages[messages.length - 1]?.id,
                     mode: "general",
                 },
             }
         },
-    }), [authToken])
+    }), [authToken, chatSessionId])
 
     const {
         messages,
+        setMessages,
         sendMessage,
         stop,
         status,
         error,
     } = useChat({
+        id: chatSessionId,
         transport: chatTransport,
         experimental_throttle: 60,
     })
@@ -124,7 +135,7 @@ export default function AgentChatPage() {
         setInventoryError(null)
 
         try {
-            const response = await fetch("/api/agent-chat", {
+            const response = await fetch(`/api/agent-chat?chatSessionId=${encodeURIComponent(chatSessionId)}`, {
                 headers: {
                     "authorization": `Bearer ${authToken}`,
                 },
@@ -136,13 +147,16 @@ export default function AgentChatPage() {
             }
 
             setInventory(payload)
+            if (payload.messages) {
+                setMessages(toUiMessages(payload.messages))
+            }
         } catch (loadError) {
             setInventory(null)
             setInventoryError(loadError instanceof Error ? loadError.message : String(loadError))
         } finally {
             setInventoryLoading(false)
         }
-    }, [authToken])
+    }, [authToken, chatSessionId, setMessages])
 
     useEffect(() => {
         void loadInventory()
@@ -340,6 +354,53 @@ function RuntimeStat({ label, value }: { label: string, value: string }) {
     )
 }
 
+function resolveDashboardChatSessionId(): string {
+    if (typeof window === "undefined") {
+        return "dashboard-agent-chat"
+    }
+
+    const existing = window.localStorage.getItem(CHAT_SESSION_STORAGE_KEY)
+    if (existing?.trim()) {
+        return existing
+    }
+
+    const generated = `dashboard-agent-chat-${crypto.randomUUID()}`
+    window.localStorage.setItem(CHAT_SESSION_STORAGE_KEY, generated)
+    return generated
+}
+
+function toUiMessages(messages: NonNullable<ToolInventoryResponse["messages"]>): UIMessage[] {
+    return messages
+        .map((message) => {
+            const text = readVisibleServerMessageText(message)
+            if (!text) {
+                return null
+            }
+
+            return {
+                id: message.messageId,
+                role: message.role,
+                parts: [{
+                    type: "text" as const,
+                    text,
+                }],
+            } satisfies UIMessage
+        })
+        .filter(isNonNullable)
+}
+
+function readVisibleServerMessageText(message: NonNullable<ToolInventoryResponse["messages"]>[number]): string {
+    const content = message.content.trim()
+    if (content) {
+        return content
+    }
+    if (message.status === "failed" && message.error) {
+        return `Agent chat failed: ${message.error}`
+    }
+
+    return ""
+}
+
 function readLatestUserText(messages: UIMessage[]): string {
     for (let i = messages.length - 1; i >= 0; i--) {
         const message = messages[i]
@@ -524,4 +585,8 @@ function formatJson(value: unknown): string {
     }
 
     return JSON.stringify(value, null, 2)
+}
+
+function isNonNullable<T>(value: T): value is NonNullable<T> {
+    return value !== null && value !== undefined
 }

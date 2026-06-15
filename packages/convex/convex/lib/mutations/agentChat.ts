@@ -26,12 +26,11 @@ export const recordAgentChatUserMessage = mutation({
             .unique()
 
         if (existing) {
-            await ctx.db.patch(existing._id, {
+            assertSameAgentChatMessage(existing, {
                 role: "user",
                 content: args.content,
                 mode: args.mode,
                 status: "received",
-                updatedAt: now,
             })
             return
         }
@@ -63,6 +62,8 @@ export const recordAgentChatAssistantMessage = mutation({
         modelProvider: v.string(),
         modelId: v.string(),
         finishReason: v.optional(v.string()),
+        reasoning: v.optional(v.string()),
+        error: v.optional(v.string()),
     },
     handler: async (ctx, args) => {
         requireServiceToken(args.serviceToken)
@@ -79,11 +80,12 @@ export const recordAgentChatAssistantMessage = mutation({
             modelProvider: args.modelProvider,
             modelId: args.modelId,
             finishReason: args.finishReason,
-            updatedAt: now,
+            reasoning: args.reasoning,
+            error: args.error,
         }
 
         if (existing) {
-            await ctx.db.patch(existing._id, patch)
+            assertSameAgentChatMessage(existing, patch)
             return
         }
 
@@ -92,6 +94,7 @@ export const recordAgentChatAssistantMessage = mutation({
             messageId: args.messageId,
             ...patch,
             createdAt: now,
+            updatedAt: now,
         })
     },
 })
@@ -129,3 +132,16 @@ export const recordAgentChatToolEvent = mutation({
         })
     },
 })
+
+function assertSameAgentChatMessage(
+    existing: Record<string, unknown>,
+    expected: Record<string, unknown>
+): void {
+    const conflicts = Object.entries(expected)
+        .filter(([field, value]) => (existing[field] ?? undefined) !== (value ?? undefined))
+        .map(([field]) => field)
+
+    if (conflicts.length > 0) {
+        throw new Error(`Agent chat message id conflict for immutable audit record: ${conflicts.join(", ")}`)
+    }
+}

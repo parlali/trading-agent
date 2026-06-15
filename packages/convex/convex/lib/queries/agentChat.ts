@@ -35,6 +35,8 @@ export const getAgentChatMessages = query({
                 modelProvider: row.modelProvider,
                 modelId: row.modelId,
                 finishReason: row.finishReason,
+                reasoning: row.reasoning,
+                error: row.error,
                 createdAt: row.createdAt,
                 updatedAt: row.updatedAt,
             }))

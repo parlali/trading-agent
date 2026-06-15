@@ -246,6 +246,8 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
                     modelProvider: args.modelProvider,
                     modelId: args.modelId,
                     finishReason: args.finishReason,
+                    reasoning: args.reasoning,
+                    error: args.error,
                 } as never)
             )
         },

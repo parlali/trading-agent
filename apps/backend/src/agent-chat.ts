@@ -22,6 +22,10 @@ export const agentChatRequestSchema = z.strictObject({
     mode: z.enum(["general", "portfolio", "operations", "mcp"]).optional(),
 })
 
+const agentChatInventoryRequestSchema = z.strictObject({
+    chatSessionId: z.string().trim().min(1).max(MAX_CHAT_ID_LENGTH).optional(),
+})
+
 export type AgentChatRequest = z.infer<typeof agentChatRequestSchema>
 
 export interface AgentChatHandlerDependencies {
@@ -48,8 +52,10 @@ export async function handleAgentChatRequest(
 
     if (request.method === "GET") {
         try {
+            const inventoryRequest = readAgentChatInventoryRequest(request)
             const inventory = await (dependencies.getInventory ?? getAgentChatInventory)({
                 abortSignal: request.signal,
+                chatSessionId: inventoryRequest.chatSessionId,
             })
 
             return Response.json({
@@ -85,6 +91,13 @@ export async function handleAgentChatRequest(
     } catch (error) {
         return jsonError(error, dependencies, requestErrorStatus(error))
     }
+}
+
+function readAgentChatInventoryRequest(request: Request): z.infer<typeof agentChatInventoryRequestSchema> {
+    const { searchParams } = new URL(request.url)
+    return agentChatInventoryRequestSchema.parse({
+        chatSessionId: searchParams.get("chatSessionId") ?? undefined,
+    })
 }
 
 async function readAgentChatRequest(request: Request): Promise<AgentChatRequest> {

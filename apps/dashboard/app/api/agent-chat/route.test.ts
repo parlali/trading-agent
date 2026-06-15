@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { requireDashboardUser } from "@/lib/codex-oauth-server"
-import { POST } from "./route"
+import { GET, POST } from "./route"
 
 vi.mock("@/lib/codex-oauth-server", () => ({
     requireDashboardUser: vi.fn(),
@@ -67,6 +67,33 @@ describe("dashboard agent chat API route", () => {
                 chatMessageId: "message-1",
                 mode: "mcp",
             }),
+            signal: request.signal,
+        }))
+    })
+
+    it("proxies bounded chat session id for server transcript inventory", async () => {
+        vi.mocked(requireDashboardUser).mockResolvedValue(undefined)
+        process.env.BACKEND_URL = "http://backend.test"
+        process.env.BACKEND_SERVICE_TOKEN = "backend-token"
+        const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({
+            ok: true,
+        }), {
+            headers: {
+                "content-type": "application/json",
+            },
+        }))
+        const request = new Request("http://dashboard.test/api/agent-chat?chatSessionId=session-1", {
+            method: "GET",
+            headers: {
+                authorization: "Bearer user-token",
+            },
+        })
+
+        const response = await GET(request)
+
+        expect(response.status).toBe(200)
+        expect(fetchSpy).toHaveBeenCalledWith(new URL("/agent-chat?chatSessionId=session-1", "http://backend.test"), expect.objectContaining({
+            method: "GET",
             signal: request.signal,
         }))
     })

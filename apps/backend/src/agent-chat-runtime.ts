@@ -57,6 +57,7 @@ export interface AgentChatInventory {
         enabled: false
         reason: string
     }
+    messages?: Awaited<ReturnType<TradingBackendClient["getAgentChatMessages"]>>
 }
 
 const CHAT_MAX_STEPS = 8
@@ -93,6 +94,30 @@ export async function createAgentChatUiMessageStream(
             })
             const assistantText: string[] = []
             const reasoningText: string[] = []
+            let terminalAssistantRecorded = false
+            const recordTerminalAssistant = async (terminal: {
+                status: "completed" | "cancelled" | "failed"
+                finishReason: string
+                content: string
+                error?: string
+            }) => {
+                if (terminalAssistantRecorded) {
+                    return
+                }
+
+                terminalAssistantRecorded = true
+                await tradingBackend.recordAgentChatAssistantMessage({
+                    sessionId: chatIds.sessionId,
+                    messageId: chatIds.assistantMessageId,
+                    content: terminal.content,
+                    status: terminal.status,
+                    modelProvider: resolvedModel.provider,
+                    modelId: resolvedModel.modelId,
+                    finishReason: terminal.finishReason,
+                    reasoning: joinOptional(reasoningText),
+                    error: terminal.error,
+                })
+            }
 
             logInfo("Agent chat turn started", {
                 chatSessionId: chatIds.sessionId,
@@ -158,22 +183,25 @@ export async function createAgentChatUiMessageStream(
                         })
                     }
                 },
-                onError: (event) => {
+                onError: async (event) => {
+                    const errorMessage = stringifyError(event.error)
+                    await recordTerminalAssistant({
+                        status: "failed",
+                        finishReason: "error",
+                        content: assistantText.join(""),
+                        error: errorMessage,
+                    })
                     logError("Agent chat stream error", {
-                        error: event.error instanceof Error ? event.error.message : String(event.error),
+                        error: errorMessage,
                         chatSessionId: chatIds.sessionId,
                         chatMessageId: chatIds.userMessageId,
                     })
                 },
                 onAbort: async () => {
-                    await tradingBackend.recordAgentChatAssistantMessage({
-                        sessionId: chatIds.sessionId,
-                        messageId: chatIds.assistantMessageId,
-                        content: buildAssistantAuditContent(assistantText, reasoningText),
+                    await recordTerminalAssistant({
                         status: "cancelled",
-                        modelProvider: resolvedModel.provider,
-                        modelId: resolvedModel.modelId,
                         finishReason: "abort",
+                        content: assistantText.join(""),
                     })
                     logInfo("Agent chat stream aborted", {
                         chatSessionId: chatIds.sessionId,
@@ -181,14 +209,10 @@ export async function createAgentChatUiMessageStream(
                     })
                 },
                 onFinish: async (event) => {
-                    await tradingBackend.recordAgentChatAssistantMessage({
-                        sessionId: chatIds.sessionId,
-                        messageId: chatIds.assistantMessageId,
-                        content: buildAssistantAuditContent(assistantText.length > 0 ? assistantText : [event.text], reasoningText),
+                    await recordTerminalAssistant({
                         status: event.finishReason === "error" ? "failed" : "completed",
-                        modelProvider: resolvedModel.provider,
-                        modelId: resolvedModel.modelId,
                         finishReason: event.finishReason,
+                        content: assistantText.length > 0 ? assistantText.join("") : event.text,
                     })
                     logInfo("Agent chat turn finished", {
                         chatSessionId: chatIds.sessionId,
@@ -212,10 +236,15 @@ export async function createAgentChatUiMessageStream(
 export async function getAgentChatInventory(args: {
     abortSignal: AbortSignal
     env?: Record<string, string | undefined>
+    chatSessionId?: string
+    tradingBackend?: TradingBackendClient
 }): Promise<AgentChatInventory> {
     const toolRuntime = await buildAgentChatToolRuntime({
         abortSignal: args.abortSignal,
     })
+    const chatMessages = args.chatSessionId
+        ? await (args.tradingBackend ?? backend).getAgentChatMessages(args.chatSessionId, CHAT_TRANSCRIPT_LIMIT)
+        : undefined
 
     return {
         model: {
@@ -229,6 +258,7 @@ export async function getAgentChatInventory(args: {
             enabled: false,
             reason: "Execution-capable manual trading tools are not exposed until account, adapter, Convex persistence, and provider reconciliation paths are wired for chat-specific audit.",
         },
+        ...(chatMessages ? { messages: chatMessages } : {}),
     }
 }
 
@@ -326,29 +356,12 @@ function buildTranscriptMessages(
         ]
 
     return trustedRows
+        .filter((row) => row.role === "user" || row.status === "completed")
         .filter((row) => row.content.trim().length > 0)
         .map((row) => ({
             role: row.role,
-            content: row.content,
+            content: row.role === "assistant" ? stripLegacyReasoning(row.content) : row.content,
         }))
-}
-
-function buildAssistantAuditContent(
-    textParts: string[],
-    reasoningParts: string[]
-): string {
-    const text = textParts.join("")
-    const reasoning = reasoningParts.join("")
-    if (reasoning.trim().length === 0) {
-        return text
-    }
-
-    return [
-        text,
-        "",
-        "Reasoning summary:",
-        reasoning,
-    ].join("\n")
 }
 
 function readToolCallId(chunk: Record<string, unknown>): string {
@@ -365,6 +378,17 @@ function readToolName(chunk: Record<string, unknown>): string {
 
 function stringifyError(error: unknown): string {
     return error instanceof Error ? error.message : String(error)
+}
+
+function joinOptional(parts: string[]): string | undefined {
+    const value = parts.join("").trim()
+    return value.length > 0 ? value : undefined
+}
+
+function stripLegacyReasoning(content: string): string {
+    const marker = "\n\nReasoning summary:\n"
+    const index = content.indexOf(marker)
+    return index >= 0 ? content.slice(0, index) : content
 }
 
 function readTrimmedEnv(

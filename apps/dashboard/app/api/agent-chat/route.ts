@@ -16,8 +16,12 @@ type ChatRequestBody = {
 export async function GET(request: Request) {
     try {
         await requireDashboardUser(request)
+        const chatSessionId = readBoundedString(new URL(request.url).searchParams.get("chatSessionId"), "chatSessionId", MAX_CHAT_ID_LENGTH)
+        const path = chatSessionId
+            ? `/agent-chat?chatSessionId=${encodeURIComponent(chatSessionId)}`
+            : "/agent-chat"
 
-        return await proxyBackendRequest("/agent-chat", {
+        return await proxyBackendRequest(path, {
             method: "GET",
         }, request.signal)
     } catch (error) {

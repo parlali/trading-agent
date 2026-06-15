@@ -129,7 +129,7 @@ Configure the backend runtime with:
 
 The backend resolves the model server-side through the Vercel AI SDK AI Gateway provider. The browser must not send model ids, raw UI message history, or tool outputs as trusted execution state. Backend `/agent-chat` accepts only the user message, optional chat/session ids, and optional visible mode/scope.
 
-The backend persists a trusted server-side chat transcript and audit trail for user prompts, assistant responses, tool inputs, tool results, tool errors, and cancelled turns. Follow-up prompts are built from that server transcript, not from browser-supplied assistant/tool history.
+The backend persists a trusted server-side chat transcript and audit trail for user prompts, assistant responses, tool inputs, tool results, tool errors, and cancelled turns. Follow-up prompts are built from completed server transcript records, not from browser-supplied assistant/tool history. The dashboard keeps a stable local chat session id and reloads visible chat messages from the authenticated server transcript.
 
 The backend streams AI SDK UI messages directly to the dashboard, including assistant text, reasoning parts when the provider supports them, tool input lifecycle, tool results, and tool errors. Stop generation aborts provider streaming and tool execution without creating strategy-run failures.
 
