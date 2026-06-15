@@ -2,7 +2,7 @@ import { internalMutation, mutation, type MutationCtx } from "../../_generated/s
 import type { Doc, Id } from "../../_generated/dataModel"
 import { v } from "convex/values"
 import { validateAccountConfig, validateStrategyConfig } from "@valiq-trading/core"
-import { mcpDiscoveryRequestKey } from "@valiq-trading/agent"
+import { compareCodeUnits, mcpDiscoveryRequestKey } from "@valiq-trading/agent"
 import { requireUser, requireServiceToken, requireServiceTokenForQueryContext, requireUserOrServiceToken } from "../authGuards"
 import { createEmptyCascadeDeleteCounts, type CascadeDeleteCounts } from "../cascadeDelete"
 import { incrementControlPlaneMetric } from "../controlPlaneMetrics"
@@ -643,6 +643,23 @@ export const deleteOrphanedStrategyHistoryBatch = mutation({
             }
         }
 
+        const orphanMcpWhitelists = await ctx.db.query("strategy_mcp_tool_whitelists").order("asc").take(batchSize)
+        for (const whitelist of orphanMcpWhitelists) {
+            if (await strategyExists(whitelist.strategyId)) {
+                continue
+            }
+
+            await ctx.db.delete(whitelist._id)
+            deleted.strategyMcpToolWhitelists++
+        }
+
+        if (sumDeletedCounts(deleted) > 0) {
+            return {
+                ...deleted,
+                hasMore: true,
+            }
+        }
+
         const orphanAlerts = await ctx.db.query("alerts").order("asc").take(batchSize)
         for (const alert of orphanAlerts) {
             if (!alert.strategyId || await strategyExists(alert.strategyId)) {
@@ -936,7 +953,7 @@ function normalizeMcpToolApprovals(tools: Array<{
     })
 
     return normalized.sort((left, right) =>
-        `${left.providerId}\0${left.toolName}`.localeCompare(`${right.providerId}\0${right.toolName}`)
+        compareCodeUnits(`${left.providerId}\0${left.toolName}`, `${right.providerId}\0${right.toolName}`)
     )
 }
 
@@ -999,7 +1016,7 @@ function normalizeMcpDiscoveryRequests(requests: Array<{
     return normalized.sort((left, right) => {
         const leftKey = mcpDiscoveryRequestKey(left)
         const rightKey = mcpDiscoveryRequestKey(right)
-        return leftKey.localeCompare(rightKey)
+        return compareCodeUnits(leftKey, rightKey)
     })
 }
 

@@ -87,6 +87,10 @@ export {
     mcpProviderDiscoveryToolKey,
     stableMcpJsonKey,
 } from "./mcp/discovery-request-identity"
+export {
+    compareCodeUnits,
+    stableJsonKey,
+} from "./mcp/stable-json"
 export type {
     CreateHttpMcpToolBindingsConfig,
     HttpMcpProviderConfig,

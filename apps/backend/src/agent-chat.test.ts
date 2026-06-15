@@ -147,6 +147,40 @@ describe("agent chat handler", () => {
         })
     })
 
+    it("passes bounded strategy id to backend inventory for scoped MCP loading", async () => {
+        const getInventory = vi.fn(async () => ({
+            modelProviders: [],
+            tools: [],
+            mcpProviders: [],
+            manualTrading: {
+                enabled: false as const,
+                reason: "disabled",
+            },
+        }))
+
+        const response = await handleAgentChatRequest(
+            new Request("http://backend.test/agent-chat?chatSessionId=session-1&strategyId=strategy-1", {
+                method: "GET",
+                headers: {
+                    authorization: "Bearer backend-token",
+                },
+            }),
+            undefined,
+            {
+                serviceToken: "backend-token",
+                getInventory,
+                logError: vi.fn(),
+            }
+        )
+
+        expect(response?.status).toBe(200)
+        expect(getInventory).toHaveBeenCalledWith({
+            abortSignal: expect.any(AbortSignal),
+            chatSessionId: "session-1",
+            strategyId: "strategy-1",
+        })
+    })
+
     it("returns 400 for invalid backend inventory query input", async () => {
         const getInventory = vi.fn()
 

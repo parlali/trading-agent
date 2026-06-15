@@ -91,6 +91,7 @@ type MessagePart = UIMessage["parts"][number]
 type ServerChatMessage = NonNullable<ToolInventoryResponse["messages"]>[number]
 type ServerToolEvent = NonNullable<ServerChatMessage["toolEvents"]>[number]
 const CHAT_SESSION_STORAGE_KEY = "dashboard-agent-chat-session-id"
+const NO_STRATEGY_VALUE = "__none__"
 
 export default function AgentChatPage() {
     const authToken = useAuthToken()
@@ -105,7 +106,7 @@ export default function AgentChatPage() {
     const parentRef = useRef<HTMLDivElement | null>(null)
     const isRunningRef = useRef(false)
     const strategies = useQuery(api.queries.getAllStrategies, {})
-    const activeStrategyId = selectedStrategyId || (strategies?.[0]?._id ? String(strategies[0]._id) : "")
+    const activeStrategyId = selectedStrategyId
     const chatTransport = useMemo(() => new DefaultChatTransport({
         api: "/api/agent-chat",
         prepareSendMessagesRequest({ messages, id, messageId, body, headers }) {
@@ -224,12 +225,6 @@ export default function AgentChatPage() {
     }, [activeStrategyId, authToken, chatSessionId, setMessages])
 
     useEffect(() => {
-        if (!selectedStrategyId && strategies && strategies.length > 0) {
-            setSelectedStrategyId(String(strategies[0]._id))
-        }
-    }, [selectedStrategyId, strategies])
-
-    useEffect(() => {
         void loadInventory({ hydrateTranscript: true })
     }, [loadInventory])
 
@@ -283,7 +278,7 @@ export default function AgentChatPage() {
             body: {
                 modelProvider,
                 modelId: selectedModelId,
-                strategyId: activeStrategyId,
+                ...(activeStrategyId ? { strategyId: activeStrategyId } : {}),
             },
         })
     }
@@ -410,14 +405,17 @@ export default function AgentChatPage() {
                         <div className="space-y-1.5">
                             <Label className="text-[11px] text-muted-foreground">MCP Strategy</Label>
                             <Select
-                                value={activeStrategyId}
-                                onValueChange={setSelectedStrategyId}
-                                disabled={isRunning || strategies === undefined || strategies.length === 0}
+                                value={activeStrategyId || NO_STRATEGY_VALUE}
+                                onValueChange={(value) => setSelectedStrategyId(value === NO_STRATEGY_VALUE ? "" : value)}
+                                disabled={isRunning || strategies === undefined}
                             >
                                 <SelectTrigger className="h-9 w-full">
                                     <SelectValue placeholder="No strategy" />
                                 </SelectTrigger>
                                 <SelectContent>
+                                    <SelectItem value={NO_STRATEGY_VALUE}>
+                                        No strategy
+                                    </SelectItem>
                                     {strategies?.map((strategy) => (
                                         <SelectItem key={strategy._id} value={String(strategy._id)}>
                                             {strategy.name}

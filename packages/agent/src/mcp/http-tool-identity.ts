@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto"
+import { stableJsonKey } from "./stable-json"
 
 const MAX_OPENROUTER_TOOL_NAME_LENGTH = 64
 
@@ -42,7 +43,7 @@ export function buildMcpToolName(
 
 export function hashMcpToolSchema(schema: Record<string, unknown>): string {
     return createHash("sha256")
-        .update(stableJsonStringify(schema))
+        .update(stableJsonKey(schema))
         .digest("hex")
 }
 
@@ -50,19 +51,4 @@ function isValidOpenRouterToolName(value: string): boolean {
     return value.length > 0 &&
         value.length <= MAX_OPENROUTER_TOOL_NAME_LENGTH &&
         /^[a-zA-Z0-9_-]+$/.test(value)
-}
-
-function stableJsonStringify(value: unknown): string {
-    if (Array.isArray(value)) {
-        return `[${value.map((entry) => stableJsonStringify(entry)).join(",")}]`
-    }
-
-    if (value && typeof value === "object") {
-        return `{${Object.entries(value as Record<string, unknown>)
-            .sort(([left], [right]) => left.localeCompare(right))
-            .map(([key, entry]) => `${JSON.stringify(key)}:${stableJsonStringify(entry)}`)
-            .join(",")}}`
-    }
-
-    return JSON.stringify(value)
 }

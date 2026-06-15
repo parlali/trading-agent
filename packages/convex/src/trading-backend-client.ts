@@ -173,10 +173,14 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
         async getStrategyMcpToolWhitelist(strategyId: Id<"strategies">): Promise<StrategyMcpToolWhitelist | null> {
             return await runWithTimeout(
                 "Convex query getStrategyMcpToolWhitelist",
-                async () => await client.query(api.queries.getStrategyMcpToolWhitelist, {
-                    ...requireMachineAuth(),
-                    strategyId,
-                } as never) as StrategyMcpToolWhitelist | null
+                async () => {
+                    const row = await client.query(api.queries.getStrategyMcpToolWhitelist, {
+                        ...requireMachineAuth(),
+                        strategyId,
+                    } as never)
+
+                    return (row ?? null) as StrategyMcpToolWhitelist | null
+                }
             )
         },
         async getActiveRun(strategyId: Id<"strategies">): Promise<StoredRun | null> {

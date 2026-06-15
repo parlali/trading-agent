@@ -3,6 +3,7 @@ import { internal } from "./_generated/api"
 import { v } from "convex/values"
 import {
     MCP_PROVIDER_SECRET_KEYS,
+    compareCodeUnits,
     discoverHttpMcpToolInventory,
     mcpDiscoveryRequestKey,
     resolveMcpProviderConfigs,
@@ -89,7 +90,7 @@ export const discoverMcpToolInventory = action({
         }
 
         return {
-            providers: Array.from(providerIds).sort((left, right) => left.localeCompare(right)).map((providerId) => {
+            providers: Array.from(providerIds).sort(compareCodeUnits).map((providerId) => {
                 const providerUnavailable = resolution.diagnostics.some((diagnostic) =>
                     diagnostic.providerId === providerId && diagnostic.reason === "provider_unavailable"
                 )
@@ -269,7 +270,7 @@ function normalizeMcpDiscoveryRequests(
     return normalized.sort((left, right) => {
         const leftKey = mcpDiscoveryRequestKey(left)
         const rightKey = mcpDiscoveryRequestKey(right)
-        return leftKey.localeCompare(rightKey)
+        return compareCodeUnits(leftKey, rightKey)
     })
 }
 

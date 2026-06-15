@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useCallback } from "react"
+import { useState, useCallback, useEffect } from "react"
 import { useAction, useQuery } from "convex/react"
 import { api, type Id } from "@valiq-trading/convex"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
@@ -208,6 +208,23 @@ export default function TestPage() {
         api.queries.getStrategyMcpToolWhitelist,
         selectedMcpStrategyId ? { strategyId: selectedMcpStrategyId as Id<"strategies"> } : "skip"
     )
+
+    useEffect(() => {
+        setMcpToolName(MCP_RUNTIME_ONLY_VALUE)
+        setMcpToolArgsJson("{}")
+    }, [selectedMcpStrategyId])
+
+    useEffect(() => {
+        if (mcpToolName === MCP_RUNTIME_ONLY_VALUE || mcpWhitelist === undefined) {
+            return
+        }
+
+        const allowedToolNames = new Set((mcpWhitelist?.tools ?? []).map((tool) => tool.registeredName))
+        if (!allowedToolNames.has(mcpToolName)) {
+            setMcpToolName(MCP_RUNTIME_ONLY_VALUE)
+            setMcpToolArgsJson("{}")
+        }
+    }, [mcpToolName, mcpWhitelist])
 
     const venueTests = {
         "mt5": { run: testMT5, icon: BarChart3, description: "Runtime-aligned worker health, MT5 account, positions, and working orders" },

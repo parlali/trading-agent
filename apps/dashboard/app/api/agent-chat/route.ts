@@ -6,6 +6,7 @@ export const runtime = "nodejs"
 const MAX_CHAT_MESSAGE_LENGTH = 8_000
 const MAX_CHAT_ID_LENGTH = 160
 const MAX_CHAT_MODEL_ID_LENGTH = 200
+const MAX_CHAT_STRATEGY_ID_LENGTH = 160
 const INTERNAL_ERROR_MESSAGE = "An internal error occurred"
 
 type ChatRequestBody = {
@@ -14,16 +15,25 @@ type ChatRequestBody = {
     modelId?: string
     chatSessionId?: string
     chatMessageId?: string
+    strategyId?: string
     mode?: "general" | "portfolio" | "operations" | "mcp"
 }
 
 export async function GET(request: Request) {
     try {
         await requireDashboardUser(request)
-        const chatSessionId = readBoundedString(new URL(request.url).searchParams.get("chatSessionId"), "chatSessionId", MAX_CHAT_ID_LENGTH)
-        const path = chatSessionId
-            ? `/agent-chat?chatSessionId=${encodeURIComponent(chatSessionId)}`
-            : "/agent-chat"
+        const searchParams = new URL(request.url).searchParams
+        const backendParams = new URLSearchParams()
+        const chatSessionId = readBoundedString(searchParams.get("chatSessionId"), "chatSessionId", MAX_CHAT_ID_LENGTH)
+        const strategyId = readBoundedString(searchParams.get("strategyId"), "strategyId", MAX_CHAT_STRATEGY_ID_LENGTH)
+        if (chatSessionId) {
+            backendParams.set("chatSessionId", chatSessionId)
+        }
+        if (strategyId) {
+            backendParams.set("strategyId", strategyId)
+        }
+        const query = backendParams.toString()
+        const path = query ? `/agent-chat?${query}` : "/agent-chat"
 
         return await proxyBackendRequest(path, {
             method: "GET",
@@ -56,6 +66,7 @@ export async function POST(request: Request) {
                 modelId: body.modelId,
                 chatSessionId: body.chatSessionId,
                 chatMessageId: body.chatMessageId,
+                strategyId: body.strategyId,
                 mode: body.mode,
             }),
         }, request.signal)
@@ -70,7 +81,7 @@ function readChatRequestBody(value: unknown): ChatRequestBody {
     }
 
     const body = value as Record<string, unknown>
-    rejectUnknownFields(body, ["message", "modelProvider", "modelId", "chatSessionId", "chatMessageId", "mode"])
+    rejectUnknownFields(body, ["message", "modelProvider", "modelId", "chatSessionId", "chatMessageId", "strategyId", "mode"])
 
     return {
         message: readBoundedString(body.message, "message", MAX_CHAT_MESSAGE_LENGTH),
@@ -78,6 +89,7 @@ function readChatRequestBody(value: unknown): ChatRequestBody {
         modelId: readBoundedString(body.modelId, "modelId", MAX_CHAT_MODEL_ID_LENGTH),
         chatSessionId: readBoundedString(body.chatSessionId, "chatSessionId", MAX_CHAT_ID_LENGTH),
         chatMessageId: readBoundedString(body.chatMessageId, "chatMessageId", MAX_CHAT_ID_LENGTH),
+        strategyId: readBoundedString(body.strategyId, "strategyId", MAX_CHAT_STRATEGY_ID_LENGTH),
         mode: readChatMode(body.mode),
     }
 }

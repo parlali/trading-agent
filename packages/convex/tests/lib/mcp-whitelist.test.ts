@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { setStrategyMcpToolWhitelist } from "../../convex/lib/mutations/strategies"
+import { deleteOrphanedStrategyHistoryBatch, setStrategyMcpToolWhitelist } from "../../convex/lib/mutations/strategies"
 import { getStrategyMcpToolWhitelist } from "../../convex/lib/queries/strategies"
 import { callRegistered, FakeMutationDb as FakeDb } from "./fakeMutationDb"
 import { callRegisteredQuery } from "./fakeQueryDb"
@@ -145,6 +145,48 @@ describe("strategy MCP tool whitelist persistence", () => {
         })
 
         expect(result).toEqual(row)
+    })
+
+    it("removes orphaned strategy MCP whitelist rows during orphan cleanup", async () => {
+        process.env.BACKEND_SERVICE_TOKEN = "test-token"
+        const db = new FakeDb({
+            strategies: [{
+                _id: "strategy-1",
+                app: "alpaca-options",
+                accountId: "acct-1",
+            }],
+            strategy_mcp_tool_whitelists: [
+                {
+                    _id: "whitelist-valid",
+                    strategyId: "strategy-1",
+                    tools: [],
+                    createdAt: 1,
+                    updatedAt: 1,
+                },
+                {
+                    _id: "whitelist-orphan",
+                    strategyId: "missing-strategy",
+                    tools: [],
+                    createdAt: 1,
+                    updatedAt: 1,
+                },
+            ],
+            control_plane_metrics: [],
+        })
+
+        const result = await callRegistered(deleteOrphanedStrategyHistoryBatch, { db } as never, {
+            serviceToken: "test-token",
+            batchSize: 10,
+        })
+
+        expect(result).toMatchObject({
+            strategyMcpToolWhitelists: 1,
+            hasMore: true,
+        })
+        expect(db.rows.strategy_mcp_tool_whitelists).toEqual([expect.objectContaining({
+            _id: "whitelist-valid",
+            strategyId: "strategy-1",
+        })])
     })
 })
 

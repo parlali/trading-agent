@@ -229,7 +229,7 @@ function mergeDiscoveryToolRequests(
     }
 
     return Array.from(requestsByKey.values()).sort((left, right) =>
-        discoveryRequestKey(left).localeCompare(discoveryRequestKey(right))
+        compareCodeUnits(discoveryRequestKey(left), discoveryRequestKey(right))
     )
 }
 
@@ -243,12 +243,23 @@ function stableJsonKey(value: unknown): string {
     }
     if (value && typeof value === "object") {
         return `{${Object.entries(value as Record<string, unknown>)
-            .sort(([left], [right]) => left.localeCompare(right))
+            .sort(([left], [right]) => compareCodeUnits(left, right))
             .map(([key, entry]) => `${JSON.stringify(key)}:${stableJsonKey(entry)}`)
             .join(",")}}`
     }
 
     return JSON.stringify(value)
+}
+
+function compareCodeUnits(left: string, right: string): number {
+    if (left < right) {
+        return -1
+    }
+    if (left > right) {
+        return 1
+    }
+
+    return 0
 }
 
 function isMcpDiscoverySource(value: string): value is InventoryTool["source"] {
@@ -308,7 +319,7 @@ function buildSelectedTools(
     }
 
     return tools.sort((left, right) =>
-        `${left.providerId}\0${left.toolName}`.localeCompare(`${right.providerId}\0${right.toolName}`)
+        compareCodeUnits(`${left.providerId}\0${left.toolName}`, `${right.providerId}\0${right.toolName}`)
     )
 }
 
@@ -480,6 +491,9 @@ export default function McpToolsPage() {
         api.queries.getStrategyMcpToolWhitelist,
         selectedStrategyId ? { strategyId: selectedStrategyId as Id<"strategies"> } : "skip"
     )
+    const whitelistReady = selectedStrategyId
+        ? whitelist !== undefined && (whitelist === null || String(whitelist.strategyId) === selectedStrategyId)
+        : false
 
     const loadInventory = useCallback(async (discoveryTools: DiscoveryToolRequest[] = []): Promise<boolean> => {
         setLoadingInventory(true)
@@ -503,13 +517,19 @@ export default function McpToolsPage() {
     }, [loadInventory])
 
     useEffect(() => {
+        setInventory(null)
+        setSelectedKeys(new Set())
+        setLastDiscoveryTools([])
+    }, [selectedStrategyId])
+
+    useEffect(() => {
         if (!discoveryProviderId && inventory?.providers[0]) {
             setDiscoveryProviderId(inventory.providers[0].id)
         }
     }, [discoveryProviderId, inventory])
 
     useEffect(() => {
-        if (whitelist === undefined) {
+        if (!whitelistReady) {
             return
         }
 
@@ -517,7 +537,7 @@ export default function McpToolsPage() {
         setSelectedKeys(new Set((whitelist?.tools ?? []).map((tool) => toolKey(tool.providerId, tool.toolName))))
         setLastDiscoveryTools(persistedDiscoveryTools)
         void loadInventory(persistedDiscoveryTools)
-    }, [loadInventory, whitelist])
+    }, [loadInventory, whitelist, whitelistReady])
 
     const selectedStrategy = useMemo(() =>
         strategies?.find((strategy) => String(strategy._id) === selectedStrategyId),
@@ -642,7 +662,7 @@ export default function McpToolsPage() {
     }
 
     async function handleSave() {
-        if (!selectedStrategyId || !inventory) {
+        if (!selectedStrategyId || !inventory || !whitelistReady || loadingInventory) {
             return
         }
 
@@ -733,7 +753,7 @@ export default function McpToolsPage() {
                         {loadingInventory ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
                         Refresh
                     </Button>
-                    <Button onClick={handleSave} disabled={saving || !inventory || !selectedStrategyId}>
+                    <Button onClick={handleSave} disabled={saving || loadingInventory || !inventory || !selectedStrategyId || !whitelistReady}>
                         {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
                         Save
                     </Button>

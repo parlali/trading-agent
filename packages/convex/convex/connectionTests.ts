@@ -2,6 +2,7 @@
 
 import { action, type ActionCtx } from "./_generated/server"
 import { internal } from "./_generated/api"
+import type { Id } from "./_generated/dataModel"
 import { v } from "convex/values"
 import { requireUser } from "./lib/authGuards"
 import {
@@ -609,7 +610,7 @@ export const testMcpConnection = action({
 
                 const engine = new ToolExecutionEngine({
                     tools: registry,
-                    context: createMcpConnectionRunContext(),
+                    context: createMcpConnectionRunContext(args.strategyId),
                     logger: createLogger({ minLevel: "fatal" }),
                     runStartedAt: Date.now(),
                     runTimeoutMs: 60_000,
@@ -640,10 +641,10 @@ function readMcpConnectionSecrets(): Record<string, string | null> {
     return secrets
 }
 
-function createMcpConnectionRunContext() {
+function createMcpConnectionRunContext(strategyId: Id<"strategies">) {
     return {
         runId: "connection-test",
-        strategyId: "connection-test",
+        strategyId,
         app: "polymarket" as const,
         timestamp: Date.now(),
         trigger: "manual" as const,
