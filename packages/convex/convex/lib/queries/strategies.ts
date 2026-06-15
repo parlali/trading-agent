@@ -92,6 +92,33 @@ export const getAllStrategies = query({
     },
 })
 
+export const getStrategyMcpToolWhitelist = query({
+    args: {
+        serviceToken: v.optional(v.string()),
+        strategyId: v.id("strategies"),
+    },
+    handler: async (ctx, args) => {
+        await requireUserOrServiceToken(ctx, args.serviceToken)
+
+        return await ctx.db
+            .query("strategy_mcp_tool_whitelists")
+            .withIndex("by_strategy", (q) => q.eq("strategyId", args.strategyId))
+            .first()
+    },
+})
+
+export const getStrategyMcpToolWhitelistInternal = internalQuery({
+    args: {
+        strategyId: v.id("strategies"),
+    },
+    handler: async (ctx, args) => {
+        return await ctx.db
+            .query("strategy_mcp_tool_whitelists")
+            .withIndex("by_strategy", (q) => q.eq("strategyId", args.strategyId))
+            .first()
+    },
+})
+
 export const getStrategyOwnedInstruments = query({
     args: { serviceToken: v.string(), strategyId: v.id("strategies") },
     handler: async (ctx, args) => {

@@ -18,6 +18,7 @@ import { EmptyState } from "@/components/empty-state"
 import { formatTimestamp } from "@/lib/format"
 import { ArrowLeft, ArrowRightLeft, BrainCircuit, Loader2, MessageSquare, Square, Trash2 } from "lucide-react"
 import { MarkdownContent } from "@/components/markdown-content"
+import { McpDiagnosticsList } from "@/components/mcp-diagnostics-list"
 import {
     Dialog,
     DialogContent,
@@ -53,6 +54,7 @@ export default function RunDetailPage({
     const runId = id as Id<"strategy_runs">
     const router = useRouter()
     const { data: overview } = useDashboardOverview()
+    const run = useQuery(api.queries.getRunById, { runId })
     const agentLogs = useQuery(api.queries.getAgentLogs, { runId })
     const tradeEvents = useQuery(api.queries.getTradeEvents, { runId })
     const stopRunMutation = useMutation(api.mutations.stopRun)
@@ -62,7 +64,6 @@ export default function RunDetailPage({
     const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
     const [deleting, setDeleting] = useState(false)
 
-    const run = overview?.recentRuns.find((r) => String(r._id) === id)
     const strategy = run
         ? overview?.strategies.find((s) => String(s._id) === String(run.strategyId))
         : null
@@ -94,7 +95,7 @@ export default function RunDetailPage({
         }
     }
 
-    if (agentLogs === undefined || tradeEvents === undefined) {
+    if (run === undefined || agentLogs === undefined || tradeEvents === undefined) {
         return (
             <div className="space-y-6">
                 <Skeleton className="h-8 w-48" />
@@ -258,6 +259,8 @@ export default function RunDetailPage({
                     </CardContent>
                 </Card>
             ) : null}
+
+            <McpDiagnosticsList diagnostics={run?.mcpToolDiagnostics ?? []} />
 
             <Card>
                 <CardHeader>

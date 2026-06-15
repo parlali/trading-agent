@@ -42,7 +42,6 @@ export class OpenRouterAgentProvider implements AgentModelProvider {
             runTimeoutMs,
         } = args
         const aggregatedUsage = createEmptyUsage()
-        const openRouterTools = projectToolsForOpenRouter(tools.getAll())
         let consecutiveErrors = 0
         let iteration = 0
         let killSwitchActivated = false
@@ -167,6 +166,7 @@ export class OpenRouterAgentProvider implements AgentModelProvider {
                     maxIterations,
                     runId: context.runId,
                 })
+                const openRouterTools = projectToolsForOpenRouter(tools.getAll())
 
                 let response
                 try {

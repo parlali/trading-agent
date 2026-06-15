@@ -43,6 +43,71 @@ export const agentChatToolPayloadV = v.object({
     json: v.string(),
 })
 
+export const mcpToolSkipReasonV = stringLiterals([
+    "provider_unavailable",
+    "provider_blocked",
+    "strategy_whitelist_missing",
+    "strategy_whitelist_empty",
+    "provider_not_configured",
+    "not_whitelisted",
+    "tool_disappeared",
+    "schema_changed",
+    "registered_name_changed",
+    "schema_incompatible",
+    "unsafe_annotation",
+    "invalid_name",
+    "malformed_tool",
+    "duplicate_upstream_tool",
+    "duplicate_registered_name",
+    "discovery_tool",
+    "nested_discovery_failed",
+    "nested_discovery_unsupported_schema",
+    "discovery_limit_exceeded",
+])
+
+export const mcpToolDiscoverySourceV = v.union(
+    v.literal("tools/list"),
+    v.literal("tools/discover"),
+    v.literal("tool_search")
+)
+
+export const mcpToolAnnotationsV = v.object({
+    readOnlyHint: v.optional(v.boolean()),
+    destructiveHint: v.optional(v.boolean()),
+    openWorldHint: v.optional(v.boolean()),
+})
+
+export const mcpToolApprovalV = v.object({
+    providerId: v.string(),
+    toolName: v.string(),
+    registeredName: v.string(),
+    schemaHash: v.string(),
+    description: v.optional(v.string()),
+    source: v.optional(mcpToolDiscoverySourceV),
+    inputSchema: v.optional(v.any()),
+    annotations: v.optional(mcpToolAnnotationsV),
+    approvedAt: v.optional(v.number()),
+    approvedBy: v.optional(v.string()),
+    approvalReason: v.optional(v.string()),
+})
+
+export const mcpToolDiscoveryRequestV = v.object({
+    providerId: v.string(),
+    toolName: v.string(),
+    input: v.any(),
+})
+
+export const mcpToolDiagnosticV = v.object({
+    providerId: v.string(),
+    upstreamToolName: v.optional(v.string()),
+    registeredName: v.optional(v.string()),
+    source: v.optional(mcpToolDiscoverySourceV),
+    reason: mcpToolSkipReasonV,
+    message: v.string(),
+    schemaReason: v.optional(v.string()),
+    annotationReason: v.optional(v.string()),
+})
+
 export const claimSourceV = v.union(
     v.literal("position"),
     v.literal("order"),

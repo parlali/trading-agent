@@ -3,7 +3,14 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { createLogger } from "@valiq-trading/core"
 import { ToolExecutionEngine } from "../tool-execution-engine"
 import { ToolRegistry } from "../tool-registry"
-import { createHttpMcpToolBindings } from "./http-tools"
+import {
+    createHttpMcpToolBindingResolution,
+    createHttpMcpToolBindings,
+    discoverHttpMcpToolInventory,
+    hashMcpToolSchema,
+    type McpToolDiagnostic,
+} from "./http-tools"
+import { createScopedMcpProviderConfig } from "./provider-scope"
 
 describe("HTTP MCP tool bindings", () => {
     const servers: Array<{ close: () => void }> = []
@@ -129,7 +136,571 @@ describe("HTTP MCP tool bindings", () => {
         expect(tools).toEqual([])
     })
 
-    it("blocks allowlisted MCP tools that declare destructive or open-world annotations", async () => {
+    it("discovers provider-gated MCP tools from optional tools/discover and binds only approved tools", async () => {
+        const receivedMethods: string[] = []
+        const server = await startMcpServer(async (request, response) => {
+            const body = await readJsonBody(request)
+            receivedMethods.push(String(body.method))
+
+            if (body.method === "initialize") {
+                writeJsonRpc(response, body.id, {
+                    protocolVersion: "2025-03-26",
+                    capabilities: {},
+                    serverInfo: { name: "discover-server", version: "1.0.0" },
+                })
+                return
+            }
+
+            if (body.method === "notifications/initialized") {
+                response.writeHead(202)
+                response.end()
+                return
+            }
+
+            if (body.method === "tools/list") {
+                writeJsonRpc(response, body.id, {
+                    tools: [],
+                })
+                return
+            }
+
+            if (body.method === "tools/discover") {
+                writeJsonRpc(response, body.id, {
+                    tools: [{
+                        name: "gated_search",
+                        description: "Search a gated provider catalog",
+                        inputSchema: {
+                            type: "object",
+                            properties: {
+                                query: { type: "string" },
+                            },
+                            required: ["query"],
+                        },
+                    }],
+                })
+                return
+            }
+
+            if (body.method === "tools/call") {
+                writeJsonRpc(response, body.id, {
+                    content: [{
+                        type: "text",
+                        text: "gated result",
+                    }],
+                })
+                return
+            }
+
+            writeJsonRpcError(response, body.id, -32601, "method not found")
+        })
+        servers.push(server)
+
+        const inventory = await discoverHttpMcpToolInventory({
+            providers: [{
+                id: "macro",
+                url: server.url,
+                discoveryTools: [{
+                    name: "tool_search",
+                    inputs: [{ query: "", limit: 50 }],
+                }],
+            }],
+            logger: createLogger({ minLevel: "fatal" }),
+        })
+
+        expect(inventory.inventory).toMatchObject([{
+            providerId: "macro",
+            upstreamToolName: "gated_search",
+            registeredName: "mcp_macro_gated_search",
+            source: "tools/discover",
+        }])
+        expect(receivedMethods).toContain("tools/discover")
+
+        const resolution = await createHttpMcpToolBindingResolution({
+            providers: [{
+                id: "macro",
+                url: server.url,
+                approvedTools: [{
+                    name: "gated_search",
+                    registeredName: "mcp_macro_gated_search",
+                    schemaHash: inventory.inventory[0]?.schemaHash,
+                }],
+            }],
+            logger: createLogger({ minLevel: "fatal" }),
+        })
+
+        expect(resolution.bindings.map((tool) => tool.name)).toEqual(["mcp_macro_gated_search"])
+        await expect(resolution.bindings[0]?.handler({ query: "earnings" })).resolves.toMatchObject({
+            content: [{
+                type: "text",
+                text: "gated result",
+            }],
+        })
+    })
+
+    it("discovers nested MCP tools through bounded provider discovery and binds only approved nested tools", async () => {
+        const receivedCalls: string[] = []
+        const server = await startMcpServer(async (request, response) => {
+            const body = await readJsonBody(request)
+            receivedCalls.push(String(body.method))
+
+            if (body.method === "initialize") {
+                writeJsonRpc(response, body.id, {
+                    protocolVersion: "2025-03-26",
+                    capabilities: {},
+                    serverInfo: { name: "nested-server", version: "1.0.0" },
+                })
+                return
+            }
+
+            if (body.method === "notifications/initialized") {
+                response.writeHead(202)
+                response.end()
+                return
+            }
+
+            if (body.method === "tools/list") {
+                writeJsonRpc(response, body.id, {
+                    tools: [{
+                        name: "tool_search",
+                        description: "Discover hidden tools",
+                        inputSchema: {
+                            type: "object",
+                            properties: {
+                                query: { type: "string" },
+                                limit: { type: "number" },
+                            },
+                            required: ["query"],
+                        },
+                        annotations: {
+                            readOnlyHint: true,
+                        },
+                    }],
+                })
+                return
+            }
+
+            if (body.method === "tools/call") {
+                const params = body.params as Record<string, unknown>
+                if (params.name === "tool_search") {
+                    writeJsonRpc(response, body.id, {
+                        structuredContent: {
+                            tools: [{
+                                name: "nested_search",
+                                description: "Nested search",
+                                inputSchema: {
+                                    type: "object",
+                                    properties: {
+                                        query: { type: "string" },
+                                    },
+                                    required: ["query"],
+                                },
+                            }],
+                        },
+                        content: [],
+                    })
+                    return
+                }
+
+                if (params.name === "nested_search") {
+                    writeJsonRpc(response, body.id, {
+                        content: [{
+                            type: "text",
+                            text: "nested result",
+                        }],
+                    })
+                    return
+                }
+            }
+
+            writeJsonRpcError(response, body.id, -32601, "method not found")
+        })
+        servers.push(server)
+
+        const inventory = await discoverHttpMcpToolInventory({
+            providers: [{
+                id: "macro",
+                url: server.url,
+                discoveryTools: [{
+                    name: "tool_search",
+                    inputs: [{ query: "", limit: 50 }],
+                }],
+            }],
+            logger: createLogger({ minLevel: "fatal" }),
+        })
+
+        expect(inventory.inventory.map((tool) => tool.upstreamToolName)).toContain("nested_search")
+        expect(inventory.inventory.map((tool) => tool.upstreamToolName)).toContain("tool_search")
+        expect(inventory.diagnostics.some((diagnostic) =>
+            diagnostic.upstreamToolName === "tool_search" && diagnostic.reason === "discovery_tool"
+        )).toBe(false)
+
+        const resolution = await createHttpMcpToolBindingResolution({
+            providers: [{
+                id: "macro",
+                url: server.url,
+                discoveryTools: [{
+                    name: "tool_search",
+                    inputs: [{ query: "", limit: 50 }],
+                }],
+                approvedTools: [{
+                    name: "nested_search",
+                }],
+            }],
+            logger: createLogger({ minLevel: "fatal" }),
+        })
+
+        expect(resolution.bindings.map((tool) => tool.name)).toEqual(["mcp_macro_nested_search"])
+        expect(receivedCalls).toContain("tools/call")
+
+        const result = await resolution.bindings[0]?.handler({ query: "rates" })
+        expect(result).toMatchObject({
+            content: [{
+                type: "text",
+                text: "nested result",
+            }],
+        })
+    })
+
+    it("replays persisted category discovery inputs before binding approved nested tools", async () => {
+        const receivedDiscoveryInputs: unknown[] = []
+        const marketContextInputSchema = {
+            type: "object",
+            properties: {},
+        }
+        const server = await startMcpServer(async (request, response) => {
+            const body = await readJsonBody(request)
+
+            if (body.method === "initialize") {
+                writeJsonRpc(response, body.id, {
+                    protocolVersion: "2025-03-26",
+                    capabilities: {},
+                    serverInfo: { name: "category-discovery-server", version: "1.0.0" },
+                })
+                return
+            }
+
+            if (body.method === "notifications/initialized") {
+                response.writeHead(202)
+                response.end()
+                return
+            }
+
+            if (body.method === "tools/list") {
+                writeJsonRpc(response, body.id, {
+                    tools: [{
+                        name: "discover_tools",
+                        description: "Discover category tools",
+                        inputSchema: {
+                            type: "object",
+                            properties: {
+                                category: { type: "string" },
+                            },
+                            required: ["category"],
+                        },
+                    }],
+                })
+                return
+            }
+
+            if (body.method === "tools/call") {
+                const params = body.params as Record<string, unknown>
+                if (params.name === "discover_tools") {
+                    receivedDiscoveryInputs.push(params.arguments)
+                    const input = params.arguments as Record<string, unknown> | undefined
+                    writeJsonRpc(response, body.id, {
+                        structuredContent: {
+                            tools: input?.category === "macro_analysis"
+                                ? [{
+                                    name: "get_current_market_context",
+                                    description: "Current macro context",
+                                    inputSchema: marketContextInputSchema,
+                                }]
+                                : [],
+                        },
+                        content: [],
+                    })
+                    return
+                }
+
+                if (params.name === "get_current_market_context") {
+                    writeJsonRpc(response, body.id, {
+                        content: [{
+                            type: "text",
+                            text: "macro context",
+                        }],
+                    })
+                    return
+                }
+            }
+
+            writeJsonRpcError(response, body.id, -32601, "method not found")
+        })
+        servers.push(server)
+
+        const persistedWhitelist = {
+            discoveryTools: [{
+                providerId: "core_api",
+                toolName: "discover_tools",
+                input: { category: "macro_analysis" },
+            }],
+            tools: [{
+                providerId: "core_api",
+                toolName: "get_current_market_context",
+                registeredName: "mcp_core_api_get_current_market_context",
+                schemaHash: hashMcpToolSchema(marketContextInputSchema),
+            }],
+        }
+        const scopedProvider = createScopedMcpProviderConfig({
+            provider: {
+                id: "core_api",
+                url: server.url,
+            },
+            tools: persistedWhitelist.tools,
+            discoveryRequests: persistedWhitelist.discoveryTools,
+        })
+
+        const resolution = await createHttpMcpToolBindingResolution({
+            providers: [scopedProvider],
+            logger: createLogger({ minLevel: "fatal" }),
+        })
+
+        expect(scopedProvider.discoveryTools).toEqual([{
+            name: "discover_tools",
+            inputs: [{ category: "macro_analysis" }],
+        }])
+        expect(scopedProvider.approvedTools).toEqual([{
+            name: "get_current_market_context",
+            registeredName: "mcp_core_api_get_current_market_context",
+            schemaHash: hashMcpToolSchema(marketContextInputSchema),
+        }])
+        expect(receivedDiscoveryInputs).toEqual([{ category: "macro_analysis" }])
+        expect(resolution.bindings.map((tool) => tool.name)).toEqual(["mcp_core_api_get_current_market_context"])
+        await expect(resolution.bindings[0]?.handler({})).resolves.toMatchObject({
+            content: [{
+                type: "text",
+                text: "macro context",
+            }],
+        })
+    })
+
+    it("dynamically registers approved MCP tools from a discovery tool call result", async () => {
+        const receivedToolCalls: Array<{ name: string, arguments: unknown }> = []
+        const server = await startMcpServer(async (request, response) => {
+            const body = await readJsonBody(request)
+
+            if (body.method === "initialize") {
+                writeJsonRpc(response, body.id, {
+                    protocolVersion: "2025-03-26",
+                    capabilities: {},
+                    serverInfo: { name: "dynamic-discovery-server", version: "1.0.0" },
+                })
+                return
+            }
+
+            if (body.method === "notifications/initialized") {
+                response.writeHead(202)
+                response.end()
+                return
+            }
+
+            if (body.method === "tools/list") {
+                writeJsonRpc(response, body.id, {
+                    tools: [{
+                        name: "discover_tools",
+                        description: "Discover provider tools",
+                        inputSchema: {
+                            type: "object",
+                            properties: {
+                                query: { type: "string" },
+                                limit: { type: "number" },
+                            },
+                            required: ["query"],
+                        },
+                    }],
+                })
+                return
+            }
+
+            if (body.method === "tools/call") {
+                const params = body.params as Record<string, unknown>
+                receivedToolCalls.push({
+                    name: String(params.name),
+                    arguments: params.arguments,
+                })
+
+                if (params.name === "discover_tools") {
+                    const input = params.arguments as Record<string, unknown> | undefined
+                    const query = input?.query
+                    writeJsonRpc(response, body.id, {
+                        structuredContent: {
+                            tools: [{
+                                name: query === "rates" ? "dynamic_lookup" : "catalog_lookup",
+                                description: query === "rates" ? "Dynamic lookup" : "Catalog lookup",
+                                inputSchema: {
+                                    type: "object",
+                                    properties: {
+                                        query: { type: "string" },
+                                    },
+                                    required: ["query"],
+                                },
+                            }],
+                        },
+                        content: [],
+                    })
+                    return
+                }
+
+                if (params.name === "catalog_lookup") {
+                    writeJsonRpc(response, body.id, {
+                        content: [{
+                            type: "text",
+                            text: "catalog result",
+                        }],
+                    })
+                    return
+                }
+
+                if (params.name === "dynamic_lookup") {
+                    writeJsonRpc(response, body.id, {
+                        content: [{
+                            type: "text",
+                            text: "dynamic result",
+                        }],
+                    })
+                    return
+                }
+            }
+
+            writeJsonRpcError(response, body.id, -32601, "method not found")
+        })
+        servers.push(server)
+
+        const registry = new ToolRegistry()
+        const diagnostics: McpToolDiagnostic[] = []
+        const resolution = await createHttpMcpToolBindingResolution({
+            providers: [{
+                id: "macro",
+                url: server.url,
+                approvedTools: [
+                    { name: "discover_tools" },
+                    { name: "catalog_lookup" },
+                    { name: "dynamic_lookup" },
+                ],
+            }],
+            logger: createLogger({ minLevel: "fatal" }),
+            dynamicToolRegistry: registry,
+            dynamicDiagnostics: diagnostics,
+        })
+
+        for (const binding of resolution.bindings) {
+            registry.register(binding)
+        }
+
+        expect(resolution.bindings.map((tool) => tool.name)).toEqual([
+            "mcp_macro_discover_tools",
+            "mcp_macro_catalog_lookup",
+        ])
+        expect(resolution.diagnostics).toEqual(expect.arrayContaining([
+            expect.objectContaining({
+                upstreamToolName: "dynamic_lookup",
+                reason: "tool_disappeared",
+            }),
+        ]))
+        expect(receivedToolCalls).toContainEqual({
+            name: "discover_tools",
+            arguments: { query: "", limit: 50 },
+        })
+        expect(registry.has("mcp_macro_dynamic_lookup")).toBe(false)
+
+        await registry.get("mcp_macro_discover_tools")?.handler({ query: "rates" })
+
+        expect(registry.has("mcp_macro_dynamic_lookup")).toBe(true)
+        expect(diagnostics.some((diagnostic) => diagnostic.reason === "tool_disappeared")).toBe(false)
+
+        const result = await registry.get("mcp_macro_dynamic_lookup")?.handler({ query: "cpi" })
+        expect(result).toMatchObject({
+            content: [{
+                type: "text",
+                text: "dynamic result",
+            }],
+        })
+    })
+
+    it("fails closed when an approved MCP tool schema hash changes", async () => {
+        const server = await createSingleToolServer("search")
+        servers.push(server)
+
+        const resolution = await createHttpMcpToolBindingResolution({
+            providers: [{
+                id: "macro",
+                url: server.url,
+                approvedTools: [{
+                    name: "search",
+                    registeredName: "mcp_macro_search",
+                    schemaHash: "b".repeat(64),
+                }],
+            }],
+            logger: createLogger({ minLevel: "fatal" }),
+        })
+
+        expect(resolution.bindings).toEqual([])
+        expect(resolution.diagnostics).toContainEqual(expect.objectContaining({
+            providerId: "macro",
+            upstreamToolName: "search",
+            reason: "schema_changed",
+        }))
+    })
+
+    it("records disappeared approved tools without exposing replacements", async () => {
+        const server = await startMcpServer(async (request, response) => {
+            const body = await readJsonBody(request)
+
+            if (body.method === "initialize") {
+                writeJsonRpc(response, body.id, {
+                    protocolVersion: "2025-03-26",
+                    capabilities: {},
+                    serverInfo: { name: "empty-server", version: "1.0.0" },
+                })
+                return
+            }
+
+            if (body.method === "notifications/initialized") {
+                response.writeHead(202)
+                response.end()
+                return
+            }
+
+            if (body.method === "tools/list") {
+                writeJsonRpc(response, body.id, { tools: [] })
+                return
+            }
+
+            writeJsonRpc(response, body.id, { content: [] })
+        })
+        servers.push(server)
+
+        const resolution = await createHttpMcpToolBindingResolution({
+            providers: [{
+                id: "macro",
+                url: server.url,
+                approvedTools: [{
+                    name: "search",
+                    registeredName: "mcp_macro_search",
+                    schemaHash: "a".repeat(64),
+                }],
+            }],
+            logger: createLogger({ minLevel: "fatal" }),
+        })
+
+        expect(resolution.bindings).toEqual([])
+        expect(resolution.diagnostics).toContainEqual(expect.objectContaining({
+            providerId: "macro",
+            upstreamToolName: "search",
+            reason: "tool_disappeared",
+        }))
+    })
+
+    it("surfaces allowlisted MCP tools that declare destructive or open-world annotations", async () => {
         const server = await startMcpServer(async (request, response) => {
             const body = await readJsonBody(request)
 
@@ -180,7 +751,7 @@ describe("HTTP MCP tool bindings", () => {
         })
         servers.push(server)
 
-        const tools = await createHttpMcpToolBindings({
+        const resolution = await createHttpMcpToolBindingResolution({
             providers: [{
                 id: "unsafe",
                 url: server.url,
@@ -189,10 +760,28 @@ describe("HTTP MCP tool bindings", () => {
             logger: createLogger({ minLevel: "fatal" }),
         })
 
-        expect(tools).toEqual([])
+        expect(resolution.bindings.map((tool) => tool.name)).toEqual([
+            "mcp_unsafe_place_order",
+            "mcp_unsafe_web_browse",
+        ])
+        expect(resolution.inventory).toEqual(expect.arrayContaining([
+            expect.objectContaining({
+                upstreamToolName: "place_order",
+                annotations: {
+                    destructiveHint: true,
+                },
+            }),
+            expect.objectContaining({
+                upstreamToolName: "web_browse",
+                annotations: {
+                    openWorldHint: true,
+                },
+            }),
+        ]))
+        expect(resolution.diagnostics.some((diagnostic) => diagnostic.reason === "unsafe_annotation")).toBe(false)
     })
 
-    it("blocks allowlisted MCP tools with malformed destructive or open-world annotations", async () => {
+    it("records malformed annotation diagnostics without hiding allowlisted MCP tools", async () => {
         const server = await startMcpServer(async (request, response) => {
             const body = await readJsonBody(request)
 
@@ -243,7 +832,7 @@ describe("HTTP MCP tool bindings", () => {
         })
         servers.push(server)
 
-        const tools = await createHttpMcpToolBindings({
+        const resolution = await createHttpMcpToolBindingResolution({
             providers: [{
                 id: "unsafe",
                 url: server.url,
@@ -252,7 +841,26 @@ describe("HTTP MCP tool bindings", () => {
             logger: createLogger({ minLevel: "fatal" }),
         })
 
-        expect(tools).toEqual([])
+        expect(resolution.bindings.map((tool) => tool.name)).toEqual([
+            "mcp_unsafe_place_order",
+            "mcp_unsafe_web_browse",
+        ])
+        expect(resolution.inventory.map((tool) => tool.upstreamToolName)).toEqual([
+            "place_order",
+            "web_browse",
+        ])
+        expect(resolution.diagnostics).toEqual(expect.arrayContaining([
+            expect.objectContaining({
+                upstreamToolName: "place_order",
+                reason: "unsafe_annotation",
+                annotationReason: "destructiveHint must be boolean",
+            }),
+            expect.objectContaining({
+                upstreamToolName: "web_browse",
+                reason: "unsafe_annotation",
+                annotationReason: "openWorldHint must be boolean",
+            }),
+        ]))
     })
 
     it("degrades repeated MCP research failures through tool category", async () => {
@@ -424,6 +1032,176 @@ describe("HTTP MCP tool bindings", () => {
         })
 
         expect(tools).toEqual([])
+    })
+
+    it("records malformed top-level MCP tools as skipped-tool diagnostics", async () => {
+        const server = await startMcpServer(async (request, response) => {
+            const body = await readJsonBody(request)
+
+            if (body.method === "initialize") {
+                writeJsonRpc(response, body.id, {
+                    protocolVersion: "2025-03-26",
+                    capabilities: {},
+                    serverInfo: { name: "malformed-list-server", version: "1.0.0" },
+                })
+                return
+            }
+
+            if (body.method === "notifications/initialized") {
+                response.writeHead(202)
+                response.end()
+                return
+            }
+
+            if (body.method === "tools/list") {
+                writeJsonRpc(response, body.id, {
+                    tools: [
+                        {
+                            name: "valid_search",
+                            inputSchema: {
+                                type: "object",
+                                properties: {},
+                            },
+                        },
+                        {
+                            name: "bad_description",
+                            description: 42,
+                            inputSchema: {
+                                type: "object",
+                                properties: {},
+                            },
+                        },
+                        {
+                            name: "bad_input",
+                            inputSchema: "not-object",
+                        },
+                        {
+                            description: "missing name",
+                            inputSchema: {
+                                type: "object",
+                                properties: {},
+                            },
+                        },
+                    ],
+                })
+                return
+            }
+
+            writeJsonRpcError(response, body.id, -32601, "method not found")
+        })
+        servers.push(server)
+
+        const inventory = await discoverHttpMcpToolInventory({
+            providers: [{
+                id: "macro",
+                url: server.url,
+            }],
+            logger: createLogger({ minLevel: "fatal" }),
+        })
+
+        expect(inventory.inventory.map((tool) => tool.upstreamToolName)).toEqual(["valid_search"])
+        expect(inventory.diagnostics).toEqual(expect.arrayContaining([
+            expect.objectContaining({
+                upstreamToolName: "bad_description",
+                reason: "malformed_tool",
+            }),
+            expect.objectContaining({
+                upstreamToolName: "bad_input",
+                reason: "schema_incompatible",
+                schemaReason: "inputSchema must be an object",
+            }),
+            expect.objectContaining({
+                reason: "invalid_name",
+            }),
+        ]))
+        expect(inventory.diagnostics.some((diagnostic) => diagnostic.reason === "provider_unavailable")).toBe(false)
+    })
+
+    it("records malformed nested discovery results as skipped-tool diagnostics", async () => {
+        const server = await startMcpServer(async (request, response) => {
+            const body = await readJsonBody(request)
+
+            if (body.method === "initialize") {
+                writeJsonRpc(response, body.id, {
+                    protocolVersion: "2025-03-26",
+                    capabilities: {},
+                    serverInfo: { name: "malformed-nested-server", version: "1.0.0" },
+                })
+                return
+            }
+
+            if (body.method === "notifications/initialized") {
+                response.writeHead(202)
+                response.end()
+                return
+            }
+
+            if (body.method === "tools/list") {
+                writeJsonRpc(response, body.id, {
+                    tools: [{
+                        name: "catalog_search",
+                        inputSchema: {
+                            type: "object",
+                            properties: {},
+                        },
+                    }],
+                })
+                return
+            }
+
+            if (body.method === "tools/call") {
+                writeJsonRpc(response, body.id, {
+                    structuredContent: {
+                        tools: [
+                            {
+                                name: "nested_valid",
+                                inputSchema: {
+                                    type: "object",
+                                    properties: {},
+                                },
+                            },
+                            {
+                                name: "nested_bad",
+                                inputSchema: "not-object",
+                            },
+                            {
+                                description: "missing name",
+                            },
+                        ],
+                    },
+                })
+                return
+            }
+
+            writeJsonRpcError(response, body.id, -32601, "method not found")
+        })
+        servers.push(server)
+
+        const inventory = await discoverHttpMcpToolInventory({
+            providers: [{
+                id: "macro",
+                url: server.url,
+                discoveryTools: [{
+                    name: "catalog_search",
+                    inputs: [{}],
+                }],
+            }],
+            logger: createLogger({ minLevel: "fatal" }),
+        })
+
+        expect(inventory.inventory.map((tool) => tool.upstreamToolName)).toEqual(["catalog_search", "nested_valid"])
+        expect(inventory.diagnostics).toEqual(expect.arrayContaining([
+            expect.objectContaining({
+                upstreamToolName: "nested_bad",
+                source: "tool_search",
+                reason: "schema_incompatible",
+                schemaReason: "inputSchema must be an object",
+            }),
+            expect.objectContaining({
+                source: "tool_search",
+                reason: "invalid_name",
+            }),
+        ]))
     })
 
     it("rejects malformed MCP tools/call content blocks at the transport boundary", async () => {
@@ -605,7 +1383,7 @@ describe("HTTP MCP tool bindings", () => {
                 allowedTools: ["search"],
             }],
             logger: createLogger({ minLevel: "fatal" }),
-        })).rejects.toThrow("returned repeated cursor same-cursor")
+        })).rejects.toThrow("returned repeated cursor")
     })
 
     it("waits for matching JSON-RPC responses in MCP event streams", async () => {

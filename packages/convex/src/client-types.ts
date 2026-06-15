@@ -1,6 +1,12 @@
 import type { Id } from "../convex/_generated/dataModel"
 import type { CascadeDeleteCounts } from "../convex/lib/cascadeDelete"
 import type {
+    McpToolApproval,
+    McpToolDiagnostic,
+    McpToolDiscoveryRequest,
+    McpToolInventoryEntry,
+} from "@valiq-trading/agent"
+import type {
     App,
     AppKillSwitches,
     OrderIntent,
@@ -29,6 +35,13 @@ export interface ToolManifestEntry {
     category?: string
     contractBoundary?: string
     contractOwner?: string
+}
+
+export type {
+    McpToolApproval,
+    McpToolDiagnostic,
+    McpToolDiscoveryRequest,
+    McpToolInventoryEntry,
 }
 
 export interface ConvexOrderPersistenceConfig {
@@ -92,6 +105,28 @@ export interface StoredAccount {
     updatedAt?: number
 }
 
+export interface StrategyMcpToolWhitelist {
+    _id: Id<"strategy_mcp_tool_whitelists">
+    _creationTime: number
+    strategyId: Id<"strategies">
+    tools: McpToolApproval[]
+    discoveryTools?: McpToolDiscoveryRequest[]
+    createdAt: number
+    updatedAt: number
+}
+
+export interface McpToolInventoryResult {
+    providers: Array<{
+        id: string
+        toolCount: number
+        skippedCount: number
+        status: "available" | "unavailable"
+        error?: string
+    }>
+    tools: McpToolInventoryEntry[]
+    diagnostics: McpToolDiagnostic[]
+}
+
 export type RunTrigger = "cron" | "manual" | "callback" | "chat"
 
 export interface CreateRunMetadata {
@@ -129,6 +164,7 @@ export interface RunDiagnostics {
     opportunityClosed?: number
     opportunityRealizedPnl?: number
     systemContextDigest?: RunSystemContextDigest
+    mcpToolDiagnostics?: McpToolDiagnostic[]
     toolManifest?: ToolManifestEntry[]
 }
 
@@ -639,6 +675,7 @@ export interface TradingBackendClient extends TradeEventLogger, AgentMessageLogg
     getLatestPositions(strategyId: Id<"strategies">): Promise<Position[]>
     getPositionsForRun(strategyId: Id<"strategies">, runId: Id<"strategy_runs">): Promise<Position[]>
     getAllStrategies(): Promise<StoredStrategy[]>
+    getStrategyMcpToolWhitelist(strategyId: Id<"strategies">): Promise<StrategyMcpToolWhitelist | null>
     getAccounts(app?: Exclude<App, "backend">): Promise<StoredAccount[]>
     getAccountByAppAndId(app: Exclude<App, "backend">, accountId: string): Promise<StoredAccount | null>
     upsertAccount(config: AccountConfig): Promise<Id<"accounts">>

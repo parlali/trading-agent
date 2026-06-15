@@ -6,8 +6,9 @@ import {
 import {
     ToolExecutionEngine,
     ToolRegistry,
-    createHttpMcpToolBindings,
+    discoverHttpMcpToolInventory,
     resolveMcpProviderConfigs,
+    type McpToolDiagnostic,
     type ToolBinding,
     type ToolManifestEntry,
 } from "@valiq-trading/agent"
@@ -17,6 +18,7 @@ import type {
 } from "@valiq-trading/core"
 import type {
     Id,
+    StrategyMcpToolWhitelist,
     TradingBackendClient,
 } from "@valiq-trading/convex"
 import { z } from "zod/v4"
@@ -27,13 +29,16 @@ import {
     logger,
     resolvedSecrets,
 } from "./state"
+import { createMcpTools } from "./plugins/shared"
 
 export interface BuildAgentChatToolRuntimeArgs {
     abortSignal: AbortSignal
+    strategyId?: Id<"strategies">
     tradingBackend?: TradingBackendClient
     secrets?: Record<string, string | null | undefined>
     log?: Logger
-    createMcpBindings?: typeof createHttpMcpToolBindings
+    discoverMcpInventory?: typeof discoverHttpMcpToolInventory
+    createScopedMcpTools?: typeof createMcpTools
 }
 
 export interface AgentChatToolRuntime {
@@ -68,6 +73,7 @@ export async function buildAgentChatToolRuntime(
     const log = args.log ?? logger
     const secrets = args.secrets ?? resolvedSecrets
     const registry = new ToolRegistry()
+    const mcpToolDiagnostics: McpToolDiagnostic[] = []
 
     for (const binding of createReadOnlyChatTools(tradingBackend, secrets, log)) {
         registry.register(binding)
@@ -78,14 +84,26 @@ export async function buildAgentChatToolRuntime(
         logger: log,
         compatibleVenues: ALL_APPS,
     })
-    const mcpDiscovery = await discoverAgentChatMcpBindings({
+    const mcpDiscovery = await discoverAgentChatMcpInventory({
         providers: mcpProviderResolution.providers,
         logger: log,
         signal: args.abortSignal,
-        createMcpBindings: args.createMcpBindings ?? createHttpMcpToolBindings,
+        discoverMcpInventory: args.discoverMcpInventory ?? discoverHttpMcpToolInventory,
     })
+    const mcpToolWhitelist = args.strategyId
+        ? await tradingBackend.getStrategyMcpToolWhitelist(args.strategyId)
+        : null
+    const executableMcpTools = args.strategyId
+        ? await (args.createScopedMcpTools ?? createMcpTools)({
+            secrets: normalizeMcpSecrets(secrets),
+            runLogger: log,
+            mcpToolWhitelist,
+            mcpToolDiagnostics,
+            mcpToolRegistry: registry,
+        })
+        : []
 
-    for (const binding of mcpDiscovery.bindings) {
+    for (const binding of executableMcpTools) {
         registry.register(binding)
     }
 
@@ -102,7 +120,7 @@ export async function buildAgentChatToolRuntime(
         tools: createAiSdkTools(registry, engine),
         mcpProviders: [
             ...mcpProviderResolution.unavailable,
-            ...mcpDiscovery.providers,
+            ...mergeAgentChatMcpProviderStatuses(mcpDiscovery.providers, mcpToolWhitelist, executableMcpTools.length),
         ],
     }
 }
@@ -440,6 +458,43 @@ function isNonNullable<T>(value: T): value is NonNullable<T> {
     return value !== null && value !== undefined
 }
 
+function normalizeMcpSecrets(secrets: Record<string, string | null | undefined>): Record<string, string | null> {
+    const normalized: Record<string, string | null> = {}
+
+    for (const [key, value] of Object.entries(secrets)) {
+        normalized[key] = value ?? null
+    }
+
+    return normalized
+}
+
+function mergeAgentChatMcpProviderStatuses(
+    providers: AgentChatToolRuntime["mcpProviders"],
+    whitelist: StrategyMcpToolWhitelist | null,
+    executableToolCount: number
+): AgentChatToolRuntime["mcpProviders"] {
+    if (!whitelist || executableToolCount === 0) {
+        return providers
+    }
+
+    const approvedToolsByProvider = new Map<string, number>()
+    for (const tool of whitelist.tools) {
+        approvedToolsByProvider.set(tool.providerId, (approvedToolsByProvider.get(tool.providerId) ?? 0) + 1)
+    }
+
+    return providers.map((provider) => {
+        const approvedCount = approvedToolsByProvider.get(provider.id)
+        if (!approvedCount || provider.status !== "available") {
+            return provider
+        }
+
+        return {
+            ...provider,
+            toolCount: approvedCount,
+        }
+    })
+}
+
 function resolveAgentChatMcpProviderConfigs(args: {
     secrets: Record<string, string | null | undefined>
     logger: Logger
@@ -470,48 +525,48 @@ function resolveAgentChatMcpProviderConfigs(args: {
     }
 }
 
-async function discoverAgentChatMcpBindings(args: {
+async function discoverAgentChatMcpInventory(args: {
     providers: ReturnType<typeof resolveMcpProviderConfigs>
     logger: Logger
     signal: AbortSignal
-    createMcpBindings: typeof createHttpMcpToolBindings
+    discoverMcpInventory: typeof discoverHttpMcpToolInventory
 }): Promise<{
-    bindings: ToolBinding[]
     providers: AgentChatToolRuntime["mcpProviders"]
 }> {
-    const bindings: ToolBinding[] = []
     const providers: AgentChatToolRuntime["mcpProviders"] = []
 
     for (const provider of args.providers) {
         try {
-            const providerBindings = await args.createMcpBindings({
+            const inventory = await args.discoverMcpInventory({
                 providers: [provider],
                 logger: args.logger,
                 signal: args.signal,
+                failOnProviderError: false,
             })
-            bindings.push(...providerBindings)
+            const providerUnavailable = inventory.diagnostics.some((diagnostic) =>
+                diagnostic.providerId === provider.id && diagnostic.reason === "provider_unavailable"
+            )
             providers.push({
                 id: provider.id,
-                toolCount: providerBindings.length,
-                status: "available",
+                toolCount: inventory.inventory.length,
+                status: providerUnavailable ? "unavailable" : "available",
+                error: providerUnavailable ? "MCP provider inventory unavailable" : undefined,
             })
         } catch (error) {
-            const message = error instanceof Error ? error.message : String(error)
-            args.logger.error("MCP provider unavailable for agent chat", {
+            args.logger.error("MCP provider inventory unavailable for agent chat", {
                 providerId: provider.id,
-                error: message,
+                error: error instanceof Error ? error.name : typeof error,
             })
             providers.push({
                 id: provider.id,
                 toolCount: 0,
                 status: "unavailable",
-                error: message,
+                error: "MCP provider inventory unavailable",
             })
         }
     }
 
     return {
-        bindings,
         providers,
     }
 }

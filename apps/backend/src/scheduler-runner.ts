@@ -128,6 +128,7 @@ export async function runStrategy(
     let currentAccountState: AccountState | undefined
     let runtimeContextLines: string[] | undefined
     let registeredToolManifest: ToolManifestEntry[] = []
+    let mcpToolDiagnostics: RunDiagnostics["mcpToolDiagnostics"] = []
 
     try {
         runtime = await createScheduledRunRuntime({
@@ -250,6 +251,7 @@ export async function runStrategy(
             })
             runSystemContextDigest = preparedTurn.runSystemContextDigest
             registeredToolManifest = preparedTurn.toolManifest
+            mcpToolDiagnostics = preparedTurn.mcpToolDiagnostics
             currentAccountState = preparedTurn.context.accountState
 
             const result = await executeAgentRun(
@@ -299,7 +301,10 @@ export async function runStrategy(
             const cleanSummary = result.summary
                 ? sanitizeRunSummary(result.summary)
                 : result.summary
-            const runDiagnostics = buildRunDiagnostics(result, runSystemContextDigest)
+            const runDiagnostics = buildRunDiagnostics(result, runSystemContextDigest) ?? {}
+            if (mcpToolDiagnostics.length > 0) {
+                runDiagnostics.mcpToolDiagnostics = mcpToolDiagnostics
+            }
 
             if (result.error) {
                 await Promise.all([
@@ -362,7 +367,7 @@ export async function runStrategy(
                 "failed",
                 undefined,
                 message,
-                buildFailureRunDiagnostics(llmConfig, runSystemContextDigest, registeredToolManifest)
+                buildFailureRunDiagnostics(llmConfig, runSystemContextDigest, registeredToolManifest, mcpToolDiagnostics)
             ),
             backend.createAlert({
                 strategyId: strategy._id,
@@ -425,7 +430,8 @@ export async function runStrategy(
 function buildFailureRunDiagnostics(
     llmConfig: StrategyLlmConfig,
     systemContextDigest?: RunSystemContextDigest,
-    toolManifest: ToolManifestEntry[] = []
+    toolManifest: ToolManifestEntry[] = [],
+    mcpToolDiagnostics: RunDiagnostics["mcpToolDiagnostics"] = []
 ): RunDiagnostics {
     const diagnostics: RunDiagnostics = {
         llmProvider: llmConfig.provider,
@@ -444,6 +450,9 @@ function buildFailureRunDiagnostics(
 
     if (systemContextDigest) {
         diagnostics.systemContextDigest = systemContextDigest
+    }
+    if (mcpToolDiagnostics.length > 0) {
+        diagnostics.mcpToolDiagnostics = mcpToolDiagnostics
     }
     diagnostics.toolManifest = toolManifest
 

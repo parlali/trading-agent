@@ -2,6 +2,7 @@
 
 import { action, type ActionCtx } from "./_generated/server"
 import { internal } from "./_generated/api"
+import type { Id } from "./_generated/dataModel"
 import { v } from "convex/values"
 import { requireUser } from "./lib/authGuards"
 import {
@@ -14,10 +15,12 @@ import {
     MCP_PROVIDER_SECRET_KEYS,
     ToolExecutionEngine,
     ToolRegistry,
-    createHttpMcpToolBindings,
+    createHttpMcpToolBindingResolution,
+    discoverHttpMcpToolInventory,
     resolveMcpProviderConfigs,
     withMcpToolCallBudget,
 } from "@valiq-trading/agent"
+import { createMcpConnectionProviderScope } from "./lib/mcpConnectionScope"
 import {
     ALPACA_RUNTIME_SECRET_KEYS,
     AlpacaClient,
@@ -501,7 +504,9 @@ export const testOKXConnection = action({
 
 export const testMcpConnection = action({
     args: {
+        strategyId: v.id("strategies"),
         toolName: v.optional(v.string()),
+        toolArgs: v.optional(v.any()),
     },
     handler: async (ctx, args) => {
         await requireUser(ctx)
@@ -524,32 +529,94 @@ export const testMcpConnection = action({
                 },
             })
 
-            const toolBindings = await createHttpMcpToolBindings({
+            const inventory = await discoverHttpMcpToolInventory({
                 providers,
+                failOnProviderError: false,
             })
-            const registry = new ToolRegistry()
-            for (const tool of toolBindings) {
-                registry.register(withMcpToolCallBudget(tool, 4))
+
+            const toolNames = inventory.inventory
+                .map((tool) => tool.registeredName)
+                .sort((left, right) => left.localeCompare(right))
+            const providerUnavailable = inventory.diagnostics.some((diagnostic) =>
+                diagnostic.reason === "provider_unavailable"
+            )
+            steps.push({
+                name: "Discover Tools",
+                ok: !providerUnavailable,
+                data: {
+                    toolNames,
+                    diagnostics: inventory.diagnostics,
+                },
+                error: providerUnavailable ? "One or more MCP providers were unavailable" : undefined,
+            })
+
+            const whitelist = await ctx.runQuery(internal.queries.getStrategyMcpToolWhitelistInternal, {
+                strategyId: args.strategyId,
+            })
+            if (!whitelist) {
+                steps.push({
+                    name: "Strategy Whitelist",
+                    ok: false,
+                    error: "Selected strategy has no persisted MCP tool whitelist",
+                })
+                return { ok: false, steps }
+            }
+            if (whitelist.tools.length === 0) {
+                steps.push({
+                    name: "Strategy Whitelist",
+                    ok: false,
+                    error: "Selected strategy whitelist contains no enabled MCP tools",
+                })
+                return { ok: false, steps }
             }
 
-            const toolNames = registry.getAll().map((tool) => tool.name).sort((left, right) => left.localeCompare(right))
-            steps.push({ name: "List Tools", ok: true, data: { toolNames } })
+            const providerScope = createMcpConnectionProviderScope(providers, whitelist)
+            const toolBindings = await createHttpMcpToolBindingResolution({
+                providers: providerScope.providers,
+                failOnProviderError: false,
+            })
+            const registry = new ToolRegistry()
+            for (const tool of toolBindings.bindings) {
+                registry.register(withMcpToolCallBudget(tool, 4))
+            }
+            steps.push({
+                name: "Strategy Whitelist",
+                ok: toolBindings.bindings.length > 0 && providerScope.missingProviderIds.length === 0,
+                data: {
+                    approvedTools: whitelist.tools.map((tool) => tool.registeredName),
+                    registeredTools: toolBindings.bindings.map((tool) => tool.name),
+                    missingProviderIds: providerScope.missingProviderIds,
+                    diagnostics: toolBindings.diagnostics,
+                },
+                error: providerScope.missingProviderIds.length > 0
+                    ? `Approved MCP provider is not configured: ${providerScope.missingProviderIds.join(", ")}`
+                    : toolBindings.bindings.length === 0
+                        ? "No persisted strategy MCP tools registered in runtime ToolRegistry"
+                        : undefined,
+            })
+            if (toolBindings.bindings.length === 0 || providerScope.missingProviderIds.length > 0) {
+                return { ok: false, steps }
+            }
 
             if (args.toolName) {
-                if (!registry.has(args.toolName)) {
-                    steps.push({ name: "Call Tool", ok: false, error: `Tool ${args.toolName} is not registered in runtime ToolRegistry` })
+                const approvedTool = whitelist.tools.find((tool) =>
+                    tool.registeredName === args.toolName || tool.toolName === args.toolName
+                )
+                const callToolName = approvedTool?.registeredName ?? args.toolName
+                if (!registry.has(callToolName)) {
+                    steps.push({ name: "Call Tool", ok: false, error: `Tool ${callToolName} is not registered in runtime ToolRegistry` })
                     return { ok: false, steps }
                 }
 
                 const engine = new ToolExecutionEngine({
                     tools: registry,
-                    context: createMcpConnectionRunContext(),
+                    context: createMcpConnectionRunContext(args.strategyId),
                     logger: createLogger({ minLevel: "fatal" }),
                     runStartedAt: Date.now(),
                     runTimeoutMs: 60_000,
                     maxRepeatedToolErrors: 1,
                 })
-                const result = await engine.executeMcpCall(args.toolName, {}, "connection-test-call")
+                const result = await engine.executeMcpCall(callToolName, args.toolArgs ?? {}, "connection-test-call")
                 const outcome = engine.getOutcome()
                 steps.push({
                     name: "Call Tool",
@@ -574,10 +641,10 @@ function readMcpConnectionSecrets(): Record<string, string | null> {
     return secrets
 }
 
-function createMcpConnectionRunContext() {
+function createMcpConnectionRunContext(strategyId: Id<"strategies">) {
     return {
         runId: "connection-test",
-        strategyId: "connection-test",
+        strategyId,
         app: "polymarket" as const,
         timestamp: Date.now(),
         trigger: "manual" as const,

@@ -21,6 +21,7 @@ const pageNames: Record<string, string> = {
     "/trades": "Trades",
     "/runs": "Runs",
     "/chat": "Agent Chat",
+    "/mcp-tools": "MCP Tools",
 }
 
 function getPageTitle(pathname: string): string {

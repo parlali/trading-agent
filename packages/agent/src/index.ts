@@ -71,8 +71,39 @@ export { startRunToolServer } from "./mcp/run-tool-server"
 export type { RunToolServer, RunToolServerConfig } from "./mcp/run-tool-server"
 export { HttpMcpClient } from "./mcp/http-client"
 export type { HttpMcpClientConfig, HttpMcpTool, ToolsCallResult } from "./mcp/http-client"
-export { createHttpMcpToolBindings, withMcpToolCallBudget } from "./mcp/http-tools"
-export type { HttpMcpProviderConfig, CreateHttpMcpToolBindingsConfig } from "./mcp/http-tools"
+export {
+    createHttpMcpToolBindingResolution,
+    createHttpMcpToolBindings,
+    discoverHttpMcpToolInventory,
+    hashMcpToolSchema,
+    withMcpToolCallBudget,
+} from "./mcp/http-tools"
+export {
+    createScopedMcpProviderConfig,
+    mergeMcpDiscoveryToolConfigs,
+} from "./mcp/provider-scope"
+export {
+    mcpDiscoveryRequestKey,
+    mcpProviderDiscoveryToolKey,
+    stableMcpJsonKey,
+} from "./mcp/discovery-request-identity"
+export {
+    compareCodeUnits,
+    stableJsonKey,
+} from "./mcp/stable-json"
+export type {
+    CreateHttpMcpToolBindingsConfig,
+    HttpMcpProviderConfig,
+    HttpMcpToolBindingResolution,
+    McpApprovedTool,
+    McpNestedDiscoveryToolConfig,
+    McpToolApproval,
+    McpToolDiagnostic,
+    McpToolDiscoveryRequest,
+    McpToolDiscoverySource,
+    McpToolInventoryEntry,
+    McpToolSkipReason,
+} from "./mcp/http-tools"
 export {
     MCP_PROVIDER_SECRET_KEYS,
     resolveMcpProviderConfigs,

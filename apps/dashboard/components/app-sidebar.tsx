@@ -19,6 +19,7 @@ import {
     Moon,
     Monitor,
     Plug,
+    SlidersHorizontal,
     Settings2,
     ShieldCheck,
     Sun,
@@ -48,6 +49,7 @@ const mainItems = [
     { label: "Schedule", href: "/schedule", icon: Calendar },
     { label: "Runs", href: "/runs", icon: History },
     { label: "Chat", href: "/chat", icon: MessageCircle },
+    { label: "MCP Tools", href: "/mcp-tools", icon: SlidersHorizontal },
     { label: "Integrations", href: "/integrations", icon: Plug },
     { label: "Test", href: "/test", icon: ListChecks },
 ]

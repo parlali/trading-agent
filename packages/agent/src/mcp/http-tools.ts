@@ -1,81 +1,131 @@
-import { createHash } from "node:crypto"
 import { z } from "zod"
-import type { Logger, VenueApp } from "@valiq-trading/core"
-import type { ToolBinding, ToolCategory } from "../tool-registry"
+import type { ToolBinding } from "../tool-registry"
 import { withCallBudget } from "../tools/with-call-budget"
-import { HttpMcpClient, type HttpMcpTool } from "./http-client"
+import { HttpMcpClient, type HttpMcpTool, type ToolsCallResult } from "./http-client"
+import {
+    buildApprovedToolMap,
+    createCandidateForRemoteTool,
+    type McpToolCandidate,
+} from "./http-tool-candidates"
+import {
+    DEFAULT_MCP_MAX_TOOLS_PER_PROVIDER,
+    appendMcpToolParseIssueDiagnostics,
+    discoverProviderRemoteTools,
+    isNestedDiscoveryTool,
+    readNestedDiscoveredTools,
+    type DiscoveredRemoteTool,
+} from "./http-tool-discovery"
+import { hashMcpToolSchema } from "./http-tool-identity"
+import { sanitizeMcpError } from "./mcp-error-sanitizer"
+import type {
+    CreateHttpMcpToolBindingsConfig,
+    HttpMcpProviderConfig,
+    HttpMcpToolBindingResolution,
+    McpToolDiagnostic,
+    McpToolInventoryEntry,
+} from "./http-tool-types"
 
-export interface HttpMcpProviderConfig {
-    id: string
-    url: string
-    token?: string
-    category?: Extract<ToolCategory, "research">
-    timeoutMs?: number
-    maxTools?: number
-    maxListPages?: number
-    allowedTools?: readonly string[]
-    blockedTools?: readonly string[]
-    compatibleVenues?: readonly VenueApp[]
-}
+export { hashMcpToolSchema } from "./http-tool-identity"
+export type {
+    CreateHttpMcpToolBindingsConfig,
+    HttpMcpProviderConfig,
+    HttpMcpToolBindingResolution,
+    McpApprovedTool,
+    McpNestedDiscoveryToolConfig,
+    McpToolAnnotations,
+    McpToolApproval,
+    McpToolDiagnostic,
+    McpToolDiscoveryRequest,
+    McpToolDiscoverySource,
+    McpToolInventoryEntry,
+    McpToolSkipReason,
+} from "./http-tool-types"
 
-export interface CreateHttpMcpToolBindingsConfig {
-    providers: readonly HttpMcpProviderConfig[]
-    logger?: Pick<Logger, "debug" | "info" | "warn" | "error">
-    signal?: AbortSignal
-}
-
-const DEFAULT_MCP_MAX_TOOLS_PER_PROVIDER = 50
-const MAX_OPENROUTER_TOOL_NAME_LENGTH = 64
 const remoteMcpParamsSchema = z.record(z.string(), z.unknown())
+
+interface ResolvedProviderTools {
+    inventory: McpToolInventoryEntry[]
+    diagnostics: McpToolDiagnostic[]
+    resolvedTools: Array<{ binding: ToolBinding, inventory: McpToolInventoryEntry }>
+}
 
 export async function createHttpMcpToolBindings(
     config: CreateHttpMcpToolBindingsConfig
 ): Promise<ToolBinding[]> {
+    const resolution = await createHttpMcpToolBindingResolution(config)
+    return resolution.bindings
+}
+
+export async function createHttpMcpToolBindingResolution(
+    config: CreateHttpMcpToolBindingsConfig
+): Promise<HttpMcpToolBindingResolution> {
     const bindings: ToolBinding[] = []
+    const inventory: McpToolInventoryEntry[] = []
+    const diagnostics: McpToolDiagnostic[] = []
     const registeredNames = new Set<string>()
 
     for (const provider of config.providers) {
-        const client = new HttpMcpClient({
-            id: provider.id,
-            url: provider.url,
-            token: provider.token,
-            timeoutMs: provider.timeoutMs,
-            maxListPages: provider.maxListPages,
-            logger: config.logger,
+        const providerResolution = await resolveProviderTools({
+            provider,
+            config,
+            requireWhitelist: true,
+            emitDisappearedDiagnostics: true,
         })
-        const maxTools = provider.maxTools ?? DEFAULT_MCP_MAX_TOOLS_PER_PROVIDER
-        const tools = await client.listTools({
-            signal: config.signal,
-            maxTools,
-        })
+        inventory.push(...providerResolution.inventory)
+        diagnostics.push(...providerResolution.diagnostics)
 
-        for (const remoteTool of tools) {
-            const binding = createBindingForRemoteTool({
-                provider,
-                remoteTool,
-                client,
-                logger: config.logger,
-            })
-
-            if (!binding) {
+        for (const resolvedTool of providerResolution.resolvedTools) {
+            if (registeredNames.has(resolvedTool.binding.name)) {
+                diagnostics.push({
+                    providerId: provider.id,
+                    upstreamToolName: resolvedTool.inventory.upstreamToolName,
+                    registeredName: resolvedTool.binding.name,
+                    source: resolvedTool.inventory.source,
+                    reason: "duplicate_registered_name",
+                    message: "MCP tool skipped because its registered name duplicates another MCP tool",
+                })
                 continue
             }
 
-            if (registeredNames.has(binding.name)) {
-                throw new Error(`Duplicate MCP tool registration detected for ${binding.name}`)
-            }
-
-            registeredNames.add(binding.name)
-            bindings.push(binding)
+            registeredNames.add(resolvedTool.binding.name)
+            bindings.push(resolvedTool.binding)
         }
 
         config.logger?.info("MCP provider tools registered", {
             providerId: provider.id,
-            registeredTools: bindings.filter((binding) => binding.name.startsWith(`mcp_${sanitizeToolNamePart(provider.id)}_`)).length,
+            registeredTools: providerResolution.resolvedTools.length,
+            skippedTools: providerResolution.diagnostics.length,
         })
     }
 
-    return bindings
+    return {
+        bindings,
+        inventory,
+        diagnostics,
+    }
+}
+
+export async function discoverHttpMcpToolInventory(
+    config: CreateHttpMcpToolBindingsConfig
+): Promise<Pick<HttpMcpToolBindingResolution, "inventory" | "diagnostics">> {
+    const inventory: McpToolInventoryEntry[] = []
+    const diagnostics: McpToolDiagnostic[] = []
+
+    for (const provider of config.providers) {
+        const providerResolution = await resolveProviderTools({
+            provider,
+            config,
+            requireWhitelist: false,
+            emitDisappearedDiagnostics: false,
+        })
+        inventory.push(...providerResolution.inventory)
+        diagnostics.push(...providerResolution.diagnostics)
+    }
+
+    return {
+        inventory,
+        diagnostics,
+    }
 }
 
 export function withMcpToolCallBudget(tool: ToolBinding, maxCalls: number): ToolBinding {
@@ -84,51 +134,18 @@ export function withMcpToolCallBudget(tool: ToolBinding, maxCalls: number): Tool
         : tool
 }
 
-function createBindingForRemoteTool(args: {
+function createBindingForCandidate(args: {
     provider: HttpMcpProviderConfig
     remoteTool: HttpMcpTool
+    candidate: McpToolCandidate
     client: HttpMcpClient
-    logger?: Pick<Logger, "warn">
-}): ToolBinding | null {
-    if (!isAllowedReadOnlyMcpTool(args.provider, args.remoteTool)) {
-        args.logger?.warn("MCP tool skipped because it is not explicitly allowed as read-only", {
-            providerId: args.provider.id,
-            toolName: args.remoteTool.name,
-        })
-        return null
-    }
-
-    const providerPart = sanitizeToolNamePart(args.provider.id)
-    const toolPart = sanitizeToolNamePart(args.remoteTool.name)
-
-    if (!providerPart || !toolPart) {
-        args.logger?.warn("MCP tool skipped due to invalid name", {
-            providerId: args.provider.id,
-            toolName: args.remoteTool.name,
-        })
-        return null
-    }
-
-    const inputSchema = normalizeMcpInputSchema(args.remoteTool.inputSchema)
-    if (!inputSchema) {
-        args.logger?.warn("MCP tool skipped due to unsupported input schema", {
-            providerId: args.provider.id,
-            toolName: args.remoteTool.name,
-        })
-        return null
-    }
-
-    const registeredName = buildMcpToolName(providerPart, toolPart, args.provider.id, args.remoteTool.name)
-    const description = [
-        args.remoteTool.description?.trim() || `Call MCP tool ${args.remoteTool.name}`,
-        `Provider: ${args.provider.id}. Upstream tool: ${args.remoteTool.name}.`,
-    ].join(" ")
-
+    dynamicRefresh?: (result: ToolsCallResult) => Promise<void>
+}): ToolBinding {
     return {
-        name: registeredName,
-        description,
+        name: args.candidate.inventory.registeredName,
+        description: args.candidate.inventory.description,
         parameters: remoteMcpParamsSchema,
-        jsonSchema: inputSchema,
+        jsonSchema: args.candidate.inputSchema,
         category: args.provider.category ?? "research",
         compatibleVenues: args.provider.compatibleVenues,
         contractBoundary: "shared",
@@ -136,129 +153,294 @@ function createBindingForRemoteTool(args: {
         outputDescription: "Returns the upstream MCP tool result.",
         errorSemantics: "Remote MCP validation, transport, and provider errors throw and are handled by the registered tool category.",
         handler: async (params, context) => {
-            return await args.client.callTool(args.remoteTool.name, params, context?.signal)
+            const result = await args.client.callTool(args.remoteTool.name, params, context?.signal)
+            if (args.dynamicRefresh) {
+                await args.dynamicRefresh(result)
+            }
+            return result
         },
     }
 }
 
-function isAllowedReadOnlyMcpTool(
-    provider: HttpMcpProviderConfig,
-    remoteTool: HttpMcpTool
-): boolean {
-    const destructiveHint = remoteTool.annotations?.destructiveHint as unknown
-    const openWorldHint = remoteTool.annotations?.openWorldHint as unknown
+async function resolveProviderTools(args: {
+    provider: HttpMcpProviderConfig
+    config: CreateHttpMcpToolBindingsConfig
+    requireWhitelist: boolean
+    emitDisappearedDiagnostics: boolean
+}): Promise<ResolvedProviderTools> {
+    const diagnostics: McpToolDiagnostic[] = []
+    const client = new HttpMcpClient({
+        id: args.provider.id,
+        url: args.provider.url,
+        token: args.provider.token,
+        timeoutMs: args.provider.timeoutMs,
+        maxListPages: args.provider.maxListPages,
+        logger: args.config.logger,
+    })
+    const maxTools = args.provider.maxTools ?? DEFAULT_MCP_MAX_TOOLS_PER_PROVIDER
+    let remoteTools: DiscoveredRemoteTool[]
 
-    if (provider.blockedTools?.includes(remoteTool.name)) {
-        return false
-    }
-    if (!provider.allowedTools?.includes(remoteTool.name)) {
-        return false
-    }
-    if (isBlockingMcpSafetyHint(destructiveHint) || isBlockingMcpSafetyHint(openWorldHint)) {
-        return false
-    }
+    try {
+        remoteTools = await discoverProviderRemoteTools({
+            provider: args.provider,
+            client,
+            maxTools,
+            signal: args.config.signal,
+            includeNestedDiscovery: args.config.includeNestedDiscovery !== false,
+            logger: args.config.logger,
+            diagnostics,
+        })
+    } catch (error) {
+        if (args.config.failOnProviderError !== false) {
+            throw error
+        }
 
-    return true
-}
+        diagnostics.push({
+            providerId: args.provider.id,
+            reason: "provider_unavailable",
+            message: sanitizeMcpError(error),
+        })
 
-function isBlockingMcpSafetyHint(value: unknown): boolean {
-    return value !== undefined && value !== false
-}
-
-function normalizeMcpInputSchema(schema: Record<string, unknown> | undefined): Record<string, unknown> | null {
-    if (!schema) {
         return {
-            type: "object",
-            properties: {},
+            inventory: [],
+            diagnostics,
+            resolvedTools: [],
         }
     }
 
-    if (schema.type && schema.type !== "object") {
-        return null
-    }
+    const resolved = resolveRemoteToolBindings({
+        provider: args.provider,
+        config: args.config,
+        requireWhitelist: args.requireWhitelist,
+        emitDisappearedDiagnostics: args.emitDisappearedDiagnostics,
+        remoteTools,
+        client,
+    })
 
-    const normalized = schema.type
-        ? schema
-        : {
-            ...schema,
-            type: "object",
+    return {
+        inventory: resolved.inventory,
+        diagnostics: [
+            ...diagnostics,
+            ...resolved.diagnostics,
+        ],
+        resolvedTools: resolved.resolvedTools,
+    }
+}
+
+function resolveRemoteToolBindings(args: {
+    provider: HttpMcpProviderConfig
+    config: CreateHttpMcpToolBindingsConfig
+    requireWhitelist: boolean
+    emitDisappearedDiagnostics: boolean
+    remoteTools: DiscoveredRemoteTool[]
+    client: HttpMcpClient
+}): ResolvedProviderTools {
+    const diagnostics: McpToolDiagnostic[] = []
+    const inventory: McpToolInventoryEntry[] = []
+    const resolvedTools: Array<{ binding: ToolBinding, inventory: McpToolInventoryEntry }> = []
+    const approvedTools = buildApprovedToolMap(args.provider)
+    const discoveredToolNames = new Set<string>()
+
+    for (const remoteTool of args.remoteTools) {
+        if (discoveredToolNames.has(remoteTool.tool.name)) {
+            diagnostics.push({
+                providerId: args.provider.id,
+                upstreamToolName: remoteTool.tool.name,
+                source: remoteTool.source,
+                reason: "duplicate_upstream_tool",
+                message: "MCP tool skipped because the provider discovered the same upstream tool name more than once",
+            })
+            continue
         }
 
-    return hasValidObjectSchemaFields(normalized)
-        ? normalized
-        : null
-}
+        discoveredToolNames.add(remoteTool.tool.name)
+        const candidate = createCandidateForRemoteTool({
+            provider: args.provider,
+            remoteTool: remoteTool.tool,
+            source: remoteTool.source,
+        })
 
-function hasValidObjectSchemaFields(schema: Record<string, unknown>): boolean {
-    if (schema.properties !== undefined && !isSchemaProperties(schema.properties)) {
-        return false
+        if ("diagnostic" in candidate) {
+            diagnostics.push(candidate.diagnostic)
+            continue
+        }
+
+        inventory.push(candidate.inventory)
+
+        if (!args.requireWhitelist) {
+            continue
+        }
+
+        const approvedTool = approvedTools.get(remoteTool.tool.name)
+        if (!approvedTool) {
+            diagnostics.push({
+                providerId: args.provider.id,
+                upstreamToolName: remoteTool.tool.name,
+                registeredName: candidate.inventory.registeredName,
+                source: remoteTool.source,
+                reason: "not_whitelisted",
+                message: "MCP tool skipped because it is not whitelisted for this strategy",
+            })
+            continue
+        }
+
+        if (approvedTool.schemaHash && approvedTool.schemaHash !== candidate.inventory.schemaHash) {
+            diagnostics.push({
+                providerId: args.provider.id,
+                upstreamToolName: remoteTool.tool.name,
+                registeredName: candidate.inventory.registeredName,
+                source: remoteTool.source,
+                reason: "schema_changed",
+                message: "MCP tool skipped because its discovered input schema hash no longer matches the approved schema hash",
+                schemaReason: `expected ${approvedTool.schemaHash}, discovered ${candidate.inventory.schemaHash}`,
+            })
+            continue
+        }
+
+        if (approvedTool.registeredName && approvedTool.registeredName !== candidate.inventory.registeredName) {
+            diagnostics.push({
+                providerId: args.provider.id,
+                upstreamToolName: remoteTool.tool.name,
+                registeredName: candidate.inventory.registeredName,
+                source: remoteTool.source,
+                reason: "registered_name_changed",
+                message: "MCP tool skipped because its registered tool name no longer matches the approved name",
+            })
+            continue
+        }
+
+        resolvedTools.push({
+            binding: createBindingForCandidate({
+                provider: args.provider,
+                remoteTool: remoteTool.tool,
+                candidate,
+                client: args.client,
+                dynamicRefresh: createDynamicRefreshForTool({
+                    provider: args.provider,
+                    remoteTool: remoteTool.tool,
+                    config: args.config,
+                    client: args.client,
+                }),
+            }),
+            inventory: candidate.inventory,
+        })
     }
 
-    if (schema.required !== undefined && !isStringArray(schema.required)) {
-        return false
+    if (args.requireWhitelist && args.emitDisappearedDiagnostics) {
+        for (const approvedTool of approvedTools.values()) {
+            if (!discoveredToolNames.has(approvedTool.name)) {
+                diagnostics.push({
+                    providerId: args.provider.id,
+                    upstreamToolName: approvedTool.name,
+                    registeredName: approvedTool.registeredName,
+                    reason: "tool_disappeared",
+                    message: "MCP tool skipped because the approved upstream tool was not discovered from the provider",
+                })
+            }
+        }
     }
 
-    if (schema.additionalProperties !== undefined && !isAdditionalPropertiesSchema(schema.additionalProperties)) {
-        return false
+    return {
+        inventory,
+        diagnostics,
+        resolvedTools,
+    }
+}
+
+function createDynamicRefreshForTool(args: {
+    provider: HttpMcpProviderConfig
+    remoteTool: HttpMcpTool
+    config: CreateHttpMcpToolBindingsConfig
+    client: HttpMcpClient
+}): ((result: ToolsCallResult) => Promise<void>) | undefined {
+    if (!args.config.dynamicToolRegistry || !isNestedDiscoveryTool(args.provider, args.remoteTool.name)) {
+        return undefined
     }
 
-    return true
+    return async (result) => {
+        registerDynamicResolvedTools({
+            provider: args.provider,
+            config: args.config,
+            resolution: resolveDynamicToolsFromDiscoveryResult({
+                provider: args.provider,
+                config: args.config,
+                client: args.client,
+                result,
+            }),
+        })
+
+        registerDynamicResolvedTools({
+            provider: args.provider,
+            config: args.config,
+            resolution: await resolveProviderTools({
+                provider: args.provider,
+                config: {
+                    ...args.config,
+                    failOnProviderError: false,
+                    includeNestedDiscovery: true,
+                },
+                requireWhitelist: true,
+                emitDisappearedDiagnostics: false,
+            }),
+        })
+    }
 }
 
-function isSchemaProperties(value: unknown): boolean {
-    if (!value || typeof value !== "object" || Array.isArray(value)) {
-        return false
+function resolveDynamicToolsFromDiscoveryResult(args: {
+    provider: HttpMcpProviderConfig
+    config: CreateHttpMcpToolBindingsConfig
+    client: HttpMcpClient
+    result: ToolsCallResult
+}): ResolvedProviderTools {
+    const diagnostics: McpToolDiagnostic[] = []
+    const nested = readNestedDiscoveredTools(args.result)
+    appendMcpToolParseIssueDiagnostics({
+        providerId: args.provider.id,
+        source: "tool_search",
+        issues: nested.issues,
+        diagnostics,
+    })
+    const resolved = resolveRemoteToolBindings({
+        provider: args.provider,
+        config: args.config,
+        requireWhitelist: true,
+        emitDisappearedDiagnostics: false,
+        remoteTools: nested.tools.map((tool) => ({ tool, source: "tool_search" as const })),
+        client: args.client,
+    })
+
+    return {
+        inventory: resolved.inventory,
+        diagnostics: [
+            ...diagnostics,
+            ...resolved.diagnostics,
+        ],
+        resolvedTools: resolved.resolvedTools,
+    }
+}
+
+function registerDynamicResolvedTools(args: {
+    provider: HttpMcpProviderConfig
+    config: CreateHttpMcpToolBindingsConfig
+    resolution: ResolvedProviderTools
+}): void {
+    args.config.dynamicDiagnostics?.push(...args.resolution.diagnostics)
+    if (!args.config.dynamicToolRegistry) {
+        return
     }
 
-    return Object.values(value as Record<string, unknown>).every((entry) =>
-        Boolean(entry) && typeof entry === "object" && !Array.isArray(entry)
-    )
-}
+    for (const resolvedTool of args.resolution.resolvedTools) {
+        if (args.config.dynamicToolRegistry.has(resolvedTool.binding.name)) {
+            continue
+        }
 
-function isStringArray(value: unknown): boolean {
-    return Array.isArray(value) && value.every((entry) => typeof entry === "string")
-}
-
-function isAdditionalPropertiesSchema(value: unknown): boolean {
-    return typeof value === "boolean" ||
-        (Boolean(value) && typeof value === "object" && !Array.isArray(value))
-}
-
-function sanitizeToolNamePart(value: string): string {
-    return value
-        .trim()
-        .toLowerCase()
-        .replace(/[^a-z0-9_]+/g, "_")
-        .replace(/^_+|_+$/g, "")
-}
-
-function buildMcpToolName(providerPart: string, toolPart: string, rawProviderId: string, rawToolName: string): string {
-    const baseName = `mcp_${providerPart}_${toolPart}`
-    const sanitizationChanged = providerPart !== rawProviderId || toolPart !== rawToolName
-    if (!sanitizationChanged && isValidOpenRouterToolName(baseName)) {
-        return baseName
+        const transformed = args.config.dynamicToolTransform
+            ? args.config.dynamicToolTransform(resolvedTool.binding)
+            : resolvedTool.binding
+        args.config.dynamicToolRegistry.register(transformed)
+        args.config.logger?.info("Dynamically registered MCP tool after discovery", {
+            providerId: args.provider.id,
+            toolName: transformed.name,
+        })
     }
-
-    const hash = createHash("sha256")
-        .update(`${rawProviderId}\0${rawToolName}`)
-        .digest("hex")
-        .slice(0, 10)
-    const prefix = "mcp_"
-    const separatorLength = 2
-    const available = MAX_OPENROUTER_TOOL_NAME_LENGTH - prefix.length - separatorLength - hash.length
-    const providerLength = Math.max(8, Math.floor(available * 0.4))
-    const toolLength = Math.max(8, available - providerLength)
-    const shortened = `${prefix}${providerPart.slice(0, providerLength)}_${toolPart.slice(0, toolLength)}_${hash}`
-
-    if (!isValidOpenRouterToolName(shortened)) {
-        throw new Error(`MCP tool name could not be made OpenRouter-compatible for provider ${rawProviderId} tool ${rawToolName}`)
-    }
-
-    return shortened
-}
-
-function isValidOpenRouterToolName(value: string): boolean {
-    return value.length > 0 &&
-        value.length <= MAX_OPENROUTER_TOOL_NAME_LENGTH &&
-        /^[a-zA-Z0-9_-]+$/.test(value)
 }

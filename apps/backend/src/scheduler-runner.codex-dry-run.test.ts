@@ -160,6 +160,7 @@ function createBackendMock(storedPositions: Position[], events: string[]) {
             positionKeys: [],
             workingOrderIds: [],
         })),
+        getStrategyMcpToolWhitelist: vi.fn(async () => null),
         recordExecutionSafetyFault: vi.fn(async () => undefined),
         recordRunCallback: vi.fn(async () => undefined),
         refreshStrategyRiskState: vi.fn(async () => ({

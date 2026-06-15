@@ -3,6 +3,8 @@
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useChat } from "@ai-sdk/react"
 import { useAuthToken } from "@convex-dev/auth/react"
+import { useQuery } from "convex/react"
+import { api } from "@valiq-trading/convex"
 import {
     DefaultChatTransport,
     getToolName,
@@ -89,6 +91,7 @@ type MessagePart = UIMessage["parts"][number]
 type ServerChatMessage = NonNullable<ToolInventoryResponse["messages"]>[number]
 type ServerToolEvent = NonNullable<ServerChatMessage["toolEvents"]>[number]
 const CHAT_SESSION_STORAGE_KEY = "dashboard-agent-chat-session-id"
+const NO_STRATEGY_VALUE = "__none__"
 
 export default function AgentChatPage() {
     const authToken = useAuthToken()
@@ -96,11 +99,14 @@ export default function AgentChatPage() {
     const [input, setInput] = useState("")
     const [modelProvider, setModelProvider] = useState<AgentChatModelProvider>("codex")
     const [modelId, setModelId] = useState("")
+    const [selectedStrategyId, setSelectedStrategyId] = useState<string>("")
     const [inventory, setInventory] = useState<ToolInventoryResponse | null>(null)
     const [inventoryLoading, setInventoryLoading] = useState(false)
     const [inventoryError, setInventoryError] = useState<string | null>(null)
     const parentRef = useRef<HTMLDivElement | null>(null)
     const isRunningRef = useRef(false)
+    const strategies = useQuery(api.queries.getAllStrategies, {})
+    const activeStrategyId = selectedStrategyId
     const chatTransport = useMemo(() => new DefaultChatTransport({
         api: "/api/agent-chat",
         prepareSendMessagesRequest({ messages, id, messageId, body, headers }) {
@@ -121,6 +127,7 @@ export default function AgentChatPage() {
                     modelId: readTransportModelId(body?.modelId),
                     chatSessionId: id || chatSessionId,
                     chatMessageId: messageId ?? messages[messages.length - 1]?.id,
+                    strategyId: readTransportStrategyId(body?.strategyId),
                     mode: "general",
                 },
             }
@@ -185,9 +192,15 @@ export default function AgentChatPage() {
 
         try {
             const hydrateTranscript = options.hydrateTranscript === true
-            const path = hydrateTranscript
-                ? `/api/agent-chat?chatSessionId=${encodeURIComponent(chatSessionId)}`
-                : "/api/agent-chat"
+            const params = new URLSearchParams()
+            if (hydrateTranscript) {
+                params.set("chatSessionId", chatSessionId)
+            }
+            if (activeStrategyId) {
+                params.set("strategyId", activeStrategyId)
+            }
+            const query = params.toString()
+            const path = query ? `/api/agent-chat?${query}` : "/api/agent-chat"
             const response = await fetch(path, {
                 headers: {
                     "authorization": `Bearer ${authToken}`,
@@ -209,7 +222,7 @@ export default function AgentChatPage() {
         } finally {
             setInventoryLoading(false)
         }
-    }, [authToken, chatSessionId, setMessages])
+    }, [activeStrategyId, authToken, chatSessionId, setMessages])
 
     useEffect(() => {
         void loadInventory({ hydrateTranscript: true })
@@ -265,6 +278,7 @@ export default function AgentChatPage() {
             body: {
                 modelProvider,
                 modelId: selectedModelId,
+                ...(activeStrategyId ? { strategyId: activeStrategyId } : {}),
             },
         })
     }
@@ -335,7 +349,7 @@ export default function AgentChatPage() {
                 </div>
 
                 <form onSubmit={handleSubmit} className="shrink-0 border-t border-border-subtle p-3">
-                    <div className="mb-3 grid grid-cols-2 gap-2 md:grid-cols-[180px_minmax(0,1fr)]">
+                    <div className="mb-3 grid grid-cols-1 gap-2 md:grid-cols-[180px_minmax(0,1fr)_minmax(0,1fr)]">
                         <div className="space-y-1.5">
                             <Label className="text-[11px] text-muted-foreground">Provider</Label>
                             <Select
@@ -387,6 +401,29 @@ export default function AgentChatPage() {
                                 />
                             )}
                         </div>
+
+                        <div className="space-y-1.5">
+                            <Label className="text-[11px] text-muted-foreground">MCP Strategy</Label>
+                            <Select
+                                value={activeStrategyId || NO_STRATEGY_VALUE}
+                                onValueChange={(value) => setSelectedStrategyId(value === NO_STRATEGY_VALUE ? "" : value)}
+                                disabled={isRunning || strategies === undefined}
+                            >
+                                <SelectTrigger className="h-9 w-full">
+                                    <SelectValue placeholder="No strategy" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                    <SelectItem value={NO_STRATEGY_VALUE}>
+                                        No strategy
+                                    </SelectItem>
+                                    {strategies?.map((strategy) => (
+                                        <SelectItem key={strategy._id} value={String(strategy._id)}>
+                                            {strategy.name}
+                                        </SelectItem>
+                                    ))}
+                                </SelectContent>
+                            </Select>
+                        </div>
                     </div>
                     {selectedProviderReason && !selectedProviderConfigured ? (
                         <div className="mb-2 flex items-start gap-2 rounded-md border border-signal-danger/30 bg-signal-danger/10 px-3 py-2 text-xs text-signal-danger">
@@ -409,7 +446,7 @@ export default function AgentChatPage() {
                                     event.currentTarget.form?.requestSubmit()
                                 }
                             }}
-                            placeholder="Ask the agent anything or request work with the configured MCP tools"
+                            placeholder="Ask the agent anything or inspect configured MCP provider inventory"
                             className="max-h-32 min-h-16 resize-none text-sm sm:max-h-40 sm:min-h-20"
                             disabled={isRunning || !authToken}
                         />
@@ -723,6 +760,12 @@ function readTransportModelId(value: unknown): string {
     }
 
     return trimmed
+}
+
+function readTransportStrategyId(value: unknown): string | undefined {
+    return typeof value === "string" && value.trim().length > 0
+        ? value.trim()
+        : undefined
 }
 
 function headersToRecord(headers: HeadersInit | undefined): Record<string, string> {

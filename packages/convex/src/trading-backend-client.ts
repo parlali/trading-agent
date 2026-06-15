@@ -61,6 +61,7 @@ import type {
     StoreCodexChatGptAuthArgs,
     StoredRun,
     StoredStrategy,
+    StrategyMcpToolWhitelist,
     StrategyOrderHistoryRow,
     StrategyOwnershipScopeRow,
     StrategyRiskStateRow,
@@ -167,6 +168,19 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
             return await runWithTimeout(
                 "Convex query getStrategyById",
                 async () => await client.query(api.queries.getStrategyById, { ...requireMachineAuth(), id } as never) as StoredStrategy | null
+            )
+        },
+        async getStrategyMcpToolWhitelist(strategyId: Id<"strategies">): Promise<StrategyMcpToolWhitelist | null> {
+            return await runWithTimeout(
+                "Convex query getStrategyMcpToolWhitelist",
+                async () => {
+                    const row = await client.query(api.queries.getStrategyMcpToolWhitelist, {
+                        ...requireMachineAuth(),
+                        strategyId,
+                    } as never)
+
+                    return (row ?? null) as StrategyMcpToolWhitelist | null
+                }
             )
         },
         async getActiveRun(strategyId: Id<"strategies">): Promise<StoredRun | null> {

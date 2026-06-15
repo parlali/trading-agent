@@ -15,6 +15,7 @@ export const CASCADE_DELETE_COUNT_KEYS = [
     "accountSnapshots",
     "appHeartbeats",
     "manualRunRequests",
+    "strategyMcpToolWhitelists",
     "alerts",
 ] as const
 

@@ -19,6 +19,8 @@ export {
 export {
     upsertAccount,
     upsertStrategy,
+    setStrategyMcpToolWhitelist,
+    setStrategyMcpToolWhitelistInternal,
     disableStrategy,
     deleteStrategy,
     deleteStrategyBatch,

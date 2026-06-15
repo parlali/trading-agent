@@ -54,6 +54,7 @@ describe("dashboard agent chat API route", () => {
             message: "hello",
             chatSessionId: "session-1",
             chatMessageId: "message-1",
+            strategyId: "strategy-1",
             mode: "mcp",
         })
         const response = await POST(request)
@@ -67,6 +68,7 @@ describe("dashboard agent chat API route", () => {
                 modelId: "test-model",
                 chatSessionId: "session-1",
                 chatMessageId: "message-1",
+                strategyId: "strategy-1",
                 mode: "mcp",
             }),
             signal: request.signal,
@@ -84,7 +86,7 @@ describe("dashboard agent chat API route", () => {
                 "content-type": "application/json",
             },
         }))
-        const request = new Request("http://dashboard.test/api/agent-chat?chatSessionId=session-1", {
+        const request = new Request("http://dashboard.test/api/agent-chat?chatSessionId=session-1&strategyId=strategy-1", {
             method: "GET",
             headers: {
                 authorization: "Bearer user-token",
@@ -94,7 +96,7 @@ describe("dashboard agent chat API route", () => {
         const response = await GET(request)
 
         expect(response.status).toBe(200)
-        expect(fetchSpy).toHaveBeenCalledWith(new URL("/agent-chat?chatSessionId=session-1", "http://backend.test"), expect.objectContaining({
+        expect(fetchSpy).toHaveBeenCalledWith(new URL("/agent-chat?chatSessionId=session-1&strategyId=strategy-1", "http://backend.test"), expect.objectContaining({
             method: "GET",
             signal: request.signal,
         }))

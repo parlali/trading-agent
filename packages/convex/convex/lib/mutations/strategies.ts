@@ -1,8 +1,9 @@
-import { mutation, type MutationCtx } from "../../_generated/server"
+import { internalMutation, mutation, type MutationCtx } from "../../_generated/server"
 import type { Doc, Id } from "../../_generated/dataModel"
 import { v } from "convex/values"
 import { validateAccountConfig, validateStrategyConfig } from "@valiq-trading/core"
-import { requireUser, requireServiceToken, requireUserOrServiceToken } from "../authGuards"
+import { compareCodeUnits, mcpDiscoveryRequestKey } from "@valiq-trading/agent"
+import { requireUser, requireServiceToken, requireServiceTokenForQueryContext, requireUserOrServiceToken } from "../authGuards"
 import { createEmptyCascadeDeleteCounts, type CascadeDeleteCounts } from "../cascadeDelete"
 import { incrementControlPlaneMetric } from "../controlPlaneMetrics"
 import {
@@ -16,8 +17,10 @@ import {
     deleteStrategyTableBatch,
     sumDeletedCounts,
 } from "./strategyCascadeDelete"
-import { venueAppV } from "../validators"
+import { mcpToolApprovalV, mcpToolDiscoveryRequestV, venueAppV } from "../validators"
 import { enqueueManualRunRequest } from "./systemManualRuns"
+
+const MAX_MCP_DISCOVERY_REQUESTS_PER_PROVIDER = 4
 
 const strategyImportArg = v.object({
     app: venueAppV,
@@ -36,6 +39,7 @@ const accountImportArg = v.object({
     status: v.optional(v.union(v.literal("active"), v.literal("disabled"))),
     notes: v.optional(v.string()),
 })
+type PersistedMcpToolDiscoverySource = "tools/list" | "tools/discover" | "tool_search"
 
 export const upsertAccount = mutation({
     args: {
@@ -140,6 +144,31 @@ export const upsertStrategy = mutation({
             createdAt: now,
             updatedAt: now,
         })
+    },
+})
+
+export const setStrategyMcpToolWhitelist = mutation({
+    args: {
+        strategyId: v.id("strategies"),
+        tools: v.array(mcpToolApprovalV),
+        discoveryTools: v.optional(v.array(mcpToolDiscoveryRequestV)),
+        serviceToken: v.optional(v.string()),
+    },
+    handler: async (ctx, args) => {
+        requireServiceTokenForQueryContext(args.serviceToken ?? "", ctx)
+
+        return await persistStrategyMcpToolWhitelist(ctx, args.strategyId, args.tools, args.discoveryTools ?? [])
+    },
+})
+
+export const setStrategyMcpToolWhitelistInternal = internalMutation({
+    args: {
+        strategyId: v.id("strategies"),
+        tools: v.array(mcpToolApprovalV),
+        discoveryTools: v.optional(v.array(mcpToolDiscoveryRequestV)),
+    },
+    handler: async (ctx, args) => {
+        return await persistStrategyMcpToolWhitelist(ctx, args.strategyId, args.tools, args.discoveryTools ?? [])
     },
 })
 
@@ -614,6 +643,23 @@ export const deleteOrphanedStrategyHistoryBatch = mutation({
             }
         }
 
+        const orphanMcpWhitelists = await ctx.db.query("strategy_mcp_tool_whitelists").order("asc").take(batchSize)
+        for (const whitelist of orphanMcpWhitelists) {
+            if (await strategyExists(whitelist.strategyId)) {
+                continue
+            }
+
+            await ctx.db.delete(whitelist._id)
+            deleted.strategyMcpToolWhitelists++
+        }
+
+        if (sumDeletedCounts(deleted) > 0) {
+            return {
+                ...deleted,
+                hasMore: true,
+            }
+        }
+
         const orphanAlerts = await ctx.db.query("alerts").order("asc").take(batchSize)
         for (const alert of orphanAlerts) {
             if (!alert.strategyId || await strategyExists(alert.strategyId)) {
@@ -774,4 +820,240 @@ async function assertAccountExists(
     if (account.status !== "active") {
         throw new Error(`Strategy account is not active: ${app}:${accountId}`)
     }
+}
+
+async function persistStrategyMcpToolWhitelist(
+    ctx: MutationCtx,
+    strategyId: Id<"strategies">,
+    requestedTools: Array<{
+        providerId: string
+        toolName: string
+        registeredName: string
+        schemaHash: string
+        description?: string
+        source?: string
+        inputSchema?: unknown
+        annotations?: {
+            readOnlyHint?: boolean
+            destructiveHint?: boolean
+            openWorldHint?: boolean
+        }
+        approvedAt?: number
+        approvedBy?: string
+        approvalReason?: string
+    }>,
+    requestedDiscoveryTools: Array<{
+        providerId: string
+        toolName: string
+        input: unknown
+    }>
+) {
+    const strategy = await ctx.db.get(strategyId)
+    if (!strategy) {
+        throw new Error(`Strategy not found: ${strategyId}`)
+    }
+
+    const tools = normalizeMcpToolApprovals(requestedTools)
+    const discoveryTools = normalizeMcpDiscoveryRequests(requestedDiscoveryTools)
+    const now = Date.now()
+    const existing = await ctx.db
+        .query("strategy_mcp_tool_whitelists")
+        .withIndex("by_strategy", (q) => q.eq("strategyId", strategyId))
+        .first()
+
+    if (existing) {
+        await ctx.db.patch(existing._id, {
+            tools,
+            discoveryTools,
+            updatedAt: now,
+        })
+        return existing._id
+    }
+
+    return await ctx.db.insert("strategy_mcp_tool_whitelists", {
+        strategyId,
+        tools,
+        discoveryTools,
+        createdAt: now,
+        updatedAt: now,
+    })
+}
+
+function normalizeMcpToolApprovals(tools: Array<{
+    providerId: string
+    toolName: string
+    registeredName: string
+    schemaHash: string
+    description?: string
+    source?: string
+    inputSchema?: unknown
+    annotations?: {
+        readOnlyHint?: boolean
+        destructiveHint?: boolean
+        openWorldHint?: boolean
+    }
+    approvedAt?: number
+    approvedBy?: string
+    approvalReason?: string
+}>) {
+    const seen = new Set<string>()
+    const normalized = tools.map((tool) => {
+        const providerId = tool.providerId.trim()
+        const toolName = tool.toolName.trim()
+        const registeredName = tool.registeredName.trim()
+        const schemaHash = tool.schemaHash.trim()
+        const approvedBy = tool.approvedBy?.trim()
+        const approvalReason = tool.approvalReason?.trim()
+        const description = tool.description?.trim()
+
+        if (!providerId) {
+            throw new Error("MCP whitelist providerId must be non-empty")
+        }
+        if (!toolName) {
+            throw new Error("MCP whitelist toolName must be non-empty")
+        }
+        if (!registeredName) {
+            throw new Error("MCP whitelist registeredName must be non-empty")
+        }
+        if (!schemaHash || !/^[a-f0-9]{64}$/.test(schemaHash)) {
+            throw new Error("MCP whitelist schemaHash must be a SHA-256 hex digest")
+        }
+        if (tool.source && tool.source !== "tools/list" && tool.source !== "tools/discover" && tool.source !== "tool_search") {
+            throw new Error("MCP whitelist source must be a supported MCP discovery source")
+        }
+        if (tool.approvedAt !== undefined && (!Number.isFinite(tool.approvedAt) || tool.approvedAt <= 0)) {
+            throw new Error("MCP whitelist approvedAt must be a positive timestamp")
+        }
+        if (tool.inputSchema !== undefined && (!tool.inputSchema || typeof tool.inputSchema !== "object" || Array.isArray(tool.inputSchema))) {
+            throw new Error("MCP whitelist inputSchema must be an object")
+        }
+        if (tool.annotations !== undefined && (!tool.annotations || typeof tool.annotations !== "object" || Array.isArray(tool.annotations))) {
+            throw new Error("MCP whitelist annotations must be an object")
+        }
+
+        const key = `${providerId}\0${toolName}`
+        if (seen.has(key)) {
+            throw new Error(`Duplicate MCP whitelist tool: ${providerId}:${toolName}`)
+        }
+        seen.add(key)
+
+        return {
+            providerId,
+            toolName,
+            registeredName,
+            schemaHash,
+            description: description || undefined,
+            source: normalizeMcpToolDiscoverySource(tool.source),
+            inputSchema: tool.inputSchema,
+            annotations: normalizeMcpToolAnnotations(tool.annotations),
+            approvedAt: tool.approvedAt,
+            approvedBy: approvedBy || undefined,
+            approvalReason: approvalReason || undefined,
+        }
+    })
+
+    return normalized.sort((left, right) =>
+        compareCodeUnits(`${left.providerId}\0${left.toolName}`, `${right.providerId}\0${right.toolName}`)
+    )
+}
+
+function normalizeMcpDiscoveryRequests(requests: Array<{
+    providerId: string
+    toolName: string
+    input: unknown
+}>): Array<{
+    providerId: string
+    toolName: string
+    input: Record<string, unknown>
+}> {
+    const seen = new Set<string>()
+    const normalized: Array<{
+        providerId: string
+        toolName: string
+        input: Record<string, unknown>
+    }> = []
+
+    for (const request of requests) {
+        const providerId = request.providerId.trim()
+        const toolName = request.toolName.trim()
+
+        if (!providerId) {
+            throw new Error("MCP discovery providerId must be non-empty")
+        }
+        if (!toolName) {
+            throw new Error("MCP discovery toolName must be non-empty")
+        }
+        if (!request.input || typeof request.input !== "object" || Array.isArray(request.input)) {
+            throw new Error("MCP discovery input must be a JSON object")
+        }
+
+        const input = request.input as Record<string, unknown>
+        const key = mcpDiscoveryRequestKey({
+            providerId,
+            toolName,
+            input,
+        })
+        if (seen.has(key)) {
+            continue
+        }
+        seen.add(key)
+        normalized.push({
+            providerId,
+            toolName,
+            input,
+        })
+    }
+
+    const countsByProvider = new Map<string, number>()
+    for (const request of normalized) {
+        const count = (countsByProvider.get(request.providerId) ?? 0) + 1
+        if (count > MAX_MCP_DISCOVERY_REQUESTS_PER_PROVIDER) {
+            throw new Error(`MCP discovery request is limited to ${MAX_MCP_DISCOVERY_REQUESTS_PER_PROVIDER} tool calls per provider`)
+        }
+        countsByProvider.set(request.providerId, count)
+    }
+
+    return normalized.sort((left, right) => {
+        const leftKey = mcpDiscoveryRequestKey(left)
+        const rightKey = mcpDiscoveryRequestKey(right)
+        return compareCodeUnits(leftKey, rightKey)
+    })
+}
+
+function normalizeMcpToolDiscoverySource(
+    source: string | undefined
+): PersistedMcpToolDiscoverySource | undefined {
+    if (source === undefined) {
+        return undefined
+    }
+
+    if (source === "tools/list" || source === "tools/discover" || source === "tool_search") {
+        return source
+    }
+
+    throw new Error("MCP whitelist source must be a supported MCP discovery source")
+}
+
+function normalizeMcpToolAnnotations(annotations: {
+    readOnlyHint?: boolean
+    destructiveHint?: boolean
+    openWorldHint?: boolean
+} | undefined): {
+    readOnlyHint?: boolean
+    destructiveHint?: boolean
+    openWorldHint?: boolean
+} | undefined {
+    if (!annotations) {
+        return undefined
+    }
+
+    const normalized = {
+        readOnlyHint: annotations.readOnlyHint,
+        destructiveHint: annotations.destructiveHint,
+        openWorldHint: annotations.openWorldHint,
+    }
+
+    return Object.values(normalized).some((value) => value !== undefined)
+        ? normalized
+        : undefined
 }
