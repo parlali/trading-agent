@@ -5,6 +5,7 @@ export const runtime = "nodejs"
 
 const MAX_CHAT_MESSAGE_LENGTH = 8_000
 const MAX_CHAT_ID_LENGTH = 160
+const INTERNAL_ERROR_MESSAGE = "An internal error occurred"
 
 type ChatRequestBody = {
     message?: string
@@ -25,10 +26,7 @@ export async function GET(request: Request) {
             method: "GET",
         }, request.signal)
     } catch (error) {
-        return Response.json({
-            ok: false,
-            error: error instanceof Error ? error.message : String(error),
-        }, { status: errorStatus(error) })
+        return agentChatErrorResponse(error, true)
     }
 }
 
@@ -51,9 +49,7 @@ export async function POST(request: Request) {
             }),
         }, request.signal)
     } catch (error) {
-        return Response.json({
-            error: error instanceof Error ? error.message : String(error),
-        }, { status: errorStatus(error) })
+        return agentChatErrorResponse(error)
     }
 }
 
@@ -132,6 +128,19 @@ async function proxyBackendRequest(path: string, init: RequestInit, signal: Abor
         },
     })
 
+    if (response.status >= 500) {
+        await response.body?.cancel()
+        return Response.json({
+            error: INTERNAL_ERROR_MESSAGE,
+        }, {
+            status: response.status,
+            statusText: response.statusText,
+            headers: {
+                "cache-control": "no-store",
+            },
+        })
+    }
+
     return new Response(response.body, {
         status: response.status,
         statusText: response.statusText,
@@ -142,7 +151,56 @@ async function proxyBackendRequest(path: string, init: RequestInit, signal: Abor
     })
 }
 
+function agentChatErrorResponse(error: unknown, includeOk = false): Response {
+    const status = errorStatus(error)
+    return Response.json({
+        ...(includeOk ? { ok: false } : {}),
+        error: status >= 500 ? INTERNAL_ERROR_MESSAGE : errorMessage(error),
+    }, { status })
+}
+
 function errorStatus(error: unknown): number {
-    const message = error instanceof Error ? error.message : String(error)
-    return message === "Dashboard authentication required" ? 401 : 400
+    const message = errorMessage(error)
+    if (message === "Dashboard authentication required") {
+        return 401
+    }
+    if (isClientRequestError(error, message)) {
+        return 400
+    }
+    if (isProxyConfigurationError(message)) {
+        return 503
+    }
+    if (isBackendGatewayError(error, message)) {
+        return 502
+    }
+
+    return 500
+}
+
+function errorMessage(error: unknown): string {
+    return error instanceof Error ? error.message : String(error)
+}
+
+function isClientRequestError(error: unknown, message: string): boolean {
+    return error instanceof SyntaxError ||
+        message === "Request body must be an object" ||
+        message.startsWith("Unsupported agent chat field(s):") ||
+        message === "mode must be one of general, portfolio, operations, or mcp" ||
+        message.startsWith("message must ") ||
+        message.startsWith("chatSessionId must ") ||
+        message.startsWith("chatMessageId must ")
+}
+
+function isProxyConfigurationError(message: string): boolean {
+    return message.startsWith("BACKEND_URL is not configured") ||
+        message.startsWith("BACKEND_SERVICE_TOKEN is not configured") ||
+        message === "Invalid URL"
+}
+
+function isBackendGatewayError(error: unknown, message: string): boolean {
+    return error instanceof TypeError ||
+        message.includes("fetch failed") ||
+        message.includes("ECONNREFUSED") ||
+        message.includes("ENOTFOUND") ||
+        message.includes("ETIMEDOUT")
 }

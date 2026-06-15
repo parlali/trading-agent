@@ -146,6 +146,28 @@ describe("agent chat handler", () => {
         })
     })
 
+    it("returns 400 for invalid backend inventory query input", async () => {
+        const getInventory = vi.fn()
+
+        const response = await handleAgentChatRequest(
+            new Request(`http://backend.test/agent-chat?chatSessionId=${"x".repeat(161)}`, {
+                method: "GET",
+                headers: {
+                    authorization: "Bearer backend-token",
+                },
+            }),
+            undefined,
+            {
+                serviceToken: "backend-token",
+                getInventory,
+                logError: vi.fn(),
+            }
+        )
+
+        expect(response?.status).toBe(400)
+        expect(getInventory).not.toHaveBeenCalled()
+    })
+
     it("accepts chat without a strategy id", async () => {
         const createStream = vi.fn(async () => new ReadableStream())
 

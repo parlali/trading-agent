@@ -67,7 +67,7 @@ export async function handleAgentChatRequest(
                 },
             })
         } catch (error) {
-            return jsonError(error, dependencies, 500)
+            return jsonError(error, dependencies, requestErrorStatus(error))
         }
     }
 

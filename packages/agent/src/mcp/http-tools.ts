@@ -145,17 +145,24 @@ function isAllowedReadOnlyMcpTool(
     provider: HttpMcpProviderConfig,
     remoteTool: HttpMcpTool
 ): boolean {
+    const destructiveHint = remoteTool.annotations?.destructiveHint as unknown
+    const openWorldHint = remoteTool.annotations?.openWorldHint as unknown
+
     if (provider.blockedTools?.includes(remoteTool.name)) {
         return false
     }
     if (!provider.allowedTools?.includes(remoteTool.name)) {
         return false
     }
-    if (remoteTool.annotations?.destructiveHint === true || remoteTool.annotations?.openWorldHint === true) {
+    if (isBlockingMcpSafetyHint(destructiveHint) || isBlockingMcpSafetyHint(openWorldHint)) {
         return false
     }
 
     return true
+}
+
+function isBlockingMcpSafetyHint(value: unknown): boolean {
+    return value !== undefined && value !== false
 }
 
 function normalizeMcpInputSchema(schema: Record<string, unknown> | undefined): Record<string, unknown> | null {

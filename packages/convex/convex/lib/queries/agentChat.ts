@@ -1,6 +1,7 @@
 import { query } from "../../_generated/server"
 import { v } from "convex/values"
 import { requireUserOrServiceToken } from "../authGuards"
+import { decodeAgentChatToolPayload, type AgentChatToolPayload } from "../agentChatToolPayload"
 
 const MAX_AGENT_CHAT_TRANSCRIPT_MESSAGES = 40
 
@@ -32,26 +33,30 @@ export const getAgentChatMessages = query({
             createdAt: number
         }>>()
 
-        for (const message of rows) {
-            const toolRows = await ctx.db
-                .query("agent_chat_tool_events")
-                .withIndex("by_session_message_created_at", (q) =>
-                    q.eq("sessionId", message.sessionId).eq("messageId", message.messageId)
-                )
-                .order("asc")
-                .collect()
-            const events = toolRows.map((row) => ({
+        const toolEventResults = await Promise.all(
+            rows.map(async (message) => ({
+                messageId: message.messageId,
+                rows: await ctx.db
+                    .query("agent_chat_tool_events")
+                    .withIndex("by_session_message_created_at", (q) =>
+                        q.eq("sessionId", message.sessionId).eq("messageId", message.messageId)
+                    )
+                    .order("asc")
+                    .collect(),
+            }))
+        )
+
+        for (const result of toolEventResults) {
+            toolEventsByMessageId.set(result.messageId, result.rows.map((row) => ({
                 toolCallId: row.toolCallId,
                 toolName: row.toolName,
                 state: row.state,
-                input: row.input,
-                output: row.output,
+                input: decodeAgentChatToolPayload(row.input as AgentChatToolPayload | undefined),
+                output: decodeAgentChatToolPayload(row.output as AgentChatToolPayload | undefined),
                 error: row.error,
                 durationMs: row.durationMs,
                 createdAt: row.createdAt,
-            }))
-
-            toolEventsByMessageId.set(message.messageId, events)
+            })))
         }
 
         return rows

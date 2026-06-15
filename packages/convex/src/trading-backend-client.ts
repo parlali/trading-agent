@@ -1,5 +1,6 @@
 import { api } from "../convex/_generated/api"
 import type { Id } from "../convex/_generated/dataModel"
+import { encodeAgentChatToolPayload } from "../convex/lib/agentChatToolPayload"
 import type {
     AccountPnlEvent,
     AccountState,
@@ -261,8 +262,8 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
                     toolCallId: args.toolCallId,
                     toolName: args.toolName,
                     state: args.state,
-                    input: args.input,
-                    output: args.output,
+                    input: encodeAgentChatToolPayload(args.input),
+                    output: encodeAgentChatToolPayload(args.output),
                     error: args.error,
                     durationMs: args.durationMs,
                 } as never)

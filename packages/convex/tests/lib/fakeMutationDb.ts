@@ -113,6 +113,19 @@ class FakeMutationQuery {
         return this.applyFilters().slice(0, limit)
     }
 
+    async paginate(args: { cursor: string | null; numItems: number }) {
+        const rows = this.applyFilters()
+        const start = args.cursor ? Number(args.cursor) : 0
+        const page = rows.slice(start, start + args.numItems)
+        const next = start + page.length
+
+        return {
+            page,
+            isDone: next >= rows.length,
+            continueCursor: String(next),
+        }
+    }
+
     private applyFilters() {
         const filtered = this.rows.filter((row) =>
             this.filters.every((filter) => row[filter.field] === filter.value)

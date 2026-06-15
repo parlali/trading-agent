@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest"
 import {
     recordAgentChatAssistantMessage,
+    recordAgentChatToolEvent,
     recordAgentChatUserMessage,
 } from "../../convex/lib/mutations/agentChat"
 import { getAgentChatMessages } from "../../convex/lib/queries/agentChat"
+import { encodeAgentChatToolPayload } from "../../convex/lib/agentChatToolPayload"
 import { callRegistered, FakeMutationDb as FakeDb } from "./fakeMutationDb"
 
 describe("agent chat audit mutations", () => {
@@ -77,6 +79,37 @@ describe("agent chat audit mutations", () => {
         })
     })
 
+    it("stores tool input and output as versioned payload envelopes", async () => {
+        process.env.BACKEND_SERVICE_TOKEN = "test-token"
+        const db = new FakeDb({
+            agent_chat_tool_events: [],
+        })
+
+        await callRegistered(recordAgentChatToolEvent, { db } as never, {
+            serviceToken: "test-token",
+            sessionId: "session-1",
+            messageId: "message-1:assistant",
+            toolCallId: "call-1",
+            toolName: "list_accounts",
+            state: "result",
+            input: encodeAgentChatToolPayload({ accountId: "acct-1" }),
+            output: encodeAgentChatToolPayload({ accounts: ["acct-1"] }),
+        })
+
+        expect(db.rows.agent_chat_tool_events?.[0]).toMatchObject({
+            input: {
+                schemaVersion: 1,
+                encoding: "json",
+                json: "{\"accountId\":\"acct-1\"}",
+            },
+            output: {
+                schemaVersion: 1,
+                encoding: "json",
+                json: "{\"accounts\":[\"acct-1\"]}",
+            },
+        })
+    })
+
     it("returns tool events with transcript messages when newer session events exceed the old global cap", async () => {
         process.env.BACKEND_SERVICE_TOKEN = "test-token"
         const db = new FakeDb({
@@ -98,7 +131,7 @@ describe("agent chat audit mutations", () => {
                     toolCallId: "call-1",
                     toolName: "list_accounts",
                     state: "input",
-                    input: {},
+                    input: encodeAgentChatToolPayload({}),
                     createdAt: 2,
                 },
                 {
@@ -108,8 +141,8 @@ describe("agent chat audit mutations", () => {
                     toolCallId: "call-1",
                     toolName: "list_accounts",
                     state: "result",
-                    input: {},
-                    output: { accounts: [] },
+                    input: encodeAgentChatToolPayload({}),
+                    output: encodeAgentChatToolPayload({ accounts: [] }),
                     createdAt: 3,
                 },
                 ...Array.from({ length: 201 }, (_, index) => ({
@@ -119,7 +152,7 @@ describe("agent chat audit mutations", () => {
                     toolCallId: `noise-call-${index}`,
                     toolName: "mcp_noise",
                     state: "input",
-                    input: { index },
+                    input: encodeAgentChatToolPayload({ index }),
                     createdAt: 4 + index,
                 })),
             ],

@@ -1,6 +1,7 @@
 import { mutation } from "../../_generated/server"
 import { v } from "convex/values"
 import { requireServiceToken } from "../authGuards"
+import { agentChatToolPayloadV } from "../validators"
 
 const chatModeV = v.union(
     v.literal("general"),
@@ -111,8 +112,8 @@ export const recordAgentChatToolEvent = mutation({
             v.literal("result"),
             v.literal("error")
         ),
-        input: v.optional(v.any()),
-        output: v.optional(v.any()),
+        input: v.optional(agentChatToolPayloadV),
+        output: v.optional(agentChatToolPayloadV),
         error: v.optional(v.string()),
         durationMs: v.optional(v.number()),
     },

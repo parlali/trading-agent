@@ -37,6 +37,9 @@ export const createRun = mutation({
     },
     handler: async (ctx, args) => {
         requireServiceToken(args.serviceToken)
+        const trigger = args.trigger ?? "cron"
+        assertRunChatMetadata(args, trigger)
+
         const strategy = await ctx.db.get(args.strategyId)
         if (!strategy) {
             throw new Error(`Strategy not found: ${args.strategyId}`)
@@ -78,14 +81,42 @@ export const createRun = mutation({
             app: args.app,
             accountId: strategy.accountId,
             status: "running",
-            trigger: args.trigger ?? "cron",
-            chatSource: args.chatSource,
-            chatSessionId: args.chatSessionId,
-            chatMessageId: args.chatMessageId,
+            trigger,
+            ...(trigger === "chat"
+                ? {
+                    chatSource: args.chatSource,
+                    chatSessionId: args.chatSessionId,
+                    chatMessageId: args.chatMessageId,
+                }
+                : {}),
             startedAt: Date.now(),
         })
     },
 })
+
+function assertRunChatMetadata(
+    args: {
+        chatSource?: "dashboard"
+        chatSessionId?: string
+        chatMessageId?: string
+    },
+    trigger: "cron" | "manual" | "callback" | "chat"
+): void {
+    const hasAnyChatMetadata = args.chatSource !== undefined ||
+        args.chatSessionId !== undefined ||
+        args.chatMessageId !== undefined
+
+    if (trigger === "chat") {
+        if (!args.chatSource || !args.chatSessionId || !args.chatMessageId) {
+            throw new Error("Chat-triggered runs require chatSource, chatSessionId, and chatMessageId")
+        }
+        return
+    }
+
+    if (hasAnyChatMetadata) {
+        throw new Error("Chat metadata is only allowed when trigger is \"chat\"")
+    }
+}
 
 export const recoverStaleRunningRuns = mutation({
     args: {

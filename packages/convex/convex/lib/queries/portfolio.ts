@@ -45,7 +45,12 @@ export const getPortfolioFreshness = query({
                 .query("provider_sync_state")
                 .withIndex("by_app", (q) => q.eq("app", args.app!))
                 .collect()
-            : await ctx.db.query("provider_sync_state").collect()
+            : args.accountId
+                ? await ctx.db
+                    .query("provider_sync_state")
+                    .withIndex("by_account", (q) => q.eq("accountId", args.accountId!))
+                    .collect()
+                : await ctx.db.query("provider_sync_state").collect()
 
         return rows.map((row) => buildFreshnessDto(row.app, row))
     },
@@ -70,7 +75,12 @@ export const getPortfolioAccountSnapshots = query({
                         : q.eq("app", args.app!)
                 )
                 .collect()
-            : await ctx.db.query("account_snapshots").collect()
+            : args.accountId
+                ? await ctx.db
+                    .query("account_snapshots")
+                    .withIndex("by_account", (q) => q.eq("accountId", args.accountId!))
+                    .collect()
+                : await ctx.db.query("account_snapshots").collect()
 
         const latestByAccount = new Map<string, typeof rows[number]>()
         for (const row of rows) {
@@ -123,7 +133,12 @@ export const getPortfolioPositions = query({
                             : q.eq("app", args.app!)
                     )
                     .collect()
-                : ctx.db.query("provider_positions").collect(),
+                : args.accountId
+                    ? ctx.db
+                        .query("provider_positions")
+                        .withIndex("by_account", (q) => q.eq("accountId", args.accountId!))
+                        .collect()
+                    : ctx.db.query("provider_positions").collect(),
             ctx.db.query("strategies").collect(),
             ctx.db.query("position_syncs").collect(),
         ])

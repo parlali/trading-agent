@@ -1,4 +1,5 @@
 import { query } from "../../_generated/server"
+import type { Doc } from "../../_generated/dataModel"
 import { v } from "convex/values"
 import { requireUser, requireServiceToken, requireUserOrServiceToken } from "../authGuards"
 import { createDefaultKillSwitchState } from "../killSwitchState"
@@ -81,21 +82,48 @@ export const getRecentAlerts = query({
         requireServiceToken(args.serviceToken)
 
         const limit = Math.max(1, Math.min(args.limit ?? 20, 100))
-        const alerts = await ctx.db.query("alerts").order("desc").take(limit * 4)
+        const alerts: Doc<"alerts">[] = []
+        const pageSize = Math.max(50, limit * 4)
+        let cursor: string | null = null
 
-        return alerts
-            .filter((alert) => args.severity === undefined || alert.severity === args.severity)
-            .filter((alert) => args.acknowledged === undefined || alert.acknowledged === args.acknowledged)
-            .slice(0, limit)
-            .map((alert) => ({
-                id: String(alert._id),
-                strategyId: alert.strategyId ? String(alert.strategyId) : undefined,
-                app: alert.app,
-                severity: alert.severity,
-                message: alert.message,
-                acknowledged: alert.acknowledged,
-                timestamp: alert.timestamp,
-            }))
+        while (alerts.length < limit) {
+            const page = await ctx.db
+                .query("alerts")
+                .order("desc")
+                .paginate({
+                    cursor,
+                    numItems: pageSize,
+                })
+
+            for (const alert of page.page) {
+                if (args.severity !== undefined && alert.severity !== args.severity) {
+                    continue
+                }
+                if (args.acknowledged !== undefined && alert.acknowledged !== args.acknowledged) {
+                    continue
+                }
+
+                alerts.push(alert)
+                if (alerts.length >= limit) {
+                    break
+                }
+            }
+
+            if (page.isDone) {
+                break
+            }
+            cursor = page.continueCursor
+        }
+
+        return alerts.map((alert) => ({
+            id: String(alert._id),
+            strategyId: alert.strategyId ? String(alert.strategyId) : undefined,
+            app: alert.app,
+            severity: alert.severity,
+            message: alert.message,
+            acknowledged: alert.acknowledged,
+            timestamp: alert.timestamp,
+        }))
     },
 })
 

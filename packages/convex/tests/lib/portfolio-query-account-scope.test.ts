@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest"
 import {
+    getPortfolioAccountSnapshots,
     getPortfolioFreshness,
     getPortfolioPositions,
 } from "../../convex/lib/queries/portfolio"
@@ -22,6 +23,73 @@ describe("portfolio query account scope", () => {
             accountId: "acct-requested",
             providerStatus: "stale",
             stale: true,
+        })])
+    })
+
+    it("filters provider freshness by account id without requiring app scope", async () => {
+        process.env.BACKEND_SERVICE_TOKEN = "test-token"
+        const db = new FakeDb({
+            provider_sync_state: [
+                createFreshnessRow("alpaca-options", "acct-a"),
+                createFreshnessRow("polymarket", "acct-b"),
+            ],
+        })
+
+        const rows = await callRegistered(getPortfolioFreshness, { db } as never, {
+            serviceToken: "test-token",
+            accountId: "acct-a",
+        }) as Array<{ accountId: string }>
+
+        expect(rows).toHaveLength(1)
+        expect(rows[0]?.accountId).toBe("acct-a")
+    })
+
+    it("filters account snapshots by account id without requiring app scope", async () => {
+        process.env.BACKEND_SERVICE_TOKEN = "test-token"
+        const db = new FakeDb({
+            account_snapshots: [
+                createAccountSnapshot("alpaca-options", "acct-a", 100),
+                createAccountSnapshot("alpaca-options", "acct-b", 200),
+                createAccountSnapshot("polymarket", "acct-a", 300),
+            ],
+        })
+
+        const rows = await callRegistered(getPortfolioAccountSnapshots, { db } as never, {
+            serviceToken: "test-token",
+            accountId: "acct-a",
+        }) as Array<{ app: string; accountId: string }>
+
+        expect(rows).toEqual([
+            expect.objectContaining({
+                app: "alpaca-options",
+                accountId: "acct-a",
+            }),
+            expect.objectContaining({
+                app: "polymarket",
+                accountId: "acct-a",
+            }),
+        ])
+    })
+
+    it("filters provider positions by account id without requiring app scope", async () => {
+        process.env.BACKEND_SERVICE_TOKEN = "test-token"
+        const db = new FakeDb({
+            strategies: [],
+            position_syncs: [],
+            provider_positions: [
+                createProviderPosition("alpaca-options", "acct-a", "SPY260501C00720000"),
+                createProviderPosition("polymarket", "acct-b", "event-token"),
+            ],
+        })
+
+        const rows = await callRegistered(getPortfolioPositions, { db } as never, {
+            serviceToken: "test-token",
+            accountId: "acct-a",
+        }) as Array<{ accountId: string; instrument: string }>
+
+        expect(rows).toEqual([expect.objectContaining({
+            accountId: "acct-a",
+            instrument: "SPY260501C00720000",
         })])
     })
 
@@ -107,6 +175,54 @@ function createDryRunPosition(args: {
         accountId: args.accountId,
         positionKey: args.instrument,
         instrument: args.instrument,
+        side: "long",
+        quantity: 1,
+        entryPrice: 1,
+        syncedAt: 100,
+    }
+}
+
+function createFreshnessRow(app: string, accountId: string) {
+    return {
+        _id: `freshness-${app}-${accountId}`,
+        app,
+        accountId,
+        accountScope: "account",
+        providerStatus: "synced",
+        stale: false,
+        driftDetected: false,
+        positionCount: 0,
+        pendingOrderCount: 0,
+        updatedAt: 100,
+    }
+}
+
+function createAccountSnapshot(app: string, accountId: string, timestamp: number) {
+    return {
+        _id: `snapshot-${app}-${accountId}-${timestamp}`,
+        app,
+        accountId,
+        venue: app,
+        balance: 100,
+        equity: 100,
+        buyingPower: 100,
+        marginUsed: 0,
+        marginAvailable: 100,
+        openPnl: 0,
+        dayPnl: 0,
+        timestamp,
+    }
+}
+
+function createProviderPosition(app: string, accountId: string, instrument: string) {
+    return {
+        _id: `provider-position-${app}-${accountId}`,
+        app,
+        accountId,
+        positionKey: instrument,
+        ownershipStatus: "owned",
+        expectedExternal: true,
+        instrument,
         side: "long",
         quantity: 1,
         entryPrice: 1,

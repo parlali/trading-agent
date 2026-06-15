@@ -97,6 +97,49 @@ describe("dashboard agent chat API route", () => {
             signal: request.signal,
         }))
     })
+
+    it("returns sanitized gateway failures when backend fetch rejects", async () => {
+        vi.mocked(requireDashboardUser).mockResolvedValue(undefined)
+        process.env.BACKEND_URL = "http://backend.test"
+        process.env.BACKEND_SERVICE_TOKEN = "backend-token"
+        vi.spyOn(globalThis, "fetch").mockRejectedValue(new TypeError("fetch failed: backend secret"))
+
+        await expectProxyFailureForPostAndGet(502, "An internal error occurred")
+    })
+
+    it("returns sanitized service failures when backend URL is missing", async () => {
+        vi.mocked(requireDashboardUser).mockResolvedValue(undefined)
+        process.env.BACKEND_SERVICE_TOKEN = "backend-token"
+        const fetchSpy = vi.spyOn(globalThis, "fetch")
+
+        await expectProxyFailureForPostAndGet(503, "An internal error occurred")
+        expect(fetchSpy).not.toHaveBeenCalled()
+    })
+
+    it("returns sanitized service failures when backend service token is missing", async () => {
+        vi.mocked(requireDashboardUser).mockResolvedValue(undefined)
+        process.env.BACKEND_URL = "http://backend.test"
+        const fetchSpy = vi.spyOn(globalThis, "fetch")
+
+        await expectProxyFailureForPostAndGet(503, "An internal error occurred")
+        expect(fetchSpy).not.toHaveBeenCalled()
+    })
+
+    it("sanitizes backend 5xx responses while preserving status", async () => {
+        vi.mocked(requireDashboardUser).mockResolvedValue(undefined)
+        process.env.BACKEND_URL = "http://backend.test"
+        process.env.BACKEND_SERVICE_TOKEN = "backend-token"
+        vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify({
+            error: "backend secret stack",
+        }), {
+            status: 500,
+            headers: {
+                "content-type": "application/json",
+            },
+        }))
+
+        await expectProxyFailureForPostAndGet(500, "An internal error occurred")
+    })
 })
 
 function createRequest(body: Record<string, unknown>): Request {
@@ -108,4 +151,25 @@ function createRequest(body: Record<string, unknown>): Request {
         },
         body: JSON.stringify(body),
     })
+}
+
+function createGetRequest(): Request {
+    return new Request("http://dashboard.test/api/agent-chat?chatSessionId=session-1", {
+        method: "GET",
+        headers: {
+            authorization: "Bearer user-token",
+        },
+    })
+}
+
+async function expectProxyFailureForPostAndGet(status: number, error: string): Promise<void> {
+    const postResponse = await POST(createRequest({
+        message: "hello",
+    }))
+    const getResponse = await GET(createGetRequest())
+
+    expect(postResponse.status).toBe(status)
+    expect(await postResponse.json()).toMatchObject({ error })
+    expect(getResponse.status).toBe(status)
+    expect(await getResponse.json()).toMatchObject({ error })
 }

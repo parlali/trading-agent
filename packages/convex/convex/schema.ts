@@ -21,6 +21,7 @@ import {
     orderTransitionRowFieldsV,
     positionValueFieldsV,
     accountSnapshotValueFieldsV,
+    agentChatToolPayloadV,
 } from "./lib/validators"
 
 const heartbeatStateFields = {
@@ -187,8 +188,8 @@ export default defineSchema({
             v.literal("result"),
             v.literal("error")
         ),
-        input: v.optional(v.any()),
-        output: v.optional(v.any()),
+        input: v.optional(agentChatToolPayloadV),
+        output: v.optional(agentChatToolPayloadV),
         error: v.optional(v.string()),
         durationMs: v.optional(v.number()),
         createdAt: v.number(),
@@ -330,6 +331,7 @@ export default defineSchema({
         timestamp: v.number(),
     })
         .index("by_app", ["app"])
+        .index("by_account", ["accountId"])
         .index("by_app_account", ["app", "accountId"])
         .index("by_app_timestamp", ["app", "timestamp"]),
 
@@ -374,6 +376,7 @@ export default defineSchema({
         updatedAt: v.number(),
     })
         .index("by_app", ["app"])
+        .index("by_account", ["accountId"])
         .index("by_app_account", ["app", "accountId"]),
 
     provider_positions: defineTable({
@@ -389,6 +392,7 @@ export default defineSchema({
         syncedAt: v.number(),
     })
         .index("by_app", ["app"])
+        .index("by_account", ["accountId"])
         .index("by_app_account", ["app", "accountId"])
         .index("by_app_strategy", ["app", "strategyId"]),
 
