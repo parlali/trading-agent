@@ -91,6 +91,7 @@ describe("backend plugin shared helpers", () => {
             "MCP_SERVER_URL",
             "MCP_PROVIDER_CONFIGS",
             "MCP_SERVER_TOKEN",
+            "MCP_SERVER_ALLOWED_TOOLS",
         ])
     })
 

@@ -37,7 +37,7 @@ export const getPortfolioFreshness = query({
                 .query("provider_sync_state")
                 .withIndex("by_app_account", (q) => q.eq("app", args.app!).eq("accountId", args.accountId!))
                 .first()
-            return [buildFreshnessDto(args.app, row)]
+            return [buildFreshnessDto(args.app, row, args.accountId)]
         }
 
         const rows = args.app
@@ -45,9 +45,70 @@ export const getPortfolioFreshness = query({
                 .query("provider_sync_state")
                 .withIndex("by_app", (q) => q.eq("app", args.app!))
                 .collect()
-            : await ctx.db.query("provider_sync_state").collect()
+            : args.accountId
+                ? await ctx.db
+                    .query("provider_sync_state")
+                    .withIndex("by_account", (q) => q.eq("accountId", args.accountId!))
+                    .collect()
+                : await ctx.db.query("provider_sync_state").collect()
 
         return rows.map((row) => buildFreshnessDto(row.app, row))
+    },
+})
+
+export const getPortfolioAccountSnapshots = query({
+    args: {
+        serviceToken: v.optional(v.string()),
+        app: v.optional(venueAppV),
+        accountId: v.optional(v.string()),
+    },
+    handler: async (ctx, args) => {
+        await requireUserOrServiceToken(ctx, args.serviceToken)
+
+        const rows = args.app
+            ? await ctx.db
+                .query("account_snapshots")
+                .withIndex(
+                    args.accountId ? "by_app_account" : "by_app",
+                    (q) => args.accountId
+                        ? q.eq("app", args.app!).eq("accountId", args.accountId!)
+                        : q.eq("app", args.app!)
+                )
+                .collect()
+            : args.accountId
+                ? await ctx.db
+                    .query("account_snapshots")
+                    .withIndex("by_account", (q) => q.eq("accountId", args.accountId!))
+                    .collect()
+                : await ctx.db.query("account_snapshots").collect()
+
+        const latestByAccount = new Map<string, typeof rows[number]>()
+        for (const row of rows) {
+            const key = `${row.app}:${row.accountId ?? "unassigned"}`
+            const existing = latestByAccount.get(key)
+            if (!existing || row.timestamp > existing.timestamp) {
+                latestByAccount.set(key, row)
+            }
+        }
+
+        return Array.from(latestByAccount.values())
+            .sort((left, right) =>
+                left.app.localeCompare(right.app) ||
+                (left.accountId ?? "unassigned").localeCompare(right.accountId ?? "unassigned")
+            )
+            .map((row) => ({
+                app: row.app,
+                accountId: row.accountId ?? "unassigned",
+                venue: row.venue,
+                balance: row.balance,
+                equity: row.equity ?? (row.balance + row.openPnl),
+                buyingPower: row.buyingPower,
+                marginUsed: row.marginUsed,
+                marginAvailable: row.marginAvailable,
+                openPnl: row.openPnl,
+                dayPnl: row.dayPnl,
+                timestamp: row.timestamp,
+            }))
     },
 })
 
@@ -72,7 +133,12 @@ export const getPortfolioPositions = query({
                             : q.eq("app", args.app!)
                     )
                     .collect()
-                : ctx.db.query("provider_positions").collect(),
+                : args.accountId
+                    ? ctx.db
+                        .query("provider_positions")
+                        .withIndex("by_account", (q) => q.eq("accountId", args.accountId!))
+                        .collect()
+                    : ctx.db.query("provider_positions").collect(),
             ctx.db.query("strategies").collect(),
             ctx.db.query("position_syncs").collect(),
         ])
@@ -83,6 +149,9 @@ export const getPortfolioPositions = query({
                 return false
             }
             if (args.strategyId && strategy._id !== args.strategyId) {
+                return false
+            }
+            if (args.accountId && strategy.accountId !== args.accountId) {
                 return false
             }
             return Boolean((strategy.policy as Record<string, unknown>).dryRun)
@@ -460,7 +529,8 @@ function aggregateEquityBuckets(
 
 function buildFreshnessDto(
     app: typeof VENUE_APPS[number],
-    row: Doc<"provider_sync_state"> | null
+    row: Doc<"provider_sync_state"> | null,
+    requestedAccountId?: string
 ) {
     const stale = isStale(row?.lastVerifiedAt)
     const providerStatus = stale
@@ -469,7 +539,7 @@ function buildFreshnessDto(
 
     return {
         app,
-        accountId: row?.accountId ?? "unassigned",
+        accountId: row?.accountId ?? requestedAccountId ?? "unassigned",
         accountScope: "account" as const,
         lastSyncedAt: row?.lastSyncedAt,
         lastVerifiedAt: row?.lastVerifiedAt,

@@ -20,6 +20,7 @@ const pageNames: Record<string, string> = {
     "/equity": "Equity",
     "/trades": "Trades",
     "/runs": "Runs",
+    "/chat": "Agent Chat",
 }
 
 function getPageTitle(pathname: string): string {

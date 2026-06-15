@@ -12,6 +12,10 @@ export {
 } from "./lib/queries/strategies"
 
 export {
+    getAgentChatMessages,
+} from "./lib/queries/agentChat"
+
+export {
     getCodexChatGptAuth,
 } from "./lib/queries/codexAuth"
 
@@ -45,6 +49,7 @@ export {
 
 export {
     getPortfolioFreshness,
+    getPortfolioAccountSnapshots,
     getPortfolioPositions,
     getPortfolioPendingOrders,
     getPortfolioTradeHistory,
@@ -57,6 +62,7 @@ export {
     assertDashboardUser,
     getManualRunRequests,
     getControlPlaneMetrics,
+    getRecentAlerts,
     getFullResetAudit,
 } from "./lib/queries/system"
 

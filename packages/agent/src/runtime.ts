@@ -21,6 +21,8 @@ export interface AgentRuntimeConfig {
     agentLogger?: AgentMessageLogger
     cleanup?: Array<() => Promise<void>>
     killSwitchChecker?: () => Promise<boolean>
+    userMessage?: string
+    abortSignal?: AbortSignal
 }
 
 export interface AgentRunResult {
@@ -59,7 +61,8 @@ export async function executeAgentRun(
     conversation.addSystemMessage(systemPrompt)
     const systemSequence = conversation.getSequence()
 
-    const userMessage = "Your positions and account state are already in the system prompt. Begin with the research steps defined in your strategy context, then decide on actions."
+    const userMessage = config.userMessage ??
+        "Your positions and account state are already in the system prompt. Begin with the research steps defined in your strategy context, then decide on actions."
 
     conversation.addUserMessage(userMessage)
     const userSequence = conversation.getSequence()
@@ -95,8 +98,22 @@ export async function executeAgentRun(
         nextTranscriptSequence: () => conversation.reserveSequence(),
     })
     const provider = createAgentModelProvider(providerConfig)
+    let aborted = false
+    const abortProvider = () => {
+        aborted = true
+        provider.cancel()
+    }
+    if (config.abortSignal?.aborted) {
+        abortProvider()
+    } else {
+        config.abortSignal?.addEventListener("abort", abortProvider, { once: true })
+    }
 
     try {
+        if (config.abortSignal?.aborted) {
+            throw createAbortError("Agent run cancelled")
+        }
+
         const providerResult = await provider.run({
             conversation,
             context,
@@ -112,10 +129,13 @@ export async function executeAgentRun(
         })
         const outcome = toolEngine.getOutcome()
         const decisionTaken = !providerResult.error && providerResult.summary.length > 0
+        const error = aborted || config.abortSignal?.aborted
+            ? providerResult.error ?? "Agent run cancelled"
+            : providerResult.error
 
         return {
             summary: providerResult.summary,
-            error: providerResult.error,
+            error,
             iterations: providerResult.iterations,
             usage: providerResult.usage,
             opportunityCoverage: outcome.opportunityCoverage,
@@ -124,6 +144,7 @@ export async function executeAgentRun(
             toolManifest: tools.getManifest(),
         }
     } finally {
+        config.abortSignal?.removeEventListener("abort", abortProvider)
         provider.cancel()
         if (config.cleanup && config.cleanup.length > 0) {
             for (const cleanup of config.cleanup) {
@@ -138,6 +159,12 @@ export async function executeAgentRun(
             }
         }
     }
+}
+
+function createAbortError(message: string): Error {
+    const error = new Error(message)
+    error.name = "AbortError"
+    return error
 }
 
 function createAgentModelProvider(config: AgentRuntimeModelProviderConfig): AgentModelProvider {

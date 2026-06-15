@@ -85,6 +85,7 @@ describe("HTTP MCP tool bindings", () => {
                 id: "macro",
                 url: server.url,
                 token: "secret",
+                allowedTools: ["search"],
             }],
             logger: createLogger({ minLevel: "fatal" }),
         })
@@ -113,11 +114,153 @@ describe("HTTP MCP tool bindings", () => {
         })
     })
 
+    it("does not expose MCP tools without an explicit read-only allowlist", async () => {
+        const server = await createSingleToolServer("search")
+        servers.push(server)
+
+        const tools = await createHttpMcpToolBindings({
+            providers: [{
+                id: "macro",
+                url: server.url,
+            }],
+            logger: createLogger({ minLevel: "fatal" }),
+        })
+
+        expect(tools).toEqual([])
+    })
+
+    it("blocks allowlisted MCP tools that declare destructive or open-world annotations", async () => {
+        const server = await startMcpServer(async (request, response) => {
+            const body = await readJsonBody(request)
+
+            if (body.method === "initialize") {
+                writeJsonRpc(response, body.id, {
+                    protocolVersion: "2025-03-26",
+                    capabilities: {},
+                    serverInfo: { name: "unsafe-server", version: "1.0.0" },
+                })
+                return
+            }
+
+            if (body.method === "notifications/initialized") {
+                response.writeHead(202)
+                response.end()
+                return
+            }
+
+            if (body.method === "tools/list") {
+                writeJsonRpc(response, body.id, {
+                    tools: [
+                        {
+                            name: "place_order",
+                            inputSchema: {
+                                type: "object",
+                                properties: {},
+                            },
+                            annotations: {
+                                destructiveHint: true,
+                            },
+                        },
+                        {
+                            name: "web_browse",
+                            inputSchema: {
+                                type: "object",
+                                properties: {},
+                            },
+                            annotations: {
+                                openWorldHint: true,
+                            },
+                        },
+                    ],
+                })
+                return
+            }
+
+            writeJsonRpc(response, body.id, { content: [] })
+        })
+        servers.push(server)
+
+        const tools = await createHttpMcpToolBindings({
+            providers: [{
+                id: "unsafe",
+                url: server.url,
+                allowedTools: ["place_order", "web_browse"],
+            }],
+            logger: createLogger({ minLevel: "fatal" }),
+        })
+
+        expect(tools).toEqual([])
+    })
+
+    it("blocks allowlisted MCP tools with malformed destructive or open-world annotations", async () => {
+        const server = await startMcpServer(async (request, response) => {
+            const body = await readJsonBody(request)
+
+            if (body.method === "initialize") {
+                writeJsonRpc(response, body.id, {
+                    protocolVersion: "2025-03-26",
+                    capabilities: {},
+                    serverInfo: { name: "malformed-annotations-server", version: "1.0.0" },
+                })
+                return
+            }
+
+            if (body.method === "notifications/initialized") {
+                response.writeHead(202)
+                response.end()
+                return
+            }
+
+            if (body.method === "tools/list") {
+                writeJsonRpc(response, body.id, {
+                    tools: [
+                        {
+                            name: "place_order",
+                            inputSchema: {
+                                type: "object",
+                                properties: {},
+                            },
+                            annotations: {
+                                destructiveHint: "true",
+                            },
+                        },
+                        {
+                            name: "web_browse",
+                            inputSchema: {
+                                type: "object",
+                                properties: {},
+                            },
+                            annotations: {
+                                openWorldHint: "true",
+                            },
+                        },
+                    ],
+                })
+                return
+            }
+
+            writeJsonRpc(response, body.id, { content: [] })
+        })
+        servers.push(server)
+
+        const tools = await createHttpMcpToolBindings({
+            providers: [{
+                id: "unsafe",
+                url: server.url,
+                allowedTools: ["place_order", "web_browse"],
+            }],
+            logger: createLogger({ minLevel: "fatal" }),
+        })
+
+        expect(tools).toEqual([])
+    })
+
     it("degrades repeated MCP research failures through tool category", async () => {
         const tools = await createHttpMcpToolBindings({
             providers: [{
                 id: "macro",
                 url: await createFailingMcpServerUrl(),
+                allowedTools: ["search"],
             }],
             logger: createLogger({ minLevel: "fatal" }),
         })
@@ -207,6 +350,7 @@ describe("HTTP MCP tool bindings", () => {
             providers: [{
                 id: "macro",
                 url: server.url,
+                allowedTools: ["search"],
             }],
             logger: createLogger({ minLevel: "fatal" }),
         })
@@ -274,6 +418,7 @@ describe("HTTP MCP tool bindings", () => {
             providers: [{
                 id: "macro",
                 url: server.url,
+                allowedTools: ["bad_properties", "bad_required", "bad_additional"],
             }],
             logger: createLogger({ minLevel: "fatal" }),
         })
@@ -328,6 +473,7 @@ describe("HTTP MCP tool bindings", () => {
             providers: [{
                 id: "macro",
                 url: server.url,
+                allowedTools: ["search"],
             }],
             logger: createLogger({ minLevel: "fatal" }),
         })
@@ -384,6 +530,10 @@ describe("HTTP MCP tool bindings", () => {
             providers: [{
                 id: "macro",
                 url: server.url,
+                allowedTools: [
+                    `research_${"a".repeat(48)}_one`,
+                    `research_${"a".repeat(48)}_two`,
+                ],
             }],
             logger: createLogger({ minLevel: "fatal" }),
         })
@@ -402,10 +552,12 @@ describe("HTTP MCP tool bindings", () => {
                 {
                     id: "macro.ai",
                     url: firstServer.url,
+                    allowedTools: ["search"],
                 },
                 {
                     id: "macro-ai",
                     url: secondServer.url,
+                    allowedTools: ["search"],
                 },
             ],
             logger: createLogger({ minLevel: "fatal" }),
@@ -450,6 +602,7 @@ describe("HTTP MCP tool bindings", () => {
             providers: [{
                 id: "macro",
                 url: server.url,
+                allowedTools: ["search"],
             }],
             logger: createLogger({ minLevel: "fatal" }),
         })).rejects.toThrow("returned repeated cursor same-cursor")
@@ -506,6 +659,7 @@ describe("HTTP MCP tool bindings", () => {
             providers: [{
                 id: "macro",
                 url: server.url,
+                allowedTools: ["search"],
             }],
             logger: createLogger({ minLevel: "fatal" }),
         })

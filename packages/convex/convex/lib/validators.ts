@@ -10,6 +10,7 @@ import {
     EXECUTION_SAFETY_FAULT_CATEGORIES,
     EXECUTION_COMMIT_OUTCOMES,
 } from "@valiq-trading/core"
+import { AGENT_CHAT_TOOL_PAYLOAD_SCHEMA_VERSION } from "./agentChatToolPayload"
 import {
     ORDER_STATUSES,
     ORDER_ACTIONS,
@@ -35,6 +36,12 @@ export const severityV = stringLiterals(SEVERITY_LEVELS)
 export const eventTypeV = stringLiterals(EVENT_TYPES)
 export const heartbeatStatusV = stringLiterals(["healthy", "degraded", "unhealthy"])
 export const agentLogRoleV = stringLiterals(["system", "user", "assistant", "tool"])
+
+export const agentChatToolPayloadV = v.object({
+    schemaVersion: v.literal(AGENT_CHAT_TOOL_PAYLOAD_SCHEMA_VERSION),
+    encoding: v.literal("json"),
+    json: v.string(),
+})
 
 export const claimSourceV = v.union(
     v.literal("position"),

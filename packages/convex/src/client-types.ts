@@ -92,7 +92,13 @@ export interface StoredAccount {
     updatedAt?: number
 }
 
-export type RunTrigger = "cron" | "manual" | "callback"
+export type RunTrigger = "cron" | "manual" | "callback" | "chat"
+
+export interface CreateRunMetadata {
+    chatSource?: "dashboard"
+    chatSessionId?: string
+    chatMessageId?: string
+}
 
 export interface RunDiagnostics {
     degradedResearch?: boolean
@@ -133,6 +139,9 @@ export interface StoredRun extends RunDiagnostics {
     app: App
     status: "running" | "completed" | "failed"
     trigger?: RunTrigger
+    chatSource?: "dashboard"
+    chatSessionId?: string
+    chatMessageId?: string
     startedAt: number
     endedAt?: number
     summary?: string
@@ -154,6 +163,68 @@ export interface AgentLogRow {
     toolOutput?: string
     toolCalls?: string
     timestamp: number
+}
+
+export type AgentChatMode = "general" | "portfolio" | "operations" | "mcp"
+
+export interface AgentChatMessageRow {
+    id: string
+    sessionId: string
+    messageId: string
+    role: "user" | "assistant"
+    content: string
+    mode?: AgentChatMode
+    status: "received" | "completed" | "cancelled" | "failed"
+    modelProvider?: string
+    modelId?: string
+    finishReason?: string
+    reasoning?: string
+    error?: string
+    toolEvents?: AgentChatToolEventRow[]
+    createdAt: number
+    updatedAt: number
+}
+
+export interface AgentChatToolEventRow {
+    toolCallId: string
+    toolName: string
+    state: "input" | "result" | "error"
+    input?: unknown
+    output?: unknown
+    error?: string
+    durationMs?: number
+    createdAt: number
+}
+
+export interface RecordAgentChatUserMessageArgs {
+    sessionId: string
+    messageId: string
+    content: string
+    mode?: AgentChatMode
+}
+
+export interface RecordAgentChatAssistantMessageArgs {
+    sessionId: string
+    messageId: string
+    content: string
+    status: "completed" | "cancelled" | "failed"
+    modelProvider: string
+    modelId: string
+    finishReason?: string
+    reasoning?: string
+    error?: string
+}
+
+export interface RecordAgentChatToolEventArgs {
+    sessionId: string
+    messageId: string
+    toolCallId: string
+    toolName: string
+    state: "input" | "result" | "error"
+    input?: unknown
+    output?: unknown
+    error?: string
+    durationMs?: number
 }
 
 export interface TradeEventRow {
@@ -257,9 +328,32 @@ export interface StrategyOwnershipScopeRow {
 
 export type PortfolioFreshnessRow = PortfolioFreshness
 
+export interface PortfolioAccountSnapshotRow extends AccountState {
+    app: Exclude<App, "backend">
+    accountId: string
+    venue: string
+    timestamp: number
+}
+
 export type ProviderPositionRow = PortfolioPosition
 
 export type ProviderPendingOrderRow = PortfolioPendingOrder
+
+export interface AlertRow {
+    id: string
+    strategyId?: string
+    app?: App
+    severity: "critical" | "warning" | "info"
+    message: string
+    acknowledged: boolean
+    timestamp: number
+}
+
+export interface GetRecentAlertsArgs {
+    severity?: AlertRow["severity"]
+    acknowledged?: boolean
+    limit?: number
+}
 
 export interface StrategyRiskStateRow extends StrategyRiskState {
     strategyId: string
@@ -469,11 +563,15 @@ export interface TradingBackendClient extends TradeEventLogger, AgentMessageLogg
     getRunHistory(strategyId: Id<"strategies">, limit?: number, beforeStartedAt?: number, beforeCreationTime?: number): Promise<StoredRun[]>
     getRunById(runId: Id<"strategy_runs">): Promise<StoredRun | null>
     getAgentLogs(runId: Id<"strategy_runs">): Promise<AgentLogRow[]>
+    getAgentChatMessages(sessionId: string, limit?: number): Promise<AgentChatMessageRow[]>
+    recordAgentChatUserMessage(args: RecordAgentChatUserMessageArgs): Promise<void>
+    recordAgentChatAssistantMessage(args: RecordAgentChatAssistantMessageArgs): Promise<void>
+    recordAgentChatToolEvent(args: RecordAgentChatToolEventArgs): Promise<void>
     getTradeEvents(runId: Id<"strategy_runs">): Promise<TradeEventRow[]>
     getLastCompletedRunSummary(strategyId: Id<"strategies">): Promise<LastCompletedRunSummary | null>
     recoverRunningRuns(): Promise<number>
     recoverStaleRunningRuns(olderThanMs?: number): Promise<number>
-    createRun(strategyId: Id<"strategies">, app: App, trigger?: RunTrigger): Promise<Id<"strategy_runs">>
+    createRun(strategyId: Id<"strategies">, app: App, trigger?: RunTrigger, metadata?: CreateRunMetadata): Promise<Id<"strategy_runs">>
     updateRun(
         runId: Id<"strategy_runs">,
         status: StoredRun["status"],
@@ -511,6 +609,7 @@ export interface TradingBackendClient extends TradeEventLogger, AgentMessageLogg
     getSystemState(): Promise<KillSwitchState>
     getControlPlaneMetrics(): Promise<ControlPlaneMetricRow[]>
     getPortfolioFreshness(app?: Exclude<App, "backend">, accountId?: string): Promise<PortfolioFreshnessRow[]>
+    getPortfolioAccountSnapshots(app?: Exclude<App, "backend">, accountId?: string): Promise<PortfolioAccountSnapshotRow[]>
     getStrategyRiskState(strategyId: Id<"strategies">): Promise<StrategyRiskStateRow | null>
     getStrategyExecutionSafetyFaults(
         strategyId: Id<"strategies">,
@@ -525,6 +624,7 @@ export interface TradingBackendClient extends TradeEventLogger, AgentMessageLogg
         instruments: string[]
     ): Promise<AdoptProviderPositionsResult>
     getManualRunRequests(app: Exclude<App, "backend">): Promise<ManualRunRequest[]>
+    getRecentAlerts(args?: GetRecentAlertsArgs): Promise<AlertRow[]>
     claimManualRunRequests(args: ClaimManualRunRequestsArgs): Promise<ClaimManualRunRequestsResult>
     ackManualRunRequest(args: AckManualRunRequestArgs): Promise<AckManualRunRequestResult>
     clearManualRunRequest(requestId: Id<"manual_run_requests">): Promise<void>

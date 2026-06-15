@@ -21,6 +21,7 @@ import {
     orderTransitionRowFieldsV,
     positionValueFieldsV,
     accountSnapshotValueFieldsV,
+    agentChatToolPayloadV,
 } from "./lib/validators"
 
 const heartbeatStateFields = {
@@ -82,8 +83,12 @@ export default defineSchema({
         trigger: v.optional(v.union(
             v.literal("cron"),
             v.literal("manual"),
-            v.literal("callback")
+            v.literal("callback"),
+            v.literal("chat")
         )),
+        chatSource: v.optional(v.literal("dashboard")),
+        chatSessionId: v.optional(v.string()),
+        chatMessageId: v.optional(v.string()),
         startedAt: v.number(),
         endedAt: v.optional(v.number()),
         summary: v.optional(v.string()),
@@ -144,6 +149,54 @@ export default defineSchema({
     })
         .index("by_run", ["runId"])
         .index("by_run_sequence", ["runId", "sequence"]),
+
+    agent_chat_messages: defineTable({
+        sessionId: v.string(),
+        messageId: v.string(),
+        role: v.union(v.literal("user"), v.literal("assistant")),
+        content: v.string(),
+        mode: v.optional(v.union(
+            v.literal("general"),
+            v.literal("portfolio"),
+            v.literal("operations"),
+            v.literal("mcp")
+        )),
+        status: v.union(
+            v.literal("received"),
+            v.literal("completed"),
+            v.literal("cancelled"),
+            v.literal("failed")
+        ),
+        modelProvider: v.optional(v.string()),
+        modelId: v.optional(v.string()),
+        finishReason: v.optional(v.string()),
+        reasoning: v.optional(v.string()),
+        error: v.optional(v.string()),
+        createdAt: v.number(),
+        updatedAt: v.number(),
+    })
+        .index("by_session_created_at", ["sessionId", "createdAt"])
+        .index("by_session_message", ["sessionId", "messageId"]),
+
+    agent_chat_tool_events: defineTable({
+        sessionId: v.string(),
+        messageId: v.string(),
+        toolCallId: v.string(),
+        toolName: v.string(),
+        state: v.union(
+            v.literal("input"),
+            v.literal("result"),
+            v.literal("error")
+        ),
+        input: v.optional(agentChatToolPayloadV),
+        output: v.optional(agentChatToolPayloadV),
+        error: v.optional(v.string()),
+        durationMs: v.optional(v.number()),
+        createdAt: v.number(),
+    })
+        .index("by_session_created_at", ["sessionId", "createdAt"])
+        .index("by_session_message_created_at", ["sessionId", "messageId", "createdAt"])
+        .index("by_session_tool_call", ["sessionId", "toolCallId"]),
 
     trade_events: defineTable({
         runId: v.id("strategy_runs"),
@@ -278,6 +331,7 @@ export default defineSchema({
         timestamp: v.number(),
     })
         .index("by_app", ["app"])
+        .index("by_account", ["accountId"])
         .index("by_app_account", ["app", "accountId"])
         .index("by_app_timestamp", ["app", "timestamp"]),
 
@@ -322,6 +376,7 @@ export default defineSchema({
         updatedAt: v.number(),
     })
         .index("by_app", ["app"])
+        .index("by_account", ["accountId"])
         .index("by_app_account", ["app", "accountId"]),
 
     provider_positions: defineTable({
@@ -337,6 +392,7 @@ export default defineSchema({
         syncedAt: v.number(),
     })
         .index("by_app", ["app"])
+        .index("by_account", ["accountId"])
         .index("by_app_account", ["app", "accountId"])
         .index("by_app_strategy", ["app", "strategyId"]),
 

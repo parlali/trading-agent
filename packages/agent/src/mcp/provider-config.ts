@@ -5,6 +5,7 @@ export const MCP_PROVIDER_SECRET_KEYS = [
     "MCP_PROVIDER_CONFIGS",
     "MCP_SERVER_URL",
     "MCP_SERVER_TOKEN",
+    "MCP_SERVER_ALLOWED_TOOLS",
 ] as const
 
 export interface ResolveMcpProviderConfigsInput {
@@ -47,6 +48,7 @@ function resolveJsonMcpProviders(input: ResolveMcpProviderConfigsInput): HttpMcp
 function resolveSingleMcpProvider(input: ResolveMcpProviderConfigsInput): HttpMcpProviderConfig[] {
     const url = readOptionalString(input.secrets.MCP_SERVER_URL)
     const token = readOptionalString(input.secrets.MCP_SERVER_TOKEN)
+    const allowedTools = readOptionalStringList(input.secrets.MCP_SERVER_ALLOWED_TOOLS, "MCP_SERVER_ALLOWED_TOOLS")
     if (!url) {
         if (token) {
             input.logger?.warn("MCP server token ignored because MCP_SERVER_URL is not configured")
@@ -59,6 +61,7 @@ function resolveSingleMcpProvider(input: ResolveMcpProviderConfigsInput): HttpMc
         url,
         token,
         category: "research",
+        ...(allowedTools ? { allowedTools } : {}),
         compatibleVenues: input.compatibleVenues,
     }]
 }
@@ -83,6 +86,8 @@ function normalizeMcpProviderConfig(
         timeoutMs: readOptionalPositiveInteger(record.timeoutMs, `${source}.timeoutMs`),
         maxTools: readOptionalPositiveInteger(record.maxTools, `${source}.maxTools`),
         maxListPages: readOptionalPositiveInteger(record.maxListPages, `${source}.maxListPages`),
+        allowedTools: readOptionalStringArray(record.allowedTools, `${source}.allowedTools`),
+        blockedTools: readOptionalStringArray(record.blockedTools, `${source}.blockedTools`),
         compatibleVenues,
     }
 }
@@ -140,4 +145,30 @@ function readOptionalPositiveInteger(value: unknown, label: string): number | un
     }
 
     return parsed
+}
+
+function readOptionalStringArray(value: unknown, label: string): string[] | undefined {
+    if (value === undefined || value === null || value === "") {
+        return undefined
+    }
+
+    if (!Array.isArray(value) || value.some((entry) => typeof entry !== "string" || entry.trim().length === 0)) {
+        throw new Error(`${label} must be a non-empty string array`)
+    }
+
+    return value.map((entry) => entry.trim())
+}
+
+function readOptionalStringList(value: unknown, label: string): string[] | undefined {
+    const raw = readOptionalString(value)
+    if (!raw) {
+        return undefined
+    }
+
+    const entries = raw.split(",").map((entry) => entry.trim()).filter(Boolean)
+    if (entries.length === 0) {
+        throw new Error(`${label} must include at least one tool name`)
+    }
+
+    return entries
 }

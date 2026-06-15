@@ -2,10 +2,11 @@
 
 import Markdown from "react-markdown"
 import type { ComponentPropsWithoutRef } from "react"
+import { cn } from "@/lib/utils"
 
-export function MarkdownContent({ content }: { content: string }) {
+export function MarkdownContent({ content, className }: { content: string, className?: string }) {
     return (
-        <div className="text-xs space-y-2 max-h-[200px] max-w-full overflow-auto bg-muted/50 rounded p-2">
+        <div className={cn("text-xs space-y-2 max-h-[200px] max-w-full overflow-auto bg-muted/50 rounded p-2", className)}>
             <Markdown components={components}>{content}</Markdown>
         </div>
     )

@@ -1,5 +1,6 @@
 import { api } from "../convex/_generated/api"
 import type { Id } from "../convex/_generated/dataModel"
+import { encodeAgentChatToolPayload } from "../convex/lib/agentChatToolPayload"
 import type {
     AccountPnlEvent,
     AccountState,
@@ -19,12 +20,15 @@ import type {
     AdoptProviderPositionsResult,
     AckManualRunRequestArgs,
     AckManualRunRequestResult,
+    AgentChatMessageRow,
+    AlertRow,
     CascadeDeleteCounts,
     ClearFullResetStateBatchResult,
     ClaimManualRunRequestsArgs,
     ClaimManualRunRequestsResult,
     ControlPlaneMetricRow,
     CreateAlertArgs,
+    CreateRunMetadata,
     DeleteAllStrategiesResult,
     DeleteOrphanedStrategyHistoryBatchResult,
     DeleteStrategyBatchResult,
@@ -33,10 +37,12 @@ import type {
     CodexChatGptAuthRecord,
     ExecutionSafetyFaultRow,
     FullResetAudit,
+    GetRecentAlertsArgs,
     KillSwitchState,
     LastCompletedRunSummary,
     ManualRunRequest,
     PortfolioFreshnessRow,
+    PortfolioAccountSnapshotRow,
     ProviderPendingOrderRow,
     ProviderPortfolioReconciliationResult,
     ProviderPositionRow,
@@ -44,6 +50,9 @@ import type {
     RecordExecutionSafetyFaultArgs,
     ReplaceAllStrategiesResult,
     RefreshStrategyRiskStateArgs,
+    RecordAgentChatAssistantMessageArgs,
+    RecordAgentChatToolEventArgs,
+    RecordAgentChatUserMessageArgs,
     ReportHeartbeatSnapshotArgs,
     ReportHeartbeatSnapshotResult,
     ResolveExecutionSafetyFaultsArgs,
@@ -204,6 +213,62 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
                 } as never) as AgentLogRow[]
             )
         },
+        async getAgentChatMessages(sessionId: string, limit?: number): Promise<AgentChatMessageRow[]> {
+            return await runWithTimeout(
+                "Convex query getAgentChatMessages",
+                async () => await client.query(api.queries.getAgentChatMessages, {
+                    ...requireMachineAuth(),
+                    sessionId,
+                    limit,
+                } as never) as AgentChatMessageRow[]
+            )
+        },
+        async recordAgentChatUserMessage(args: RecordAgentChatUserMessageArgs): Promise<void> {
+            await runWithTimeout(
+                "Convex mutation recordAgentChatUserMessage",
+                async () => await client.mutation(api.mutations.recordAgentChatUserMessage, {
+                    ...requireMachineAuth(),
+                    sessionId: args.sessionId,
+                    messageId: args.messageId,
+                    content: args.content,
+                    mode: args.mode,
+                } as never)
+            )
+        },
+        async recordAgentChatAssistantMessage(args: RecordAgentChatAssistantMessageArgs): Promise<void> {
+            await runWithTimeout(
+                "Convex mutation recordAgentChatAssistantMessage",
+                async () => await client.mutation(api.mutations.recordAgentChatAssistantMessage, {
+                    ...requireMachineAuth(),
+                    sessionId: args.sessionId,
+                    messageId: args.messageId,
+                    content: args.content,
+                    status: args.status,
+                    modelProvider: args.modelProvider,
+                    modelId: args.modelId,
+                    finishReason: args.finishReason,
+                    reasoning: args.reasoning,
+                    error: args.error,
+                } as never)
+            )
+        },
+        async recordAgentChatToolEvent(args: RecordAgentChatToolEventArgs): Promise<void> {
+            await runWithTimeout(
+                "Convex mutation recordAgentChatToolEvent",
+                async () => await client.mutation(api.mutations.recordAgentChatToolEvent, {
+                    ...requireMachineAuth(),
+                    sessionId: args.sessionId,
+                    messageId: args.messageId,
+                    toolCallId: args.toolCallId,
+                    toolName: args.toolName,
+                    state: args.state,
+                    input: encodeAgentChatToolPayload(args.input),
+                    output: encodeAgentChatToolPayload(args.output),
+                    error: args.error,
+                    durationMs: args.durationMs,
+                } as never)
+            )
+        },
         async getTradeEvents(runId: Id<"strategy_runs">): Promise<TradeEventRow[]> {
             return await runWithTimeout(
                 "Convex query getTradeEvents",
@@ -240,7 +305,12 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
 
             return result.recovered
         },
-        async createRun(strategyId: Id<"strategies">, app: App, trigger?: RunTrigger): Promise<Id<"strategy_runs">> {
+        async createRun(
+            strategyId: Id<"strategies">,
+            app: App,
+            trigger?: RunTrigger,
+            metadata?: CreateRunMetadata
+        ): Promise<Id<"strategy_runs">> {
             return await runWithTimeout(
                 "Convex mutation createRun",
                 async () => await client.mutation(api.mutations.createRun, {
@@ -248,6 +318,9 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
                     strategyId,
                     app,
                     trigger,
+                    chatSource: metadata?.chatSource,
+                    chatSessionId: metadata?.chatSessionId,
+                    chatMessageId: metadata?.chatMessageId,
                 } as never) as Id<"strategy_runs">
             )
         },
@@ -598,6 +671,19 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
                 } as never) as PortfolioFreshnessRow[]
             )
         },
+        async getPortfolioAccountSnapshots(
+            app?: Exclude<App, "backend">,
+            accountId?: string
+        ): Promise<PortfolioAccountSnapshotRow[]> {
+            return await runWithTimeout(
+                "Convex query getPortfolioAccountSnapshots",
+                async () => await client.query(api.queries.getPortfolioAccountSnapshots, {
+                    ...requireMachineAuth(),
+                    app,
+                    accountId,
+                } as never) as PortfolioAccountSnapshotRow[]
+            )
+        },
         async getStrategyRiskState(strategyId: Id<"strategies">): Promise<StrategyRiskStateRow | null> {
             const row = await runWithTimeout(
                 "Convex query getStrategyRiskState",
@@ -683,6 +769,17 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
             return await runWithTimeout(
                 "Convex query getManualRunRequests",
                 async () => await client.query(api.queries.getManualRunRequests, { ...requireMachineAuth(), app } as never) as ManualRunRequest[]
+            )
+        },
+        async getRecentAlerts(args: GetRecentAlertsArgs = {}): Promise<AlertRow[]> {
+            return await runWithTimeout(
+                "Convex query getRecentAlerts",
+                async () => await client.query(api.queries.getRecentAlerts, {
+                    ...requireMachineAuth(),
+                    severity: args.severity,
+                    acknowledged: args.acknowledged,
+                    limit: args.limit,
+                } as never) as AlertRow[]
             )
         },
         async claimManualRunRequests(args: ClaimManualRunRequestsArgs): Promise<ClaimManualRunRequestsResult> {

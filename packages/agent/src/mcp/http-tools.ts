@@ -13,6 +13,8 @@ export interface HttpMcpProviderConfig {
     timeoutMs?: number
     maxTools?: number
     maxListPages?: number
+    allowedTools?: readonly string[]
+    blockedTools?: readonly string[]
     compatibleVenues?: readonly VenueApp[]
 }
 
@@ -88,6 +90,14 @@ function createBindingForRemoteTool(args: {
     client: HttpMcpClient
     logger?: Pick<Logger, "warn">
 }): ToolBinding | null {
+    if (!isAllowedReadOnlyMcpTool(args.provider, args.remoteTool)) {
+        args.logger?.warn("MCP tool skipped because it is not explicitly allowed as read-only", {
+            providerId: args.provider.id,
+            toolName: args.remoteTool.name,
+        })
+        return null
+    }
+
     const providerPart = sanitizeToolNamePart(args.provider.id)
     const toolPart = sanitizeToolNamePart(args.remoteTool.name)
 
@@ -129,6 +139,30 @@ function createBindingForRemoteTool(args: {
             return await args.client.callTool(args.remoteTool.name, params, context?.signal)
         },
     }
+}
+
+function isAllowedReadOnlyMcpTool(
+    provider: HttpMcpProviderConfig,
+    remoteTool: HttpMcpTool
+): boolean {
+    const destructiveHint = remoteTool.annotations?.destructiveHint as unknown
+    const openWorldHint = remoteTool.annotations?.openWorldHint as unknown
+
+    if (provider.blockedTools?.includes(remoteTool.name)) {
+        return false
+    }
+    if (!provider.allowedTools?.includes(remoteTool.name)) {
+        return false
+    }
+    if (isBlockingMcpSafetyHint(destructiveHint) || isBlockingMcpSafetyHint(openWorldHint)) {
+        return false
+    }
+
+    return true
+}
+
+function isBlockingMcpSafetyHint(value: unknown): boolean {
+    return value !== undefined && value !== false
 }
 
 function normalizeMcpInputSchema(schema: Record<string, unknown> | undefined): Record<string, unknown> | null {
