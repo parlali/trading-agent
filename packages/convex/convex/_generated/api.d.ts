@@ -20,6 +20,7 @@ import type * as lib_dryRunLedger from "../lib/dryRunLedger.js";
 import type * as lib_heartbeatModel from "../lib/heartbeatModel.js";
 import type * as lib_instrumentClaims from "../lib/instrumentClaims.js";
 import type * as lib_killSwitchState from "../lib/killSwitchState.js";
+import type * as lib_mcpConnectionScope from "../lib/mcpConnectionScope.js";
 import type * as lib_mutations_agentChat from "../lib/mutations/agentChat.js";
 import type * as lib_mutations_codexAuth from "../lib/mutations/codexAuth.js";
 import type * as lib_mutations_orders from "../lib/mutations/orders.js";
@@ -86,6 +87,7 @@ declare const fullApi: ApiFromModules<{
   "lib/heartbeatModel": typeof lib_heartbeatModel;
   "lib/instrumentClaims": typeof lib_instrumentClaims;
   "lib/killSwitchState": typeof lib_killSwitchState;
+  "lib/mcpConnectionScope": typeof lib_mcpConnectionScope;
   "lib/mutations/agentChat": typeof lib_mutations_agentChat;
   "lib/mutations/codexAuth": typeof lib_mutations_codexAuth;
   "lib/mutations/orders": typeof lib_mutations_orders;
