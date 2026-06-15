@@ -71,6 +71,12 @@ export const mcpToolDiscoverySourceV = v.union(
     v.literal("tool_search")
 )
 
+export const mcpToolAnnotationsV = v.object({
+    readOnlyHint: v.optional(v.boolean()),
+    destructiveHint: v.optional(v.boolean()),
+    openWorldHint: v.optional(v.boolean()),
+})
+
 export const mcpToolApprovalV = v.object({
     providerId: v.string(),
     toolName: v.string(),
@@ -79,6 +85,7 @@ export const mcpToolApprovalV = v.object({
     description: v.optional(v.string()),
     source: v.optional(mcpToolDiscoverySourceV),
     inputSchema: v.optional(v.any()),
+    annotations: v.optional(mcpToolAnnotationsV),
     approvedAt: v.optional(v.number()),
     approvedBy: v.optional(v.string()),
     approvalReason: v.optional(v.string()),

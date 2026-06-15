@@ -32,6 +32,7 @@ export type {
     HttpMcpToolBindingResolution,
     McpApprovedTool,
     McpNestedDiscoveryToolConfig,
+    McpToolAnnotations,
     McpToolApproval,
     McpToolDiagnostic,
     McpToolDiscoverySource,

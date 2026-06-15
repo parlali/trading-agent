@@ -811,6 +811,11 @@ async function persistStrategyMcpToolWhitelist(
         description?: string
         source?: string
         inputSchema?: unknown
+        annotations?: {
+            readOnlyHint?: boolean
+            destructiveHint?: boolean
+            openWorldHint?: boolean
+        }
         approvedAt?: number
         approvedBy?: string
         approvalReason?: string
@@ -852,6 +857,11 @@ function normalizeMcpToolApprovals(tools: Array<{
     description?: string
     source?: string
     inputSchema?: unknown
+    annotations?: {
+        readOnlyHint?: boolean
+        destructiveHint?: boolean
+        openWorldHint?: boolean
+    }
     approvedAt?: number
     approvedBy?: string
     approvalReason?: string
@@ -887,6 +897,9 @@ function normalizeMcpToolApprovals(tools: Array<{
         if (tool.inputSchema !== undefined && (!tool.inputSchema || typeof tool.inputSchema !== "object" || Array.isArray(tool.inputSchema))) {
             throw new Error("MCP whitelist inputSchema must be an object")
         }
+        if (tool.annotations !== undefined && (!tool.annotations || typeof tool.annotations !== "object" || Array.isArray(tool.annotations))) {
+            throw new Error("MCP whitelist annotations must be an object")
+        }
 
         const key = `${providerId}\0${toolName}`
         if (seen.has(key)) {
@@ -902,6 +915,7 @@ function normalizeMcpToolApprovals(tools: Array<{
             description: description || undefined,
             source: normalizeMcpToolDiscoverySource(tool.source),
             inputSchema: tool.inputSchema,
+            annotations: normalizeMcpToolAnnotations(tool.annotations),
             approvedAt: tool.approvedAt,
             approvedBy: approvedBy || undefined,
             approvalReason: approvalReason || undefined,
@@ -925,4 +939,28 @@ function normalizeMcpToolDiscoverySource(
     }
 
     throw new Error("MCP whitelist source must be a supported MCP discovery source")
+}
+
+function normalizeMcpToolAnnotations(annotations: {
+    readOnlyHint?: boolean
+    destructiveHint?: boolean
+    openWorldHint?: boolean
+} | undefined): {
+    readOnlyHint?: boolean
+    destructiveHint?: boolean
+    openWorldHint?: boolean
+} | undefined {
+    if (!annotations) {
+        return undefined
+    }
+
+    const normalized = {
+        readOnlyHint: annotations.readOnlyHint,
+        destructiveHint: annotations.destructiveHint,
+        openWorldHint: annotations.openWorldHint,
+    }
+
+    return Object.values(normalized).some((value) => value !== undefined)
+        ? normalized
+        : undefined
 }

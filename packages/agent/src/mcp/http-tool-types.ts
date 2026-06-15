@@ -7,6 +7,12 @@ export interface McpApprovedTool {
     schemaHash?: string
 }
 
+export interface McpToolAnnotations {
+    readOnlyHint?: boolean
+    destructiveHint?: boolean
+    openWorldHint?: boolean
+}
+
 export interface McpToolApproval {
     providerId: string
     toolName: string
@@ -15,6 +21,7 @@ export interface McpToolApproval {
     description?: string
     source?: McpToolDiscoverySource
     inputSchema?: Record<string, unknown>
+    annotations?: McpToolAnnotations
     approvedAt?: number
     approvedBy?: string
     approvalReason?: string
@@ -82,6 +89,7 @@ export interface McpToolInventoryEntry {
     source: McpToolDiscoverySource
     schemaHash: string
     inputSchema: Record<string, unknown>
+    annotations?: McpToolAnnotations
 }
 
 export interface CreateHttpMcpToolBindingsConfig {

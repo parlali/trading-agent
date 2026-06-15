@@ -4,7 +4,7 @@ import {
     hashMcpToolSchema,
     sanitizeToolNamePart,
 } from "./http-tool-identity"
-import { normalizeMcpInputSchema, readMcpSafetyBlock } from "./http-tool-schema"
+import { normalizeMcpInputSchema } from "./http-tool-schema"
 import type { HttpMcpProviderConfig, McpApprovedTool, McpToolDiagnostic, McpToolDiscoverySource, McpToolInventoryEntry } from "./http-tool-types"
 
 export interface McpToolCandidate {
@@ -25,20 +25,6 @@ export function createCandidateForRemoteTool(args: {
                 source: args.source,
                 reason: "provider_blocked",
                 message: "MCP tool skipped because it is blocked by provider configuration",
-            },
-        }
-    }
-
-    const safetyBlock = readMcpSafetyBlock(args.remoteTool)
-    if (safetyBlock) {
-        return {
-            diagnostic: {
-                providerId: args.provider.id,
-                upstreamToolName: args.remoteTool.name,
-                source: args.source,
-                reason: "unsafe_annotation",
-                message: "MCP tool skipped because its safety annotations are unsafe or malformed",
-                annotationReason: safetyBlock,
             },
         }
     }
@@ -87,6 +73,7 @@ export function createCandidateForRemoteTool(args: {
             source: args.source,
             schemaHash: hashMcpToolSchema(inputSchema.schema),
             inputSchema: inputSchema.schema,
+            annotations: args.remoteTool.annotations,
         },
         inputSchema: inputSchema.schema,
     }

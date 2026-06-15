@@ -13,6 +13,7 @@ import {
     CardHeader,
     CardTitle,
 } from "@/components/ui/card"
+import { Input } from "@/components/ui/input"
 import {
     Select,
     SelectContent,
@@ -20,6 +21,7 @@ import {
     SelectTrigger,
     SelectValue,
 } from "@/components/ui/select"
+import { Textarea } from "@/components/ui/textarea"
 import { EmptyState } from "@/components/empty-state"
 import { PageSkeleton } from "@/components/page-skeleton"
 import { VenueBadge } from "@/components/venue-badge"
@@ -37,8 +39,17 @@ type ToolRow = {
     source?: string
     description: string
     available: boolean
+    annotations?: InventoryTool["annotations"]
     diagnostics: McpToolDiagnostic[]
 }
+
+type DiscoveryToolRequest = {
+    providerId: string
+    toolName: string
+    input: Record<string, unknown>
+}
+
+const DEFAULT_DISCOVERY_TOOL_NAME = "discover_tools"
 
 function toolKey(providerId: string, toolName: string): string {
     return `${providerId}\0${toolName}`
@@ -88,7 +99,25 @@ function parseInventoryTool(value: unknown): InventoryTool {
         source,
         schemaHash: readString(record.schemaHash, "tool.schemaHash"),
         inputSchema: readRecord(record.inputSchema, "tool.inputSchema"),
+        annotations: parseMcpToolAnnotations(record.annotations),
     }
+}
+
+function parseMcpToolAnnotations(value: unknown): InventoryTool["annotations"] | undefined {
+    if (value === undefined) {
+        return undefined
+    }
+
+    const record = readRecord(value, "tool.annotations")
+    const annotations = {
+        readOnlyHint: readOptionalBoolean(record.readOnlyHint, "tool.annotations.readOnlyHint"),
+        destructiveHint: readOptionalBoolean(record.destructiveHint, "tool.annotations.destructiveHint"),
+        openWorldHint: readOptionalBoolean(record.openWorldHint, "tool.annotations.openWorldHint"),
+    }
+
+    return Object.values(annotations).some((entry) => entry !== undefined)
+        ? annotations
+        : undefined
 }
 
 function parseInventoryDiagnostic(value: unknown): McpToolDiagnostic {
@@ -152,6 +181,33 @@ function readNumber(value: unknown, label: string): number {
     return value
 }
 
+function readOptionalBoolean(value: unknown, label: string): boolean | undefined {
+    if (value === undefined) {
+        return undefined
+    }
+
+    if (typeof value !== "boolean") {
+        throw new Error(`${label} must be a boolean`)
+    }
+
+    return value
+}
+
+function parseJsonObject(value: string, label: string): Record<string, unknown> {
+    let parsed: unknown
+    try {
+        parsed = JSON.parse(value.trim() || "{}") as unknown
+    } catch (error) {
+        throw new Error(`${label} must be valid JSON: ${error instanceof Error ? error.message : String(error)}`)
+    }
+
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        throw new Error(`${label} must be a JSON object`)
+    }
+
+    return parsed as Record<string, unknown>
+}
+
 function isMcpDiscoverySource(value: string): value is InventoryTool["source"] {
     return value === "tools/list" || value === "tools/discover" || value === "tool_search"
 }
@@ -197,6 +253,7 @@ function buildSelectedTools(
                 toolName: availableTool.upstreamToolName,
                 registeredName: availableTool.registeredName,
                 schemaHash: availableTool.schemaHash,
+                annotations: availableTool.annotations,
             })
             continue
         }
@@ -231,6 +288,26 @@ function ToolCheckbox({
                 className="h-4 w-4 cursor-pointer rounded border-border accent-primary"
             />
         </label>
+    )
+}
+
+function ToolAnnotationBadges({ annotations }: { annotations?: InventoryTool["annotations"] }) {
+    if (!annotations?.destructiveHint && !annotations?.openWorldHint && annotations?.readOnlyHint !== true) {
+        return null
+    }
+
+    return (
+        <div className="flex flex-wrap items-center gap-1">
+            {annotations.destructiveHint ? (
+                <Badge variant="destructive" className="text-[10px]">destructive</Badge>
+            ) : null}
+            {annotations.openWorldHint ? (
+                <Badge variant="secondary" className="text-[10px]">open-world</Badge>
+            ) : null}
+            {annotations.readOnlyHint === true ? (
+                <Badge variant="outline" className="text-[10px]">read-only</Badge>
+            ) : null}
+        </div>
     )
 }
 
@@ -300,6 +377,7 @@ function ProviderSection({
                                             <Badge variant="destructive" className="text-[10px]">unavailable</Badge>
                                         ) : null}
                                     </div>
+                                    <ToolAnnotationBadges annotations={row.annotations} />
                                     <p className="line-clamp-2 text-xs text-muted-foreground">{row.description}</p>
                                     <code className="block truncate text-[11px] text-muted-foreground">{row.registeredName}</code>
                                     {row.diagnostics.length > 0 ? (
@@ -336,6 +414,10 @@ export default function McpToolsPage() {
     const [loadingInventory, setLoadingInventory] = useState(false)
     const [saving, setSaving] = useState(false)
     const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set())
+    const [discoveryProviderId, setDiscoveryProviderId] = useState("")
+    const [discoveryToolName, setDiscoveryToolName] = useState(DEFAULT_DISCOVERY_TOOL_NAME)
+    const [discoveryInputJson, setDiscoveryInputJson] = useState("{}")
+    const [lastDiscoveryTools, setLastDiscoveryTools] = useState<DiscoveryToolRequest[]>([])
 
     useEffect(() => {
         if (!selectedStrategyId && strategies && strategies.length > 0) {
@@ -348,13 +430,18 @@ export default function McpToolsPage() {
         selectedStrategyId ? { strategyId: selectedStrategyId as Id<"strategies"> } : "skip"
     )
 
-    const loadInventory = useCallback(async () => {
+    const loadInventory = useCallback(async (discoveryTools: DiscoveryToolRequest[] = []): Promise<boolean> => {
         setLoadingInventory(true)
         try {
-            const result = parseMcpToolInventoryResult(await discoverInventory({}))
+            const result = parseMcpToolInventoryResult(await discoverInventory(
+                discoveryTools.length > 0 ? { discoveryTools } : {}
+            ))
             setInventory(result)
+            setLastDiscoveryTools(discoveryTools)
+            return true
         } catch (error) {
             toast.error(error instanceof Error ? error.message : "Failed to refresh MCP inventory")
+            return false
         } finally {
             setLoadingInventory(false)
         }
@@ -363,6 +450,12 @@ export default function McpToolsPage() {
     useEffect(() => {
         void loadInventory()
     }, [loadInventory])
+
+    useEffect(() => {
+        if (!discoveryProviderId && inventory?.providers[0]) {
+            setDiscoveryProviderId(inventory.providers[0].id)
+        }
+    }, [discoveryProviderId, inventory])
 
     useEffect(() => {
         setSelectedKeys(new Set((whitelist?.tools ?? []).map((tool) => toolKey(tool.providerId, tool.toolName))))
@@ -400,6 +493,7 @@ export default function McpToolsPage() {
                 source: tool.source,
                 description: tool.description,
                 available: true,
+                annotations: tool.annotations,
                 diagnostics: diagnosticsByKey.get(key) ?? [],
             })
             rows.set(tool.providerId, providerRows)
@@ -418,6 +512,7 @@ export default function McpToolsPage() {
                 upstreamToolName: tool.toolName,
                 registeredName: tool.registeredName,
                 schemaHash: tool.schemaHash,
+                annotations: tool.annotations,
                 description: "Previously selected tool is not available in the latest provider inventory",
                 available: false,
                 diagnostics: diagnosticsByKey.get(key) ?? [{
@@ -500,12 +595,40 @@ export default function McpToolsPage() {
                 strategyId: selectedStrategyId as Id<"strategies">,
                 tools,
                 approvalReason: "dashboard_mcp_tools",
+                ...(lastDiscoveryTools.length > 0 ? { discoveryTools: lastDiscoveryTools } : {}),
             })
             toast.success("MCP tool scope saved")
         } catch (error) {
             toast.error(error instanceof Error ? error.message : "Failed to save MCP tool scope")
         } finally {
             setSaving(false)
+        }
+    }
+
+    async function handleRunDiscovery() {
+        const providerId = discoveryProviderId.trim()
+        const toolName = discoveryToolName.trim()
+        if (!providerId) {
+            toast.error("Select an MCP provider before running discovery")
+            return
+        }
+        if (!toolName) {
+            toast.error("Discovery tool name is required")
+            return
+        }
+
+        try {
+            const discoveryTools: DiscoveryToolRequest[] = [{
+                providerId,
+                toolName,
+                input: parseJsonObject(discoveryInputJson, "Discovery input"),
+            }]
+            const refreshed = await loadInventory(discoveryTools)
+            if (refreshed) {
+                toast.success("MCP discovery refreshed")
+            }
+        } catch (error) {
+            toast.error(error instanceof Error ? error.message : "Failed to run MCP discovery")
         }
     }
 
@@ -547,7 +670,7 @@ export default function McpToolsPage() {
                     ) : null}
                 </div>
                 <div className="flex items-center gap-2">
-                    <Button variant="outline" onClick={loadInventory} disabled={loadingInventory}>
+                    <Button variant="outline" onClick={() => void loadInventory()} disabled={loadingInventory}>
                         {loadingInventory ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
                         Refresh
                     </Button>
@@ -556,6 +679,55 @@ export default function McpToolsPage() {
                         Save
                     </Button>
                 </div>
+            </div>
+
+            <div className="grid gap-2 rounded-md border border-border-subtle px-3 py-3 md:grid-cols-[minmax(10rem,14rem)_minmax(12rem,18rem)_minmax(0,1fr)_auto] md:items-end">
+                <div className="space-y-1">
+                    <p className="text-[11px] text-muted-foreground">Discovery provider</p>
+                    <Select
+                        value={discoveryProviderId}
+                        onValueChange={setDiscoveryProviderId}
+                        disabled={!inventory || inventory.providers.length === 0 || loadingInventory}
+                    >
+                        <SelectTrigger className="h-9 w-full">
+                            <SelectValue placeholder="Provider" />
+                        </SelectTrigger>
+                        <SelectContent>
+                            {inventory?.providers.map((provider) => (
+                                <SelectItem key={provider.id} value={provider.id}>
+                                    {provider.id}
+                                </SelectItem>
+                            ))}
+                        </SelectContent>
+                    </Select>
+                </div>
+                <div className="space-y-1">
+                    <p className="text-[11px] text-muted-foreground">Discovery tool</p>
+                    <Input
+                        value={discoveryToolName}
+                        onChange={(event) => setDiscoveryToolName(event.target.value)}
+                        placeholder={DEFAULT_DISCOVERY_TOOL_NAME}
+                        className="h-9 font-mono text-xs"
+                    />
+                </div>
+                <div className="space-y-1">
+                    <p className="text-[11px] text-muted-foreground">Input JSON</p>
+                    <Textarea
+                        value={discoveryInputJson}
+                        onChange={(event) => setDiscoveryInputJson(event.target.value)}
+                        placeholder='{"category":"news"}'
+                        className="min-h-9 font-mono text-xs"
+                    />
+                </div>
+                <Button
+                    variant="outline"
+                    onClick={() => void handleRunDiscovery()}
+                    disabled={loadingInventory || !inventory || inventory.providers.length === 0}
+                    className="h-9"
+                >
+                    {loadingInventory ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
+                    Run
+                </Button>
             </div>
 
             <div className="grid gap-3 md:grid-cols-3">

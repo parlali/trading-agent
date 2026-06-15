@@ -24,6 +24,9 @@ describe("strategy MCP tool whitelist persistence", () => {
                         type: "object",
                         properties: {},
                     },
+                    annotations: {
+                        openWorldHint: true,
+                    },
                     approvedAt: 100,
                     approvedBy: "user-1",
                     approvalReason: "dashboard_mcp_tools",
@@ -57,6 +60,9 @@ describe("strategy MCP tool whitelist persistence", () => {
                     inputSchema: {
                         type: "object",
                         properties: {},
+                    },
+                    annotations: {
+                        openWorldHint: true,
                     },
                     approvedAt: 100,
                     approvedBy: "user-1",

@@ -1,4 +1,5 @@
 import type { Logger } from "@valiq-trading/core"
+import type { McpToolAnnotations } from "./http-tool-types"
 
 export interface HttpMcpClientConfig {
     id: string
@@ -14,12 +15,7 @@ export interface HttpMcpTool {
     name: string
     description?: string
     inputSchema?: Record<string, unknown>
-    annotations?: {
-        readOnlyHint?: boolean
-        destructiveHint?: boolean
-        openWorldHint?: boolean
-        [key: string]: unknown
-    }
+    annotations?: McpToolAnnotations
 }
 
 interface JsonRpcSuccess<T> {
@@ -450,6 +446,7 @@ export function parseMcpToolEntries(entries: unknown[]): HttpMcpToolsResult {
         const parsed = parseMcpTool(entry, index)
         if ("tool" in parsed) {
             tools.push(parsed.tool)
+            issues.push(...parsed.issues)
         } else {
             issues.push(parsed.issue)
         }
@@ -461,7 +458,7 @@ export function parseMcpToolEntries(entries: unknown[]): HttpMcpToolsResult {
     }
 }
 
-function parseMcpTool(value: unknown, index: number): { tool: HttpMcpTool } | { issue: HttpMcpToolParseIssue } {
+function parseMcpTool(value: unknown, index: number): { tool: HttpMcpTool, issues: HttpMcpToolParseIssue[] } | { issue: HttpMcpToolParseIssue } {
     if (!value || typeof value !== "object" || Array.isArray(value)) {
         return {
             issue: {
@@ -506,26 +503,100 @@ function parseMcpTool(value: unknown, index: number): { tool: HttpMcpTool } | { 
             },
         }
     }
-    if (record.annotations !== undefined && (!record.annotations || typeof record.annotations !== "object" || Array.isArray(record.annotations))) {
-        return {
-            issue: {
-                index,
-                upstreamToolName,
-                reason: "unsafe_annotation",
-                message: "MCP provider returned a tool with malformed safety annotations",
-                annotationReason: "annotations must be an object",
-            },
-        }
-    }
+    const annotationResult = parseMcpToolAnnotations(record.annotations, index, upstreamToolName)
 
     return {
         tool: {
             name: upstreamToolName,
             description: record.description,
             inputSchema: record.inputSchema as Record<string, unknown> | undefined,
-            annotations: record.annotations as HttpMcpTool["annotations"],
+            annotations: annotationResult.annotations,
         },
+        issues: annotationResult.issues,
     }
+}
+
+function parseMcpToolAnnotations(
+    value: unknown,
+    index: number,
+    upstreamToolName: string
+): { annotations?: McpToolAnnotations, issues: HttpMcpToolParseIssue[] } {
+    if (value === undefined) {
+        return { issues: [] }
+    }
+
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+        return {
+            issues: [{
+                index,
+                upstreamToolName,
+                reason: "unsafe_annotation",
+                message: "MCP provider returned a tool with malformed annotations",
+                annotationReason: "annotations must be an object",
+            }],
+        }
+    }
+
+    const record = value as Record<string, unknown>
+    const annotations: McpToolAnnotations = {}
+    const issues: HttpMcpToolParseIssue[] = []
+
+    readBooleanAnnotation({
+        record,
+        annotations,
+        issues,
+        index,
+        upstreamToolName,
+        name: "readOnlyHint",
+    })
+    readBooleanAnnotation({
+        record,
+        annotations,
+        issues,
+        index,
+        upstreamToolName,
+        name: "destructiveHint",
+    })
+    readBooleanAnnotation({
+        record,
+        annotations,
+        issues,
+        index,
+        upstreamToolName,
+        name: "openWorldHint",
+    })
+
+    return {
+        annotations: Object.keys(annotations).length > 0 ? annotations : undefined,
+        issues,
+    }
+}
+
+function readBooleanAnnotation(args: {
+    record: Record<string, unknown>
+    annotations: McpToolAnnotations
+    issues: HttpMcpToolParseIssue[]
+    index: number
+    upstreamToolName: string
+    name: keyof McpToolAnnotations
+}): void {
+    const value = args.record[args.name]
+    if (value === undefined) {
+        return
+    }
+
+    if (typeof value === "boolean") {
+        args.annotations[args.name] = value
+        return
+    }
+
+    args.issues.push({
+        index: args.index,
+        upstreamToolName: args.upstreamToolName,
+        reason: "unsafe_annotation",
+        message: "MCP provider returned a tool with a malformed annotation",
+        annotationReason: `${args.name} must be boolean`,
+    })
 }
 
 function validateToolsCallResult(providerId: string, toolName: string, value: unknown): ToolsCallResult {

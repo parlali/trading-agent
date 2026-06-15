@@ -2,10 +2,8 @@ import type { HttpMcpTool } from "./http-client"
 
 export function readMcpSafetyBlock(remoteTool: HttpMcpTool): string | undefined {
     const destructiveHint = remoteTool.annotations?.destructiveHint as unknown
-    const openWorldHint = remoteTool.annotations?.openWorldHint as unknown
 
-    return readBlockingMcpSafetyHint("destructiveHint", destructiveHint) ??
-        readBlockingMcpSafetyHint("openWorldHint", openWorldHint)
+    return readBlockingMcpSafetyHint("destructiveHint", destructiveHint)
 }
 
 export function normalizeMcpInputSchema(

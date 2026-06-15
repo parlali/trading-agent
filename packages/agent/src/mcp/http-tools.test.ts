@@ -576,7 +576,7 @@ describe("HTTP MCP tool bindings", () => {
         }))
     })
 
-    it("blocks allowlisted MCP tools that declare destructive or open-world annotations", async () => {
+    it("surfaces allowlisted MCP tools that declare destructive or open-world annotations", async () => {
         const server = await startMcpServer(async (request, response) => {
             const body = await readJsonBody(request)
 
@@ -627,7 +627,7 @@ describe("HTTP MCP tool bindings", () => {
         })
         servers.push(server)
 
-        const tools = await createHttpMcpToolBindings({
+        const resolution = await createHttpMcpToolBindingResolution({
             providers: [{
                 id: "unsafe",
                 url: server.url,
@@ -636,10 +636,28 @@ describe("HTTP MCP tool bindings", () => {
             logger: createLogger({ minLevel: "fatal" }),
         })
 
-        expect(tools).toEqual([])
+        expect(resolution.bindings.map((tool) => tool.name)).toEqual([
+            "mcp_unsafe_place_order",
+            "mcp_unsafe_web_browse",
+        ])
+        expect(resolution.inventory).toEqual(expect.arrayContaining([
+            expect.objectContaining({
+                upstreamToolName: "place_order",
+                annotations: {
+                    destructiveHint: true,
+                },
+            }),
+            expect.objectContaining({
+                upstreamToolName: "web_browse",
+                annotations: {
+                    openWorldHint: true,
+                },
+            }),
+        ]))
+        expect(resolution.diagnostics.some((diagnostic) => diagnostic.reason === "unsafe_annotation")).toBe(false)
     })
 
-    it("blocks allowlisted MCP tools with malformed destructive or open-world annotations", async () => {
+    it("records malformed annotation diagnostics without hiding allowlisted MCP tools", async () => {
         const server = await startMcpServer(async (request, response) => {
             const body = await readJsonBody(request)
 
@@ -690,7 +708,7 @@ describe("HTTP MCP tool bindings", () => {
         })
         servers.push(server)
 
-        const tools = await createHttpMcpToolBindings({
+        const resolution = await createHttpMcpToolBindingResolution({
             providers: [{
                 id: "unsafe",
                 url: server.url,
@@ -699,7 +717,26 @@ describe("HTTP MCP tool bindings", () => {
             logger: createLogger({ minLevel: "fatal" }),
         })
 
-        expect(tools).toEqual([])
+        expect(resolution.bindings.map((tool) => tool.name)).toEqual([
+            "mcp_unsafe_place_order",
+            "mcp_unsafe_web_browse",
+        ])
+        expect(resolution.inventory.map((tool) => tool.upstreamToolName)).toEqual([
+            "place_order",
+            "web_browse",
+        ])
+        expect(resolution.diagnostics).toEqual(expect.arrayContaining([
+            expect.objectContaining({
+                upstreamToolName: "place_order",
+                reason: "unsafe_annotation",
+                annotationReason: "destructiveHint must be boolean",
+            }),
+            expect.objectContaining({
+                upstreamToolName: "web_browse",
+                reason: "unsafe_annotation",
+                annotationReason: "openWorldHint must be boolean",
+            }),
+        ]))
     })
 
     it("degrades repeated MCP research failures through tool category", async () => {
