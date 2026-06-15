@@ -25,6 +25,17 @@ class FakeDb {
     query(table: string) {
         return new FakeQuery(this.rows[table] ?? [])
     }
+
+    async get(id: string) {
+        for (const rows of Object.values(this.rows)) {
+            const row = rows.find((entry) => entry._id === id)
+            if (row) {
+                return row
+            }
+        }
+
+        return null
+    }
 }
 
 class FakeQuery {

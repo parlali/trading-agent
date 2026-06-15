@@ -83,6 +83,7 @@ export type {
     HttpMcpProviderConfig,
     HttpMcpToolBindingResolution,
     McpApprovedTool,
+    McpNestedDiscoveryToolConfig,
     McpToolApproval,
     McpToolDiagnostic,
     McpToolDiscoverySource,

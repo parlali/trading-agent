@@ -19,6 +19,7 @@ import {
     resolveMcpProviderConfigs,
     withMcpToolCallBudget,
 } from "@valiq-trading/agent"
+import { createMcpConnectionProviderScope } from "./lib/mcpConnectionScope"
 import {
     ALPACA_RUNTIME_SECRET_KEYS,
     AlpacaClient,
@@ -502,6 +503,7 @@ export const testOKXConnection = action({
 
 export const testMcpConnection = action({
     args: {
+        strategyId: v.id("strategies"),
         toolName: v.optional(v.string()),
     },
     handler: async (ctx, args) => {
@@ -546,34 +548,59 @@ export const testMcpConnection = action({
                 error: providerUnavailable ? "One or more MCP providers were unavailable" : undefined,
             })
 
-            if (args.toolName) {
-                const selectedTool = inventory.inventory.find((tool) =>
-                    tool.registeredName === args.toolName || tool.upstreamToolName === args.toolName
-                )
-                if (!selectedTool) {
-                    steps.push({ name: "Call Tool", ok: false, error: `Tool ${args.toolName} is not present in discovered safe MCP inventory` })
-                    return { ok: false, steps }
-                }
-
-                const toolBindings = await createHttpMcpToolBindingResolution({
-                    providers: providers
-                        .filter((provider) => provider.id === selectedTool.providerId)
-                        .map((provider) => ({
-                            ...provider,
-                            approvedTools: [{
-                                name: selectedTool.upstreamToolName,
-                                registeredName: selectedTool.registeredName,
-                                schemaHash: selectedTool.schemaHash,
-                            }],
-                        })),
-                    failOnProviderError: false,
+            const whitelist = await ctx.runQuery(internal.queries.getStrategyMcpToolWhitelistInternal, {
+                strategyId: args.strategyId,
+            })
+            if (!whitelist) {
+                steps.push({
+                    name: "Strategy Whitelist",
+                    ok: false,
+                    error: "Selected strategy has no persisted MCP tool whitelist",
                 })
-                const registry = new ToolRegistry()
-                for (const tool of toolBindings.bindings) {
-                    registry.register(withMcpToolCallBudget(tool, 4))
-                }
+                return { ok: false, steps }
+            }
+            if (whitelist.tools.length === 0) {
+                steps.push({
+                    name: "Strategy Whitelist",
+                    ok: false,
+                    error: "Selected strategy whitelist contains no enabled MCP tools",
+                })
+                return { ok: false, steps }
+            }
 
-                const callToolName = selectedTool.registeredName
+            const providerScope = createMcpConnectionProviderScope(providers, whitelist.tools)
+            const toolBindings = await createHttpMcpToolBindingResolution({
+                providers: providerScope.providers,
+                failOnProviderError: false,
+            })
+            const registry = new ToolRegistry()
+            for (const tool of toolBindings.bindings) {
+                registry.register(withMcpToolCallBudget(tool, 4))
+            }
+            steps.push({
+                name: "Strategy Whitelist",
+                ok: toolBindings.bindings.length > 0 && providerScope.missingProviderIds.length === 0,
+                data: {
+                    approvedTools: whitelist.tools.map((tool) => tool.registeredName),
+                    registeredTools: toolBindings.bindings.map((tool) => tool.name),
+                    missingProviderIds: providerScope.missingProviderIds,
+                    diagnostics: toolBindings.diagnostics,
+                },
+                error: providerScope.missingProviderIds.length > 0
+                    ? `Approved MCP provider is not configured: ${providerScope.missingProviderIds.join(", ")}`
+                    : toolBindings.bindings.length === 0
+                        ? "No persisted strategy MCP tools registered in runtime ToolRegistry"
+                        : undefined,
+            })
+            if (toolBindings.bindings.length === 0 || providerScope.missingProviderIds.length > 0) {
+                return { ok: false, steps }
+            }
+
+            if (args.toolName) {
+                const approvedTool = whitelist.tools.find((tool) =>
+                    tool.registeredName === args.toolName || tool.toolName === args.toolName
+                )
+                const callToolName = approvedTool?.registeredName ?? args.toolName
                 if (!registry.has(callToolName)) {
                     steps.push({ name: "Call Tool", ok: false, error: `Tool ${callToolName} is not registered in runtime ToolRegistry` })
                     return { ok: false, steps }

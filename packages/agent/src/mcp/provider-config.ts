@@ -88,6 +88,7 @@ function normalizeMcpProviderConfig(
         maxListPages: readOptionalPositiveInteger(record.maxListPages, `${source}.maxListPages`),
         allowedTools: readOptionalStringArray(record.allowedTools, `${source}.allowedTools`),
         blockedTools: readOptionalStringArray(record.blockedTools, `${source}.blockedTools`),
+        discoveryTools: readOptionalDiscoveryTools(record.discoveryTools, `${source}.discoveryTools`),
         compatibleVenues,
     }
 }
@@ -157,6 +158,42 @@ function readOptionalStringArray(value: unknown, label: string): string[] | unde
     }
 
     return value.map((entry) => entry.trim())
+}
+
+function readOptionalDiscoveryTools(
+    value: unknown,
+    label: string
+): HttpMcpProviderConfig["discoveryTools"] | undefined {
+    if (value === undefined || value === null || value === "") {
+        return undefined
+    }
+
+    if (!Array.isArray(value)) {
+        throw new Error(`${label} must be an array`)
+    }
+
+    return value.map((entry, index) => {
+        if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+            throw new Error(`${label}[${index}] must be an object`)
+        }
+
+        const record = entry as Record<string, unknown>
+        const inputs = record.inputs
+        if (!Array.isArray(inputs) || inputs.length === 0) {
+            throw new Error(`${label}[${index}].inputs must be a non-empty object array`)
+        }
+
+        return {
+            name: readRequiredString(record.name, `${label}[${index}].name`),
+            inputs: inputs.map((input, inputIndex) => {
+                if (!input || typeof input !== "object" || Array.isArray(input)) {
+                    throw new Error(`${label}[${index}].inputs[${inputIndex}] must be an object`)
+                }
+
+                return input as Record<string, unknown>
+            }),
+        }
+    })
 }
 
 function readOptionalStringList(value: unknown, label: string): string[] | undefined {

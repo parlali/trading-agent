@@ -196,6 +196,10 @@ describe("HTTP MCP tool bindings", () => {
             providers: [{
                 id: "macro",
                 url: server.url,
+                discoveryTools: [{
+                    name: "tool_search",
+                    inputs: [{ query: "", limit: 50 }],
+                }],
             }],
             logger: createLogger({ minLevel: "fatal" }),
         })
@@ -313,6 +317,10 @@ describe("HTTP MCP tool bindings", () => {
             providers: [{
                 id: "macro",
                 url: server.url,
+                discoveryTools: [{
+                    name: "tool_search",
+                    inputs: [{ query: "", limit: 50 }],
+                }],
             }],
             logger: createLogger({ minLevel: "fatal" }),
         })
@@ -326,6 +334,10 @@ describe("HTTP MCP tool bindings", () => {
             providers: [{
                 id: "macro",
                 url: server.url,
+                discoveryTools: [{
+                    name: "tool_search",
+                    inputs: [{ query: "", limit: 50 }],
+                }],
                 approvedTools: [{
                     name: "nested_search",
                 }],
@@ -716,6 +728,180 @@ describe("HTTP MCP tool bindings", () => {
         expect(tools).toEqual([])
     })
 
+    it("records malformed top-level MCP tools as skipped-tool diagnostics", async () => {
+        const server = await startMcpServer(async (request, response) => {
+            const body = await readJsonBody(request)
+
+            if (body.method === "initialize") {
+                writeJsonRpc(response, body.id, {
+                    protocolVersion: "2025-03-26",
+                    capabilities: {},
+                    serverInfo: { name: "malformed-list-server", version: "1.0.0" },
+                })
+                return
+            }
+
+            if (body.method === "notifications/initialized") {
+                response.writeHead(202)
+                response.end()
+                return
+            }
+
+            if (body.method === "tools/list") {
+                writeJsonRpc(response, body.id, {
+                    tools: [
+                        {
+                            name: "valid_search",
+                            inputSchema: {
+                                type: "object",
+                                properties: {},
+                            },
+                        },
+                        {
+                            name: "bad_description",
+                            description: 42,
+                            inputSchema: {
+                                type: "object",
+                                properties: {},
+                            },
+                        },
+                        {
+                            name: "bad_input",
+                            inputSchema: "not-object",
+                        },
+                        {
+                            description: "missing name",
+                            inputSchema: {
+                                type: "object",
+                                properties: {},
+                            },
+                        },
+                    ],
+                })
+                return
+            }
+
+            writeJsonRpcError(response, body.id, -32601, "method not found")
+        })
+        servers.push(server)
+
+        const inventory = await discoverHttpMcpToolInventory({
+            providers: [{
+                id: "macro",
+                url: server.url,
+            }],
+            logger: createLogger({ minLevel: "fatal" }),
+        })
+
+        expect(inventory.inventory.map((tool) => tool.upstreamToolName)).toEqual(["valid_search"])
+        expect(inventory.diagnostics).toEqual(expect.arrayContaining([
+            expect.objectContaining({
+                upstreamToolName: "bad_description",
+                reason: "malformed_tool",
+            }),
+            expect.objectContaining({
+                upstreamToolName: "bad_input",
+                reason: "schema_incompatible",
+                schemaReason: "inputSchema must be an object",
+            }),
+            expect.objectContaining({
+                reason: "invalid_name",
+            }),
+        ]))
+        expect(inventory.diagnostics.some((diagnostic) => diagnostic.reason === "provider_unavailable")).toBe(false)
+    })
+
+    it("records malformed nested discovery results as skipped-tool diagnostics", async () => {
+        const server = await startMcpServer(async (request, response) => {
+            const body = await readJsonBody(request)
+
+            if (body.method === "initialize") {
+                writeJsonRpc(response, body.id, {
+                    protocolVersion: "2025-03-26",
+                    capabilities: {},
+                    serverInfo: { name: "malformed-nested-server", version: "1.0.0" },
+                })
+                return
+            }
+
+            if (body.method === "notifications/initialized") {
+                response.writeHead(202)
+                response.end()
+                return
+            }
+
+            if (body.method === "tools/list") {
+                writeJsonRpc(response, body.id, {
+                    tools: [{
+                        name: "catalog_search",
+                        inputSchema: {
+                            type: "object",
+                            properties: {},
+                        },
+                    }],
+                })
+                return
+            }
+
+            if (body.method === "tools/call") {
+                writeJsonRpc(response, body.id, {
+                    structuredContent: {
+                        tools: [
+                            {
+                                name: "nested_valid",
+                                inputSchema: {
+                                    type: "object",
+                                    properties: {},
+                                },
+                            },
+                            {
+                                name: "nested_bad",
+                                inputSchema: "not-object",
+                            },
+                            {
+                                description: "missing name",
+                            },
+                        ],
+                    },
+                })
+                return
+            }
+
+            writeJsonRpcError(response, body.id, -32601, "method not found")
+        })
+        servers.push(server)
+
+        const inventory = await discoverHttpMcpToolInventory({
+            providers: [{
+                id: "macro",
+                url: server.url,
+                discoveryTools: [{
+                    name: "catalog_search",
+                    inputs: [{}],
+                }],
+            }],
+            logger: createLogger({ minLevel: "fatal" }),
+        })
+
+        expect(inventory.inventory.map((tool) => tool.upstreamToolName)).toEqual(["nested_valid"])
+        expect(inventory.diagnostics).toEqual(expect.arrayContaining([
+            expect.objectContaining({
+                upstreamToolName: "catalog_search",
+                reason: "discovery_tool",
+            }),
+            expect.objectContaining({
+                upstreamToolName: "nested_bad",
+                source: "tool_search",
+                reason: "schema_incompatible",
+                schemaReason: "inputSchema must be an object",
+            }),
+            expect.objectContaining({
+                source: "tool_search",
+                reason: "invalid_name",
+            }),
+        ]))
+    })
+
     it("rejects malformed MCP tools/call content blocks at the transport boundary", async () => {
         const server = await startMcpServer(async (request, response) => {
             const body = await readJsonBody(request)
@@ -895,7 +1081,7 @@ describe("HTTP MCP tool bindings", () => {
                 allowedTools: ["search"],
             }],
             logger: createLogger({ minLevel: "fatal" }),
-        })).rejects.toThrow("returned repeated cursor same-cursor")
+        })).rejects.toThrow("returned repeated cursor")
     })
 
     it("waits for matching JSON-RPC responses in MCP event streams", async () => {

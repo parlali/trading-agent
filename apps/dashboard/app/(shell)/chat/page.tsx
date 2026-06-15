@@ -409,7 +409,7 @@ export default function AgentChatPage() {
                                     event.currentTarget.form?.requestSubmit()
                                 }
                             }}
-                            placeholder="Ask the agent anything or request work with the configured MCP tools"
+                            placeholder="Ask the agent anything or inspect configured MCP provider inventory"
                             className="max-h-32 min-h-16 resize-none text-sm sm:max-h-40 sm:min-h-20"
                             disabled={isRunning || !authToken}
                         />

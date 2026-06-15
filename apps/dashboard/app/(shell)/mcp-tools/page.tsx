@@ -1,10 +1,10 @@
 "use client"
 
-import { useAction, useMutation, useQuery } from "convex/react"
+import { useAction, useQuery } from "convex/react"
 import { api, type Id, type McpToolApproval, type McpToolDiagnostic, type McpToolInventoryResult } from "@valiq-trading/convex"
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { toast } from "sonner"
-import { AlertTriangle, Loader2, RefreshCw, Save, Search } from "lucide-react"
+import { Loader2, RefreshCw, Save, Search } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
@@ -23,6 +23,7 @@ import {
 import { EmptyState } from "@/components/empty-state"
 import { PageSkeleton } from "@/components/page-skeleton"
 import { VenueBadge } from "@/components/venue-badge"
+import { McpDiagnosticsList, formatMcpDiagnosticReason } from "@/components/mcp-diagnostics-list"
 
 type InventoryTool = McpToolInventoryResult["tools"][number]
 type InventoryProvider = McpToolInventoryResult["providers"][number]
@@ -43,16 +44,140 @@ function toolKey(providerId: string, toolName: string): string {
     return `${providerId}\0${toolName}`
 }
 
-function formatReason(reason: string): string {
-    return reason.replaceAll("_", " ")
-}
-
 function shortHash(hash: string): string {
     return hash.slice(0, 12)
 }
 
-function normalizeInventoryResult(value: unknown): McpToolInventoryResult {
-    return value as McpToolInventoryResult
+function parseMcpToolInventoryResult(value: unknown): McpToolInventoryResult {
+    const record = readRecord(value, "MCP inventory result")
+    return {
+        providers: readArray(record.providers, "providers").map(parseInventoryProvider),
+        tools: readArray(record.tools, "tools").map(parseInventoryTool),
+        diagnostics: readArray(record.diagnostics, "diagnostics").map(parseInventoryDiagnostic),
+    }
+}
+
+function parseInventoryProvider(value: unknown): InventoryProvider {
+    const record = readRecord(value, "MCP provider")
+    const status = readString(record.status, "provider.status")
+    if (status !== "available" && status !== "unavailable") {
+        throw new Error("MCP provider status is invalid")
+    }
+
+    return {
+        id: readString(record.id, "provider.id"),
+        toolCount: readNumber(record.toolCount, "provider.toolCount"),
+        skippedCount: readNumber(record.skippedCount, "provider.skippedCount"),
+        status,
+        error: readOptionalString(record.error),
+    }
+}
+
+function parseInventoryTool(value: unknown): InventoryTool {
+    const record = readRecord(value, "MCP tool")
+    const source = readString(record.source, "tool.source")
+    if (!isMcpDiscoverySource(source)) {
+        throw new Error("MCP tool source is invalid")
+    }
+
+    return {
+        providerId: readString(record.providerId, "tool.providerId"),
+        upstreamToolName: readString(record.upstreamToolName, "tool.upstreamToolName"),
+        registeredName: readString(record.registeredName, "tool.registeredName"),
+        description: readString(record.description, "tool.description"),
+        source,
+        schemaHash: readString(record.schemaHash, "tool.schemaHash"),
+        inputSchema: readRecord(record.inputSchema, "tool.inputSchema"),
+    }
+}
+
+function parseInventoryDiagnostic(value: unknown): McpToolDiagnostic {
+    const record = readRecord(value, "MCP diagnostic")
+    const source = readOptionalString(record.source)
+    if (source !== undefined && !isMcpDiscoverySource(source)) {
+        throw new Error("MCP diagnostic source is invalid")
+    }
+    const reason = readString(record.reason, "diagnostic.reason")
+    if (!isMcpToolDiagnosticReason(reason)) {
+        throw new Error("MCP diagnostic reason is invalid")
+    }
+
+    return {
+        providerId: readString(record.providerId, "diagnostic.providerId"),
+        upstreamToolName: readOptionalString(record.upstreamToolName),
+        registeredName: readOptionalString(record.registeredName),
+        source,
+        reason,
+        message: readString(record.message, "diagnostic.message"),
+        schemaReason: readOptionalString(record.schemaReason),
+        annotationReason: readOptionalString(record.annotationReason),
+    }
+}
+
+function readRecord(value: unknown, label: string): Record<string, unknown> {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+        throw new Error(`${label} must be an object`)
+    }
+
+    return value as Record<string, unknown>
+}
+
+function readArray(value: unknown, label: string): unknown[] {
+    if (!Array.isArray(value)) {
+        throw new Error(`${label} must be an array`)
+    }
+
+    return value
+}
+
+function readString(value: unknown, label: string): string {
+    if (typeof value !== "string" || value.trim().length === 0) {
+        throw new Error(`${label} must be a non-empty string`)
+    }
+
+    return value
+}
+
+function readOptionalString(value: unknown): string | undefined {
+    return typeof value === "string" && value.trim().length > 0
+        ? value
+        : undefined
+}
+
+function readNumber(value: unknown, label: string): number {
+    if (typeof value !== "number" || !Number.isFinite(value)) {
+        throw new Error(`${label} must be a finite number`)
+    }
+
+    return value
+}
+
+function isMcpDiscoverySource(value: string): value is InventoryTool["source"] {
+    return value === "tools/list" || value === "tools/discover" || value === "tool_search"
+}
+
+function isMcpToolDiagnosticReason(value: string): value is McpToolDiagnostic["reason"] {
+    return [
+        "provider_unavailable",
+        "provider_blocked",
+        "strategy_whitelist_missing",
+        "strategy_whitelist_empty",
+        "provider_not_configured",
+        "not_whitelisted",
+        "tool_disappeared",
+        "schema_changed",
+        "registered_name_changed",
+        "schema_incompatible",
+        "unsafe_annotation",
+        "invalid_name",
+        "malformed_tool",
+        "duplicate_upstream_tool",
+        "duplicate_registered_name",
+        "discovery_tool",
+        "nested_discovery_failed",
+        "nested_discovery_unsupported_schema",
+        "discovery_limit_exceeded",
+    ].includes(value)
 }
 
 function buildSelectedTools(
@@ -181,7 +306,7 @@ function ProviderSection({
                                         <div className="space-y-1">
                                             {row.diagnostics.map((diagnostic, index) => (
                                                 <p key={`${diagnostic.reason}-${index}`} className="text-[11px] text-signal-warning">
-                                                    {formatReason(diagnostic.reason)}
+                                                    {formatMcpDiagnosticReason(diagnostic.reason)}
                                                     {diagnostic.schemaReason ? `: ${diagnostic.schemaReason}` : ""}
                                                     {diagnostic.annotationReason ? `: ${diagnostic.annotationReason}` : ""}
                                                 </p>
@@ -202,50 +327,10 @@ function ProviderSection({
     )
 }
 
-function DiagnosticsList({ diagnostics }: { diagnostics: McpToolDiagnostic[] }) {
-    if (diagnostics.length === 0) {
-        return null
-    }
-
-    return (
-        <Card>
-            <CardHeader className="pb-3">
-                <CardTitle className="flex items-center gap-2 text-sm">
-                    <AlertTriangle className="h-4 w-4 text-signal-warning" />
-                    Diagnostics
-                </CardTitle>
-            </CardHeader>
-            <CardContent className="pt-0">
-                <div className="overflow-hidden rounded-md border border-border-subtle">
-                    {diagnostics.map((diagnostic, index) => (
-                        <div key={`${diagnostic.providerId}-${diagnostic.upstreamToolName ?? "provider"}-${diagnostic.reason}-${index}`} className="grid gap-1 border-b border-border-subtle px-3 py-2 text-xs last:border-b-0 md:grid-cols-[10rem_minmax(0,1fr)_10rem]">
-                            <code className="truncate text-muted-foreground">{diagnostic.providerId}</code>
-                            <div className="min-w-0">
-                                <div className="flex items-center gap-2">
-                                    <span className="truncate font-medium">{diagnostic.upstreamToolName ?? "provider"}</span>
-                                    <Badge variant="outline" className="text-[10px]">{formatReason(diagnostic.reason)}</Badge>
-                                </div>
-                                <p className="text-muted-foreground">{diagnostic.message}</p>
-                                {diagnostic.schemaReason ? (
-                                    <p className="text-signal-warning">{diagnostic.schemaReason}</p>
-                                ) : null}
-                                {diagnostic.annotationReason ? (
-                                    <p className="text-signal-warning">{diagnostic.annotationReason}</p>
-                                ) : null}
-                            </div>
-                            <code className="truncate text-muted-foreground">{diagnostic.registeredName ?? diagnostic.source ?? ""}</code>
-                        </div>
-                    ))}
-                </div>
-            </CardContent>
-        </Card>
-    )
-}
-
 export default function McpToolsPage() {
     const strategies = useQuery(api.queries.getAllStrategies, {})
     const discoverInventory = useAction(api.actions.discoverMcpToolInventory)
-    const setWhitelist = useMutation(api.mutations.setStrategyMcpToolWhitelist)
+    const setWhitelist = useAction(api.actions.setStrategyMcpToolWhitelist)
     const [selectedStrategyId, setSelectedStrategyId] = useState<string>("")
     const [inventory, setInventory] = useState<McpToolInventoryResult | null>(null)
     const [loadingInventory, setLoadingInventory] = useState(false)
@@ -266,7 +351,7 @@ export default function McpToolsPage() {
     const loadInventory = useCallback(async () => {
         setLoadingInventory(true)
         try {
-            const result = normalizeInventoryResult(await discoverInventory({}))
+            const result = parseMcpToolInventoryResult(await discoverInventory({}))
             setInventory(result)
         } catch (error) {
             toast.error(error instanceof Error ? error.message : "Failed to refresh MCP inventory")
@@ -414,6 +499,7 @@ export default function McpToolsPage() {
             await setWhitelist({
                 strategyId: selectedStrategyId as Id<"strategies">,
                 tools,
+                approvalReason: "dashboard_mcp_tools",
             })
             toast.success("MCP tool scope saved")
         } catch (error) {
@@ -506,7 +592,7 @@ export default function McpToolsPage() {
                             onToggle={handleToggle}
                         />
                     ))}
-                    <DiagnosticsList diagnostics={visibleDiagnostics} />
+                    <McpDiagnosticsList diagnostics={visibleDiagnostics} title="Diagnostics" />
                 </div>
             )}
         </div>

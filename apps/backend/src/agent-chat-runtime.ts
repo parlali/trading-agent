@@ -600,7 +600,8 @@ function buildAgentChatSystemPrompt(
         "Configured MCP providers:",
         providerLines.map((line) => `- ${line}`).join("\n"),
         "",
-        "Use read-only portfolio, account, run, alert, provider health, and MCP tools when they are needed to answer factual operational questions.",
+        "Use read-only portfolio, account, run, alert, and provider health tools when they are needed to answer factual operational questions.",
+        "MCP provider inventory may be inspected, but executable MCP tools are only available inside scheduled strategy runtimes with persisted strategy whitelists.",
     ].join("\n")
 }
 

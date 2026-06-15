@@ -49,4 +49,29 @@ describe("MCP provider config", () => {
             blockedTools: ["write"],
         })
     })
+
+    it("normalizes explicit nested discovery tool config", () => {
+        expect(resolveMcpProviderConfigs({
+            secrets: {
+                MCP_PROVIDER_CONFIGS: JSON.stringify([{
+                    id: "macro",
+                    url: "https://mcp.example/mcp",
+                    discoveryTools: [{
+                        name: "catalog_search",
+                        inputs: [
+                            { query: "rates", limit: 5 },
+                        ],
+                    }],
+                }]),
+            },
+        })[0]).toMatchObject({
+            id: "macro",
+            discoveryTools: [{
+                name: "catalog_search",
+                inputs: [
+                    { query: "rates", limit: 5 },
+                ],
+            }],
+        })
+    })
 })

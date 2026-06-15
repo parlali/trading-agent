@@ -56,6 +56,7 @@ export const mcpToolSkipReasonV = stringLiterals([
     "schema_incompatible",
     "unsafe_annotation",
     "invalid_name",
+    "malformed_tool",
     "duplicate_upstream_tool",
     "duplicate_registered_name",
     "discovery_tool",
@@ -75,6 +76,12 @@ export const mcpToolApprovalV = v.object({
     toolName: v.string(),
     registeredName: v.string(),
     schemaHash: v.string(),
+    description: v.optional(v.string()),
+    source: v.optional(mcpToolDiscoverySourceV),
+    inputSchema: v.optional(v.any()),
+    approvedAt: v.optional(v.number()),
+    approvedBy: v.optional(v.string()),
+    approvalReason: v.optional(v.string()),
 })
 
 export const mcpToolDiagnosticV = v.object({

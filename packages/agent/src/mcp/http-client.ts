@@ -38,8 +38,21 @@ interface JsonRpcFailure {
     }
 }
 
-interface ToolsListResult {
-    tools?: HttpMcpTool[]
+export interface HttpMcpToolParseIssue {
+    index: number
+    upstreamToolName?: string
+    reason: "malformed_tool" | "invalid_name" | "schema_incompatible" | "unsafe_annotation"
+    message: string
+    schemaReason?: string
+    annotationReason?: string
+}
+
+export interface HttpMcpToolsResult {
+    tools: HttpMcpTool[]
+    issues: HttpMcpToolParseIssue[]
+}
+
+interface ToolsListPageResult extends HttpMcpToolsResult {
     nextCursor?: string
 }
 
@@ -77,9 +90,19 @@ export class HttpMcpClient {
     constructor(private readonly config: HttpMcpClientConfig) {}
 
     async listTools(options: ListToolsOptions = {}): Promise<HttpMcpTool[]> {
+        const result = await this.listToolsDetailed(options)
+        if (result.issues.length > 0) {
+            throw new Error(`MCP provider ${this.config.id} returned malformed tools/list entries`)
+        }
+
+        return result.tools
+    }
+
+    async listToolsDetailed(options: ListToolsOptions = {}): Promise<HttpMcpToolsResult> {
         await this.initialize(options.signal)
 
         const tools: HttpMcpTool[] = []
+        const issues: HttpMcpToolParseIssue[] = []
         let cursor: string | undefined
         const seenCursors = new Set<string>()
         const maxPages = options.maxPages ?? this.config.maxListPages ?? DEFAULT_MAX_LIST_PAGES
@@ -93,16 +116,17 @@ export class HttpMcpClient {
 
             if (cursor) {
                 if (seenCursors.has(cursor)) {
-                    throw new Error(`MCP provider ${this.config.id} tools/list returned repeated cursor ${cursor}`)
+                    throw new Error(`MCP provider ${this.config.id} tools/list returned repeated cursor`)
                 }
                 seenCursors.add(cursor)
             }
 
-            const result = validateToolsListResult(
+            const result = validateToolsListPageResult(
                 this.config.id,
                 await this.request<unknown>("tools/list", cursor ? { cursor } : {}, options.signal)
             )
             tools.push(...result.tools)
+            issues.push(...result.issues)
             if (options.maxTools !== undefined && tools.length > options.maxTools) {
                 throw new Error(`MCP provider ${this.config.id} exposed more than configured maxTools ${options.maxTools}`)
             }
@@ -116,7 +140,10 @@ export class HttpMcpClient {
             toolCount: tools.length,
         })
 
-        return tools
+        return {
+            tools,
+            issues,
+        }
     }
 
     async callTool(
@@ -132,6 +159,15 @@ export class HttpMcpClient {
     }
 
     async discoverTools(signal?: AbortSignal): Promise<HttpMcpTool[]> {
+        const result = await this.discoverToolsDetailed(signal)
+        if (result.issues.length > 0) {
+            throw new Error(`MCP provider ${this.config.id} returned malformed tools/discover entries`)
+        }
+
+        return result.tools
+    }
+
+    async discoverToolsDetailed(signal?: AbortSignal): Promise<HttpMcpToolsResult> {
         await this.initialize(signal)
         return validateToolsDiscoverResult(
             this.config.id,
@@ -167,7 +203,7 @@ export class HttpMcpClient {
             this.config.logger?.warn("MCP notification failed", {
                 providerId: this.config.id,
                 method,
-                error: error instanceof Error ? error.message : String(error),
+                error: formatHttpClientLogError(error),
             })
         }
     }
@@ -236,7 +272,7 @@ export class HttpMcpClient {
         } catch (error) {
             this.config.logger?.error("MCP HTTP request failed", {
                 providerId: this.config.id,
-                error: error instanceof Error ? error.message : String(error),
+                error: formatHttpClientLogError(error),
             })
             throw error
         } finally {
@@ -269,6 +305,22 @@ export class HttpMcpClient {
             this.sessionId = sessionId.trim()
         }
     }
+}
+
+function formatHttpClientLogError(error: unknown): string {
+    if (error instanceof McpProviderRequestError) {
+        return error.message
+    }
+
+    if (error instanceof SyntaxError) {
+        return "MCP provider returned malformed JSON"
+    }
+
+    if (error instanceof Error && error.name === "AbortError") {
+        return "MCP provider request was aborted"
+    }
+
+    return "MCP provider request failed"
 }
 
 function parseMcpResponseBody(
@@ -336,7 +388,7 @@ function isJsonRpcResponse(value: unknown): value is JsonRpcSuccess<unknown> | J
         ("result" in record || "error" in record)
 }
 
-function validateToolsListResult(providerId: string, value: unknown): { tools: HttpMcpTool[], nextCursor?: string } {
+function validateToolsListPageResult(providerId: string, value: unknown): ToolsListPageResult {
     if (!value || typeof value !== "object" || Array.isArray(value)) {
         throw new Error(`MCP provider ${providerId} returned malformed tools/list result`)
     }
@@ -347,20 +399,21 @@ function validateToolsListResult(providerId: string, value: unknown): { tools: H
         throw new Error(`MCP provider ${providerId} returned malformed tools/list tools`)
     }
 
-    const tools = (rawTools ?? []).map((tool, index) => validateMcpTool(providerId, tool, index))
+    const parsed = parseMcpToolEntries(rawTools ?? [])
     const nextCursor = typeof record.nextCursor === "string" && record.nextCursor.length > 0
         ? record.nextCursor
         : undefined
 
     return {
-        tools,
+        tools: parsed.tools,
+        issues: parsed.issues,
         nextCursor,
     }
 }
 
-function validateToolsDiscoverResult(providerId: string, value: unknown): HttpMcpTool[] {
+function validateToolsDiscoverResult(providerId: string, value: unknown): HttpMcpToolsResult {
     if (Array.isArray(value)) {
-        return value.map((tool, index) => validateMcpTool(providerId, tool, index))
+        return parseMcpToolEntries(value)
     }
 
     if (!value || typeof value !== "object") {
@@ -380,41 +433,98 @@ function validateToolsDiscoverResult(providerId: string, value: unknown): HttpMc
         throw new Error(`MCP provider ${providerId} returned malformed tools/discover tools`)
     }
 
-    return rawTools.map((tool, index) => {
+    return parseMcpToolEntries(rawTools.map((tool) => {
         if (tool && typeof tool === "object" && !Array.isArray(tool) && "tool" in tool) {
-            return validateMcpTool(providerId, (tool as Record<string, unknown>).tool, index)
+            return (tool as Record<string, unknown>).tool
         }
 
-        return validateMcpTool(providerId, tool, index)
-    })
+        return tool
+    }))
 }
 
-function validateMcpTool(providerId: string, value: unknown, index: number): HttpMcpTool {
+export function parseMcpToolEntries(entries: unknown[]): HttpMcpToolsResult {
+    const tools: HttpMcpTool[] = []
+    const issues: HttpMcpToolParseIssue[] = []
+
+    for (const [index, entry] of entries.entries()) {
+        const parsed = parseMcpTool(entry, index)
+        if ("tool" in parsed) {
+            tools.push(parsed.tool)
+        } else {
+            issues.push(parsed.issue)
+        }
+    }
+
+    return {
+        tools,
+        issues,
+    }
+}
+
+function parseMcpTool(value: unknown, index: number): { tool: HttpMcpTool } | { issue: HttpMcpToolParseIssue } {
     if (!value || typeof value !== "object" || Array.isArray(value)) {
-        throw new Error(`MCP provider ${providerId} returned malformed tool at index ${index}`)
+        return {
+            issue: {
+                index,
+                reason: "malformed_tool",
+                message: "MCP provider returned a malformed tool entry",
+            },
+        }
     }
 
     const record = value as Record<string, unknown>
     if (typeof record.name !== "string" || record.name.trim().length === 0) {
-        throw new Error(`MCP provider ${providerId} returned tool without a valid name at index ${index}`)
+        return {
+            issue: {
+                index,
+                reason: "invalid_name",
+                message: "MCP provider returned a tool without a valid name",
+            },
+        }
     }
 
+    const upstreamToolName = record.name.trim()
     if (record.description !== undefined && typeof record.description !== "string") {
-        throw new Error(`MCP provider ${providerId} returned tool ${record.name} with malformed description`)
+        return {
+            issue: {
+                index,
+                upstreamToolName,
+                reason: "malformed_tool",
+                message: "MCP provider returned a tool with a malformed description",
+            },
+        }
     }
 
     if (record.inputSchema !== undefined && (!record.inputSchema || typeof record.inputSchema !== "object" || Array.isArray(record.inputSchema))) {
-        throw new Error(`MCP provider ${providerId} returned tool ${record.name} with malformed inputSchema`)
+        return {
+            issue: {
+                index,
+                upstreamToolName,
+                reason: "schema_incompatible",
+                message: "MCP provider returned a tool with a malformed input schema",
+                schemaReason: "inputSchema must be an object",
+            },
+        }
     }
     if (record.annotations !== undefined && (!record.annotations || typeof record.annotations !== "object" || Array.isArray(record.annotations))) {
-        throw new Error(`MCP provider ${providerId} returned tool ${record.name} with malformed annotations`)
+        return {
+            issue: {
+                index,
+                upstreamToolName,
+                reason: "unsafe_annotation",
+                message: "MCP provider returned a tool with malformed safety annotations",
+                annotationReason: "annotations must be an object",
+            },
+        }
     }
 
     return {
-        name: record.name,
-        description: record.description,
-        inputSchema: record.inputSchema as Record<string, unknown> | undefined,
-        annotations: record.annotations as HttpMcpTool["annotations"],
+        tool: {
+            name: upstreamToolName,
+            description: record.description,
+            inputSchema: record.inputSchema as Record<string, unknown> | undefined,
+            annotations: record.annotations as HttpMcpTool["annotations"],
+        },
     }
 }
 

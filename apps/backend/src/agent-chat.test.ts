@@ -11,10 +11,10 @@ vi.hoisted(() => {
     })
 })
 
-import { createUIMessageStreamResponse } from "ai"
+import { createUIMessageStreamResponse, tool } from "ai"
 import { MockLanguageModelV3, simulateReadableStream } from "ai/test"
 import { z } from "zod/v4"
-import type { ToolBinding } from "@valiq-trading/agent"
+import { ToolExecutionEngine, ToolRegistry, type ToolBinding } from "@valiq-trading/agent"
 import { createLogger } from "@valiq-trading/core"
 import type {
     AgentChatMessageRow,
@@ -257,7 +257,7 @@ describe("agent chat handler", () => {
                 tradingBackend: backend,
                 secrets: {},
                 log: createLogger({ minLevel: "fatal" }),
-                createMcpBindings: async () => [],
+                discoverMcpInventory: async () => ({ inventory: [], diagnostics: [] }),
             }),
             logInfo: vi.fn(),
             logError: vi.fn(),
@@ -287,7 +287,7 @@ describe("agent chat handler", () => {
             tradingBackend: backend,
             secrets: {},
             log: createLogger({ minLevel: "fatal" }),
-            createMcpBindings: async () => [],
+            discoverMcpInventory: async () => ({ inventory: [], diagnostics: [] }),
         })
         let streamCall = 0
         const streams = [
@@ -416,7 +416,7 @@ describe("agent chat handler", () => {
                 tradingBackend: backend,
                 secrets: {},
                 log: createLogger({ minLevel: "fatal" }),
-                createMcpBindings: async () => [],
+                discoverMcpInventory: async () => ({ inventory: [], diagnostics: [] }),
             }),
             createCodexProvider: () => provider,
             logInfo: vi.fn(),
@@ -473,7 +473,7 @@ describe("agent chat handler", () => {
                 tradingBackend: backend,
                 secrets: {},
                 log: createLogger({ minLevel: "fatal" }),
-                createMcpBindings: async () => [],
+                discoverMcpInventory: async () => ({ inventory: [], diagnostics: [] }),
             }),
             logInfo: vi.fn(),
             logError: vi.fn(),
@@ -530,7 +530,7 @@ describe("agent chat handler", () => {
             tradingBackend: backend,
             secrets: {},
             log: createLogger({ minLevel: "fatal" }),
-            createMcpBindings: async () => [],
+            discoverMcpInventory: async () => ({ inventory: [], diagnostics: [] }),
         })
         const model = new MockLanguageModelV3({
             doStream: streamResult([
@@ -565,12 +565,12 @@ describe("agent chat handler", () => {
         let toolAborted = false
         const auditBackend = createBackendMock()
         const waitingTool: ToolBinding = {
-            name: "mcp_test_wait",
+            name: "test_wait",
             description: "Wait until cancelled",
             parameters: z.strictObject({}),
             category: "research",
             contractBoundary: "shared",
-            contractOwner: "mcp:test",
+            contractOwner: "agent-chat-test",
             handler: async (_params, context) => await new Promise((_, reject) => {
                 toolStarted = true
                 context?.signal?.addEventListener("abort", () => {
@@ -579,19 +579,35 @@ describe("agent chat handler", () => {
                 }, { once: true })
             }),
         }
-        const toolRuntime = await buildAgentChatToolRuntime({
-            abortSignal: providerController.signal,
-            tradingBackend: createBackendMock(),
-            secrets: {
-                MCP_PROVIDER_CONFIGS: JSON.stringify([{
-                    id: "test",
-                    url: "https://mcp.test/rpc",
-                    allowedTools: ["wait"],
-                }]),
-            },
-            log: createLogger({ minLevel: "fatal" }),
-            createMcpBindings: async () => [waitingTool],
+        const registry = new ToolRegistry()
+        registry.register(waitingTool)
+        const engine = new ToolExecutionEngine({
+            tools: registry,
+            logger: createLogger({ minLevel: "fatal" }),
+            runStartedAt: Date.now(),
+            runTimeoutMs: 120_000,
+            maxToolTimeoutMs: 30_000,
         })
+        const toolRuntime = {
+            registry,
+            tools: {
+                test_wait: tool({
+                    description: waitingTool.description,
+                    inputSchema: z.strictObject({}),
+                    execute: async (input, options) => {
+                        const result = await engine.executeMcpCall(waitingTool.name, input, options.toolCallId, {
+                            signal: options.abortSignal,
+                        })
+                        if (result.fatal || result.isError) {
+                            throw new Error(result.content)
+                        }
+
+                        return result.content
+                    },
+                }),
+            },
+            mcpProviders: [],
+        }
         const model = new MockLanguageModelV3({
             doStream: async (options) => {
                 providerStarted = true
@@ -601,7 +617,7 @@ describe("agent chat handler", () => {
 
                 return streamResult([
                     { type: "stream-start", warnings: [] },
-                    { type: "tool-call", toolCallId: "call-wait", toolName: "mcp_test_wait", input: "{}" },
+                    { type: "tool-call", toolCallId: "call-wait", toolName: "test_wait", input: "{}" },
                     finishChunk("tool-calls"),
                 ])
             },
@@ -658,18 +674,24 @@ describe("agent chat handler", () => {
     })
 
     it("uses backend MCP secrets for discovery and never exposes bearer tokens in inventory", async () => {
-        const createMcpBindings = vi.fn(async (config) => {
+        const discoverMcpInventory = vi.fn(async (config) => {
             expect(config.providers[0]?.token).toBe("secret-token")
 
-            return [{
-                name: "mcp_secure_lookup",
-                description: "Secure MCP lookup",
-                parameters: z.strictObject({}),
-                category: "research",
-                contractBoundary: "shared",
-                contractOwner: "mcp:secure",
-                handler: async () => ({ ok: true }),
-            } satisfies ToolBinding]
+            return {
+                inventory: [{
+                    providerId: "secure",
+                    upstreamToolName: "lookup",
+                    registeredName: "mcp_secure_lookup",
+                    description: "Secure MCP lookup",
+                    source: "tools/list" as const,
+                    schemaHash: "a".repeat(64),
+                    inputSchema: {
+                        type: "object",
+                        properties: {},
+                    },
+                }],
+                diagnostics: [],
+            }
         })
         const toolRuntime = await buildAgentChatToolRuntime({
             abortSignal: new AbortController().signal,
@@ -683,14 +705,19 @@ describe("agent chat handler", () => {
                 }]),
             },
             log: createLogger({ minLevel: "fatal" }),
-            createMcpBindings,
+            discoverMcpInventory,
         })
 
         const tools = listAgentChatTools(toolRuntime.registry)
         const serializedTools = JSON.stringify(tools)
 
-        expect(createMcpBindings).toHaveBeenCalled()
-        expect(serializedTools).toContain("mcp_secure_lookup")
+        expect(discoverMcpInventory).toHaveBeenCalled()
+        expect(toolRuntime.mcpProviders).toEqual([{
+            id: "secure",
+            toolCount: 1,
+            status: "available",
+        }])
+        expect(serializedTools).not.toContain("mcp_secure_lookup")
         expect(serializedTools).not.toContain("secret-token")
         expect(serializedTools).not.toContain("not-for-browser")
         expect(tools.some((entry) => entry.category === "execution")).toBe(false)
@@ -715,38 +742,40 @@ describe("agent chat handler", () => {
                 ]),
             },
             log: createLogger({ minLevel: "fatal" }),
-            createMcpBindings: async ({ providers }) => {
+            discoverMcpInventory: async ({ providers }) => {
                 if (providers[0]?.id === "broken") {
                     throw new Error("provider down")
                 }
 
-                return [{
-                    name: "mcp_secure_lookup",
-                    description: "Secure MCP lookup",
-                    parameters: z.strictObject({ query: z.string() }),
-                    jsonSchema: {
-                        type: "object",
-                        properties: {
-                            query: { type: "string" },
+                return {
+                    inventory: [{
+                        providerId: "secure",
+                        upstreamToolName: "lookup",
+                        registeredName: "mcp_secure_lookup",
+                        description: "Secure MCP lookup",
+                        source: "tools/list" as const,
+                        schemaHash: "a".repeat(64),
+                        inputSchema: {
+                            type: "object",
+                            properties: {
+                                query: { type: "string" },
+                            },
+                            required: ["query"],
                         },
-                        required: ["query"],
-                    },
-                    category: "research",
-                    contractBoundary: "shared",
-                    contractOwner: "mcp:secure",
-                    handler: async () => ({ ok: true }),
-                } satisfies ToolBinding]
+                    }],
+                    diagnostics: [],
+                }
             },
         })
 
         expect(runtime.registry.has("list_accounts")).toBe(true)
-        expect(runtime.registry.has("mcp_secure_lookup")).toBe(true)
+        expect(runtime.registry.has("mcp_secure_lookup")).toBe(false)
         expect(runtime.mcpProviders).toEqual([
             {
                 id: "broken",
                 toolCount: 0,
                 status: "unavailable",
-                error: "provider down",
+                error: "MCP provider inventory unavailable",
             },
             {
                 id: "secure",
@@ -754,7 +783,7 @@ describe("agent chat handler", () => {
                 status: "available",
             },
         ])
-        expect(JSON.stringify((runtime.tools.mcp_secure_lookup as Record<string, unknown>).inputSchema)).toContain("query")
+        expect(runtime.tools.mcp_secure_lookup).toBeUndefined()
     })
 })
 

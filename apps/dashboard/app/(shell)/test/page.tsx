@@ -2,11 +2,18 @@
 
 import { useState, useCallback } from "react"
 import { useAction, useQuery } from "convex/react"
-import { api } from "@valiq-trading/convex"
+import { api, type Id } from "@valiq-trading/convex"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { ScrollArea } from "@/components/ui/scroll-area"
+import {
+    Select,
+    SelectContent,
+    SelectItem,
+    SelectTrigger,
+    SelectValue,
+} from "@/components/ui/select"
 import { VENUE_META } from "@/lib/constants"
 import {
     Loader2,
@@ -85,12 +92,14 @@ function TestCard({
     icon: Icon,
     onRun,
     children,
+    disabled,
 }: {
     title: string
     description: string
     icon: React.ComponentType<{ className?: string }>
     onRun: () => Promise<TestResult>
     children?: React.ReactNode
+    disabled?: boolean
 }) {
     const [status, setStatus] = useState<TestStatus>("idle")
     const [result, setResult] = useState<TestResult | null>(null)
@@ -142,7 +151,7 @@ function TestCard({
                             size="sm"
                             variant="outline"
                             onClick={handleRun}
-                            disabled={status === "running"}
+                            disabled={status === "running" || disabled}
                         >
                             {status === "running" ? (
                                 <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -187,6 +196,9 @@ export default function TestPage() {
     const testOKX = useAction(api.connectionTests.testOKXConnection)
     const testMcp = useAction(api.connectionTests.testMcpConnection)
     const accounts = useQuery(api.queries.getAccounts, {})
+    const strategies = useQuery(api.queries.getAllStrategies, {})
+    const [mcpStrategyId, setMcpStrategyId] = useState<string>("")
+    const selectedMcpStrategyId = mcpStrategyId || (strategies?.[0]?._id ? String(strategies[0]._id) : "")
 
     const venueTests = {
         "mt5": { run: testMT5, icon: BarChart3, description: "Runtime-aligned worker health, MT5 account, positions, and working orders" },
@@ -242,10 +254,35 @@ export default function TestPage() {
 
                 <TestCard
                     title="MCP Research"
-                    description="Generic MCP endpoint: initialize and list configured research/data tools"
+                    description="Generic MCP endpoint through the selected strategy whitelist"
                     icon={Sparkles}
-                    onRun={() => testMcp({})}
-                />
+                    disabled={!selectedMcpStrategyId}
+                    onRun={() => testMcp({ strategyId: selectedMcpStrategyId as Id<"strategies"> })}
+                >
+                    {strategies === undefined ? (
+                        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                            Loading strategies...
+                        </div>
+                    ) : strategies.length === 0 ? (
+                        <div className="rounded-md border border-border-subtle px-3 py-2 text-xs text-muted-foreground">
+                            No strategies configured. MCP tests require a persisted strategy whitelist.
+                        </div>
+                    ) : (
+                        <Select value={selectedMcpStrategyId} onValueChange={setMcpStrategyId}>
+                            <SelectTrigger className="w-full md:w-[28rem]">
+                                <SelectValue placeholder="Select strategy" />
+                            </SelectTrigger>
+                            <SelectContent>
+                                {strategies.map((strategy) => (
+                                    <SelectItem key={strategy._id} value={String(strategy._id)}>
+                                        {strategy.name}
+                                    </SelectItem>
+                                ))}
+                            </SelectContent>
+                        </Select>
+                    )}
+                </TestCard>
             </div>
         </div>
     )

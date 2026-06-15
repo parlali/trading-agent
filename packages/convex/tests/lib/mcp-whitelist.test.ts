@@ -18,6 +18,15 @@ describe("strategy MCP tool whitelist persistence", () => {
                     toolName: "rates",
                     registeredName: "mcp_macro_rates",
                     schemaHash: "b".repeat(64),
+                    description: "Rates lookup",
+                    source: "tools/list",
+                    inputSchema: {
+                        type: "object",
+                        properties: {},
+                    },
+                    approvedAt: 100,
+                    approvedBy: "user-1",
+                    approvalReason: "dashboard_mcp_tools",
                 },
                 {
                     providerId: "macro",
@@ -43,6 +52,15 @@ describe("strategy MCP tool whitelist persistence", () => {
                     toolName: "rates",
                     registeredName: "mcp_macro_rates",
                     schemaHash: "b".repeat(64),
+                    description: "Rates lookup",
+                    source: "tools/list",
+                    inputSchema: {
+                        type: "object",
+                        properties: {},
+                    },
+                    approvedAt: 100,
+                    approvedBy: "user-1",
+                    approvalReason: "dashboard_mcp_tools",
                 },
             ],
         })

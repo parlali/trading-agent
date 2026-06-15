@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest"
 import { getTradeEvents } from "../../convex/lib/queries/orders"
 import {
     getAgentLogs,
+    getRunById,
     getRunHistory,
 } from "../../convex/lib/queries/runs"
 import {
@@ -115,6 +116,28 @@ describe("run queries", () => {
 
         expect(agentLogs.map((row) => row._id)).toEqual(["log-1"])
         expect(tradeEvents.map((row) => row._id)).toEqual(["event-1"])
+    })
+
+    it("returns persisted MCP diagnostics through direct run detail lookup", async () => {
+        const diagnostics = [{
+            providerId: "macro",
+            upstreamToolName: "rates",
+            registeredName: "mcp_macro_rates",
+            reason: "schema_changed",
+            message: "schema changed",
+        }]
+        const run = await callRegisteredQuery(getRunById, {
+            strategy_runs: [{
+                _id: "run-old",
+                strategyId: "strategy-1",
+                startedAt: 1,
+                mcpToolDiagnostics: diagnostics,
+            }],
+        }, {
+            runId: "run-old",
+        }) as FakeRow
+
+        expect(run.mcpToolDiagnostics).toEqual(diagnostics)
     })
 
     it("fails closed when run evidence exceeds the export row bound", async () => {
