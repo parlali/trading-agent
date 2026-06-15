@@ -174,7 +174,7 @@ export interface AgentChatMessageRow {
     role: "user" | "assistant"
     content: string
     mode?: AgentChatMode
-    status: "received" | "completed" | "cancelled" | "failed"
+    status: "received" | "running" | "completed" | "cancelled" | "failed"
     modelProvider?: string
     modelId?: string
     finishReason?: string
@@ -207,7 +207,7 @@ export interface RecordAgentChatAssistantMessageArgs {
     sessionId: string
     messageId: string
     content: string
-    status: "completed" | "cancelled" | "failed"
+    status: "running" | "completed" | "cancelled" | "failed"
     modelProvider: string
     modelId: string
     finishReason?: string

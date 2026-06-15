@@ -12,6 +12,7 @@ import {
     ConversationManager,
     ToolExecutionEngine,
     type AgentMessageLogger,
+    type CodexAppServerProviderConfig,
 } from "@valiq-trading/agent"
 import type { StrategyRunContext } from "@valiq-trading/core"
 import {
@@ -41,6 +42,7 @@ export interface AgentChatRuntimeDependencies {
     tradingBackend?: TradingBackendClient
     toolRuntime?: AgentChatToolRuntime
     buildToolRuntime?: typeof buildAgentChatToolRuntime
+    createCodexProvider?: (config: CodexAppServerProviderConfig) => Pick<CodexAppServerProvider, "cancel" | "run">
     logInfo?: (message: string, fields?: Record<string, unknown>) => void
     logError?: (message: string, fields?: Record<string, unknown>) => void
 }
@@ -117,6 +119,13 @@ export async function createAgentChatUiMessageStream(
             let terminalAssistantRecorded = false
             let terminalAssistantWrite: Promise<void> | undefined
             let userMessageRecorded = false
+            const recordAssistantStarted = createAgentChatAssistantStartRecorder({
+                tradingBackend,
+                chatIds,
+                modelProvider: resolvedModel.provider,
+                modelId: resolvedModel.modelId,
+                isTerminalRecorded: () => terminalAssistantRecorded,
+            })
             const recordTerminalAssistant = async (terminal: {
                 status: "completed" | "cancelled" | "failed"
                 finishReason: string
@@ -169,6 +178,7 @@ export async function createAgentChatUiMessageStream(
                     mode: args.request.mode,
                 })
                 userMessageRecorded = true
+                await recordAssistantStarted()
                 const transcript = await tradingBackend.getAgentChatMessages(chatIds.sessionId, CHAT_TRANSCRIPT_LIMIT)
                 const toolRuntime = args.toolRuntime ?? await (args.buildToolRuntime ?? buildAgentChatToolRuntime)({
                     abortSignal: args.abortSignal,
@@ -323,6 +333,13 @@ async function createCodexAgentChatUiMessageStream(
             const chatIds = resolveChatIds(args.request)
             let terminalAssistantRecorded = false
             let userMessageRecorded = false
+            const recordAssistantStarted = createAgentChatAssistantStartRecorder({
+                tradingBackend,
+                chatIds,
+                modelProvider: "codex",
+                modelId: args.request.modelId,
+                isTerminalRecorded: () => terminalAssistantRecorded,
+            })
             const recordTerminalAssistant = async (terminal: {
                 status: "completed" | "cancelled" | "failed"
                 finishReason: string
@@ -354,6 +371,7 @@ async function createCodexAgentChatUiMessageStream(
                     mode: args.request.mode,
                 })
                 userMessageRecorded = true
+                await recordAssistantStarted()
                 const transcript = await tradingBackend.getAgentChatMessages(chatIds.sessionId, CHAT_TRANSCRIPT_LIMIT)
                 const toolRuntime = args.toolRuntime ?? await (args.buildToolRuntime ?? buildAgentChatToolRuntime)({
                     abortSignal: args.abortSignal,
@@ -373,7 +391,9 @@ async function createCodexAgentChatUiMessageStream(
                     maxToolTimeoutMs: CHAT_TIMEOUT_MS,
                     nextTranscriptSequence: () => conversation.reserveSequence(),
                 })
-                const provider = new CodexAppServerProvider({
+                const createCodexProvider = args.createCodexProvider ??
+                    ((config: CodexAppServerProviderConfig) => new CodexAppServerProvider(config))
+                const provider = createCodexProvider({
                     provider: "codex",
                     model: args.request.modelId,
                     authMode: "chatgpt",
@@ -734,6 +754,35 @@ function resolveChatIds(request: AgentChatRequest): {
         sessionId,
         userMessageId,
         assistantMessageId: `${userMessageId}:assistant`,
+    }
+}
+
+function createAgentChatAssistantStartRecorder(args: {
+    tradingBackend: TradingBackendClient
+    chatIds: {
+        sessionId: string
+        assistantMessageId: string
+    }
+    modelProvider: AgentChatModelProvider
+    modelId: string
+    isTerminalRecorded: () => boolean
+}): () => Promise<void> {
+    let assistantMessageStarted = false
+
+    return async () => {
+        if (assistantMessageStarted || args.isTerminalRecorded()) {
+            return
+        }
+
+        await args.tradingBackend.recordAgentChatAssistantMessage({
+            sessionId: args.chatIds.sessionId,
+            messageId: args.chatIds.assistantMessageId,
+            content: "",
+            status: "running",
+            modelProvider: args.modelProvider,
+            modelId: args.modelId,
+        })
+        assistantMessageStarted = true
     }
 }
 

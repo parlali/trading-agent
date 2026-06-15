@@ -56,6 +56,7 @@ export const recordAgentChatAssistantMessage = mutation({
         messageId: v.string(),
         content: v.string(),
         status: v.union(
+            v.literal("running"),
             v.literal("completed"),
             v.literal("cancelled"),
             v.literal("failed")
@@ -86,6 +87,14 @@ export const recordAgentChatAssistantMessage = mutation({
         }
 
         if (existing) {
+            if (existing.status === "running" && args.status !== "running") {
+                await ctx.db.patch(existing._id, {
+                    ...patch,
+                    updatedAt: now,
+                })
+                return
+            }
+
             assertSameAgentChatMessage(existing, patch)
             return
         }

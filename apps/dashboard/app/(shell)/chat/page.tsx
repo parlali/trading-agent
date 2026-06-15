@@ -71,7 +71,7 @@ type ToolInventoryResponse = {
         messageId: string
         role: "user" | "assistant"
         content: string
-        status: "received" | "completed" | "cancelled" | "failed"
+        status: "received" | "running" | "completed" | "cancelled" | "failed"
         reasoning?: string
         error?: string
         toolEvents?: Array<{
@@ -282,8 +282,8 @@ export default function AgentChatPage() {
     }
 
     return (
-        <div className="grid h-[calc(100vh-6rem)] min-h-[620px] grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
-            <section className="flex min-h-0 flex-col rounded-md border border-border-subtle bg-card">
+        <div className="flex flex-col gap-4 xl:grid xl:h-[calc(100vh-6rem)] xl:min-h-[620px] xl:grid-cols-[minmax(0,1fr)_360px]">
+            <section className="flex min-h-[calc(100svh-4.5rem)] flex-col rounded-md border border-border-subtle bg-card xl:min-h-0">
                 <div className="flex shrink-0 items-center justify-between gap-3 border-b border-border-subtle px-4 py-3">
                     <div className="min-w-0">
                         <h1 className="text-sm font-semibold">Agent Chat</h1>
@@ -335,7 +335,7 @@ export default function AgentChatPage() {
                 </div>
 
                 <form onSubmit={handleSubmit} className="shrink-0 border-t border-border-subtle p-3">
-                    <div className="mb-3 grid grid-cols-1 gap-2 md:grid-cols-[180px_minmax(0,1fr)]">
+                    <div className="mb-3 grid grid-cols-2 gap-2 md:grid-cols-[180px_minmax(0,1fr)]">
                         <div className="space-y-1.5">
                             <Label className="text-[11px] text-muted-foreground">Provider</Label>
                             <Select
@@ -410,7 +410,7 @@ export default function AgentChatPage() {
                                 }
                             }}
                             placeholder="Ask the agent anything or request work with the configured MCP tools"
-                            className="max-h-40 min-h-20 resize-none text-sm"
+                            className="max-h-32 min-h-16 resize-none text-sm sm:max-h-40 sm:min-h-20"
                             disabled={isRunning || !authToken}
                         />
                         <Button type="submit" size="icon" disabled={!canSubmit} aria-label="Send message">
@@ -420,7 +420,7 @@ export default function AgentChatPage() {
                 </form>
             </section>
 
-            <aside className="flex min-h-0 flex-col rounded-md border border-border-subtle bg-card">
+            <aside className="flex max-h-[70svh] min-h-[420px] flex-col rounded-md border border-border-subtle bg-card xl:max-h-none xl:min-h-0">
                 <div className="flex items-center justify-between gap-2 border-b border-border-subtle px-4 py-3">
                     <div>
                         <h2 className="text-sm font-semibold">Runtime</h2>
@@ -671,6 +671,10 @@ function readVisibleServerMessageText(message: ServerChatMessage): string {
         const terminal = "Agent chat was cancelled."
         return content ? `${content}\n\n${terminal}` : terminal
     }
+    if (message.status === "running") {
+        const terminal = "Agent chat is still running."
+        return content ? `${content}\n\n${terminal}` : terminal
+    }
 
     if (content) {
         return content
@@ -737,7 +741,7 @@ function headersToRecord(headers: HeadersInit | undefined): Record<string, strin
 
 function EmptyChat() {
     return (
-        <div className="flex h-full min-h-[420px] items-center justify-center">
+        <div className="flex h-full min-h-[220px] items-center justify-center sm:min-h-[420px]">
             <div className="w-full max-w-2xl rounded-md border border-border-subtle bg-background px-4 py-4">
                 <div className="flex items-center gap-2 text-sm font-medium">
                     <Wrench className="h-4 w-4 text-primary" />
@@ -773,7 +777,7 @@ function MessageBubble({ message }: { message: UIMessage }) {
                 </div>
             ) : null}
             <div className={cn(
-                "max-w-[min(860px,88%)] rounded-md border px-3 py-2",
+                "max-w-[calc(100%-2.5rem)] rounded-md border px-3 py-2 sm:max-w-[min(860px,88%)]",
                 isUser
                     ? "border-primary/20 bg-primary text-primary-foreground"
                     : "border-border-subtle bg-background"

@@ -31,6 +31,7 @@ import {
     buildAgentChatToolRuntime,
     listAgentChatTools,
 } from "./agent-chat-tools"
+import { writeCodexChatGptAuthFileSync } from "./codex-auth"
 
 describe("agent chat handler", () => {
     it("rejects missing or invalid backend service tokens", async () => {
@@ -334,11 +335,118 @@ describe("agent chat handler", () => {
             toolName: "list_accounts",
             state: "result",
         }))
+        expect(backend.recordAgentChatAssistantMessage).toHaveBeenNthCalledWith(1, expect.objectContaining({
+            status: "running",
+            content: "",
+            modelId: "test-model",
+        }))
         expect(backend.recordAgentChatAssistantMessage).toHaveBeenCalledWith(expect.objectContaining({
             content: "The account is connected.",
             status: "completed",
             modelId: "test-model",
             reasoning: undefined,
+        }))
+    })
+
+    it("records a running Codex assistant row before Codex tool audit events", async () => {
+        const codexHome = `/tmp/valiq-agent-chat-codex-test-${crypto.randomUUID()}`
+        writeCodexChatGptAuthFileSync({
+            env: {
+                CODEX_HOME: codexHome,
+            },
+            tokens: {
+                idToken: "id-token",
+                accessToken: "access-token",
+                refreshToken: "refresh-token",
+                accountId: "account-1",
+            },
+        })
+        const backend = createBackendMock()
+        const provider = {
+            cancel: vi.fn(),
+            run: vi.fn(async (runArgs) => {
+                await runArgs.agentLogger?.log(
+                    runArgs.context.runId,
+                    runArgs.context.strategyId,
+                    1,
+                    "tool",
+                    "",
+                    "list_accounts",
+                    JSON.stringify({}),
+                    JSON.stringify({ accounts: ["acct-1"] })
+                )
+
+                return {
+                    summary: "Codex answer.",
+                    iterations: 1,
+                    usage: {
+                        promptTokens: 0,
+                        completionTokens: 0,
+                        reasoningTokens: 0,
+                        cost: 0,
+                        responseIds: [],
+                    },
+                    diagnostics: {
+                        provider: "codex" as const,
+                        model: "gpt-5.5",
+                        authMode: "chatgpt",
+                        billingMode: "chatgpt",
+                        responseIds: [],
+                    },
+                }
+            }),
+        }
+
+        const stream = await createAgentChatUiMessageStream({
+            request: runtimeChatRequest({
+                message: "Use a tool",
+                modelProvider: "codex",
+                modelId: "gpt-5.5",
+                chatSessionId: "session-1",
+                chatMessageId: "message-codex",
+            }),
+            abortSignal: new AbortController().signal,
+            env: {
+                CODEX_HOME: codexHome,
+            },
+            secrets: {},
+            tradingBackend: backend,
+            toolRuntime: await buildAgentChatToolRuntime({
+                abortSignal: new AbortController().signal,
+                tradingBackend: backend,
+                secrets: {},
+                log: createLogger({ minLevel: "fatal" }),
+                createMcpBindings: async () => [],
+            }),
+            createCodexProvider: () => provider,
+            logInfo: vi.fn(),
+            logError: vi.fn(),
+        })
+        const text = await createUIMessageStreamResponse({ stream }).text()
+
+        expect(text).toContain("Codex answer.")
+        expect(backend.recordAgentChatAssistantMessage).toHaveBeenNthCalledWith(1, expect.objectContaining({
+            sessionId: "session-1",
+            messageId: "message-codex:assistant",
+            status: "running",
+            modelProvider: "codex",
+            modelId: "gpt-5.5",
+        }))
+        expect(backend.recordAgentChatToolEvent).toHaveBeenCalledWith(expect.objectContaining({
+            messageId: "message-codex:assistant",
+            toolName: "list_accounts",
+            state: "input",
+        }))
+        expect(backend.recordAgentChatToolEvent).toHaveBeenCalledWith(expect.objectContaining({
+            messageId: "message-codex:assistant",
+            toolName: "list_accounts",
+            state: "result",
+            output: { accounts: ["acct-1"] },
+        }))
+        expect(backend.recordAgentChatAssistantMessage).toHaveBeenCalledWith(expect.objectContaining({
+            messageId: "message-codex:assistant",
+            status: "completed",
+            content: "Codex answer.",
         }))
     })
 

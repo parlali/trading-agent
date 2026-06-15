@@ -79,6 +79,44 @@ describe("agent chat audit mutations", () => {
         })
     })
 
+    it("updates a running assistant placeholder into one terminal audit row", async () => {
+        process.env.BACKEND_SERVICE_TOKEN = "test-token"
+        const db = new FakeDb({
+            agent_chat_messages: [],
+        })
+        const running = {
+            serviceToken: "test-token",
+            sessionId: "session-1",
+            messageId: "message-1:assistant",
+            content: "",
+            status: "running",
+            modelProvider: "codex",
+            modelId: "gpt-5.5",
+        }
+        const completed = {
+            ...running,
+            content: "done",
+            status: "completed",
+            finishReason: "stop",
+        }
+
+        await callRegistered(recordAgentChatAssistantMessage, { db } as never, running)
+        await callRegistered(recordAgentChatAssistantMessage, { db } as never, completed)
+        await callRegistered(recordAgentChatAssistantMessage, { db } as never, completed)
+
+        expect(db.rows.agent_chat_messages).toHaveLength(1)
+        expect(db.rows.agent_chat_messages?.[0]).toMatchObject({
+            content: "done",
+            status: "completed",
+            finishReason: "stop",
+        })
+        await expect(callRegistered(recordAgentChatAssistantMessage, { db } as never, {
+            ...completed,
+            status: "failed",
+            error: "changed",
+        })).rejects.toThrow("Agent chat message id conflict")
+    })
+
     it("stores tool input and output as versioned payload envelopes", async () => {
         process.env.BACKEND_SERVICE_TOKEN = "test-token"
         const db = new FakeDb({
@@ -176,5 +214,74 @@ describe("agent chat audit mutations", () => {
                 output: { accounts: [] },
             }),
         ])
+    })
+
+    it("surfaces orphaned tool events as a failed assistant transcript turn", async () => {
+        process.env.BACKEND_SERVICE_TOKEN = "test-token"
+        const db = new FakeDb({
+            agent_chat_messages: [{
+                _id: "user-row",
+                sessionId: "session-1",
+                messageId: "message-2",
+                role: "user",
+                content: "test tools",
+                status: "received",
+                createdAt: 1,
+                updatedAt: 1,
+            }],
+            agent_chat_tool_events: [
+                {
+                    _id: "orphan-tool-input",
+                    sessionId: "session-1",
+                    messageId: "message-2:assistant",
+                    toolCallId: "call-1",
+                    toolName: "list_accounts",
+                    state: "input",
+                    input: encodeAgentChatToolPayload({}),
+                    createdAt: 2,
+                },
+                {
+                    _id: "orphan-tool-result",
+                    sessionId: "session-1",
+                    messageId: "message-2:assistant",
+                    toolCallId: "call-1",
+                    toolName: "list_accounts",
+                    state: "result",
+                    input: encodeAgentChatToolPayload({}),
+                    output: encodeAgentChatToolPayload({ accounts: ["acct-1"] }),
+                    createdAt: 3,
+                },
+            ],
+        })
+
+        const messages = await callRegistered(getAgentChatMessages, { db } as never, {
+            serviceToken: "test-token",
+            sessionId: "session-1",
+        }) as Array<{
+            messageId: string
+            role: string
+            status: string
+            error?: string
+            toolEvents: Array<{ state: string; toolName: string; output?: unknown }>
+        }>
+
+        expect(messages).toHaveLength(2)
+        expect(messages[1]).toMatchObject({
+            messageId: "message-2:assistant",
+            role: "assistant",
+            status: "failed",
+            error: "Agent chat tool execution was recorded but no terminal assistant response was saved.",
+            toolEvents: [
+                expect.objectContaining({
+                    state: "input",
+                    toolName: "list_accounts",
+                }),
+                expect.objectContaining({
+                    state: "result",
+                    toolName: "list_accounts",
+                    output: { accounts: ["acct-1"] },
+                }),
+            ],
+        })
     })
 })
