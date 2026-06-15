@@ -19,6 +19,12 @@ export default function LoginPage() {
     const [error, setError] = useState("")
     const [isSubmitting, setIsSubmitting] = useState(false)
 
+    useEffect(() => {
+        if (isAuthenticated) {
+            router.replace("/")
+        }
+    }, [isAuthenticated, router])
+
     if (isAuthLoading) {
         return (
             <div className="flex h-screen items-center justify-center bg-background">
@@ -26,12 +32,6 @@ export default function LoginPage() {
             </div>
         )
     }
-
-    useEffect(() => {
-        if (isAuthenticated) {
-            router.replace("/")
-        }
-    }, [isAuthenticated, router])
 
     if (isAuthenticated) {
         return null

@@ -34,12 +34,14 @@ export function createKillSwitchGuardedVenue<T extends VenueAdapter>(
 
 export function startHealthServer(config: {
     port: number
+    idleTimeout?: number
     appName: string
     getHealth: () => Record<string, unknown>
     handleRequest?: (request: Request) => Response | Promise<Response | undefined> | undefined
 }): void {
     Bun.serve({
         port: config.port,
+        idleTimeout: config.idleTimeout,
         async fetch(request) {
             const { pathname } = new URL(request.url)
             const handled = await config.handleRequest?.(request)

@@ -21,6 +21,8 @@ import {
     restoreCodexChatGptAuthFromControlPlane,
 } from "./codex-auth-persistence"
 
+const BACKEND_HTTP_IDLE_TIMEOUT_SECONDS = 180
+
 async function main(): Promise<void> {
     await resolveAllSecrets()
     await restoreCodexChatGptAuthFromControlPlane({
@@ -87,6 +89,7 @@ async function main(): Promise<void> {
 function startHealthServer(scheduler: Scheduler): void {
     startRuntimeHealthServer({
         port: healthPort,
+        idleTimeout: BACKEND_HTTP_IDLE_TIMEOUT_SECONDS,
         appName: APP_NAME,
         getHealth: () => ({
             ready: healthState.ready,

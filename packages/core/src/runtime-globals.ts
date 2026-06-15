@@ -2,6 +2,7 @@ export type RuntimeEnvironment = Record<string, string | undefined>
 
 export type RuntimeServeConfig = {
     port: number
+    idleTimeout?: number
     fetch(request: Request): Response | Promise<Response>
 }
 

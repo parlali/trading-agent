@@ -334,6 +334,15 @@ async function createCodexAgentChatUiMessageStream(
             const chatIds = resolveChatIds(args.request)
             let terminalAssistantRecorded = false
             let userMessageRecorded = false
+            let uiStreamStarted = false
+            const writeStreamStart = () => {
+                if (uiStreamStarted) {
+                    return
+                }
+
+                writer.write({ type: "start" })
+                uiStreamStarted = true
+            }
             const recordAssistantStarted = createAgentChatAssistantStartRecorder({
                 tradingBackend,
                 chatIds,
@@ -373,6 +382,7 @@ async function createCodexAgentChatUiMessageStream(
                 })
                 userMessageRecorded = true
                 await recordAssistantStarted()
+                writeStreamStart()
                 const transcript = await tradingBackend.getAgentChatMessages(chatIds.sessionId, CHAT_TRANSCRIPT_LIMIT)
                 const toolRuntime = args.toolRuntime ?? await (args.buildToolRuntime ?? buildAgentChatToolRuntime)({
                     abortSignal: args.abortSignal,
@@ -442,7 +452,7 @@ async function createCodexAgentChatUiMessageStream(
                     const content = result.summary.trim()
 
                     if (content) {
-                        writer.write({ type: "start" })
+                        writeStreamStart()
                         writer.write({ type: "text-start", id: chatIds.assistantMessageId })
                         writer.write({ type: "text-delta", id: chatIds.assistantMessageId, delta: content })
                         writer.write({ type: "text-end", id: chatIds.assistantMessageId })

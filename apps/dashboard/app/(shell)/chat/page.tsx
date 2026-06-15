@@ -280,6 +280,8 @@ export default function AgentChatPage() {
                 modelId: selectedModelId,
                 ...(activeStrategyId ? { strategyId: activeStrategyId } : {}),
             },
+        }).finally(() => {
+            void loadInventory({ hydrateTranscript: true })
         })
     }
 
@@ -297,7 +299,7 @@ export default function AgentChatPage() {
 
     return (
         <div className="flex flex-col gap-4 xl:grid xl:h-[calc(100vh-6rem)] xl:min-h-[620px] xl:grid-cols-[minmax(0,1fr)_360px]">
-            <section className="flex min-h-[calc(100svh-4.5rem)] flex-col rounded-md border border-border-subtle bg-card xl:min-h-0">
+            <section className="flex h-[calc(100svh-4.5rem)] min-h-[520px] flex-col rounded-md border border-border-subtle bg-card xl:h-auto xl:min-h-0">
                 <div className="flex shrink-0 items-center justify-between gap-3 border-b border-border-subtle px-4 py-3">
                     <div className="min-w-0">
                         <h1 className="text-sm font-semibold">Agent Chat</h1>
