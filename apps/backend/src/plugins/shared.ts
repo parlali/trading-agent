@@ -1,5 +1,6 @@
 import {
     MCP_PROVIDER_SECRET_KEYS,
+    createScopedMcpProviderConfig,
     createHttpMcpToolBindingResolution,
     resolveMcpProviderConfigs as resolveCanonicalMcpProviderConfigs,
     type HttpMcpProviderConfig,
@@ -190,15 +191,11 @@ function applyStrategyMcpToolWhitelist(
             continue
         }
 
-        scopedProviders.push({
-            ...provider,
-            allowedTools: tools.map((tool) => tool.toolName),
-            approvedTools: tools.map((tool) => ({
-                name: tool.toolName,
-                registeredName: tool.registeredName,
-                schemaHash: tool.schemaHash,
-            })),
-        })
+        scopedProviders.push(createScopedMcpProviderConfig({
+            provider,
+            tools,
+            discoveryRequests: (whitelist.discoveryTools ?? []).filter((request) => request.providerId === providerId),
+        }))
     }
 
     return scopedProviders

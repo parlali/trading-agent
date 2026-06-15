@@ -78,6 +78,15 @@ export {
     hashMcpToolSchema,
     withMcpToolCallBudget,
 } from "./mcp/http-tools"
+export {
+    createScopedMcpProviderConfig,
+    mergeMcpDiscoveryToolConfigs,
+} from "./mcp/provider-scope"
+export {
+    mcpDiscoveryRequestKey,
+    mcpProviderDiscoveryToolKey,
+    stableMcpJsonKey,
+} from "./mcp/discovery-request-identity"
 export type {
     CreateHttpMcpToolBindingsConfig,
     HttpMcpProviderConfig,
@@ -86,6 +95,7 @@ export type {
     McpNestedDiscoveryToolConfig,
     McpToolApproval,
     McpToolDiagnostic,
+    McpToolDiscoveryRequest,
     McpToolDiscoverySource,
     McpToolInventoryEntry,
     McpToolSkipReason,

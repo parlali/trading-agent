@@ -4,20 +4,18 @@ import { v } from "convex/values"
 import {
     MCP_PROVIDER_SECRET_KEYS,
     discoverHttpMcpToolInventory,
+    mcpDiscoveryRequestKey,
     resolveMcpProviderConfigs,
     type McpToolApproval,
     type McpToolDiagnostic,
+    type McpToolDiscoveryRequest,
     type McpToolInventoryEntry,
 } from "@valiq-trading/agent"
 import type { Id } from "./_generated/dataModel"
 import { readConvexEnv, requireServiceToken, requireUser } from "./lib/authGuards"
-import { mcpToolApprovalV } from "./lib/validators"
+import { mcpToolApprovalV, mcpToolDiscoveryRequestV } from "./lib/validators"
 
-const mcpDiscoveryToolInputV = v.object({
-    providerId: v.string(),
-    toolName: v.string(),
-    input: v.any(),
-})
+const MAX_MCP_DISCOVERY_REQUESTS_PER_PROVIDER = 4
 
 export const resolveSecrets = action({
     args: {
@@ -40,10 +38,11 @@ export const resolveSecrets = action({
 
 export const discoverMcpToolInventory = action({
     args: {
-        discoveryTools: v.optional(v.array(mcpDiscoveryToolInputV)),
+        discoveryTools: v.optional(v.array(mcpToolDiscoveryRequestV)),
     },
     handler: async (ctx, args) => {
         await requireUser(ctx)
+        const discoveryTools = normalizeMcpDiscoveryRequests(args.discoveryTools ?? [])
 
         const secrets = readMcpConnectionSecrets()
         let providers: ReturnType<typeof resolveMcpProviderConfigs>
@@ -79,7 +78,7 @@ export const discoverMcpToolInventory = action({
         }
 
         const resolution = await discoverHttpMcpToolInventory({
-            providers: applyRequestedMcpDiscoveryTools(providers, args.discoveryTools ?? []),
+            providers: applyRequestedMcpDiscoveryTools(providers, discoveryTools),
             failOnProviderError: false,
         })
         const toolsByProvider = countByProvider(resolution.inventory.map((tool) => tool.providerId))
@@ -116,7 +115,7 @@ export const setStrategyMcpToolWhitelist = action({
         strategyId: v.id("strategies"),
         tools: v.array(mcpToolApprovalV),
         approvalReason: v.optional(v.string()),
-        discoveryTools: v.optional(v.array(mcpDiscoveryToolInputV)),
+        discoveryTools: v.optional(v.array(mcpToolDiscoveryRequestV)),
     },
     handler: async (ctx, args): Promise<{
         whitelistId: Id<"strategy_mcp_tool_whitelists">
@@ -124,7 +123,8 @@ export const setStrategyMcpToolWhitelist = action({
         diagnostics: McpToolDiagnostic[]
     }> => {
         const approvedBy = await readRequiredUserActor(ctx)
-        const inventory = await discoverCurrentMcpInventory(args.discoveryTools ?? [])
+        const discoveryTools = normalizeMcpDiscoveryRequests(args.discoveryTools ?? [])
+        const inventory = await discoverCurrentMcpInventory(discoveryTools)
         const inventoryByKey = new Map(inventory.tools.map((tool) => [mcpToolKey(tool.providerId, tool.upstreamToolName), tool]))
         const now = Date.now()
         const approvals: McpToolApproval[] = []
@@ -159,6 +159,7 @@ export const setStrategyMcpToolWhitelist = action({
         const whitelistId = await ctx.runMutation(internal.mutations.setStrategyMcpToolWhitelistInternal, {
             strategyId: args.strategyId,
             tools: approvals,
+            discoveryTools,
         }) as Id<"strategy_mcp_tool_whitelists">
 
         return {
@@ -171,23 +172,19 @@ export const setStrategyMcpToolWhitelist = action({
 
 function applyRequestedMcpDiscoveryTools(
     providers: ReturnType<typeof resolveMcpProviderConfigs>,
-    requestedTools: Array<{ providerId: string, toolName: string, input: unknown }>
+    requestedTools: readonly McpToolDiscoveryRequest[]
 ): ReturnType<typeof resolveMcpProviderConfigs> {
     if (requestedTools.length === 0) {
         return providers
-    }
-
-    if (requestedTools.length > 4) {
-        throw new Error("MCP discovery request is limited to 4 tool calls")
     }
 
     const requestedByProvider = new Map<string, Array<{ name: string, inputs: Record<string, unknown>[] }>>()
     const providerIds = new Set(providers.map((provider) => provider.id))
 
     for (const requestedTool of requestedTools) {
-        const providerId = requestedTool.providerId.trim()
-        const toolName = requestedTool.toolName.trim()
-        const input = readMcpDiscoveryInput(requestedTool.input)
+        const providerId = requestedTool.providerId
+        const toolName = requestedTool.toolName
+        const input = requestedTool.input
 
         if (!providerId) {
             throw new Error("MCP discovery providerId must be non-empty")
@@ -200,6 +197,9 @@ function applyRequestedMcpDiscoveryTools(
         }
 
         const entries = requestedByProvider.get(providerId) ?? []
+        if (entries.length >= MAX_MCP_DISCOVERY_REQUESTS_PER_PROVIDER) {
+            throw new Error(`MCP discovery request is limited to ${MAX_MCP_DISCOVERY_REQUESTS_PER_PROVIDER} tool calls per provider`)
+        }
         entries.push({
             name: toolName,
             inputs: [input],
@@ -220,6 +220,56 @@ function applyRequestedMcpDiscoveryTools(
                 ...requested,
             ],
         }
+    })
+}
+
+function normalizeMcpDiscoveryRequests(
+    requestedTools: Array<{ providerId: string, toolName: string, input: unknown }>
+): McpToolDiscoveryRequest[] {
+    const seen = new Set<string>()
+    const normalized: McpToolDiscoveryRequest[] = []
+
+    for (const requestedTool of requestedTools) {
+        const providerId = requestedTool.providerId.trim()
+        const toolName = requestedTool.toolName.trim()
+        const input = readMcpDiscoveryInput(requestedTool.input)
+
+        if (!providerId) {
+            throw new Error("MCP discovery providerId must be non-empty")
+        }
+        if (!toolName) {
+            throw new Error("MCP discovery toolName must be non-empty")
+        }
+
+        const key = mcpDiscoveryRequestKey({
+            providerId,
+            toolName,
+            input,
+        })
+        if (seen.has(key)) {
+            continue
+        }
+        seen.add(key)
+        normalized.push({
+            providerId,
+            toolName,
+            input,
+        })
+    }
+
+    const countsByProvider = new Map<string, number>()
+    for (const request of normalized) {
+        const count = (countsByProvider.get(request.providerId) ?? 0) + 1
+        if (count > MAX_MCP_DISCOVERY_REQUESTS_PER_PROVIDER) {
+            throw new Error(`MCP discovery request is limited to ${MAX_MCP_DISCOVERY_REQUESTS_PER_PROVIDER} tool calls per provider`)
+        }
+        countsByProvider.set(request.providerId, count)
+    }
+
+    return normalized.sort((left, right) => {
+        const leftKey = mcpDiscoveryRequestKey(left)
+        const rightKey = mcpDiscoveryRequestKey(right)
+        return leftKey.localeCompare(rightKey)
     })
 }
 
@@ -253,7 +303,7 @@ function countByProvider(providerIds: string[]): Map<string, number> {
 }
 
 async function discoverCurrentMcpInventory(
-    requestedTools: Array<{ providerId: string, toolName: string, input: unknown }>
+    requestedTools: readonly McpToolDiscoveryRequest[]
 ): Promise<{
     tools: McpToolInventoryEntry[]
     diagnostics: McpToolDiagnostic[]

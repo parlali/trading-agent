@@ -1,7 +1,7 @@
 "use client"
 
 import { useAction, useQuery } from "convex/react"
-import { api, type Id, type McpToolApproval, type McpToolDiagnostic, type McpToolInventoryResult } from "@valiq-trading/convex"
+import { api, type Id, type McpToolApproval, type McpToolDiagnostic, type McpToolDiscoveryRequest, type McpToolInventoryResult } from "@valiq-trading/convex"
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { toast } from "sonner"
 import { Loader2, RefreshCw, Save, Search } from "lucide-react"
@@ -43,11 +43,7 @@ type ToolRow = {
     diagnostics: McpToolDiagnostic[]
 }
 
-type DiscoveryToolRequest = {
-    providerId: string
-    toolName: string
-    input: Record<string, unknown>
-}
+type DiscoveryToolRequest = McpToolDiscoveryRequest
 
 const DEFAULT_DISCOVERY_TOOL_NAME = "discover_tools"
 
@@ -208,6 +204,53 @@ function parseJsonObject(value: string, label: string): Record<string, unknown> 
     return parsed as Record<string, unknown>
 }
 
+function mergeDiscoveryToolRequests(
+    current: readonly DiscoveryToolRequest[],
+    incoming: readonly DiscoveryToolRequest[]
+): DiscoveryToolRequest[] {
+    const requestsByKey = new Map<string, DiscoveryToolRequest>()
+
+    for (const request of [...current, ...incoming]) {
+        const providerId = request.providerId.trim()
+        const toolName = request.toolName.trim()
+        if (!providerId || !toolName) {
+            continue
+        }
+
+        requestsByKey.set(discoveryRequestKey({
+            providerId,
+            toolName,
+            input: request.input,
+        }), {
+            providerId,
+            toolName,
+            input: request.input,
+        })
+    }
+
+    return Array.from(requestsByKey.values()).sort((left, right) =>
+        discoveryRequestKey(left).localeCompare(discoveryRequestKey(right))
+    )
+}
+
+function discoveryRequestKey(request: DiscoveryToolRequest): string {
+    return `${request.providerId}\0${request.toolName}\0${stableJsonKey(request.input)}`
+}
+
+function stableJsonKey(value: unknown): string {
+    if (Array.isArray(value)) {
+        return `[${value.map((entry) => stableJsonKey(entry)).join(",")}]`
+    }
+    if (value && typeof value === "object") {
+        return `{${Object.entries(value as Record<string, unknown>)
+            .sort(([left], [right]) => left.localeCompare(right))
+            .map(([key, entry]) => `${JSON.stringify(key)}:${stableJsonKey(entry)}`)
+            .join(",")}}`
+    }
+
+    return JSON.stringify(value)
+}
+
 function isMcpDiscoverySource(value: string): value is InventoryTool["source"] {
     return value === "tools/list" || value === "tools/discover" || value === "tool_search"
 }
@@ -267,6 +310,14 @@ function buildSelectedTools(
     return tools.sort((left, right) =>
         `${left.providerId}\0${left.toolName}`.localeCompare(`${right.providerId}\0${right.toolName}`)
     )
+}
+
+function filterDiscoveryRequestsForSelectedTools(
+    discoveryTools: readonly DiscoveryToolRequest[],
+    tools: readonly McpToolApproval[]
+): DiscoveryToolRequest[] {
+    const selectedProviderIds = new Set(tools.map((tool) => tool.providerId))
+    return discoveryTools.filter((request) => selectedProviderIds.has(request.providerId))
 }
 
 function ToolCheckbox({
@@ -458,8 +509,15 @@ export default function McpToolsPage() {
     }, [discoveryProviderId, inventory])
 
     useEffect(() => {
+        if (whitelist === undefined) {
+            return
+        }
+
+        const persistedDiscoveryTools = mergeDiscoveryToolRequests([], whitelist?.discoveryTools ?? [])
         setSelectedKeys(new Set((whitelist?.tools ?? []).map((tool) => toolKey(tool.providerId, tool.toolName))))
-    }, [whitelist])
+        setLastDiscoveryTools(persistedDiscoveryTools)
+        void loadInventory(persistedDiscoveryTools)
+    }, [loadInventory, whitelist])
 
     const selectedStrategy = useMemo(() =>
         strategies?.find((strategy) => String(strategy._id) === selectedStrategyId),
@@ -591,11 +649,12 @@ export default function McpToolsPage() {
         setSaving(true)
         try {
             const tools = buildSelectedTools(selectedKeys, inventory.tools, whitelist?.tools ?? [])
+            const discoveryTools = filterDiscoveryRequestsForSelectedTools(lastDiscoveryTools, tools)
             await setWhitelist({
                 strategyId: selectedStrategyId as Id<"strategies">,
                 tools,
                 approvalReason: "dashboard_mcp_tools",
-                ...(lastDiscoveryTools.length > 0 ? { discoveryTools: lastDiscoveryTools } : {}),
+                ...(discoveryTools.length > 0 ? { discoveryTools } : {}),
             })
             toast.success("MCP tool scope saved")
         } catch (error) {
@@ -618,11 +677,11 @@ export default function McpToolsPage() {
         }
 
         try {
-            const discoveryTools: DiscoveryToolRequest[] = [{
+            const discoveryTools = mergeDiscoveryToolRequests(lastDiscoveryTools, [{
                 providerId,
                 toolName,
                 input: parseJsonObject(discoveryInputJson, "Discovery input"),
-            }]
+            }])
             const refreshed = await loadInventory(discoveryTools)
             if (refreshed) {
                 toast.success("MCP discovery refreshed")
@@ -670,7 +729,7 @@ export default function McpToolsPage() {
                     ) : null}
                 </div>
                 <div className="flex items-center gap-2">
-                    <Button variant="outline" onClick={() => void loadInventory()} disabled={loadingInventory}>
+                    <Button variant="outline" onClick={() => void loadInventory(lastDiscoveryTools)} disabled={loadingInventory}>
                         {loadingInventory ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
                         Refresh
                     </Button>
@@ -730,7 +789,7 @@ export default function McpToolsPage() {
                 </Button>
             </div>
 
-            <div className="grid gap-3 md:grid-cols-3">
+            <div className="grid gap-3 md:grid-cols-4">
                 <div className="rounded-md border border-border-subtle px-3 py-2">
                     <p className="text-[11px] text-muted-foreground">Providers</p>
                     <p className="text-lg font-semibold">{inventory?.providers.length ?? 0}</p>
@@ -742,6 +801,10 @@ export default function McpToolsPage() {
                 <div className="rounded-md border border-border-subtle px-3 py-2">
                     <p className="text-[11px] text-muted-foreground">Enabled</p>
                     <p className="text-lg font-semibold">{selectedKeys.size}</p>
+                </div>
+                <div className="rounded-md border border-border-subtle px-3 py-2">
+                    <p className="text-[11px] text-muted-foreground">Discovery Calls</p>
+                    <p className="text-lg font-semibold">{lastDiscoveryTools.length}</p>
                 </div>
             </div>
 

@@ -23,6 +23,7 @@ import {
     accountSnapshotValueFieldsV,
     agentChatToolPayloadV,
     mcpToolApprovalV,
+    mcpToolDiscoveryRequestV,
     mcpToolDiagnosticV,
 } from "./lib/validators"
 
@@ -76,6 +77,7 @@ export default defineSchema({
     strategy_mcp_tool_whitelists: defineTable({
         strategyId: v.id("strategies"),
         tools: v.array(mcpToolApprovalV),
+        discoveryTools: v.optional(v.array(mcpToolDiscoveryRequestV)),
         createdAt: v.number(),
         updatedAt: v.number(),
     }).index("by_strategy", ["strategyId"]),

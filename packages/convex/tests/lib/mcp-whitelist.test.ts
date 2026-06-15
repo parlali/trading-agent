@@ -12,6 +12,18 @@ describe("strategy MCP tool whitelist persistence", () => {
         await callRegistered(setStrategyMcpToolWhitelist, { db } as never, {
             serviceToken: "test-token",
             strategyId: "strategy-1",
+            discoveryTools: [
+                {
+                    providerId: "macro",
+                    toolName: "discover_tools",
+                    input: { category: "rates" },
+                },
+                {
+                    providerId: "macro",
+                    toolName: "discover_tools",
+                    input: { category: "calendar" },
+                },
+            ],
             tools: [
                 {
                     providerId: "macro",
@@ -43,6 +55,18 @@ describe("strategy MCP tool whitelist persistence", () => {
         expect(db.rows.strategy_mcp_tool_whitelists).toHaveLength(1)
         expect(db.rows.strategy_mcp_tool_whitelists?.[0]).toMatchObject({
             strategyId: "strategy-1",
+            discoveryTools: [
+                {
+                    providerId: "macro",
+                    toolName: "discover_tools",
+                    input: { category: "calendar" },
+                },
+                {
+                    providerId: "macro",
+                    toolName: "discover_tools",
+                    input: { category: "rates" },
+                },
+            ],
             tools: [
                 {
                     providerId: "macro",

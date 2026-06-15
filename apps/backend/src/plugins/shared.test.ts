@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 import type { Logger, Position, WorkingOrder } from "@valiq-trading/core"
+import { createHttpMcpToolBindingResolution } from "@valiq-trading/agent"
 import {
     appendMcpSecretKeys,
     createMcpTools,
@@ -11,15 +12,24 @@ vi.mock("@valiq-trading/agent", async (importOriginal) => {
     return {
         ...actual,
         createHttpMcpToolBindingResolution: vi.fn(async ({ providers }: {
-            providers: Array<{ id: string; category?: string }>
+            providers: Array<{
+                id: string
+                category?: string
+                approvedTools?: Array<{
+                    name: string
+                    registeredName?: string
+                }>
+            }>
         }) => ({
-            bindings: providers.map((provider: { id: string; category?: string }) => ({
-                name: `mcp_${provider.id}_research`,
-                description: "Remote research",
-                parameters: { safeParse: (value: unknown) => ({ success: true, data: value }) },
-                category: provider.category ?? "research",
-                handler: vi.fn(),
-            })),
+            bindings: providers.flatMap((provider) =>
+                (provider.approvedTools ?? [{ name: "research", registeredName: `mcp_${provider.id}_research` }]).map((tool) => ({
+                    name: tool.registeredName ?? `mcp_${provider.id}_${tool.name}`,
+                    description: "Remote research",
+                    parameters: { safeParse: (value: unknown) => ({ success: true, data: value }) },
+                    category: provider.category ?? "research",
+                    handler: vi.fn(),
+                }))
+            ),
             inventory: [],
             diagnostics: [],
         })),
@@ -156,6 +166,55 @@ describe("backend plugin shared helpers", () => {
 
         expect(tools.map((tool) => tool.name)).toEqual(["mcp_default_research"])
         expect(tools[0]?.category).toBe("research")
+    })
+
+    it("replays persisted MCP discovery requests before registering approved nested tools", async () => {
+        const runLogger = createTestLogger()
+
+        const tools = await createMcpTools({
+            secrets: {
+                MCP_PROVIDER_CONFIGS: JSON.stringify([{
+                    id: "core_api",
+                    url: "https://mcp.example",
+                }]),
+            },
+            runLogger,
+            mcpToolWhitelist: {
+                _id: "whitelist-1" as never,
+                _creationTime: 1,
+                strategyId: "strategy-1" as never,
+                discoveryTools: [{
+                    providerId: "core_api",
+                    toolName: "discover_tools",
+                    input: { category: "macro_analysis" },
+                }],
+                tools: [{
+                    providerId: "core_api",
+                    toolName: "get_current_market_context",
+                    registeredName: "mcp_core_api_get_current_market_context",
+                    schemaHash: "a".repeat(64),
+                }],
+                createdAt: 1,
+                updatedAt: 1,
+            },
+        })
+
+        expect(tools.map((tool) => tool.name)).toEqual(["mcp_core_api_get_current_market_context"])
+        expect(createHttpMcpToolBindingResolution).toHaveBeenCalledWith(expect.objectContaining({
+            providers: [expect.objectContaining({
+                id: "core_api",
+                allowedTools: ["get_current_market_context"],
+                approvedTools: [{
+                    name: "get_current_market_context",
+                    registeredName: "mcp_core_api_get_current_market_context",
+                    schemaHash: "a".repeat(64),
+                }],
+                discoveryTools: [{
+                    name: "discover_tools",
+                    inputs: [{ category: "macro_analysis" }],
+                }],
+            })],
+        }))
     })
 
     it("rejects duplicate MCP provider ids instead of choosing a silent fallback", async () => {

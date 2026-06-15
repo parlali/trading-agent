@@ -91,6 +91,12 @@ export const mcpToolApprovalV = v.object({
     approvalReason: v.optional(v.string()),
 })
 
+export const mcpToolDiscoveryRequestV = v.object({
+    providerId: v.string(),
+    toolName: v.string(),
+    input: v.any(),
+})
+
 export const mcpToolDiagnosticV = v.object({
     providerId: v.string(),
     upstreamToolName: v.optional(v.string()),

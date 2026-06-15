@@ -1,11 +1,18 @@
-import type {
-    HttpMcpProviderConfig,
-    McpToolApproval,
+import {
+    createScopedMcpProviderConfig,
+    type HttpMcpProviderConfig,
+    type McpToolApproval,
+    type McpToolDiscoveryRequest,
 } from "@valiq-trading/agent"
+
+interface McpConnectionWhitelistScope {
+    tools: McpToolApproval[]
+    discoveryTools?: McpToolDiscoveryRequest[]
+}
 
 export function createMcpConnectionProviderScope(
     providers: HttpMcpProviderConfig[],
-    tools: McpToolApproval[]
+    whitelist: McpConnectionWhitelistScope
 ): {
     providers: HttpMcpProviderConfig[]
     missingProviderIds: string[]
@@ -13,7 +20,7 @@ export function createMcpConnectionProviderScope(
     const providerById = new Map(providers.map((provider) => [provider.id, provider]))
     const toolsByProvider = new Map<string, McpToolApproval[]>()
 
-    for (const tool of tools) {
+    for (const tool of whitelist.tools) {
         const providerTools = toolsByProvider.get(tool.providerId) ?? []
         providerTools.push(tool)
         toolsByProvider.set(tool.providerId, providerTools)
@@ -28,15 +35,11 @@ export function createMcpConnectionProviderScope(
             return []
         }
 
-        return [{
-            ...provider,
-            allowedTools: providerTools.map((tool) => tool.toolName),
-            approvedTools: providerTools.map((tool) => ({
-                name: tool.toolName,
-                registeredName: tool.registeredName,
-                schemaHash: tool.schemaHash,
-            })),
-        }]
+        return [createScopedMcpProviderConfig({
+            provider,
+            tools: providerTools,
+            discoveryRequests: (whitelist.discoveryTools ?? []).filter((request) => request.providerId === providerId),
+        })]
     })
 
     return {

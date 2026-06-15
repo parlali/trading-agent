@@ -35,6 +35,7 @@ export type {
     McpToolAnnotations,
     McpToolApproval,
     McpToolDiagnostic,
+    McpToolDiscoveryRequest,
     McpToolDiscoverySource,
     McpToolInventoryEntry,
     McpToolSkipReason,

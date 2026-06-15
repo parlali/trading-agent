@@ -569,7 +569,7 @@ export const testMcpConnection = action({
                 return { ok: false, steps }
             }
 
-            const providerScope = createMcpConnectionProviderScope(providers, whitelist.tools)
+            const providerScope = createMcpConnectionProviderScope(providers, whitelist)
             const toolBindings = await createHttpMcpToolBindingResolution({
                 providers: providerScope.providers,
                 failOnProviderError: false,

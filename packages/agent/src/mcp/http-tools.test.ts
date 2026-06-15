@@ -7,8 +7,10 @@ import {
     createHttpMcpToolBindingResolution,
     createHttpMcpToolBindings,
     discoverHttpMcpToolInventory,
+    hashMcpToolSchema,
     type McpToolDiagnostic,
 } from "./http-tools"
+import { createScopedMcpProviderConfig } from "./provider-scope"
 
 describe("HTTP MCP tool bindings", () => {
     const servers: Array<{ close: () => void }> = []
@@ -355,6 +357,128 @@ describe("HTTP MCP tool bindings", () => {
             content: [{
                 type: "text",
                 text: "nested result",
+            }],
+        })
+    })
+
+    it("replays persisted category discovery inputs before binding approved nested tools", async () => {
+        const receivedDiscoveryInputs: unknown[] = []
+        const marketContextInputSchema = {
+            type: "object",
+            properties: {},
+        }
+        const server = await startMcpServer(async (request, response) => {
+            const body = await readJsonBody(request)
+
+            if (body.method === "initialize") {
+                writeJsonRpc(response, body.id, {
+                    protocolVersion: "2025-03-26",
+                    capabilities: {},
+                    serverInfo: { name: "category-discovery-server", version: "1.0.0" },
+                })
+                return
+            }
+
+            if (body.method === "notifications/initialized") {
+                response.writeHead(202)
+                response.end()
+                return
+            }
+
+            if (body.method === "tools/list") {
+                writeJsonRpc(response, body.id, {
+                    tools: [{
+                        name: "discover_tools",
+                        description: "Discover category tools",
+                        inputSchema: {
+                            type: "object",
+                            properties: {
+                                category: { type: "string" },
+                            },
+                            required: ["category"],
+                        },
+                    }],
+                })
+                return
+            }
+
+            if (body.method === "tools/call") {
+                const params = body.params as Record<string, unknown>
+                if (params.name === "discover_tools") {
+                    receivedDiscoveryInputs.push(params.arguments)
+                    const input = params.arguments as Record<string, unknown> | undefined
+                    writeJsonRpc(response, body.id, {
+                        structuredContent: {
+                            tools: input?.category === "macro_analysis"
+                                ? [{
+                                    name: "get_current_market_context",
+                                    description: "Current macro context",
+                                    inputSchema: marketContextInputSchema,
+                                }]
+                                : [],
+                        },
+                        content: [],
+                    })
+                    return
+                }
+
+                if (params.name === "get_current_market_context") {
+                    writeJsonRpc(response, body.id, {
+                        content: [{
+                            type: "text",
+                            text: "macro context",
+                        }],
+                    })
+                    return
+                }
+            }
+
+            writeJsonRpcError(response, body.id, -32601, "method not found")
+        })
+        servers.push(server)
+
+        const persistedWhitelist = {
+            discoveryTools: [{
+                providerId: "core_api",
+                toolName: "discover_tools",
+                input: { category: "macro_analysis" },
+            }],
+            tools: [{
+                providerId: "core_api",
+                toolName: "get_current_market_context",
+                registeredName: "mcp_core_api_get_current_market_context",
+                schemaHash: hashMcpToolSchema(marketContextInputSchema),
+            }],
+        }
+        const scopedProvider = createScopedMcpProviderConfig({
+            provider: {
+                id: "core_api",
+                url: server.url,
+            },
+            tools: persistedWhitelist.tools,
+            discoveryRequests: persistedWhitelist.discoveryTools,
+        })
+
+        const resolution = await createHttpMcpToolBindingResolution({
+            providers: [scopedProvider],
+            logger: createLogger({ minLevel: "fatal" }),
+        })
+
+        expect(scopedProvider.discoveryTools).toEqual([{
+            name: "discover_tools",
+            inputs: [{ category: "macro_analysis" }],
+        }])
+        expect(scopedProvider.approvedTools).toEqual([{
+            name: "get_current_market_context",
+            registeredName: "mcp_core_api_get_current_market_context",
+            schemaHash: hashMcpToolSchema(marketContextInputSchema),
+        }])
+        expect(receivedDiscoveryInputs).toEqual([{ category: "macro_analysis" }])
+        expect(resolution.bindings.map((tool) => tool.name)).toEqual(["mcp_core_api_get_current_market_context"])
+        await expect(resolution.bindings[0]?.handler({})).resolves.toMatchObject({
+            content: [{
+                type: "text",
+                text: "macro context",
             }],
         })
     })

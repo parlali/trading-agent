@@ -3,6 +3,7 @@ import type { CascadeDeleteCounts } from "../convex/lib/cascadeDelete"
 import type {
     McpToolApproval,
     McpToolDiagnostic,
+    McpToolDiscoveryRequest,
     McpToolInventoryEntry,
 } from "@valiq-trading/agent"
 import type {
@@ -39,6 +40,7 @@ export interface ToolManifestEntry {
 export type {
     McpToolApproval,
     McpToolDiagnostic,
+    McpToolDiscoveryRequest,
     McpToolInventoryEntry,
 }
 
@@ -108,6 +110,7 @@ export interface StrategyMcpToolWhitelist {
     _creationTime: number
     strategyId: Id<"strategies">
     tools: McpToolApproval[]
+    discoveryTools?: McpToolDiscoveryRequest[]
     createdAt: number
     updatedAt: number
 }

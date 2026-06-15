@@ -32,6 +32,12 @@ export interface McpNestedDiscoveryToolConfig {
     inputs: readonly Record<string, unknown>[]
 }
 
+export interface McpToolDiscoveryRequest {
+    providerId: string
+    toolName: string
+    input: Record<string, unknown>
+}
+
 export interface HttpMcpProviderConfig {
     id: string
     url: string
