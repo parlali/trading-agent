@@ -63,6 +63,8 @@ describe("dashboard agent chat API route", () => {
             method: "POST",
             body: JSON.stringify({
                 message: "hello",
+                modelProvider: "openrouter",
+                modelId: "test-model",
                 chatSessionId: "session-1",
                 chatMessageId: "message-1",
                 mode: "mcp",
@@ -149,7 +151,11 @@ function createRequest(body: Record<string, unknown>): Request {
             "content-type": "application/json",
             authorization: "Bearer user-token",
         },
-        body: JSON.stringify(body),
+        body: JSON.stringify({
+            modelProvider: "openrouter",
+            modelId: "test-model",
+            ...body,
+        }),
     })
 }
 

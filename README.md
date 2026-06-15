@@ -1,61 +1,90 @@
-# Val-iQ Trading
+# Trading Runtime
 
 Open-source trading infrastructure for running LLM-assisted strategies with deterministic risk enforcement, provider-truth reconciliation, and a typed Convex control plane.
 
-This repository contains the reusable runtime, venue adapters, dashboard, and operational tooling. Live strategies, private plans, and deployment-specific notes live in the ignored `private/` overlay.
+The repository contains the reusable runtime, venue adapters, dashboard, agent tooling, and operational scripts. Live strategies, private rollout plans, broker files, credentials, and deployment notes belong in the ignored `private/` overlay.
 
-## What This Repo Includes
+## What Is Included
 
-- `apps/backend`: single TypeScript runtime for strategy execution across supported venues
-- `apps/mt5-worker`: Python worker exposing MT5 broker operations over HTTP
-- `apps/dashboard`: operational dashboard backed by Convex
-- `packages/*`: shared execution, risk, provider, agent, and Convex code
+- `apps/backend`: TypeScript scheduler, strategy orchestration, provider sync, agent runtime, and backend health server
+- `apps/dashboard`: Next.js operator dashboard backed by Convex
+- `apps/mt5-worker`: Python FastAPI worker exposing MetaTrader 5 operations over authenticated HTTP
+- `packages/core`: shared types, strategy config parsing, risk gates, accounting helpers, and runtime utilities
+- `packages/agent`: tool contracts, MCP integration, transcript handling, and model provider adapters
+- `packages/convex`: schema, queries, mutations, generated API bindings, and backend client helpers
+- `packages/alpaca-options`, `packages/mt5`, `packages/okx`, `packages/polymarket`: venue-specific clients, adapters, risk rules, and payload mapping
+
+## Safety Model
+
+Agents propose intents. Deterministic code owns execution permission, risk validation, account ownership, order lifecycle, accounting, kill switches, provider identity checks, persistence, and reconciliation.
+
+Provider truth remains authoritative for live account state, positions, orders, fills, and reconciliation evidence. Fallbacks must be explicit, logged, bounded, and fail closed for execution, ownership, accounting, credentials, and provider identity.
 
 ## Private Overlay
 
-This repo ignores `private/` by default. That directory is for operator-local files that should not be committed:
+This repo ignores `private/` by default. Use it for operator-local files:
 
-- `private/strategies.md`
-- `private/plan.md`
-- `private/context.md`
-- deployment notes, runbooks, or one-off maintenance scripts tied to your own accounts
+- `private/strategies.md`: account pool and strategy source of truth
+- `private/plan.md`: local rollout and audit plan
+- `private/context.md`: private operational context
+- `private/mt5-worker/servers.dat`: broker server database required by MT5 worker machines
+- deployment notes, runbooks, and one-off maintenance scripts tied to your own accounts
 
-The strategy CLI reads `private/strategies.md`.
+Do not commit credentials, broker files, deployment secrets, private strategy prompts, or audit exports.
 
 ## Setup
+
+Install dependencies with Bun:
 
 ```bash
 bun install
 ```
 
-### Convex
+Start Convex locally when developing Convex functions:
 
 ```bash
 cd packages/convex
 bunx convex dev
 ```
 
-Configure these secrets before starting the backend:
+Start the backend and dashboard in development:
 
-- `CONVEX_URL` in the backend runtime
-- `BACKEND_SERVICE_TOKEN` in both Convex env vars and the backend runtime
-- `MT5_WORKER_ACCESS_KEY` in both Convex env vars and the MT5 worker runtime
-- `POLYMARKET_PRIVATE_KEY`, `POLYMARKET_API_KEY`, `POLYMARKET_API_SECRET`, `POLYMARKET_API_PASSPHRASE`, and `POLYMARKET_FUNDER_ADDRESS` in Convex env vars for Polymarket
-- `OKX_API_KEY`, `OKX_API_SECRET`, and `OKX_API_PASSPHRASE` in Convex env vars for OKX
-- `OKX_DEMO_TRADING` in Convex env vars and set explicitly to `true` or `false`
-- `OKX_MARGIN_MODE` in Convex env vars and set explicitly to `cross` or `isolated`
-- `OKX_POSITION_MODE` in Convex env vars and set explicitly to `net_mode` or `long_short_mode`
-- `OKX_BASE_URL` in Convex env vars only when you need to override the default official host (`https://www.okx.com`)
+```bash
+bun run dev
+```
 
-Generate machine credentials with a high-entropy random value, for example:
+Run the main checks:
+
+```bash
+bun run build
+bun run test
+```
+
+## Runtime Configuration
+
+Backend runtime env:
+
+- `CONVEX_URL`
+- `BACKEND_SERVICE_TOKEN`
+- `HEALTH_PORT`
+- `OPENROUTER_API_KEY` for local fallback when it is not resolved from Convex
+- `MCP_PROVIDER_CONFIGS`, or `MCP_SERVER_URL` / `MCP_SERVER_TOKEN` / `MCP_SERVER_ALLOWED_TOOLS`
+
+Dashboard runtime env:
+
+- `NEXT_PUBLIC_CONVEX_URL`
+- `BACKEND_URL`
+- `BACKEND_SERVICE_TOKEN`
+
+Convex env must also include `BACKEND_SERVICE_TOKEN`. Generate machine credentials with high-entropy random values:
 
 ```bash
 openssl rand -hex 32
 ```
 
-Use one generated value for `BACKEND_SERVICE_TOKEN` and a different one for `MT5_WORKER_ACCESS_KEY`.
+Use distinct values for backend machine auth and MT5 worker auth.
 
-After auth is deployed, create the single dashboard user from the Convex dashboard Functions page by running the internal action `seedUserAction:seedUser` with:
+After auth is deployed, create the initial dashboard user from the Convex dashboard Functions page by running `seedUserAction:seedUser`:
 
 ```json
 {
@@ -64,32 +93,98 @@ After auth is deployed, create the single dashboard user from the Convex dashboa
 }
 ```
 
-### MT5 Worker Private Files
+## Account-Scoped Provider Secrets
+
+Accounts are declared in `private/strategies.md` with a `credentialEnvPrefix`. Provider secrets are resolved from Convex env vars by combining that prefix with each canonical provider key suffix.
+
+For example, an account with `credentialEnvPrefix` set to `OKX_GPT55_LOW` resolves `OKX_API_KEY` from `OKX_GPT55_LOW_API_KEY`.
+
+Canonical provider keys:
+
+| App | Keys |
+|---|---|
+| `mt5` | `MT5_PRIMARY_LOGIN`, `MT5_PRIMARY_PASSWORD`, `MT5_PRIMARY_SERVER` |
+| `alpaca-options` | `ALPACA_API_KEY`, `ALPACA_SECRET_KEY`, `ALPACA_ENVIRONMENT`, `ALPACA_ACCOUNT_ID` |
+| `okx-swap` | `OKX_API_KEY`, `OKX_API_SECRET`, `OKX_API_PASSPHRASE`, `OKX_BASE_URL`, `OKX_DEMO_TRADING`, `OKX_MARGIN_MODE`, `OKX_POSITION_MODE` |
+| `polymarket` | `POLYMARKET_PRIVATE_KEY`, `POLYMARKET_API_KEY`, `POLYMARKET_API_SECRET`, `POLYMARKET_API_PASSPHRASE`, `POLYMARKET_HOST`, `POLYMARKET_CHAIN_ID`, `POLYMARKET_FUNDER_ADDRESS` |
+
+MT5 also needs global worker secrets:
+
+- `MT5_WORKER_URL`
+- `MT5_WORKER_ACCESS_KEY`
+
+`OKX_DEMO_TRADING` must be set explicitly to `true` or `false`. `OKX_MARGIN_MODE` must be `cross` or `isolated`. `OKX_POSITION_MODE` must be `net_mode` or `long_short_mode`.
+
+## MT5 Worker
 
 Any machine that runs `apps/mt5-worker` must keep the broker server database at `private/mt5-worker/servers.dat`.
 
 - The worker copies that file into each portable MT5 instance before `MetaTrader5.initialize(...)`
 - The file is required and intentionally not committed
-- If you intentionally keep it outside the repo's private overlay, set `MT5_SERVERS_DAT_PATH` explicitly
+- If you intentionally keep it outside the repo private overlay, set `MT5_SERVERS_DAT_PATH`
 
 If the file is missing, the worker fails closed with a clear error instead of starting against a stale or implicit fallback path.
 
-Use a worker-specific `MT5_PORTABLE_DIR` on machines that run other MT5 automation. The default example is `C:\mt5-trading` so other services that manage `C:\mt5` cannot mutate this worker's portable terminals or broker server database.
+Use a worker-specific `MT5_PORTABLE_DIR` on machines that run other MT5 automation. On Windows deployments, set `WORKER_EXPECTED_REPO_SUFFIX` if the worker should fail closed unless it is running from an expected repo path.
 
-On Windows deployments, set `WORKER_EXPECTED_REPO_SUFFIX` if you want the worker to fail closed unless it is running from an expected repo path.
+## Polymarket Credentials
 
-### Polymarket Funder Address
-
-`POLYMARKET_FUNDER_ADDRESS` is required and must be set explicitly. The runtime does not derive it from the private key and does not fall back to any other wallet address.
+`POLYMARKET_FUNDER_ADDRESS` is required and must be set explicitly. The runtime does not derive it from the private key and does not fall back to another wallet address.
 
 Operator workflow:
 
-1. Run `bun run packages/polymarket/src/derive-api-key.ts <private-key>` to derive the L2 API credentials from the signer key you exported for Polymarket. By default this writes them to `private/polymarket-credentials.env` with restrictive file permissions. Use `--stdout` only when you explicitly want terminal output.
-2. Copy `POLYMARKET_API_KEY`, `POLYMARKET_API_SECRET`, `POLYMARKET_API_PASSPHRASE`, and `POLYMARKET_PRIVATE_KEY` from that file into Convex env vars.
-3. In Polymarket, copy the profile or proxy wallet address shown in the account UI and set that exact value as `POLYMARKET_FUNDER_ADDRESS`.
-4. Open Dashboard > Test > Polymarket and verify the `Runtime Config` step shows the expected signer and funder addresses, then verify `Authenticated Runtime Path` is green before enabling scheduled runs.
+1. Run `bun run packages/polymarket/src/derive-api-key.ts <private-key>` to derive L2 API credentials from the signer key exported for Polymarket. By default, this writes `private/polymarket-credentials.env` with restrictive file permissions.
+2. Copy `POLYMARKET_API_KEY`, `POLYMARKET_API_SECRET`, `POLYMARKET_API_PASSPHRASE`, and `POLYMARKET_PRIVATE_KEY` into the account-scoped Convex env vars.
+3. In Polymarket, copy the profile or proxy wallet address shown in the account UI and set that exact value as the account-scoped `POLYMARKET_FUNDER_ADDRESS`.
+4. Open Dashboard > Test > Polymarket and verify both the runtime config and authenticated runtime path before enabling scheduled runs.
 
-### Codex Strategy Provider
+## Strategy Management
+
+Keep the strategy document in `private/strategies.md`. It contains both the account pool and strategies.
+
+| Command | Description |
+|---|---|
+| `bun run strategies:diff` | Compare the strategy document against backend state |
+| `bun run strategies:list` | List all strategies in backend with IDs |
+| `bun run strategies:add --name="..."` | Add one strategy from the strategy document |
+| `bun run strategies:add-all` | Add all strategies from the strategy document without deleting existing history |
+| `bun run strategies:delete --name="..."` | Delete one strategy by name and cascade related data |
+| `bun run strategies:delete --id=<id>` | Delete one strategy by Convex ID |
+| `bun run strategies:reset` | Delete all strategies and associated data |
+| `bun run strategies:reset-import` | Delete everything and re-import the strategy document |
+| `bun run provider:identity-preflight` | Refresh and inspect provider identity, freshness, exposure, and active orders |
+
+Examples:
+
+```bash
+bun run strategies:diff
+bun run strategies:add --name="Example Strategy"
+bun run provider:identity-preflight -- --app=mt5
+```
+
+Force resets are safety-critical. Confirm zero open provider exposure, refresh provider truth through the same scheduled credential path, then run the reset/import command only when the provider-sync evidence is clean.
+
+## Agent Chat
+
+Dashboard `/chat` is a global owner chat with the trading agent. It does not require a configured strategy, does not accept `strategyId`, and does not call scheduled strategy execution. The dashboard API route authenticates the Convex dashboard user first, then proxies the bounded chat request to backend `/agent-chat` with `BACKEND_SERVICE_TOKEN`.
+
+The browser sends only the user message, selected `modelProvider` and `modelId`, plus optional chat/session metadata. It must not send raw UI message history or tool outputs as trusted execution state.
+
+Backend `/agent-chat`:
+
+- resolves the selected provider server-side: OpenRouter uses `OPENROUTER_API_KEY` from Convex-resolved secrets or local backend env, and Codex uses the existing dashboard-managed ChatGPT login with the app-server provider
+- reports provider availability to the dashboard so Codex can render a bounded model dropdown and OpenRouter can render a free-text model id input
+- surfaces OpenRouter model-not-found failures as explicit model selection errors
+- persists a trusted server-side transcript for user prompts, assistant responses, tool inputs, tool results, tool errors, and cancelled turns
+- reloads follow-up prompts from completed server transcript records
+- streams AI SDK UI message parts directly to the dashboard
+- aborts provider streaming and tool execution when generation is stopped
+
+Chat tools are separate from scheduled strategy runtime. The current chat registry exposes read-only operational, account, portfolio, run, alert, provider-health, and explicitly configured MCP tools. Execution-capable manual trading tools are intentionally not exposed until a chat-specific typed execution path preserves adapter identity, Convex persistence, deterministic accounting, safety fault recording, and provider-truth reconciliation.
+
+MCP exposure fails closed. Each MCP provider must explicitly allow upstream read-only tool names through `allowedTools` in `MCP_PROVIDER_CONFIGS`, or through comma-separated `MCP_SERVER_ALLOWED_TOOLS` for the single `MCP_SERVER_URL` provider. Tools annotated by the provider as destructive or open-world are blocked even when named in the allowlist. A failing MCP provider is marked unavailable in chat inventory while local read tools remain available.
+
+## Codex Strategy Provider
 
 Codex strategies use the Codex app-server provider. OpenRouter strategies require `OPENROUTER_API_KEY`; Codex ChatGPT strategies require an active dashboard-managed ChatGPT login. Missing credentials fail closed before a scheduled strategy run starts.
 
@@ -108,36 +203,7 @@ Codex strategies must use canonical policy shape:
 
 Scheduled Codex strategies must use `authMode = "chatgpt"`. Open Dashboard > Integrations > Codex ChatGPT Login and start the device-code login flow. The backend runs `codex login --device-auth` against the persisted `CODEX_HOME`, writes the Codex CLI-compatible `auth.json`, and scheduled Codex app-server runs read that same login.
 
-Persist `CODEX_HOME` for backend containers. The backend image defaults to `/var/lib/valiq/codex`; mount that directory to durable storage so restarts keep the ChatGPT login. Do not store ChatGPT OAuth cache files, access tokens, or API keys in Convex strategy config or logs.
-
-### Agent Chat
-
-Dashboard `/chat` is a global owner chat with the trading agent. It does not require a configured strategy, does not accept `strategyId`, and does not call `runStrategy(..., "chat")`. The dashboard API route authenticates the Convex dashboard user first, then proxies the bounded chat request to backend `/agent-chat` with `BACKEND_SERVICE_TOKEN`.
-
-Configure the dashboard server runtime with:
-
-- `BACKEND_URL`
-- `BACKEND_SERVICE_TOKEN`
-
-Configure the backend runtime with:
-
-- `CONVEX_URL`
-- `BACKEND_SERVICE_TOKEN`
-- `AGENT_CHAT_MODEL`
-- `AI_GATEWAY_API_KEY`
-- MCP config through Convex/backend secrets: `MCP_PROVIDER_CONFIGS` or `MCP_SERVER_URL`/`MCP_SERVER_TOKEN` plus `MCP_SERVER_ALLOWED_TOOLS`
-
-The backend resolves the model server-side through the Vercel AI SDK AI Gateway provider. The browser must not send model ids, raw UI message history, or tool outputs as trusted execution state. Backend `/agent-chat` accepts only the user message, optional chat/session ids, and optional visible mode/scope.
-
-The backend persists a trusted server-side chat transcript and audit trail for user prompts, assistant responses, tool inputs, tool results, tool errors, and cancelled turns. Follow-up prompts are built from completed server transcript records, not from browser-supplied assistant/tool history. The dashboard keeps a stable local chat session id and reloads visible chat messages from the authenticated server transcript.
-
-The backend streams AI SDK UI messages directly to the dashboard, including assistant text, reasoning parts when the provider supports them, tool input lifecycle, tool results, and tool errors. Stop generation aborts provider streaming and tool execution without creating strategy-run failures.
-
-Chat tools are separate from scheduled strategy runtime. The current chat registry exposes read-only operational, account, portfolio, run, alert, provider-health, and configured MCP tools. MCP bearer tokens stay on the backend and are never returned to the browser.
-
-MCP exposure fails closed. Each MCP provider must explicitly allow upstream read-only tool names through `allowedTools` in `MCP_PROVIDER_CONFIGS`, or through comma-separated `MCP_SERVER_ALLOWED_TOOLS` for the single `MCP_SERVER_URL` provider. Tools annotated by the provider as destructive or open-world are blocked even when named in the allowlist. A failing MCP provider is marked unavailable in chat inventory while local account and portfolio read tools remain available.
-
-Execution-capable manual trading tools are intentionally not exposed until a chat-specific typed path preserves adapter identity, Convex persistence, deterministic accounting, safety fault recording, and provider-truth reconciliation.
+Persist `CODEX_HOME` for backend containers. If it is unset, the backend uses `$HOME/.codex`. Do not store ChatGPT OAuth cache files, access tokens, or API keys in Convex strategy config or logs.
 
 Run the same app-server and MCP path used by scheduled dry-run strategies before enabling any Codex strategy:
 
@@ -147,7 +213,7 @@ bun run codex:preflight -- --strategy <strategy-id> --dry-run-only
 
 Stored-strategy preflight uses the scheduler provider gate and resolved Convex secrets. It fails closed if the strategy is not dry-run, is not configured for Codex, or lacks the active Codex ChatGPT login.
 
-The Codex app-server path disables inherited apps, plugins, browser/computer/image/multi-agent/workspace tools, shell/unified exec, and web search for strategy runs. Preflight must show only the run-scoped `valiq_run` MCP server starting. If any non-run MCP server starts, the run is interrupted and fails closed.
+The Codex app-server path disables inherited apps, plugins, browser/computer/image/multi-agent/workspace tools, shell/unified exec, and web search for strategy runs. Preflight must show only the run-scoped MCP server starting. If any non-run MCP server starts, the run is interrupted and fails closed.
 
 For a synthetic local smoke check that does not load a stored strategy, pass the model and auth mode directly:
 
@@ -155,15 +221,13 @@ For a synthetic local smoke check that does not load a stored strategy, pass the
 bun run codex:preflight -- --model=your-codex-model --auth-mode=chatgpt
 ```
 
-After a stored Codex dry-run completes, export the audit evidence before enabling rollout:
+After a stored Codex dry-run completes, export audit evidence before enabling rollout:
 
 ```bash
 bun run codex:run-audit -- --strategy <strategy-id>
 ```
 
-The command writes `private/audits/codex-run-audit-<run-id>.json` by default and fails closed if provider identity, run/evidence linkage, shared tool logs, canonical strategy tool names, forbidden Codex tool absence, dry-run ledger source run, canonical dry-run accounting state, or provider-sync health cannot be proven. Provider-sync evidence must be healthy, no-drift, and verified at or after the audited run ended. Use `--run-id <run-id>` to audit a specific run or `--out <path>` to choose the artifact path.
-
-To perform the required provider-sync check inside the audit export, pass `--refresh-provider-sync`. The exporter uses the only same-venue live strategy when exactly one exists; if multiple live strategies can refresh that venue, also pass `--provider-sync-strategy <live-strategy-id>`.
+The command writes `private/audits/codex-run-audit-<run-id>.json` by default and fails closed if provider identity, run/evidence linkage, shared tool logs, canonical strategy tool names, forbidden Codex tool absence, dry-run ledger source run, canonical dry-run accounting state, or provider-sync health cannot be proven. Provider-sync evidence must be healthy, no-drift, and verified at or after the audited run ended.
 
 After at least three scheduled Codex dry-runs complete, export rollout evidence before enabling dashboard creation:
 
@@ -171,55 +235,35 @@ After at least three scheduled Codex dry-runs complete, export rollout evidence 
 bun run codex:rollout-audit -- --strategy <strategy-id>
 ```
 
-The rollout audit writes `private/audits/codex-rollout-audit-<strategy-id>.json` by default and fails closed unless exactly one enabled Codex dry-run strategy is present, live Codex strategies remain blocked, three scheduled Codex run audits pass, summaries/tool logs/accounting diagnostics are comparable, and every enabled OpenRouter strategy has a post-rollout run sample with no Codex provider leakage. Use `--min-runs <count>` to require more scheduled runs, with `count` bounded from 1 to 50, `--refresh-provider-sync` to refresh provider truth before collecting the run audits, or `--out <path>` to choose the artifact path.
+The rollout audit writes `private/audits/codex-rollout-audit-<strategy-id>.json` by default and fails closed unless the scheduled dry-run evidence is complete, live Codex strategies remain blocked, run audits pass, summaries/tool logs/accounting diagnostics are comparable, and every enabled non-Codex strategy has post-rollout evidence without provider leakage.
 
-Live Codex execution remains blocked. Do not enable live Codex runs until replay, export audit, and provider-sync evidence has been produced for the intended venue path.
+Live Codex execution remains blocked until replay, export audit, and provider-sync evidence has been produced for the intended venue path.
 
-## Development
+## Dashboard And Auth
+
+- Dashboard users authenticate with Convex Auth
+- Backend machine traffic uses `BACKEND_SERVICE_TOKEN` for machine-only Convex actions such as secret resolution
+- MT5 worker traffic uses `MT5_WORKER_ACCESS_KEY` on every backend-to-worker request, including health checks
+- Kill switches live in Convex and are enforced by the backend runtime
+
+Rotate machine secrets by generating a new value, updating the target service first, then updating the caller, and redeploying both ends so there is no mismatch window.
+
+## Deployment
+
+Deployment-specific scripts and secrets belong in `private/`. The local private deploy script, when configured, can deploy selected surfaces:
 
 ```bash
-bun run dev
+bun private/deploy.ts --only=convex,vercel,mt5
 ```
 
-## Strategy Management
-
-Keep your strategy document in `private/strategies.md`.
-
-| Command | Description |
-|---|---|
-| `bun run strategies:diff` | Compare the strategy document against backend state |
-| `bun run strategies:list` | List all strategies in backend with IDs |
-| `bun run strategies:add --name="..."` | Add one strategy from the strategy document |
-| `bun run strategies:add-all` | Add all strategies from the strategy document without deleting existing |
-| `bun run strategies:delete --name="..."` | Delete one strategy by name and cascade related data |
-| `bun run strategies:delete --id=<id>` | Delete one strategy by Convex ID |
-| `bun run strategies:reset` | Delete all strategies and associated data |
-| `bun run strategies:reset-import` | Delete everything and re-import the strategy document |
-
-Examples:
+After deployment, verify the same runtime paths used in production:
 
 ```bash
 bun run strategies:diff
-bun run strategies:add --name="Example Strategy"
-bun run strategies:reset-import
+bun run provider:identity-preflight
 ```
 
-## Architecture
-
-The backend runs N strategies, each defined by a config record in Convex:
-
-- `policy`: typed and schema-validated deterministic settings enforced by code
-- `context`: freeform prompt context injected into the agent system prompt
-
-The agent proposes intents. The risk layer validates them. The venue adapter executes them. The system records execution and reconciliation state in Convex.
-
-## Auth Model
-
-- Dashboard users should use Convex Auth only
-- Backend machine traffic uses `BACKEND_SERVICE_TOKEN` only for machine-only Convex actions such as secret resolution
-- MT5 worker traffic uses `MT5_WORKER_ACCESS_KEY` on every backend-to-worker request, including health checks
-
-Rotate machine secrets by generating a new value, updating the target service first, then updating the caller, and redeploying both ends so there is no mismatch window.
+For MT5, SSH into the Windows worker host and verify the service manager status plus authenticated `/health` endpoint. Treat the deployment as incomplete until the service is running, the worker returns `status: ok`, and provider-sync evidence is clean.
 
 ## Stack
 
@@ -227,9 +271,10 @@ Rotate machine secrets by generating a new value, updating the target service fi
 - TypeScript
 - Turborepo
 - Convex
-- Val-iQ
+- Next.js
+- Vercel AI SDK
 - Python for the MT5 worker only
 
-## Open Source
+## Open Source Boundary
 
-This repository is intended to publish the reusable platform code. Operator-specific strategies, plans, secrets, and deployment details should remain outside version control in `private/`.
+This repository is intended to publish reusable platform code. Operator-specific strategies, plans, secrets, broker files, deployment details, and production audit artifacts should remain outside version control in `private/`.

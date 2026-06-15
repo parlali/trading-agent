@@ -22,7 +22,7 @@ import type {
     StoredAccount,
     TradingBackendClient,
 } from "@valiq-trading/convex"
-import { handleAgentChatRequest } from "./agent-chat"
+import { handleAgentChatRequest, type AgentChatRequest } from "./agent-chat"
 import {
     createAgentChatUiMessageStream,
     getAgentChatInventory,
@@ -99,11 +99,11 @@ describe("agent chat handler", () => {
 
     it("passes bounded chat session id to backend inventory for transcript loading", async () => {
         const getInventory = vi.fn(async () => ({
-            model: {
-                provider: "ai-gateway" as const,
+            modelProviders: [{
+                provider: "openrouter" as const,
                 configured: true,
-                modelId: "openai/gpt-5",
-            },
+                defaultModelId: "test-model",
+            }],
             tools: [],
             mcpProviders: [],
             manualTrading: {
@@ -189,6 +189,8 @@ describe("agent chat handler", () => {
         expect(createStream).toHaveBeenCalledWith({
             request: {
                 message: "What can you see?",
+                modelProvider: "openrouter",
+                modelId: "test-model",
                 chatSessionId: "session-1",
                 chatMessageId: "message-1",
             },
@@ -240,11 +242,11 @@ describe("agent chat handler", () => {
         })
 
         const stream = await createAgentChatUiMessageStream({
-            request: {
+            request: runtimeChatRequest({
                 message: "What about that account now?",
                 chatSessionId: "session-1",
                 chatMessageId: "message-2",
-            },
+            }),
             abortSignal: new AbortController().signal,
             model,
             modelId: "test-model",
@@ -306,7 +308,7 @@ describe("agent chat handler", () => {
         })
 
         const stream = await createAgentChatUiMessageStream({
-            request: { message: "List accounts" },
+            request: runtimeChatRequest({ message: "List accounts" }),
             abortSignal: new AbortController().signal,
             model,
             modelId: "test-model",
@@ -349,11 +351,11 @@ describe("agent chat handler", () => {
         })
 
         const stream = await createAgentChatUiMessageStream({
-            request: {
+            request: runtimeChatRequest({
                 message: "Will this fail?",
                 chatSessionId: "session-1",
                 chatMessageId: "message-fail",
-            },
+            }),
             abortSignal: new AbortController().signal,
             model,
             modelId: "test-model",
@@ -388,11 +390,11 @@ describe("agent chat handler", () => {
         })
 
         const stream = await createAgentChatUiMessageStream({
-            request: {
+            request: runtimeChatRequest({
                 message: "Will setup fail?",
                 chatSessionId: "session-1",
                 chatMessageId: "message-setup-fail",
-            },
+            }),
             abortSignal: new AbortController().signal,
             model: new MockLanguageModelV3(),
             modelId: "test-model",
@@ -431,7 +433,7 @@ describe("agent chat handler", () => {
         })
 
         const stream = await createAgentChatUiMessageStream({
-            request: { message: "List accounts for a bad provider" },
+            request: runtimeChatRequest({ message: "List accounts for a bad provider" }),
             abortSignal: new AbortController().signal,
             model,
             modelId: "test-model",
@@ -497,7 +499,7 @@ describe("agent chat handler", () => {
             },
         })
         const stream = await createAgentChatUiMessageStream({
-            request: { message: "Call wait" },
+            request: runtimeChatRequest({ message: "Call wait" }),
             abortSignal: providerController.signal,
             model,
             modelId: "test-model",
@@ -521,19 +523,30 @@ describe("agent chat handler", () => {
         }))
     })
 
-    it("surfaces configured model id in inventory", async () => {
+    it("surfaces configured model providers in inventory", async () => {
         const inventory = await getAgentChatInventory({
             abortSignal: new AbortController().signal,
             env: {
-                AGENT_CHAT_MODEL: "openai/gpt-5",
+                CODEX_HOME: `/tmp/valiq-agent-chat-test-${crypto.randomUUID()}`,
+            },
+            secrets: {
+                OPENROUTER_API_KEY: "openrouter-key",
             },
         })
 
-        expect(inventory.model).toEqual({
-            provider: "ai-gateway",
-            configured: true,
-            modelId: "openai/gpt-5",
-        })
+        expect(inventory.modelProviders).toEqual([
+            expect.objectContaining({
+                provider: "codex",
+                configured: false,
+                defaultModelId: "gpt-5.5",
+                modelIds: expect.arrayContaining(["gpt-5.5"]),
+            }),
+            {
+                provider: "openrouter",
+                configured: true,
+                reason: undefined,
+            },
+        ])
     })
 
     it("uses backend MCP secrets for discovery and never exposes bearer tokens in inventory", async () => {
@@ -644,8 +657,26 @@ function authorizedRequest(body: Record<string, unknown>): Request {
             authorization: "Bearer backend-token",
             "content-type": "application/json",
         },
-        body: JSON.stringify(body),
+        body: JSON.stringify(chatRequest(body)),
     })
+}
+
+function chatRequest(body: Record<string, unknown>): Record<string, unknown> {
+    return {
+        modelProvider: "openrouter",
+        modelId: "test-model",
+        ...body,
+    }
+}
+
+function runtimeChatRequest(
+    body: Omit<AgentChatRequest, "modelProvider" | "modelId"> & Partial<Pick<AgentChatRequest, "modelProvider" | "modelId">>
+): AgentChatRequest {
+    return {
+        modelProvider: "openrouter",
+        modelId: "test-model",
+        ...body,
+    }
 }
 
 type TestStreamChunk = Record<string, unknown>

@@ -65,7 +65,7 @@ describe("agent chat audit mutations", () => {
             messageId: "message-1:assistant",
             content: "visible answer",
             status: "failed",
-            modelProvider: "ai-gateway",
+            modelProvider: "openrouter",
             modelId: "openai/gpt-5",
             finishReason: "error",
             reasoning: "provider summary",

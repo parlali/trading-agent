@@ -26,6 +26,7 @@
         "codex:rollout-audit": "bun scripts/codex-rollout-audit-export.ts"
     },
     "dependencies": {
+        "@openrouter/ai-sdk-provider": "^2.9.1",
         "@valiq-trading/agent": "workspace:*",
         "@valiq-trading/alpaca-options": "workspace:*",
         "@valiq-trading/convex": "workspace:*",

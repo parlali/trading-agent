@@ -14,9 +14,12 @@ import {
 
 const MAX_CHAT_MESSAGE_LENGTH = 8_000
 const MAX_CHAT_ID_LENGTH = 160
+const MAX_CHAT_MODEL_ID_LENGTH = 200
 
 export const agentChatRequestSchema = z.strictObject({
     message: z.string().trim().min(1).max(MAX_CHAT_MESSAGE_LENGTH),
+    modelProvider: z.enum(["codex", "openrouter"]),
+    modelId: z.string().trim().min(1).max(MAX_CHAT_MODEL_ID_LENGTH),
     chatSessionId: z.string().trim().min(1).max(MAX_CHAT_ID_LENGTH).optional(),
     chatMessageId: z.string().trim().min(1).max(MAX_CHAT_ID_LENGTH).optional(),
     mode: z.enum(["general", "portfolio", "operations", "mcp"]).optional(),
@@ -131,6 +134,15 @@ function requestErrorStatus(error: unknown): number {
     const message = error instanceof Error ? error.message : String(error)
     if (message === "Request body must be valid JSON" || error instanceof z.ZodError) {
         return 400
+    }
+    if (message.includes("model not found")) {
+        return 404
+    }
+    if (
+        message.includes("OPENROUTER_API_KEY is not configured") ||
+        message.includes("Codex ChatGPT login is not configured")
+    ) {
+        return 503
     }
 
     return 500

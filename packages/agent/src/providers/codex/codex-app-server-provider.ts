@@ -1,5 +1,5 @@
-import { mkdtemp, rm } from "node:fs/promises"
-import { tmpdir } from "node:os"
+import { copyFile, mkdir, mkdtemp, rm } from "node:fs/promises"
+import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
 import { safeLogAgentMessage } from "../../agent-transcript"
 import { createEmptyUsage, type LLMUsage } from "../../llm-usage"
@@ -61,6 +61,7 @@ export interface CodexAppServerClientFactoryArgs {
     runArgs: AgentProviderRunArgs
     mcpServer: RunToolServer
     runDirectory: string
+    env: Record<string, string | undefined>
     onNotification: (message: JsonRpcMessage) => void
     onServerRequest: (message: JsonRpcMessage, client: CodexAppServerClient) => Promise<void> | void
 }
@@ -118,7 +119,8 @@ export class CodexAppServerProvider implements AgentModelProvider {
                 },
             })
 
-            this.client = this.createClient(args, this.mcpServer, runDirectory)
+            const clientEnv = await this.buildRunCodexEnvironment(runDirectory, this.mcpServer.token)
+            this.client = this.createClient(args, this.mcpServer, runDirectory, clientEnv)
             await this.client.initialize()
 
             const authStatus = await this.readAuthStatus()
@@ -247,7 +249,8 @@ export class CodexAppServerProvider implements AgentModelProvider {
     private createClient(
         args: AgentProviderRunArgs,
         mcpServer: RunToolServer,
-        runDirectory: string
+        runDirectory: string,
+        env: Record<string, string | undefined>
     ): CodexAppServerClient {
         const onNotification = (message: JsonRpcMessage) => this.handleNotification(message, args)
         const onServerRequest = async (message: JsonRpcMessage, client: CodexAppServerClient) => {
@@ -260,6 +263,7 @@ export class CodexAppServerProvider implements AgentModelProvider {
                 runArgs: args,
                 mcpServer,
                 runDirectory,
+                env,
                 onNotification,
                 onServerRequest,
             })
@@ -269,12 +273,44 @@ export class CodexAppServerProvider implements AgentModelProvider {
             command: this.config.codexBin ?? "codex",
             args: buildCodexAppServerArgs(this.config, mcpServer),
             cwd: runDirectory,
-            env: buildCodexEnvironment(this.config, mcpServer.token),
+            env,
             logger: args.logger,
             requestTimeoutMs: this.config.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS,
             onNotification,
             onServerRequest: async (message, client) => await onServerRequest(message, client),
         })
+    }
+
+    private async buildRunCodexEnvironment(
+        runDirectory: string,
+        mcpToken: string
+    ): Promise<Record<string, string | undefined>> {
+        const env = buildCodexEnvironment(this.config, mcpToken)
+        if (this.config.authMode !== "chatgpt") {
+            return env
+        }
+
+        const sourceCodexHome = resolveSourceCodexHome(env)
+        const isolatedCodexHome = join(runDirectory, "codex-home")
+        await mkdir(isolatedCodexHome, {
+            recursive: true,
+            mode: 0o700,
+        })
+
+        const sourceAuthFile = join(sourceCodexHome, "auth.json")
+        try {
+            await copyFile(sourceAuthFile, join(isolatedCodexHome, "auth.json"))
+        } catch (error) {
+            if (isNotFoundError(error)) {
+                throw new Error(`Cannot run Codex provider: ChatGPT auth file missing at ${sourceAuthFile}`)
+            }
+            throw error
+        }
+
+        return {
+            ...env,
+            CODEX_HOME: isolatedCodexHome,
+        }
     }
 
     private async readAuthStatus(): Promise<CodexAuthStatus> {
@@ -820,6 +856,14 @@ function readRecord(value: unknown): Record<string, unknown> | undefined {
     return value && typeof value === "object" && !Array.isArray(value)
         ? value as Record<string, unknown>
         : undefined
+}
+
+function resolveSourceCodexHome(env: Record<string, string | undefined>): string {
+    return env.CODEX_HOME ?? join(env.HOME ?? homedir(), ".codex")
+}
+
+function isNotFoundError(error: unknown): boolean {
+    return readRecord(error)?.code === "ENOENT"
 }
 
 function readNumber(value: unknown): number {

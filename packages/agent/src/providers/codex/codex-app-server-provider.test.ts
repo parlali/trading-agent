@@ -1,3 +1,6 @@
+import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { describe, expect, it, vi } from "vitest"
 import { createLogger, type StrategyRunContext } from "@valiq-trading/core"
 import { ConversationManager } from "../../conversation"
@@ -259,6 +262,57 @@ describe("CodexAppServerProvider", () => {
             expect(env.AWS_SECRET_ACCESS_KEY).toBeUndefined()
         } finally {
             process.env = originalEnv
+        }
+    })
+
+    it("isolates ChatGPT auth from inherited Codex config for provider runs", async () => {
+        const originalEnv = process.env
+        const sourceCodexHome = await mkdtemp(join(tmpdir(), "valiq-codex-source-"))
+        const runDirectory = await mkdtemp(join(tmpdir(), "valiq-codex-run-"))
+        let capturedEnv: Record<string, string | undefined> | undefined
+
+        process.env = {
+            PATH: "/usr/bin",
+            HOME: "/home/test",
+            CODEX_HOME: sourceCodexHome,
+        }
+
+        try {
+            await writeFile(join(sourceCodexHome, "auth.json"), "{\"tokens\":true}")
+            await writeFile(join(sourceCodexHome, "config.toml"), "[mcp_servers.openaiDeveloperDocs]\nenabled = true\n")
+
+            const provider = createProvider({
+                config: {
+                    runDirectory,
+                },
+                createClient: (args) => {
+                    capturedEnv = args.env
+                    return new FakeCodexClient(args, async (fake) => {
+                        fake.emitNotification({
+                            method: "turn/completed",
+                            params: {
+                                threadId: "thread-1",
+                                turn: {
+                                    id: "turn-1",
+                                    status: "completed",
+                                },
+                            },
+                        })
+                    })
+                },
+            })
+
+            const result = await provider.run(createRunArgs())
+            const isolatedCodexHome = join(runDirectory, "codex-home")
+
+            expect(result.error).toBeUndefined()
+            expect(capturedEnv?.CODEX_HOME).toBe(isolatedCodexHome)
+            await expect(readFile(join(isolatedCodexHome, "auth.json"), "utf8")).resolves.toBe("{\"tokens\":true}")
+            await expect(access(join(isolatedCodexHome, "config.toml"))).rejects.toMatchObject({ code: "ENOENT" })
+        } finally {
+            process.env = originalEnv
+            await rm(sourceCodexHome, { recursive: true, force: true })
+            await rm(runDirectory, { recursive: true, force: true })
         }
     })
 

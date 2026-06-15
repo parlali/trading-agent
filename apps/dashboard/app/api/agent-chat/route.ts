@@ -5,10 +5,13 @@ export const runtime = "nodejs"
 
 const MAX_CHAT_MESSAGE_LENGTH = 8_000
 const MAX_CHAT_ID_LENGTH = 160
+const MAX_CHAT_MODEL_ID_LENGTH = 200
 const INTERNAL_ERROR_MESSAGE = "An internal error occurred"
 
 type ChatRequestBody = {
     message?: string
+    modelProvider?: "codex" | "openrouter"
+    modelId?: string
     chatSessionId?: string
     chatMessageId?: string
     mode?: "general" | "portfolio" | "operations" | "mcp"
@@ -38,11 +41,19 @@ export async function POST(request: Request) {
         if (!body.message) {
             return Response.json({ error: "message is required for agent chat" }, { status: 400 })
         }
+        if (!body.modelProvider) {
+            return Response.json({ error: "modelProvider is required for agent chat" }, { status: 400 })
+        }
+        if (!body.modelId) {
+            return Response.json({ error: "modelId is required for agent chat" }, { status: 400 })
+        }
 
         return await proxyBackendRequest("/agent-chat", {
             method: "POST",
             body: JSON.stringify({
                 message: body.message,
+                modelProvider: body.modelProvider,
+                modelId: body.modelId,
                 chatSessionId: body.chatSessionId,
                 chatMessageId: body.chatMessageId,
                 mode: body.mode,
@@ -59,10 +70,12 @@ function readChatRequestBody(value: unknown): ChatRequestBody {
     }
 
     const body = value as Record<string, unknown>
-    rejectUnknownFields(body, ["message", "chatSessionId", "chatMessageId", "mode"])
+    rejectUnknownFields(body, ["message", "modelProvider", "modelId", "chatSessionId", "chatMessageId", "mode"])
 
     return {
         message: readBoundedString(body.message, "message", MAX_CHAT_MESSAGE_LENGTH),
+        modelProvider: readModelProvider(body.modelProvider),
+        modelId: readBoundedString(body.modelId, "modelId", MAX_CHAT_MODEL_ID_LENGTH),
         chatSessionId: readBoundedString(body.chatSessionId, "chatSessionId", MAX_CHAT_ID_LENGTH),
         chatMessageId: readBoundedString(body.chatMessageId, "chatMessageId", MAX_CHAT_ID_LENGTH),
         mode: readChatMode(body.mode),
@@ -86,6 +99,17 @@ function readChatMode(value: unknown): ChatRequestBody["mode"] {
     }
 
     throw new Error("mode must be one of general, portfolio, operations, or mcp")
+}
+
+function readModelProvider(value: unknown): ChatRequestBody["modelProvider"] {
+    if (value === undefined || value === null || value === "") {
+        return undefined
+    }
+    if (value === "codex" || value === "openrouter") {
+        return value
+    }
+
+    throw new Error("modelProvider must be codex or openrouter")
 }
 
 function readBoundedString(value: unknown, field: string, maxLength: number): string | undefined {
@@ -185,8 +209,10 @@ function isClientRequestError(error: unknown, message: string): boolean {
     return error instanceof SyntaxError ||
         message === "Request body must be an object" ||
         message.startsWith("Unsupported agent chat field(s):") ||
+        message === "modelProvider must be codex or openrouter" ||
         message === "mode must be one of general, portfolio, operations, or mcp" ||
         message.startsWith("message must ") ||
+        message.startsWith("modelId must ") ||
         message.startsWith("chatSessionId must ") ||
         message.startsWith("chatMessageId must ")
 }

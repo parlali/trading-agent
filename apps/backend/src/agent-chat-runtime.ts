@@ -1,5 +1,4 @@
 import {
-    createGateway,
     createUIMessageStream,
     stepCountIs,
     streamText,
@@ -7,9 +6,18 @@ import {
     type ModelMessage,
     type UIMessageChunk,
 } from "ai"
+import { createOpenRouter } from "@openrouter/ai-sdk-provider"
+import {
+    CodexAppServerProvider,
+    ConversationManager,
+    ToolExecutionEngine,
+    type AgentMessageLogger,
+} from "@valiq-trading/agent"
+import type { StrategyRunContext } from "@valiq-trading/core"
 import {
     backend,
     logger,
+    resolvedSecrets,
 } from "./state"
 import type { TradingBackendClient } from "@valiq-trading/convex"
 import type { AgentChatRequest } from "./agent-chat"
@@ -18,6 +26,7 @@ import {
     listAgentChatTools,
     type AgentChatToolRuntime,
 } from "./agent-chat-tools"
+import { inspectCodexChatGptAuthStatusSync } from "./codex-auth"
 
 declare const Bun: {
     env: Record<string, string | undefined>
@@ -26,8 +35,9 @@ declare const Bun: {
 export interface AgentChatRuntimeDependencies {
     model?: LanguageModel
     modelId?: string
-    modelProvider?: string
+    modelProvider?: AgentChatModelProvider
     env?: Record<string, string | undefined>
+    secrets?: Record<string, string | null | undefined>
     tradingBackend?: TradingBackendClient
     toolRuntime?: AgentChatToolRuntime
     buildToolRuntime?: typeof buildAgentChatToolRuntime
@@ -41,11 +51,13 @@ export interface CreateAgentChatStreamArgs extends AgentChatRuntimeDependencies 
 }
 
 export interface AgentChatInventory {
-    model: {
-        provider: "ai-gateway"
+    modelProviders: Array<{
+        provider: AgentChatModelProvider
         configured: boolean
-        modelId?: string
-    }
+        defaultModelId?: string
+        modelIds?: string[]
+        reason?: string
+    }>
     tools: ReturnType<typeof listAgentChatTools>
     mcpProviders: Array<{
         id: string
@@ -63,19 +75,38 @@ export interface AgentChatInventory {
 const CHAT_MAX_STEPS = 8
 const CHAT_TIMEOUT_MS = 120_000
 const CHAT_TRANSCRIPT_LIMIT = 24
+const DEFAULT_CODEX_CHAT_MODELS = [
+    "gpt-5.5",
+    "gpt-5.4-mini",
+    "gpt-5.4",
+] as const
+type AgentChatModelProvider = "codex" | "openrouter"
 
 export async function createAgentChatUiMessageStream(
     args: CreateAgentChatStreamArgs
 ): Promise<ReadableStream<UIMessageChunk>> {
     const logInfo = args.logInfo ?? ((message, fields) => logger.info(message, fields))
     const logError = args.logError ?? ((message, fields) => logger.error(message, fields))
+    const env = args.env ?? Bun.env
+    const secrets = args.secrets ?? resolvedSecrets
+
+    if (!args.model && args.request.modelProvider === "codex") {
+        return createCodexAgentChatUiMessageStream({
+            ...args,
+            env,
+            secrets,
+            logInfo,
+            logError,
+        })
+    }
+
     const resolvedModel = args.model
         ? {
             model: args.model,
-            provider: args.modelProvider ?? "injected",
-            modelId: args.modelId ?? "injected",
+            provider: args.modelProvider ?? args.request.modelProvider,
+            modelId: args.modelId ?? args.request.modelId,
         }
-        : resolveAgentChatModelRuntime(args.env)
+        : resolveAgentChatModelRuntime(args.request, env, secrets)
     const tradingBackend = args.tradingBackend ?? backend
 
     return createUIMessageStream({
@@ -142,6 +173,7 @@ export async function createAgentChatUiMessageStream(
                 const toolRuntime = args.toolRuntime ?? await (args.buildToolRuntime ?? buildAgentChatToolRuntime)({
                     abortSignal: args.abortSignal,
                     tradingBackend,
+                    secrets,
                 })
 
                 logInfo("Agent chat turn started", {
@@ -209,7 +241,7 @@ export async function createAgentChatUiMessageStream(
                         }
                     },
                     onError: async (event) => {
-                        const errorMessage = stringifyError(event.error)
+                        const errorMessage = formatAgentChatProviderError(event.error, args.request)
                         await recordTerminalAssistant({
                             status: "failed",
                             finishReason: "error",
@@ -251,10 +283,10 @@ export async function createAgentChatUiMessageStream(
                 writer.merge(result.toUIMessageStream({
                     sendReasoning: true,
                     sendSources: true,
-                    onError: (error) => error instanceof Error ? error.message : String(error),
+                    onError: (error) => formatAgentChatProviderError(error, args.request),
                 }))
             } catch (error) {
-                const errorMessage = stringifyError(error)
+                const errorMessage = formatAgentChatProviderError(error, args.request)
                 if (userMessageRecorded) {
                     await recordTerminalAssistant({
                         status: "failed",
@@ -268,32 +300,212 @@ export async function createAgentChatUiMessageStream(
                     chatSessionId: chatIds.sessionId,
                     chatMessageId: chatIds.userMessageId,
                 })
-                throw error
+                throw new Error(errorMessage)
             }
         },
-        onError: (error) => error instanceof Error ? error.message : String(error),
+        onError: (error) => formatAgentChatProviderError(error, args.request),
+    })
+}
+
+async function createCodexAgentChatUiMessageStream(
+    args: CreateAgentChatStreamArgs & {
+        env: Record<string, string | undefined>
+        secrets: Record<string, string | null | undefined>
+        logInfo: (message: string, fields?: Record<string, unknown>) => void
+        logError: (message: string, fields?: Record<string, unknown>) => void
+    }
+): Promise<ReadableStream<UIMessageChunk>> {
+    assertCodexAgentChatConfigured(args.env)
+    const tradingBackend = args.tradingBackend ?? backend
+
+    return createUIMessageStream({
+        execute: async ({ writer }) => {
+            const chatIds = resolveChatIds(args.request)
+            let terminalAssistantRecorded = false
+            let userMessageRecorded = false
+            const recordTerminalAssistant = async (terminal: {
+                status: "completed" | "cancelled" | "failed"
+                finishReason: string
+                content: string
+                error?: string
+            }) => {
+                if (terminalAssistantRecorded) {
+                    return
+                }
+
+                await tradingBackend.recordAgentChatAssistantMessage({
+                    sessionId: chatIds.sessionId,
+                    messageId: chatIds.assistantMessageId,
+                    content: terminal.content,
+                    status: terminal.status,
+                    modelProvider: "codex",
+                    modelId: args.request.modelId,
+                    finishReason: terminal.finishReason,
+                    error: terminal.error,
+                })
+                terminalAssistantRecorded = true
+            }
+
+            try {
+                await tradingBackend.recordAgentChatUserMessage({
+                    sessionId: chatIds.sessionId,
+                    messageId: chatIds.userMessageId,
+                    content: args.request.message,
+                    mode: args.request.mode,
+                })
+                userMessageRecorded = true
+                const transcript = await tradingBackend.getAgentChatMessages(chatIds.sessionId, CHAT_TRANSCRIPT_LIMIT)
+                const toolRuntime = args.toolRuntime ?? await (args.buildToolRuntime ?? buildAgentChatToolRuntime)({
+                    abortSignal: args.abortSignal,
+                    tradingBackend,
+                    secrets: args.secrets,
+                })
+                const conversation = buildCodexAgentChatConversation(args.request, toolRuntime, transcript, chatIds.userMessageId)
+                const runContext = buildAgentChatRunContext(args.request, chatIds)
+                const runStartedAt = Date.now()
+                const toolEngine = new ToolExecutionEngine({
+                    tools: toolRuntime.registry,
+                    context: runContext,
+                    logger,
+                    agentLogger: createAgentChatToolEventLogger(tradingBackend, chatIds),
+                    runStartedAt,
+                    runTimeoutMs: CHAT_TIMEOUT_MS,
+                    maxToolTimeoutMs: CHAT_TIMEOUT_MS,
+                    nextTranscriptSequence: () => conversation.reserveSequence(),
+                })
+                const provider = new CodexAppServerProvider({
+                    provider: "codex",
+                    model: args.request.modelId,
+                    authMode: "chatgpt",
+                    effort: "medium",
+                    summary: "auto",
+                    requestTimeoutMs: 60_000,
+                    turnTimeoutMs: CHAT_TIMEOUT_MS,
+                })
+                let providerCancelled = false
+                const cancelProvider = () => {
+                    providerCancelled = true
+                    provider.cancel()
+                }
+                if (args.abortSignal.aborted) {
+                    cancelProvider()
+                } else {
+                    args.abortSignal.addEventListener("abort", cancelProvider, { once: true })
+                }
+
+                try {
+                    args.logInfo("Agent chat Codex turn started", {
+                        chatSessionId: chatIds.sessionId,
+                        chatMessageId: chatIds.userMessageId,
+                        mode: args.request.mode ?? "general",
+                        modelId: args.request.modelId,
+                        tools: Object.keys(toolRuntime.tools),
+                    })
+
+                    const result = await provider.run({
+                        conversation,
+                        context: runContext,
+                        tools: toolRuntime.registry,
+                        toolEngine,
+                        logger,
+                        agentLogger: createAgentChatToolEventLogger(tradingBackend, chatIds),
+                        maxIterations: 1,
+                        maxConsecutiveErrors: 1,
+                        runStartedAt,
+                        runTimeoutMs: CHAT_TIMEOUT_MS,
+                    })
+                    const error = providerCancelled || args.abortSignal.aborted
+                        ? result.error ?? "Agent chat was cancelled"
+                        : result.error
+                    const content = result.summary.trim()
+
+                    if (content) {
+                        writer.write({ type: "start" })
+                        writer.write({ type: "text-start", id: chatIds.assistantMessageId })
+                        writer.write({ type: "text-delta", id: chatIds.assistantMessageId, delta: content })
+                        writer.write({ type: "text-end", id: chatIds.assistantMessageId })
+                    }
+                    if (error) {
+                        writer.write({ type: "error", errorText: error })
+                    }
+
+                    await recordTerminalAssistant({
+                        status: error ? "failed" : "completed",
+                        finishReason: error ? "error" : "stop",
+                        content,
+                        error,
+                    })
+                    writer.write({
+                        type: "finish",
+                        finishReason: error ? "error" : "stop",
+                    })
+
+                    args.logInfo("Agent chat Codex turn finished", {
+                        chatSessionId: chatIds.sessionId,
+                        chatMessageId: chatIds.userMessageId,
+                        modelId: args.request.modelId,
+                        error,
+                    })
+                } finally {
+                    args.abortSignal.removeEventListener("abort", cancelProvider)
+                    provider.cancel()
+                }
+            } catch (error) {
+                const errorMessage = formatAgentChatProviderError(error, args.request)
+                if (userMessageRecorded) {
+                    await recordTerminalAssistant({
+                        status: "failed",
+                        finishReason: "setup-error",
+                        content: "",
+                        error: errorMessage,
+                    })
+                }
+                args.logError("Agent chat Codex setup failed", {
+                    error: errorMessage,
+                    chatSessionId: chatIds.sessionId,
+                    chatMessageId: chatIds.userMessageId,
+                })
+                throw new Error(errorMessage)
+            }
+        },
+        onError: (error) => formatAgentChatProviderError(error, args.request),
     })
 }
 
 export async function getAgentChatInventory(args: {
     abortSignal: AbortSignal
     env?: Record<string, string | undefined>
+    secrets?: Record<string, string | null | undefined>
     chatSessionId?: string
     tradingBackend?: TradingBackendClient
 }): Promise<AgentChatInventory> {
+    const env = args.env ?? Bun.env
+    const secrets = args.secrets ?? resolvedSecrets
     const toolRuntime = await buildAgentChatToolRuntime({
         abortSignal: args.abortSignal,
+        secrets,
     })
     const chatMessages = args.chatSessionId
         ? await (args.tradingBackend ?? backend).getAgentChatMessages(args.chatSessionId, CHAT_TRANSCRIPT_LIMIT)
         : undefined
+    const codexStatus = inspectCodexChatGptAuthStatusSync(env)
+    const openRouterConfigured = Boolean(readSecret(secrets, "OPENROUTER_API_KEY") ?? readTrimmedEnv(env, "OPENROUTER_API_KEY"))
 
     return {
-        model: {
-            provider: "ai-gateway",
-            configured: Boolean(readTrimmedEnv(args.env ?? Bun.env, "AGENT_CHAT_MODEL")),
-            modelId: readTrimmedEnv(args.env ?? Bun.env, "AGENT_CHAT_MODEL"),
-        },
+        modelProviders: [
+            {
+                provider: "codex",
+                configured: codexStatus.ready,
+                defaultModelId: DEFAULT_CODEX_CHAT_MODELS[0],
+                modelIds: [...DEFAULT_CODEX_CHAT_MODELS],
+                reason: codexStatus.ready ? undefined : codexStatus.message,
+            },
+            {
+                provider: "openrouter",
+                configured: openRouterConfigured,
+                reason: openRouterConfigured ? undefined : "OPENROUTER_API_KEY is not configured in Convex or backend environment variables",
+            },
+        ],
         tools: listAgentChatTools(toolRuntime.registry),
         mcpProviders: toolRuntime.mcpProviders,
         manualTrading: {
@@ -305,32 +517,40 @@ export async function getAgentChatInventory(args: {
 }
 
 export function resolveAgentChatModel(
-    env: Record<string, string | undefined> = Bun.env
+    request: AgentChatRequest,
+    env: Record<string, string | undefined> = Bun.env,
+    secrets: Record<string, string | null | undefined> = resolvedSecrets
 ): LanguageModel {
-    return resolveAgentChatModelRuntime(env).model
+    return resolveAgentChatModelRuntime(request, env, secrets).model
 }
 
 function resolveAgentChatModelRuntime(
-    env: Record<string, string | undefined> = Bun.env
+    request: AgentChatRequest,
+    env: Record<string, string | undefined>,
+    secrets: Record<string, string | null | undefined>
 ): {
-    provider: "ai-gateway"
+    provider: AgentChatModelProvider
     modelId: string
     model: LanguageModel
 } {
-    const modelId = readTrimmedEnv(env, "AGENT_CHAT_MODEL")
+    const modelId = request.modelId.trim()
     if (!modelId) {
-        throw new Error("AGENT_CHAT_MODEL is not configured for backend agent chat")
+        throw new Error("modelId is required for backend agent chat")
     }
 
-    const apiKey = readTrimmedEnv(env, "AI_GATEWAY_API_KEY")
+    if (request.modelProvider !== "openrouter") {
+        throw new Error(`Unsupported AI SDK chat model provider: ${request.modelProvider}`)
+    }
+
+    const apiKey = readSecret(secrets, "OPENROUTER_API_KEY") ?? readTrimmedEnv(env, "OPENROUTER_API_KEY")
     if (!apiKey) {
-        throw new Error("AI_GATEWAY_API_KEY is not configured for backend agent chat model provider ai-gateway")
+        throw new Error("OPENROUTER_API_KEY is not configured for backend agent chat model provider openrouter")
     }
 
     return {
-        provider: "ai-gateway",
+        provider: "openrouter",
         modelId,
-        model: createGateway({ apiKey })(modelId),
+        model: createOpenRouter({ apiKey })(modelId),
     }
 }
 
@@ -362,6 +582,145 @@ function buildAgentChatSystemPrompt(
         "",
         "Use read-only portfolio, account, run, alert, provider health, and MCP tools when they are needed to answer factual operational questions.",
     ].join("\n")
+}
+
+function buildCodexAgentChatConversation(
+    request: AgentChatRequest,
+    toolRuntime: AgentChatToolRuntime,
+    transcript: Awaited<ReturnType<TradingBackendClient["getAgentChatMessages"]>>,
+    currentUserMessageId: string
+): ConversationManager {
+    const conversation = new ConversationManager()
+    const priorTranscript = formatCodexTrustedTranscript(transcript, currentUserMessageId)
+    conversation.addSystemMessage([
+        buildAgentChatSystemPrompt(request, toolRuntime),
+        priorTranscript ? `Trusted persisted recent transcript:\n${priorTranscript}` : "No trusted persisted prior transcript is available.",
+    ].join("\n\n"))
+    conversation.addUserMessage(request.message)
+    return conversation
+}
+
+function formatCodexTrustedTranscript(
+    transcript: Awaited<ReturnType<TradingBackendClient["getAgentChatMessages"]>>,
+    currentUserMessageId: string | undefined
+): string {
+    return transcript
+        .filter((row) => row.messageId !== currentUserMessageId)
+        .filter((row) => row.role === "user" || row.status === "completed")
+        .filter((row) => row.content.trim().length > 0)
+        .map((row) => `${row.role}: ${row.role === "assistant" ? stripLegacyReasoning(row.content) : row.content}`)
+        .join("\n\n")
+        .trim()
+}
+
+function buildAgentChatRunContext(
+    request: AgentChatRequest,
+    chatIds: {
+        sessionId: string
+        userMessageId: string
+    }
+): StrategyRunContext {
+    return {
+        runId: `agent-chat-${chatIds.userMessageId}`,
+        strategyId: `agent-chat-${chatIds.sessionId}`,
+        app: "backend",
+        timestamp: Date.now(),
+        trigger: "chat",
+        positions: [],
+        accountState: {
+            balance: 0,
+            equity: 0,
+            buyingPower: 0,
+            marginUsed: 0,
+            marginAvailable: 0,
+            openPnl: 0,
+            dayPnl: 0,
+        },
+        policy: {
+            source: "agent-chat",
+            modelProvider: request.modelProvider,
+            modelId: request.modelId,
+            manualTradingEnabled: false,
+        },
+        context: "Dashboard owner agent chat read-only runtime.",
+        runtimeContextLines: [
+            "This chat context is not a scheduled strategy run.",
+            "Execution-capable trading tools are not exposed.",
+        ],
+    }
+}
+
+function createAgentChatToolEventLogger(
+    tradingBackend: TradingBackendClient,
+    chatIds: {
+        sessionId: string
+        assistantMessageId: string
+    }
+): AgentMessageLogger {
+    return {
+        log: async (_runId, _strategyId, sequence, role, _content, toolName, toolInput, toolOutput) => {
+            if (role !== "tool" || !toolName) {
+                return
+            }
+
+            const toolCallId = `codex-tool-${sequence}-${toolName}`
+            const input = parseOptionalJson(toolInput)
+            await tradingBackend.recordAgentChatToolEvent({
+                sessionId: chatIds.sessionId,
+                messageId: chatIds.assistantMessageId,
+                toolCallId,
+                toolName,
+                state: "input",
+                input,
+            })
+            await tradingBackend.recordAgentChatToolEvent({
+                sessionId: chatIds.sessionId,
+                messageId: chatIds.assistantMessageId,
+                toolCallId,
+                toolName,
+                state: "result",
+                input,
+                output: parseOptionalJson(toolOutput),
+            })
+        },
+    }
+}
+
+function assertCodexAgentChatConfigured(env: Record<string, string | undefined>): void {
+    const status = inspectCodexChatGptAuthStatusSync(env)
+    if (!status.ready) {
+        throw new Error(`Codex ChatGPT login is not configured for backend agent chat. ${status.message}`)
+    }
+}
+
+function formatAgentChatProviderError(error: unknown, request: AgentChatRequest): string {
+    const message = stringifyError(error)
+    if (request.modelProvider === "openrouter" && isModelNotFoundError(error, message)) {
+        return `OpenRouter model not found: ${request.modelId}. Check the model id and try again.`
+    }
+    if (request.modelProvider === "codex" && isModelNotFoundError(error, message)) {
+        return `Codex model not found: ${request.modelId}. Choose a model from the configured Codex list and try again.`
+    }
+
+    return message
+}
+
+function isModelNotFoundError(error: unknown, message: string): boolean {
+    return readErrorStatusCode(error) === 404 ||
+        message.toLowerCase().includes("model not found") ||
+        message.toLowerCase().includes("no such model") ||
+        message.includes("AI_NoSuchModelError")
+}
+
+function readErrorStatusCode(error: unknown): number | undefined {
+    const record = readRecord(error)
+    const statusCode = record?.statusCode
+    if (typeof statusCode === "number") {
+        return statusCode
+    }
+
+    const causeStatusCode = readRecord(record?.cause)?.statusCode
+    return typeof causeStatusCode === "number" ? causeStatusCode : undefined
 }
 
 function resolveChatIds(request: AgentChatRequest): {
@@ -420,6 +779,32 @@ function readToolName(chunk: Record<string, unknown>): string {
 
 function stringifyError(error: unknown): string {
     return error instanceof Error ? error.message : String(error)
+}
+
+function parseOptionalJson(value: string | undefined): unknown {
+    if (!value) {
+        return undefined
+    }
+
+    try {
+        return JSON.parse(value) as unknown
+    } catch {
+        return value
+    }
+}
+
+function readRecord(value: unknown): Record<string, unknown> | undefined {
+    return value && typeof value === "object" && !Array.isArray(value)
+        ? value as Record<string, unknown>
+        : undefined
+}
+
+function readSecret(
+    secrets: Record<string, string | null | undefined>,
+    name: string
+): string | undefined {
+    const value = secrets[name]?.trim()
+    return value && value.length > 0 ? value : undefined
 }
 
 function joinOptional(parts: string[]): string | undefined {

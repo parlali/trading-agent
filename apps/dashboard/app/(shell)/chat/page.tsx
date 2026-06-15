@@ -23,18 +23,31 @@ import {
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
+import {
+    Select,
+    SelectContent,
+    SelectItem,
+    SelectTrigger,
+    SelectValue,
+} from "@/components/ui/select"
 import { MarkdownContent } from "@/components/markdown-content"
 import { cn } from "@/lib/utils"
+
+type AgentChatModelProvider = "codex" | "openrouter"
 
 type ToolInventoryResponse = {
     ok: boolean
     error?: string
-    model?: {
-        provider: "ai-gateway"
+    modelProviders?: Array<{
+        provider: AgentChatModelProvider
         configured: boolean
-        modelId?: string
-    }
+        defaultModelId?: string
+        modelIds?: string[]
+        reason?: string
+    }>
     tools?: Array<{
         name: string
         category?: string
@@ -81,6 +94,8 @@ export default function AgentChatPage() {
     const authToken = useAuthToken()
     const [chatSessionId] = useState(resolveDashboardChatSessionId)
     const [input, setInput] = useState("")
+    const [modelProvider, setModelProvider] = useState<AgentChatModelProvider>("codex")
+    const [modelId, setModelId] = useState("")
     const [inventory, setInventory] = useState<ToolInventoryResponse | null>(null)
     const [inventoryLoading, setInventoryLoading] = useState(false)
     const [inventoryError, setInventoryError] = useState<string | null>(null)
@@ -88,17 +103,22 @@ export default function AgentChatPage() {
     const isRunningRef = useRef(false)
     const chatTransport = useMemo(() => new DefaultChatTransport({
         api: "/api/agent-chat",
-        prepareSendMessagesRequest({ messages, id, messageId }) {
-            if (!authToken) {
+        prepareSendMessagesRequest({ messages, id, messageId, body, headers }) {
+            const requestHeaders = headersToRecord(headers)
+            const authorization = requestHeaders.authorization ?? requestHeaders.Authorization ?? (authToken ? `Bearer ${authToken}` : "")
+            if (!authorization) {
                 throw new Error("Dashboard authentication is not ready")
             }
 
             return {
                 headers: {
-                    "authorization": `Bearer ${authToken}`,
+                    ...requestHeaders,
+                    authorization,
                 },
                 body: {
                     message: readLatestUserText(messages),
+                    modelProvider: readTransportModelProvider(body?.modelProvider),
+                    modelId: readTransportModelId(body?.modelId),
                     chatSessionId: id || chatSessionId,
                     chatMessageId: messageId ?? messages[messages.length - 1]?.id,
                     mode: "general",
@@ -133,8 +153,19 @@ export default function AgentChatPage() {
         () => inventory?.tools ?? [],
         [inventory]
     )
+    const modelProviders = inventory?.modelProviders ?? []
+    const selectedModelProvider = modelProviders.find((provider) => provider.provider === modelProvider)
+    const selectedProviderConfigured = selectedModelProvider?.configured === true
+    const selectedProviderReason = selectedModelProvider?.reason
+    const codexModelIds = selectedModelProvider?.provider === "codex"
+        ? selectedModelProvider.modelIds ?? []
+        : []
     const mcpProviders = inventory?.mcpProviders ?? []
-    const canSubmit = input.trim().length > 0 && !isRunning && Boolean(authToken)
+    const canSubmit = input.trim().length > 0 &&
+        modelId.trim().length > 0 &&
+        selectedProviderConfigured &&
+        !isRunning &&
+        Boolean(authToken)
 
     useEffect(() => {
         isRunningRef.current = isRunning
@@ -185,6 +216,34 @@ export default function AgentChatPage() {
     }, [loadInventory])
 
     useEffect(() => {
+        if (modelProviders.length === 0) {
+            return
+        }
+
+        const current = modelProviders.find((provider) => provider.provider === modelProvider)
+        const fallback = modelProviders.find((provider) => provider.provider === "codex" && provider.configured) ??
+            modelProviders.find((provider) => provider.configured)
+        const next = current?.configured ? current : fallback
+        if (!next) {
+            return
+        }
+
+        if (next.provider !== modelProvider) {
+            setModelProvider(next.provider)
+        }
+
+        if (next.provider === "codex") {
+            const modelIds = next.modelIds ?? []
+            const nextModelId = modelIds.includes(modelId)
+                ? modelId
+                : next.defaultModelId ?? modelIds[0] ?? ""
+            if (nextModelId !== modelId) {
+                setModelId(nextModelId)
+            }
+        }
+    }, [modelId, modelProvider, modelProviders])
+
+    useEffect(() => {
         if (messages.length > 0) {
             rowVirtualizer.scrollToIndex(messages.length - 1, { align: "end" })
         }
@@ -193,12 +252,33 @@ export default function AgentChatPage() {
     function handleSubmit(event: FormEvent<HTMLFormElement>) {
         event.preventDefault()
         const text = input.trim()
-        if (!text || isRunning) {
+        const selectedModelId = modelId.trim()
+        if (!text || !canSubmit || !authToken) {
             return
         }
 
         setInput("")
-        void sendMessage({ text })
+        void sendMessage({ text }, {
+            headers: {
+                authorization: `Bearer ${authToken}`,
+            },
+            body: {
+                modelProvider,
+                modelId: selectedModelId,
+            },
+        })
+    }
+
+    function handleModelProviderChange(value: AgentChatModelProvider) {
+        const next = modelProviders.find((provider) => provider.provider === value)
+        setModelProvider(value)
+        if (value === "codex") {
+            setModelId(next?.defaultModelId ?? next?.modelIds?.[0] ?? "")
+            return
+        }
+        if (modelProvider === "codex") {
+            setModelId("")
+        }
     }
 
     return (
@@ -255,6 +335,65 @@ export default function AgentChatPage() {
                 </div>
 
                 <form onSubmit={handleSubmit} className="shrink-0 border-t border-border-subtle p-3">
+                    <div className="mb-3 grid grid-cols-1 gap-2 md:grid-cols-[180px_minmax(0,1fr)]">
+                        <div className="space-y-1.5">
+                            <Label className="text-[11px] text-muted-foreground">Provider</Label>
+                            <Select
+                                value={modelProvider}
+                                onValueChange={(value) => handleModelProviderChange(value as AgentChatModelProvider)}
+                                disabled={isRunning || modelProviders.length === 0}
+                            >
+                                <SelectTrigger className="h-9 w-full">
+                                    <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                    {modelProviders.map((provider) => (
+                                        <SelectItem key={provider.provider} value={provider.provider} disabled={!provider.configured}>
+                                            {provider.provider === "codex" ? "Codex" : "OpenRouter"}
+                                        </SelectItem>
+                                    ))}
+                                </SelectContent>
+                            </Select>
+                        </div>
+
+                        <div className="space-y-1.5">
+                            <Label className="text-[11px] text-muted-foreground">
+                                {modelProvider === "codex" ? "Codex Model" : "OpenRouter Model"}
+                            </Label>
+                            {modelProvider === "codex" ? (
+                                <Select
+                                    value={modelId}
+                                    onValueChange={setModelId}
+                                    disabled={isRunning || !selectedProviderConfigured || codexModelIds.length === 0}
+                                >
+                                    <SelectTrigger className="h-9 w-full font-mono">
+                                        <SelectValue placeholder="Select a Codex model" />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        {codexModelIds.map((id) => (
+                                            <SelectItem key={id} value={id}>
+                                                {id}
+                                            </SelectItem>
+                                        ))}
+                                    </SelectContent>
+                                </Select>
+                            ) : (
+                                <Input
+                                    value={modelId}
+                                    onChange={(event) => setModelId(event.target.value)}
+                                    placeholder="anthropic/claude-sonnet-4.6"
+                                    disabled={isRunning || !selectedProviderConfigured}
+                                    className="font-mono"
+                                />
+                            )}
+                        </div>
+                    </div>
+                    {selectedProviderReason && !selectedProviderConfigured ? (
+                        <div className="mb-2 flex items-start gap-2 rounded-md border border-signal-danger/30 bg-signal-danger/10 px-3 py-2 text-xs text-signal-danger">
+                            <CircleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                            <span className="break-words">{selectedProviderReason}</span>
+                        </div>
+                    ) : null}
                     {error ? (
                         <div className="mb-2 flex items-start gap-2 rounded-md border border-signal-danger/30 bg-signal-danger/10 px-3 py-2 text-xs text-signal-danger">
                             <CircleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
@@ -314,8 +453,34 @@ export default function AgentChatPage() {
                                     Model resolution, MCP credentials, broker/account reads, and portfolio tools stay on the backend.
                                 </p>
                                 <div className="mt-3 grid grid-cols-2 gap-2">
-                                    <RuntimeStat label="Model" value={inventory.model?.configured ? `${inventory.model.provider}:${inventory.model.modelId ?? "unknown"}` : "unconfigured"} />
+                                    <RuntimeStat label="Models" value={`${modelProviders.filter((provider) => provider.configured).length}/${modelProviders.length} configured`} />
                                     <RuntimeStat label="MCP" value={`${mcpProviders.length} provider${mcpProviders.length === 1 ? "" : "s"}`} />
+                                </div>
+                            </div>
+
+                            <div className="rounded-md border border-border-subtle p-3 text-xs">
+                                <div className="font-medium">Model Providers</div>
+                                <div className="mt-2 space-y-2">
+                                    {modelProviders.length === 0 ? (
+                                        <p className="text-muted-foreground">No model providers reported.</p>
+                                    ) : modelProviders.map((provider) => (
+                                        <div key={provider.provider} className="rounded-md bg-muted/30 p-2">
+                                            <div className="flex items-center gap-2">
+                                                <span className="min-w-0 truncate font-medium">
+                                                    {provider.provider === "codex" ? "Codex" : "OpenRouter"}
+                                                </span>
+                                                <Badge variant={provider.configured ? "outline" : "secondary"} className="ml-auto text-[10px]">
+                                                    {provider.configured ? "configured" : "missing"}
+                                                </Badge>
+                                            </div>
+                                            {provider.provider === "codex" && provider.modelIds?.length ? (
+                                                <div className="mt-1 truncate font-mono text-muted-foreground">{provider.defaultModelId ?? provider.modelIds[0]}</div>
+                                            ) : null}
+                                            {!provider.configured && provider.reason ? (
+                                                <div className="mt-1 line-clamp-2 text-signal-danger">{provider.reason}</div>
+                                            ) : null}
+                                        </div>
+                                    ))}
                                 </div>
                             </div>
 
@@ -533,6 +698,41 @@ function readLatestUserText(messages: UIMessage[]): string {
     }
 
     throw new Error("No user text message to send")
+}
+
+function readTransportModelProvider(value: unknown): AgentChatModelProvider {
+    if (value === "codex" || value === "openrouter") {
+        return value
+    }
+
+    throw new Error("Model provider is required before sending agent chat")
+}
+
+function readTransportModelId(value: unknown): string {
+    if (typeof value !== "string") {
+        throw new Error("Model id is required before sending agent chat")
+    }
+
+    const trimmed = value.trim()
+    if (!trimmed) {
+        throw new Error("Model id is required before sending agent chat")
+    }
+
+    return trimmed
+}
+
+function headersToRecord(headers: HeadersInit | undefined): Record<string, string> {
+    if (!headers) {
+        return {}
+    }
+    if (headers instanceof Headers) {
+        return Object.fromEntries(headers.entries())
+    }
+    if (Array.isArray(headers)) {
+        return Object.fromEntries(headers)
+    }
+
+    return headers
 }
 
 function EmptyChat() {
