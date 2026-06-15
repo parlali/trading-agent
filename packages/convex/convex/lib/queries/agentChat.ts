@@ -3,7 +3,6 @@ import { v } from "convex/values"
 import { requireUserOrServiceToken } from "../authGuards"
 
 const MAX_AGENT_CHAT_TRANSCRIPT_MESSAGES = 40
-const MAX_AGENT_CHAT_TOOL_EVENTS = 200
 
 export const getAgentChatMessages = query({
     args: {
@@ -22,12 +21,6 @@ export const getAgentChatMessages = query({
             .withIndex("by_session_created_at", (q) => q.eq("sessionId", args.sessionId))
             .order("desc")
             .take(limit)
-        const messageIds = new Set(rows.map((row) => row.messageId))
-        const toolRows = await ctx.db
-            .query("agent_chat_tool_events")
-            .withIndex("by_session_created_at", (q) => q.eq("sessionId", args.sessionId))
-            .order("desc")
-            .take(MAX_AGENT_CHAT_TOOL_EVENTS)
         const toolEventsByMessageId = new Map<string, Array<{
             toolCallId: string
             toolName: string
@@ -39,13 +32,15 @@ export const getAgentChatMessages = query({
             createdAt: number
         }>>()
 
-        for (const row of toolRows.reverse()) {
-            if (!messageIds.has(row.messageId)) {
-                continue
-            }
-
-            const events = toolEventsByMessageId.get(row.messageId) ?? []
-            events.push({
+        for (const message of rows) {
+            const toolRows = await ctx.db
+                .query("agent_chat_tool_events")
+                .withIndex("by_session_message_created_at", (q) =>
+                    q.eq("sessionId", message.sessionId).eq("messageId", message.messageId)
+                )
+                .order("asc")
+                .collect()
+            const events = toolRows.map((row) => ({
                 toolCallId: row.toolCallId,
                 toolName: row.toolName,
                 state: row.state,
@@ -54,8 +49,9 @@ export const getAgentChatMessages = query({
                 error: row.error,
                 durationMs: row.durationMs,
                 createdAt: row.createdAt,
-            })
-            toolEventsByMessageId.set(row.messageId, events)
+            }))
+
+            toolEventsByMessageId.set(message.messageId, events)
         }
 
         return rows

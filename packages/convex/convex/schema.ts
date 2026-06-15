@@ -194,6 +194,7 @@ export default defineSchema({
         createdAt: v.number(),
     })
         .index("by_session_created_at", ["sessionId", "createdAt"])
+        .index("by_session_message_created_at", ["sessionId", "messageId", "createdAt"])
         .index("by_session_tool_call", ["sessionId", "toolCallId"]),
 
     trade_events: defineTable({

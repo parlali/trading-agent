@@ -77,7 +77,7 @@ describe("agent chat audit mutations", () => {
         })
     })
 
-    it("returns tool events with transcript messages for dashboard reload", async () => {
+    it("returns tool events with transcript messages when newer session events exceed the old global cap", async () => {
         process.env.BACKEND_SERVICE_TOKEN = "test-token"
         const db = new FakeDb({
             agent_chat_messages: [{
@@ -112,6 +112,16 @@ describe("agent chat audit mutations", () => {
                     output: { accounts: [] },
                     createdAt: 3,
                 },
+                ...Array.from({ length: 201 }, (_, index) => ({
+                    _id: `noise-${index}`,
+                    sessionId: "session-1",
+                    messageId: `noise-${index}:assistant`,
+                    toolCallId: `noise-call-${index}`,
+                    toolName: "mcp_noise",
+                    state: "input",
+                    input: { index },
+                    createdAt: 4 + index,
+                })),
             ],
         })
 
