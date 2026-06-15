@@ -1,5 +1,5 @@
 import type { Logger, VenueApp } from "@valiq-trading/core"
-import type { ToolBinding, ToolCategory } from "../tool-registry"
+import type { ToolBinding, ToolCategory, ToolRegistry } from "../tool-registry"
 
 export interface McpApprovedTool {
     name: string
@@ -90,6 +90,9 @@ export interface CreateHttpMcpToolBindingsConfig {
     signal?: AbortSignal
     failOnProviderError?: boolean
     includeNestedDiscovery?: boolean
+    dynamicToolRegistry?: ToolRegistry
+    dynamicToolTransform?: (tool: ToolBinding) => ToolBinding
+    dynamicDiagnostics?: McpToolDiagnostic[]
 }
 
 export interface HttpMcpToolBindingResolution {

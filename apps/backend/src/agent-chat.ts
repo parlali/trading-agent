@@ -15,6 +15,7 @@ import {
 const MAX_CHAT_MESSAGE_LENGTH = 8_000
 const MAX_CHAT_ID_LENGTH = 160
 const MAX_CHAT_MODEL_ID_LENGTH = 200
+const MAX_CHAT_STRATEGY_ID_LENGTH = 160
 
 export const agentChatRequestSchema = z.strictObject({
     message: z.string().trim().min(1).max(MAX_CHAT_MESSAGE_LENGTH),
@@ -22,11 +23,13 @@ export const agentChatRequestSchema = z.strictObject({
     modelId: z.string().trim().min(1).max(MAX_CHAT_MODEL_ID_LENGTH),
     chatSessionId: z.string().trim().min(1).max(MAX_CHAT_ID_LENGTH).optional(),
     chatMessageId: z.string().trim().min(1).max(MAX_CHAT_ID_LENGTH).optional(),
+    strategyId: z.string().trim().min(1).max(MAX_CHAT_STRATEGY_ID_LENGTH).optional(),
     mode: z.enum(["general", "portfolio", "operations", "mcp"]).optional(),
 })
 
 const agentChatInventoryRequestSchema = z.strictObject({
     chatSessionId: z.string().trim().min(1).max(MAX_CHAT_ID_LENGTH).optional(),
+    strategyId: z.string().trim().min(1).max(MAX_CHAT_STRATEGY_ID_LENGTH).optional(),
 })
 
 export type AgentChatRequest = z.infer<typeof agentChatRequestSchema>
@@ -59,6 +62,7 @@ export async function handleAgentChatRequest(
             const inventory = await (dependencies.getInventory ?? getAgentChatInventory)({
                 abortSignal: request.signal,
                 chatSessionId: inventoryRequest.chatSessionId,
+                strategyId: inventoryRequest.strategyId,
             })
 
             return Response.json({
@@ -100,6 +104,7 @@ function readAgentChatInventoryRequest(request: Request): z.infer<typeof agentCh
     const { searchParams } = new URL(request.url)
     return agentChatInventoryRequestSchema.parse({
         chatSessionId: searchParams.get("chatSessionId") ?? undefined,
+        strategyId: searchParams.get("strategyId") ?? undefined,
     })
 }
 

@@ -1,4 +1,4 @@
-import type { McpToolDiagnostic, ToolBinding } from "@valiq-trading/agent"
+import type { McpToolDiagnostic, ToolBinding, ToolRegistry } from "@valiq-trading/agent"
 import type { StrategyMcpToolWhitelist } from "@valiq-trading/convex"
 import type { AccountState, Logger, Position, RiskValidator, VenueAdapter, VenueApp, WorkingOrder } from "@valiq-trading/core"
 import type { App } from "@valiq-trading/core"
@@ -34,6 +34,8 @@ export interface ExtraToolsConfig {
     runLogger: Logger
     mcpToolWhitelist?: StrategyMcpToolWhitelist | null
     mcpToolDiagnostics?: McpToolDiagnostic[]
+    mcpToolRegistry?: ToolRegistry
+    mcpToolTransform?: (tool: ToolBinding) => ToolBinding
 }
 
 export interface PreRunHookConfig {

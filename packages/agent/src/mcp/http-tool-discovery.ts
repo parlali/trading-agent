@@ -22,6 +22,11 @@ export interface DiscoveredRemoteTool {
 export const DEFAULT_MCP_MAX_TOOLS_PER_PROVIDER = 50
 
 const MAX_NESTED_DISCOVERY_CALLS_PER_PROVIDER = 4
+const DEFAULT_NESTED_DISCOVERY_TOOL_NAMES = [
+    "discover_tools",
+    "tools_discover",
+    "tool_search",
+] as const
 
 export async function discoverProviderRemoteTools(args: {
     provider: HttpMcpProviderConfig
@@ -40,7 +45,7 @@ export async function discoverProviderRemoteTools(args: {
     })
     const topLevelTools = topLevelResult.tools
 
-    appendParseIssueDiagnostics({
+    appendMcpToolParseIssueDiagnostics({
         providerId: args.provider.id,
         source: "tools/list",
         issues: topLevelResult.issues,
@@ -61,7 +66,7 @@ export async function discoverProviderRemoteTools(args: {
 
     try {
         const discoveredByMethod = await args.client.discoverToolsDetailed(args.signal)
-        appendParseIssueDiagnostics({
+        appendMcpToolParseIssueDiagnostics({
             providerId: args.provider.id,
             source: "tools/discover",
             issues: discoveredByMethod.issues,
@@ -139,7 +144,7 @@ async function discoverConfiguredNestedTools(args: {
     discoveredTools: DiscoveredRemoteTool[]
     seenToolNames: Set<string>
 }): Promise<void> {
-    const configuredDiscoveryTools = args.provider.discoveryTools ?? []
+    const configuredDiscoveryTools = resolveNestedDiscoveryToolConfigs(args.provider, args.topLevelTools)
     let discoveryCalls = 0
 
     for (const discoveryConfig of configuredDiscoveryTools) {
@@ -195,7 +200,7 @@ async function discoverConfiguredNestedTools(args: {
             try {
                 const result = await args.client.callTool(discoveryTool.name, discoveryInput, args.signal)
                 const nested = readNestedDiscoveredTools(result)
-                appendParseIssueDiagnostics({
+                appendMcpToolParseIssueDiagnostics({
                     providerId: args.provider.id,
                     source: "tool_search",
                     issues: nested.issues,
@@ -217,7 +222,7 @@ async function discoverConfiguredNestedTools(args: {
                     signal: args.signal,
                     maxTools: args.maxTools,
                 })
-                appendParseIssueDiagnostics({
+                appendMcpToolParseIssueDiagnostics({
                     providerId: args.provider.id,
                     source: "tool_search",
                     issues: refreshed.issues,
@@ -250,7 +255,51 @@ async function discoverConfiguredNestedTools(args: {
     }
 }
 
-function readNestedDiscoveredTools(result: ToolsCallResult): {
+export function isNestedDiscoveryTool(provider: HttpMcpProviderConfig, toolName: string): boolean {
+    return provider.discoveryTools?.some((tool) => tool.name === toolName) === true ||
+        DEFAULT_NESTED_DISCOVERY_TOOL_NAMES.includes(toolName as typeof DEFAULT_NESTED_DISCOVERY_TOOL_NAMES[number])
+}
+
+function resolveNestedDiscoveryToolConfigs(
+    provider: HttpMcpProviderConfig,
+    topLevelTools: HttpMcpTool[]
+): Array<{ name: string, inputs: readonly Record<string, unknown>[] }> {
+    if (provider.discoveryTools && provider.discoveryTools.length > 0) {
+        return [...provider.discoveryTools]
+    }
+
+    return topLevelTools
+        .filter((tool) => DEFAULT_NESTED_DISCOVERY_TOOL_NAMES.includes(tool.name as typeof DEFAULT_NESTED_DISCOVERY_TOOL_NAMES[number]))
+        .map((tool) => ({
+            name: tool.name,
+            inputs: buildDefaultNestedDiscoveryInputs(tool),
+        }))
+}
+
+function buildDefaultNestedDiscoveryInputs(tool: HttpMcpTool): Record<string, unknown>[] {
+    const properties = tool.inputSchema?.properties
+    const propertyNames = properties && typeof properties === "object" && !Array.isArray(properties)
+        ? new Set(Object.keys(properties))
+        : new Set<string>()
+    const input: Record<string, unknown> = {}
+
+    if (propertyNames.has("query")) {
+        input.query = ""
+    }
+    if (propertyNames.has("limit")) {
+        input.limit = DEFAULT_MCP_MAX_TOOLS_PER_PROVIDER
+    }
+    if (propertyNames.has("maxResults")) {
+        input.maxResults = DEFAULT_MCP_MAX_TOOLS_PER_PROVIDER
+    }
+    if (propertyNames.has("max_tools")) {
+        input.max_tools = DEFAULT_MCP_MAX_TOOLS_PER_PROVIDER
+    }
+
+    return [input]
+}
+
+export function readNestedDiscoveredTools(result: ToolsCallResult): {
     tools: HttpMcpTool[]
     issues: HttpMcpToolParseIssue[]
 } {
@@ -302,7 +351,7 @@ function readMcpToolEntriesFromUnknown(value: unknown): unknown[] {
     })
 }
 
-function appendParseIssueDiagnostics(args: {
+export function appendMcpToolParseIssueDiagnostics(args: {
     providerId: string
     source: McpToolDiscoverySource
     issues: HttpMcpToolParseIssue[]

@@ -7,6 +7,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { ScrollArea } from "@/components/ui/scroll-area"
+import { Textarea } from "@/components/ui/textarea"
 import {
     Select,
     SelectContent,
@@ -44,6 +45,8 @@ type TestResult = {
 }
 
 type TestStatus = "idle" | "running" | "success" | "error"
+
+const MCP_RUNTIME_ONLY_VALUE = "__runtime_only__"
 
 function StepRow({ step }: { step: StepResult }) {
     const [expanded, setExpanded] = useState(false)
@@ -198,7 +201,13 @@ export default function TestPage() {
     const accounts = useQuery(api.queries.getAccounts, {})
     const strategies = useQuery(api.queries.getAllStrategies, {})
     const [mcpStrategyId, setMcpStrategyId] = useState<string>("")
+    const [mcpToolName, setMcpToolName] = useState(MCP_RUNTIME_ONLY_VALUE)
+    const [mcpToolArgsJson, setMcpToolArgsJson] = useState("{}")
     const selectedMcpStrategyId = mcpStrategyId || (strategies?.[0]?._id ? String(strategies[0]._id) : "")
+    const mcpWhitelist = useQuery(
+        api.queries.getStrategyMcpToolWhitelist,
+        selectedMcpStrategyId ? { strategyId: selectedMcpStrategyId as Id<"strategies"> } : "skip"
+    )
 
     const venueTests = {
         "mt5": { run: testMT5, icon: BarChart3, description: "Runtime-aligned worker health, MT5 account, positions, and working orders" },
@@ -257,7 +266,12 @@ export default function TestPage() {
                     description="Generic MCP endpoint through the selected strategy whitelist"
                     icon={Sparkles}
                     disabled={!selectedMcpStrategyId}
-                    onRun={() => testMcp({ strategyId: selectedMcpStrategyId as Id<"strategies"> })}
+                    onRun={() => testMcp({
+                        strategyId: selectedMcpStrategyId as Id<"strategies">,
+                        ...(readSelectedMcpToolName(mcpToolName)
+                            ? { toolName: readSelectedMcpToolName(mcpToolName), toolArgs: parseMcpToolArgs(mcpToolArgsJson) }
+                            : {}),
+                    })}
                 >
                     {strategies === undefined ? (
                         <div className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -269,21 +283,68 @@ export default function TestPage() {
                             No strategies configured. MCP tests require a persisted strategy whitelist.
                         </div>
                     ) : (
-                        <Select value={selectedMcpStrategyId} onValueChange={setMcpStrategyId}>
-                            <SelectTrigger className="w-full md:w-[28rem]">
-                                <SelectValue placeholder="Select strategy" />
-                            </SelectTrigger>
-                            <SelectContent>
-                                {strategies.map((strategy) => (
-                                    <SelectItem key={strategy._id} value={String(strategy._id)}>
-                                        {strategy.name}
-                                    </SelectItem>
-                                ))}
-                            </SelectContent>
-                        </Select>
+                        <>
+                            <Select value={selectedMcpStrategyId} onValueChange={setMcpStrategyId}>
+                                <SelectTrigger className="w-full md:w-[28rem]">
+                                    <SelectValue placeholder="Select strategy" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                    {strategies.map((strategy) => (
+                                        <SelectItem key={strategy._id} value={String(strategy._id)}>
+                                            {strategy.name}
+                                        </SelectItem>
+                                    ))}
+                                </SelectContent>
+                            </Select>
+                            <div className="mt-3 grid gap-2 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+                                <Select
+                                    value={mcpToolName}
+                                    onValueChange={setMcpToolName}
+                                    disabled={mcpWhitelist === undefined}
+                                >
+                                    <SelectTrigger className="w-full">
+                                        <SelectValue placeholder="Select tool" />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        <SelectItem value={MCP_RUNTIME_ONLY_VALUE}>
+                                            Runtime only
+                                        </SelectItem>
+                                        {mcpWhitelist?.tools.map((tool) => (
+                                            <SelectItem key={`${tool.providerId}:${tool.toolName}`} value={tool.registeredName}>
+                                                {tool.registeredName}
+                                            </SelectItem>
+                                        ))}
+                                    </SelectContent>
+                                </Select>
+                                <Textarea
+                                    value={mcpToolArgsJson}
+                                    onChange={(event) => setMcpToolArgsJson(event.target.value)}
+                                    placeholder="Tool args JSON"
+                                    className="min-h-9 font-mono text-xs"
+                                />
+                            </div>
+                            {mcpWhitelist?.tools.length === 0 ? (
+                                <div className="mt-2 rounded-md border border-border-subtle px-3 py-2 text-xs text-muted-foreground">
+                                    Selected strategy has no approved MCP tools. Runtime-only validation can still check whitelist persistence.
+                                </div>
+                            ) : null}
+                        </>
                     )}
                 </TestCard>
             </div>
         </div>
     )
+}
+
+function parseMcpToolArgs(value: string): unknown {
+    const trimmed = value.trim()
+    if (!trimmed) {
+        return {}
+    }
+
+    return JSON.parse(trimmed) as unknown
+}
+
+function readSelectedMcpToolName(value: string): string | undefined {
+    return value === MCP_RUNTIME_ONLY_VALUE ? undefined : value
 }

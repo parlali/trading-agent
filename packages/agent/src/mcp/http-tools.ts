@@ -1,7 +1,7 @@
 import { z } from "zod"
 import type { ToolBinding } from "../tool-registry"
 import { withCallBudget } from "../tools/with-call-budget"
-import { HttpMcpClient, type HttpMcpTool } from "./http-client"
+import { HttpMcpClient, type HttpMcpTool, type ToolsCallResult } from "./http-client"
 import {
     buildApprovedToolMap,
     createCandidateForRemoteTool,
@@ -9,7 +9,11 @@ import {
 } from "./http-tool-candidates"
 import {
     DEFAULT_MCP_MAX_TOOLS_PER_PROVIDER,
+    appendMcpToolParseIssueDiagnostics,
     discoverProviderRemoteTools,
+    isNestedDiscoveryTool,
+    readNestedDiscoveredTools,
+    type DiscoveredRemoteTool,
 } from "./http-tool-discovery"
 import { hashMcpToolSchema } from "./http-tool-identity"
 import { sanitizeMcpError } from "./mcp-error-sanitizer"
@@ -37,6 +41,12 @@ export type {
 
 const remoteMcpParamsSchema = z.record(z.string(), z.unknown())
 
+interface ResolvedProviderTools {
+    inventory: McpToolInventoryEntry[]
+    diagnostics: McpToolDiagnostic[]
+    resolvedTools: Array<{ binding: ToolBinding, inventory: McpToolInventoryEntry }>
+}
+
 export async function createHttpMcpToolBindings(
     config: CreateHttpMcpToolBindingsConfig
 ): Promise<ToolBinding[]> {
@@ -57,6 +67,7 @@ export async function createHttpMcpToolBindingResolution(
             provider,
             config,
             requireWhitelist: true,
+            emitDisappearedDiagnostics: true,
         })
         inventory.push(...providerResolution.inventory)
         diagnostics.push(...providerResolution.diagnostics)
@@ -103,6 +114,7 @@ export async function discoverHttpMcpToolInventory(
             provider,
             config,
             requireWhitelist: false,
+            emitDisappearedDiagnostics: false,
         })
         inventory.push(...providerResolution.inventory)
         diagnostics.push(...providerResolution.diagnostics)
@@ -125,6 +137,7 @@ function createBindingForCandidate(args: {
     remoteTool: HttpMcpTool
     candidate: McpToolCandidate
     client: HttpMcpClient
+    dynamicRefresh?: (result: ToolsCallResult) => Promise<void>
 }): ToolBinding {
     return {
         name: args.candidate.inventory.registeredName,
@@ -138,7 +151,11 @@ function createBindingForCandidate(args: {
         outputDescription: "Returns the upstream MCP tool result.",
         errorSemantics: "Remote MCP validation, transport, and provider errors throw and are handled by the registered tool category.",
         handler: async (params, context) => {
-            return await args.client.callTool(args.remoteTool.name, params, context?.signal)
+            const result = await args.client.callTool(args.remoteTool.name, params, context?.signal)
+            if (args.dynamicRefresh) {
+                await args.dynamicRefresh(result)
+            }
+            return result
         },
     }
 }
@@ -147,14 +164,9 @@ async function resolveProviderTools(args: {
     provider: HttpMcpProviderConfig
     config: CreateHttpMcpToolBindingsConfig
     requireWhitelist: boolean
-}): Promise<{
-    inventory: McpToolInventoryEntry[]
-    diagnostics: McpToolDiagnostic[]
-    resolvedTools: Array<{ binding: ToolBinding, inventory: McpToolInventoryEntry }>
-}> {
+    emitDisappearedDiagnostics: boolean
+}): Promise<ResolvedProviderTools> {
     const diagnostics: McpToolDiagnostic[] = []
-    const inventory: McpToolInventoryEntry[] = []
-    const resolvedTools: Array<{ binding: ToolBinding, inventory: McpToolInventoryEntry }> = []
     const client = new HttpMcpClient({
         id: args.provider.id,
         url: args.provider.url,
@@ -164,7 +176,7 @@ async function resolveProviderTools(args: {
         logger: args.config.logger,
     })
     const maxTools = args.provider.maxTools ?? DEFAULT_MCP_MAX_TOOLS_PER_PROVIDER
-    let remoteTools: Array<{ tool: HttpMcpTool, source: McpToolInventoryEntry["source"] }>
+    let remoteTools: DiscoveredRemoteTool[]
 
     try {
         remoteTools = await discoverProviderRemoteTools({
@@ -188,16 +200,57 @@ async function resolveProviderTools(args: {
         })
 
         return {
-            inventory,
+            inventory: [],
             diagnostics,
-            resolvedTools,
+            resolvedTools: [],
         }
     }
 
+    const resolved = resolveRemoteToolBindings({
+        provider: args.provider,
+        config: args.config,
+        requireWhitelist: args.requireWhitelist,
+        emitDisappearedDiagnostics: args.emitDisappearedDiagnostics,
+        remoteTools,
+        client,
+    })
+
+    return {
+        inventory: resolved.inventory,
+        diagnostics: [
+            ...diagnostics,
+            ...resolved.diagnostics,
+        ],
+        resolvedTools: resolved.resolvedTools,
+    }
+}
+
+function resolveRemoteToolBindings(args: {
+    provider: HttpMcpProviderConfig
+    config: CreateHttpMcpToolBindingsConfig
+    requireWhitelist: boolean
+    emitDisappearedDiagnostics: boolean
+    remoteTools: DiscoveredRemoteTool[]
+    client: HttpMcpClient
+}): ResolvedProviderTools {
+    const diagnostics: McpToolDiagnostic[] = []
+    const inventory: McpToolInventoryEntry[] = []
+    const resolvedTools: Array<{ binding: ToolBinding, inventory: McpToolInventoryEntry }> = []
     const approvedTools = buildApprovedToolMap(args.provider)
     const discoveredToolNames = new Set<string>()
 
-    for (const remoteTool of remoteTools) {
+    for (const remoteTool of args.remoteTools) {
+        if (discoveredToolNames.has(remoteTool.tool.name)) {
+            diagnostics.push({
+                providerId: args.provider.id,
+                upstreamToolName: remoteTool.tool.name,
+                source: remoteTool.source,
+                reason: "duplicate_upstream_tool",
+                message: "MCP tool skipped because the provider discovered the same upstream tool name more than once",
+            })
+            continue
+        }
+
         discoveredToolNames.add(remoteTool.tool.name)
         const candidate = createCandidateForRemoteTool({
             provider: args.provider,
@@ -259,13 +312,19 @@ async function resolveProviderTools(args: {
                 provider: args.provider,
                 remoteTool: remoteTool.tool,
                 candidate,
-                client,
+                client: args.client,
+                dynamicRefresh: createDynamicRefreshForTool({
+                    provider: args.provider,
+                    remoteTool: remoteTool.tool,
+                    config: args.config,
+                    client: args.client,
+                }),
             }),
             inventory: candidate.inventory,
         })
     }
 
-    if (args.requireWhitelist) {
+    if (args.requireWhitelist && args.emitDisappearedDiagnostics) {
         for (const approvedTool of approvedTools.values()) {
             if (!discoveredToolNames.has(approvedTool.name)) {
                 diagnostics.push({
@@ -283,5 +342,103 @@ async function resolveProviderTools(args: {
         inventory,
         diagnostics,
         resolvedTools,
+    }
+}
+
+function createDynamicRefreshForTool(args: {
+    provider: HttpMcpProviderConfig
+    remoteTool: HttpMcpTool
+    config: CreateHttpMcpToolBindingsConfig
+    client: HttpMcpClient
+}): ((result: ToolsCallResult) => Promise<void>) | undefined {
+    if (!args.config.dynamicToolRegistry || !isNestedDiscoveryTool(args.provider, args.remoteTool.name)) {
+        return undefined
+    }
+
+    return async (result) => {
+        registerDynamicResolvedTools({
+            provider: args.provider,
+            config: args.config,
+            resolution: resolveDynamicToolsFromDiscoveryResult({
+                provider: args.provider,
+                config: args.config,
+                client: args.client,
+                result,
+            }),
+        })
+
+        registerDynamicResolvedTools({
+            provider: args.provider,
+            config: args.config,
+            resolution: await resolveProviderTools({
+                provider: args.provider,
+                config: {
+                    ...args.config,
+                    failOnProviderError: false,
+                    includeNestedDiscovery: true,
+                },
+                requireWhitelist: true,
+                emitDisappearedDiagnostics: false,
+            }),
+        })
+    }
+}
+
+function resolveDynamicToolsFromDiscoveryResult(args: {
+    provider: HttpMcpProviderConfig
+    config: CreateHttpMcpToolBindingsConfig
+    client: HttpMcpClient
+    result: ToolsCallResult
+}): ResolvedProviderTools {
+    const diagnostics: McpToolDiagnostic[] = []
+    const nested = readNestedDiscoveredTools(args.result)
+    appendMcpToolParseIssueDiagnostics({
+        providerId: args.provider.id,
+        source: "tool_search",
+        issues: nested.issues,
+        diagnostics,
+    })
+    const resolved = resolveRemoteToolBindings({
+        provider: args.provider,
+        config: args.config,
+        requireWhitelist: true,
+        emitDisappearedDiagnostics: false,
+        remoteTools: nested.tools.map((tool) => ({ tool, source: "tool_search" as const })),
+        client: args.client,
+    })
+
+    return {
+        inventory: resolved.inventory,
+        diagnostics: [
+            ...diagnostics,
+            ...resolved.diagnostics,
+        ],
+        resolvedTools: resolved.resolvedTools,
+    }
+}
+
+function registerDynamicResolvedTools(args: {
+    provider: HttpMcpProviderConfig
+    config: CreateHttpMcpToolBindingsConfig
+    resolution: ResolvedProviderTools
+}): void {
+    args.config.dynamicDiagnostics?.push(...args.resolution.diagnostics)
+    if (!args.config.dynamicToolRegistry) {
+        return
+    }
+
+    for (const resolvedTool of args.resolution.resolvedTools) {
+        if (args.config.dynamicToolRegistry.has(resolvedTool.binding.name)) {
+            continue
+        }
+
+        const transformed = args.config.dynamicToolTransform
+            ? args.config.dynamicToolTransform(resolvedTool.binding)
+            : resolvedTool.binding
+        args.config.dynamicToolRegistry.register(transformed)
+        args.config.logger?.info("Dynamically registered MCP tool after discovery", {
+            providerId: args.provider.id,
+            toolName: transformed.name,
+        })
     }
 }

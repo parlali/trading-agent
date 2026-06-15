@@ -346,11 +346,14 @@ export async function prepareScheduledRunAgentTurn(
     let runRiskState = args.riskState
     let runtimeContextLines = args.runtimeContextLines
     const mcpToolDiagnostics: McpToolDiagnostic[] = []
+    const tools = new ToolRegistry()
     const extraTools = await runtime.plugin.getExtraTools({
         secrets: strategySecrets,
         runLogger,
         mcpToolWhitelist,
         mcpToolDiagnostics,
+        mcpToolRegistry: tools,
+        mcpToolTransform: (tool) => applyMcpResearchBudget(tool, args.isCallback),
     })
     const budgetedExtraTools = extraTools.map((tool) =>
         applyMcpResearchBudget(tool, args.isCallback)
@@ -365,7 +368,6 @@ export async function prepareScheduledRunAgentTurn(
         isCallback: args.isCallback,
         runLogger,
     })
-    const tools = new ToolRegistry()
     for (const tool of toolPool.forVenue(app)) {
         tools.register(tool)
     }

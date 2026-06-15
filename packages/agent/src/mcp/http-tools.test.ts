@@ -7,6 +7,7 @@ import {
     createHttpMcpToolBindingResolution,
     createHttpMcpToolBindings,
     discoverHttpMcpToolInventory,
+    type McpToolDiagnostic,
 } from "./http-tools"
 
 describe("HTTP MCP tool bindings", () => {
@@ -326,9 +327,10 @@ describe("HTTP MCP tool bindings", () => {
         })
 
         expect(inventory.inventory.map((tool) => tool.upstreamToolName)).toContain("nested_search")
+        expect(inventory.inventory.map((tool) => tool.upstreamToolName)).toContain("tool_search")
         expect(inventory.diagnostics.some((diagnostic) =>
             diagnostic.upstreamToolName === "tool_search" && diagnostic.reason === "discovery_tool"
-        )).toBe(true)
+        )).toBe(false)
 
         const resolution = await createHttpMcpToolBindingResolution({
             providers: [{
@@ -353,6 +355,149 @@ describe("HTTP MCP tool bindings", () => {
             content: [{
                 type: "text",
                 text: "nested result",
+            }],
+        })
+    })
+
+    it("dynamically registers approved MCP tools from a discovery tool call result", async () => {
+        const receivedToolCalls: Array<{ name: string, arguments: unknown }> = []
+        const server = await startMcpServer(async (request, response) => {
+            const body = await readJsonBody(request)
+
+            if (body.method === "initialize") {
+                writeJsonRpc(response, body.id, {
+                    protocolVersion: "2025-03-26",
+                    capabilities: {},
+                    serverInfo: { name: "dynamic-discovery-server", version: "1.0.0" },
+                })
+                return
+            }
+
+            if (body.method === "notifications/initialized") {
+                response.writeHead(202)
+                response.end()
+                return
+            }
+
+            if (body.method === "tools/list") {
+                writeJsonRpc(response, body.id, {
+                    tools: [{
+                        name: "discover_tools",
+                        description: "Discover provider tools",
+                        inputSchema: {
+                            type: "object",
+                            properties: {
+                                query: { type: "string" },
+                                limit: { type: "number" },
+                            },
+                            required: ["query"],
+                        },
+                    }],
+                })
+                return
+            }
+
+            if (body.method === "tools/call") {
+                const params = body.params as Record<string, unknown>
+                receivedToolCalls.push({
+                    name: String(params.name),
+                    arguments: params.arguments,
+                })
+
+                if (params.name === "discover_tools") {
+                    const input = params.arguments as Record<string, unknown> | undefined
+                    const query = input?.query
+                    writeJsonRpc(response, body.id, {
+                        structuredContent: {
+                            tools: [{
+                                name: query === "rates" ? "dynamic_lookup" : "catalog_lookup",
+                                description: query === "rates" ? "Dynamic lookup" : "Catalog lookup",
+                                inputSchema: {
+                                    type: "object",
+                                    properties: {
+                                        query: { type: "string" },
+                                    },
+                                    required: ["query"],
+                                },
+                            }],
+                        },
+                        content: [],
+                    })
+                    return
+                }
+
+                if (params.name === "catalog_lookup") {
+                    writeJsonRpc(response, body.id, {
+                        content: [{
+                            type: "text",
+                            text: "catalog result",
+                        }],
+                    })
+                    return
+                }
+
+                if (params.name === "dynamic_lookup") {
+                    writeJsonRpc(response, body.id, {
+                        content: [{
+                            type: "text",
+                            text: "dynamic result",
+                        }],
+                    })
+                    return
+                }
+            }
+
+            writeJsonRpcError(response, body.id, -32601, "method not found")
+        })
+        servers.push(server)
+
+        const registry = new ToolRegistry()
+        const diagnostics: McpToolDiagnostic[] = []
+        const resolution = await createHttpMcpToolBindingResolution({
+            providers: [{
+                id: "macro",
+                url: server.url,
+                approvedTools: [
+                    { name: "discover_tools" },
+                    { name: "catalog_lookup" },
+                    { name: "dynamic_lookup" },
+                ],
+            }],
+            logger: createLogger({ minLevel: "fatal" }),
+            dynamicToolRegistry: registry,
+            dynamicDiagnostics: diagnostics,
+        })
+
+        for (const binding of resolution.bindings) {
+            registry.register(binding)
+        }
+
+        expect(resolution.bindings.map((tool) => tool.name)).toEqual([
+            "mcp_macro_discover_tools",
+            "mcp_macro_catalog_lookup",
+        ])
+        expect(resolution.diagnostics).toEqual(expect.arrayContaining([
+            expect.objectContaining({
+                upstreamToolName: "dynamic_lookup",
+                reason: "tool_disappeared",
+            }),
+        ]))
+        expect(receivedToolCalls).toContainEqual({
+            name: "discover_tools",
+            arguments: { query: "", limit: 50 },
+        })
+        expect(registry.has("mcp_macro_dynamic_lookup")).toBe(false)
+
+        await registry.get("mcp_macro_discover_tools")?.handler({ query: "rates" })
+
+        expect(registry.has("mcp_macro_dynamic_lookup")).toBe(true)
+        expect(diagnostics.some((diagnostic) => diagnostic.reason === "tool_disappeared")).toBe(false)
+
+        const result = await registry.get("mcp_macro_dynamic_lookup")?.handler({ query: "cpi" })
+        expect(result).toMatchObject({
+            content: [{
+                type: "text",
+                text: "dynamic result",
             }],
         })
     })
@@ -883,12 +1028,8 @@ describe("HTTP MCP tool bindings", () => {
             logger: createLogger({ minLevel: "fatal" }),
         })
 
-        expect(inventory.inventory.map((tool) => tool.upstreamToolName)).toEqual(["nested_valid"])
+        expect(inventory.inventory.map((tool) => tool.upstreamToolName)).toEqual(["catalog_search", "nested_valid"])
         expect(inventory.diagnostics).toEqual(expect.arrayContaining([
-            expect.objectContaining({
-                upstreamToolName: "catalog_search",
-                reason: "discovery_tool",
-            }),
             expect.objectContaining({
                 upstreamToolName: "nested_bad",
                 source: "tool_search",

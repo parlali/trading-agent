@@ -38,6 +38,9 @@ export async function createMcpTools(config: ExtraToolsConfig) {
         providers: scopedProviders,
         logger: config.runLogger,
         failOnProviderError: false,
+        dynamicToolRegistry: config.mcpToolRegistry,
+        dynamicToolTransform: config.mcpToolTransform,
+        dynamicDiagnostics: config.mcpToolDiagnostics,
     })
     config.mcpToolDiagnostics?.push(...resolution.diagnostics)
 

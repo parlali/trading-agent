@@ -5,13 +5,7 @@ import {
     sanitizeToolNamePart,
 } from "./http-tool-identity"
 import { normalizeMcpInputSchema, readMcpSafetyBlock } from "./http-tool-schema"
-import type {
-    HttpMcpProviderConfig,
-    McpApprovedTool,
-    McpToolDiagnostic,
-    McpToolDiscoverySource,
-    McpToolInventoryEntry,
-} from "./http-tool-types"
+import type { HttpMcpProviderConfig, McpApprovedTool, McpToolDiagnostic, McpToolDiscoverySource, McpToolInventoryEntry } from "./http-tool-types"
 
 export interface McpToolCandidate {
     inventory: McpToolInventoryEntry
@@ -31,18 +25,6 @@ export function createCandidateForRemoteTool(args: {
                 source: args.source,
                 reason: "provider_blocked",
                 message: "MCP tool skipped because it is blocked by provider configuration",
-            },
-        }
-    }
-
-    if (isConfiguredDiscoveryTool(args.provider, args.remoteTool.name)) {
-        return {
-            diagnostic: {
-                providerId: args.provider.id,
-                upstreamToolName: args.remoteTool.name,
-                source: args.source,
-                reason: "discovery_tool",
-                message: "MCP discovery meta-tool skipped so strategy runs cannot bypass the persisted whitelist",
             },
         }
     }
@@ -116,8 +98,4 @@ export function buildApprovedToolMap(provider: HttpMcpProviderConfig): Map<strin
     }
 
     return new Map((provider.allowedTools ?? []).map((name) => [name, { name }]))
-}
-
-export function isConfiguredDiscoveryTool(provider: HttpMcpProviderConfig, toolName: string): boolean {
-    return provider.discoveryTools?.some((tool) => tool.name === toolName) === true
 }

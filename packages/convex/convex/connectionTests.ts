@@ -505,6 +505,7 @@ export const testMcpConnection = action({
     args: {
         strategyId: v.id("strategies"),
         toolName: v.optional(v.string()),
+        toolArgs: v.optional(v.any()),
     },
     handler: async (ctx, args) => {
         await requireUser(ctx)
@@ -614,7 +615,7 @@ export const testMcpConnection = action({
                     runTimeoutMs: 60_000,
                     maxRepeatedToolErrors: 1,
                 })
-                const result = await engine.executeMcpCall(callToolName, {}, "connection-test-call")
+                const result = await engine.executeMcpCall(callToolName, args.toolArgs ?? {}, "connection-test-call")
                 const outcome = engine.getOutcome()
                 steps.push({
                     name: "Call Tool",

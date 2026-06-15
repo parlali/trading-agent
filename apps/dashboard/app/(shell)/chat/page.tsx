@@ -3,6 +3,8 @@
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useChat } from "@ai-sdk/react"
 import { useAuthToken } from "@convex-dev/auth/react"
+import { useQuery } from "convex/react"
+import { api } from "@valiq-trading/convex"
 import {
     DefaultChatTransport,
     getToolName,
@@ -96,11 +98,14 @@ export default function AgentChatPage() {
     const [input, setInput] = useState("")
     const [modelProvider, setModelProvider] = useState<AgentChatModelProvider>("codex")
     const [modelId, setModelId] = useState("")
+    const [selectedStrategyId, setSelectedStrategyId] = useState<string>("")
     const [inventory, setInventory] = useState<ToolInventoryResponse | null>(null)
     const [inventoryLoading, setInventoryLoading] = useState(false)
     const [inventoryError, setInventoryError] = useState<string | null>(null)
     const parentRef = useRef<HTMLDivElement | null>(null)
     const isRunningRef = useRef(false)
+    const strategies = useQuery(api.queries.getAllStrategies, {})
+    const activeStrategyId = selectedStrategyId || (strategies?.[0]?._id ? String(strategies[0]._id) : "")
     const chatTransport = useMemo(() => new DefaultChatTransport({
         api: "/api/agent-chat",
         prepareSendMessagesRequest({ messages, id, messageId, body, headers }) {
@@ -121,6 +126,7 @@ export default function AgentChatPage() {
                     modelId: readTransportModelId(body?.modelId),
                     chatSessionId: id || chatSessionId,
                     chatMessageId: messageId ?? messages[messages.length - 1]?.id,
+                    strategyId: readTransportStrategyId(body?.strategyId),
                     mode: "general",
                 },
             }
@@ -185,9 +191,15 @@ export default function AgentChatPage() {
 
         try {
             const hydrateTranscript = options.hydrateTranscript === true
-            const path = hydrateTranscript
-                ? `/api/agent-chat?chatSessionId=${encodeURIComponent(chatSessionId)}`
-                : "/api/agent-chat"
+            const params = new URLSearchParams()
+            if (hydrateTranscript) {
+                params.set("chatSessionId", chatSessionId)
+            }
+            if (activeStrategyId) {
+                params.set("strategyId", activeStrategyId)
+            }
+            const query = params.toString()
+            const path = query ? `/api/agent-chat?${query}` : "/api/agent-chat"
             const response = await fetch(path, {
                 headers: {
                     "authorization": `Bearer ${authToken}`,
@@ -209,7 +221,13 @@ export default function AgentChatPage() {
         } finally {
             setInventoryLoading(false)
         }
-    }, [authToken, chatSessionId, setMessages])
+    }, [activeStrategyId, authToken, chatSessionId, setMessages])
+
+    useEffect(() => {
+        if (!selectedStrategyId && strategies && strategies.length > 0) {
+            setSelectedStrategyId(String(strategies[0]._id))
+        }
+    }, [selectedStrategyId, strategies])
 
     useEffect(() => {
         void loadInventory({ hydrateTranscript: true })
@@ -265,6 +283,7 @@ export default function AgentChatPage() {
             body: {
                 modelProvider,
                 modelId: selectedModelId,
+                strategyId: activeStrategyId,
             },
         })
     }
@@ -335,7 +354,7 @@ export default function AgentChatPage() {
                 </div>
 
                 <form onSubmit={handleSubmit} className="shrink-0 border-t border-border-subtle p-3">
-                    <div className="mb-3 grid grid-cols-2 gap-2 md:grid-cols-[180px_minmax(0,1fr)]">
+                    <div className="mb-3 grid grid-cols-1 gap-2 md:grid-cols-[180px_minmax(0,1fr)_minmax(0,1fr)]">
                         <div className="space-y-1.5">
                             <Label className="text-[11px] text-muted-foreground">Provider</Label>
                             <Select
@@ -386,6 +405,26 @@ export default function AgentChatPage() {
                                     className="font-mono"
                                 />
                             )}
+                        </div>
+
+                        <div className="space-y-1.5">
+                            <Label className="text-[11px] text-muted-foreground">MCP Strategy</Label>
+                            <Select
+                                value={activeStrategyId}
+                                onValueChange={setSelectedStrategyId}
+                                disabled={isRunning || strategies === undefined || strategies.length === 0}
+                            >
+                                <SelectTrigger className="h-9 w-full">
+                                    <SelectValue placeholder="No strategy" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                    {strategies?.map((strategy) => (
+                                        <SelectItem key={strategy._id} value={String(strategy._id)}>
+                                            {strategy.name}
+                                        </SelectItem>
+                                    ))}
+                                </SelectContent>
+                            </Select>
                         </div>
                     </div>
                     {selectedProviderReason && !selectedProviderConfigured ? (
@@ -723,6 +762,12 @@ function readTransportModelId(value: unknown): string {
     }
 
     return trimmed
+}
+
+function readTransportStrategyId(value: unknown): string | undefined {
+    return typeof value === "string" && value.trim().length > 0
+        ? value.trim()
+        : undefined
 }
 
 function headersToRecord(headers: HeadersInit | undefined): Record<string, string> {

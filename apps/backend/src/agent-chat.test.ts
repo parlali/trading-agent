@@ -723,6 +723,57 @@ describe("agent chat handler", () => {
         expect(tools.some((entry) => entry.category === "execution")).toBe(false)
     })
 
+    it("registers executable MCP chat tools only for a selected strategy whitelist", async () => {
+        const backend = createBackendMock()
+        vi.mocked(backend.getStrategyMcpToolWhitelist).mockResolvedValue({
+            _id: "whitelist-1" as Id<"strategy_mcp_tool_whitelists">,
+            _creationTime: 1,
+            strategyId: "strategy-1" as Id<"strategies">,
+            tools: [{
+                providerId: "secure",
+                toolName: "lookup",
+                registeredName: "mcp_secure_lookup",
+                schemaHash: "a".repeat(64),
+            }],
+            createdAt: 1,
+            updatedAt: 1,
+        })
+        const createScopedMcpTools = vi.fn(async (config) => {
+            expect(config.mcpToolWhitelist?.strategyId).toBe("strategy-1")
+            return [{
+                name: "mcp_secure_lookup",
+                description: "Secure MCP lookup",
+                parameters: z.strictObject({}),
+                category: "research",
+                contractBoundary: "shared",
+                contractOwner: "mcp:secure",
+                handler: async () => ({ ok: true }),
+            } satisfies ToolBinding]
+        })
+
+        const withoutStrategy = await buildAgentChatToolRuntime({
+            abortSignal: new AbortController().signal,
+            tradingBackend: backend,
+            secrets: {},
+            log: createLogger({ minLevel: "fatal" }),
+            discoverMcpInventory: async () => ({ inventory: [], diagnostics: [] }),
+            createScopedMcpTools,
+        })
+        const withStrategy = await buildAgentChatToolRuntime({
+            abortSignal: new AbortController().signal,
+            strategyId: "strategy-1" as Id<"strategies">,
+            tradingBackend: backend,
+            secrets: {},
+            log: createLogger({ minLevel: "fatal" }),
+            discoverMcpInventory: async () => ({ inventory: [], diagnostics: [] }),
+            createScopedMcpTools,
+        })
+
+        expect(withoutStrategy.registry.has("mcp_secure_lookup")).toBe(false)
+        expect(withStrategy.registry.has("mcp_secure_lookup")).toBe(true)
+        expect(createScopedMcpTools).toHaveBeenCalledTimes(1)
+    })
+
     it("keeps local chat tools available when an MCP provider fails discovery", async () => {
         const runtime = await buildAgentChatToolRuntime({
             abortSignal: new AbortController().signal,
@@ -863,6 +914,7 @@ function createBackendMock(args: {
         recordAgentChatToolEvent: vi.fn(async () => {}),
         getAllStrategies: vi.fn(async () => []),
         getStrategyById: vi.fn(async () => null),
+        getStrategyMcpToolWhitelist: vi.fn<TradingBackendClient["getStrategyMcpToolWhitelist"]>(async () => null),
         getRunHistory: vi.fn(async () => []),
         getAccounts: vi.fn(async () => args.accounts ?? []),
         getPortfolioAccountSnapshots: vi.fn(async () => []),
