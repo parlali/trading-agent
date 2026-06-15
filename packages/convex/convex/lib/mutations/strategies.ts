@@ -16,7 +16,7 @@ import {
     deleteStrategyTableBatch,
     sumDeletedCounts,
 } from "./strategyCascadeDelete"
-import { venueAppV } from "../validators"
+import { mcpToolApprovalV, venueAppV } from "../validators"
 import { enqueueManualRunRequest } from "./systemManualRuns"
 
 const strategyImportArg = v.object({
@@ -137,6 +137,44 @@ export const upsertStrategy = mutation({
             schedule: strategy.schedule,
             policy: strategy.policy,
             context: strategy.context,
+            createdAt: now,
+            updatedAt: now,
+        })
+    },
+})
+
+export const setStrategyMcpToolWhitelist = mutation({
+    args: {
+        strategyId: v.id("strategies"),
+        tools: v.array(mcpToolApprovalV),
+        serviceToken: v.optional(v.string()),
+    },
+    handler: async (ctx, args) => {
+        await requireUserOrServiceToken(ctx, args.serviceToken)
+
+        const strategy = await ctx.db.get(args.strategyId)
+        if (!strategy) {
+            throw new Error(`Strategy not found: ${args.strategyId}`)
+        }
+
+        const tools = normalizeMcpToolApprovals(args.tools)
+        const now = Date.now()
+        const existing = await ctx.db
+            .query("strategy_mcp_tool_whitelists")
+            .withIndex("by_strategy", (q) => q.eq("strategyId", args.strategyId))
+            .first()
+
+        if (existing) {
+            await ctx.db.patch(existing._id, {
+                tools,
+                updatedAt: now,
+            })
+            return existing._id
+        }
+
+        return await ctx.db.insert("strategy_mcp_tool_whitelists", {
+            strategyId: args.strategyId,
+            tools,
             createdAt: now,
             updatedAt: now,
         })
@@ -774,4 +812,49 @@ async function assertAccountExists(
     if (account.status !== "active") {
         throw new Error(`Strategy account is not active: ${app}:${accountId}`)
     }
+}
+
+function normalizeMcpToolApprovals(tools: Array<{
+    providerId: string
+    toolName: string
+    registeredName: string
+    schemaHash: string
+}>) {
+    const seen = new Set<string>()
+    const normalized = tools.map((tool) => {
+        const providerId = tool.providerId.trim()
+        const toolName = tool.toolName.trim()
+        const registeredName = tool.registeredName.trim()
+        const schemaHash = tool.schemaHash.trim()
+
+        if (!providerId) {
+            throw new Error("MCP whitelist providerId must be non-empty")
+        }
+        if (!toolName) {
+            throw new Error("MCP whitelist toolName must be non-empty")
+        }
+        if (!registeredName) {
+            throw new Error("MCP whitelist registeredName must be non-empty")
+        }
+        if (!schemaHash || !/^[a-f0-9]{64}$/.test(schemaHash)) {
+            throw new Error("MCP whitelist schemaHash must be a SHA-256 hex digest")
+        }
+
+        const key = `${providerId}\0${toolName}`
+        if (seen.has(key)) {
+            throw new Error(`Duplicate MCP whitelist tool: ${providerId}:${toolName}`)
+        }
+        seen.add(key)
+
+        return {
+            providerId,
+            toolName,
+            registeredName,
+            schemaHash,
+        }
+    })
+
+    return normalized.sort((left, right) =>
+        `${left.providerId}\0${left.toolName}`.localeCompare(`${right.providerId}\0${right.toolName}`)
+    )
 }

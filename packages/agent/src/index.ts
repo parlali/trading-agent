@@ -71,8 +71,24 @@ export { startRunToolServer } from "./mcp/run-tool-server"
 export type { RunToolServer, RunToolServerConfig } from "./mcp/run-tool-server"
 export { HttpMcpClient } from "./mcp/http-client"
 export type { HttpMcpClientConfig, HttpMcpTool, ToolsCallResult } from "./mcp/http-client"
-export { createHttpMcpToolBindings, withMcpToolCallBudget } from "./mcp/http-tools"
-export type { HttpMcpProviderConfig, CreateHttpMcpToolBindingsConfig } from "./mcp/http-tools"
+export {
+    createHttpMcpToolBindingResolution,
+    createHttpMcpToolBindings,
+    discoverHttpMcpToolInventory,
+    hashMcpToolSchema,
+    withMcpToolCallBudget,
+} from "./mcp/http-tools"
+export type {
+    CreateHttpMcpToolBindingsConfig,
+    HttpMcpProviderConfig,
+    HttpMcpToolBindingResolution,
+    McpApprovedTool,
+    McpToolApproval,
+    McpToolDiagnostic,
+    McpToolDiscoverySource,
+    McpToolInventoryEntry,
+    McpToolSkipReason,
+} from "./mcp/http-tools"
 export {
     MCP_PROVIDER_SECRET_KEYS,
     resolveMcpProviderConfigs,

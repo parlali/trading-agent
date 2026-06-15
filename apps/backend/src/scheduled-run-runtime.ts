@@ -1,10 +1,11 @@
 import {
     ToolRegistry,
     withMcpToolCallBudget,
+    type McpToolDiagnostic,
     type ToolBinding,
 } from "@valiq-trading/agent"
 import { createConvexOrderPersistenceAdapter } from "@valiq-trading/convex"
-import type { Id, RunTrigger, StoredStrategy } from "@valiq-trading/convex"
+import type { Id, RunTrigger, StoredStrategy, StrategyMcpToolWhitelist } from "@valiq-trading/convex"
 import {
     ExecutionPipeline,
     buildRunSystemContextDigest,
@@ -63,6 +64,7 @@ export interface ScheduledRunRuntime {
     strategy: StoredStrategy
     policy: Record<string, unknown>
     strategySecrets: Record<string, string | null>
+    mcpToolWhitelist: StrategyMcpToolWhitelist | null
     runId: Id<"strategy_runs">
     runLogger: Logger
     venue: VenueAdapter
@@ -93,6 +95,7 @@ export interface PreparedScheduledRunAgentTurn {
     riskState: StrategyRiskState
     runtimeContextLines?: string[]
     toolManifest: ReturnType<ToolRegistry["getManifest"]>
+    mcpToolDiagnostics: McpToolDiagnostic[]
 }
 
 export async function createScheduledRunRuntime(
@@ -116,10 +119,12 @@ export async function createScheduledRunRuntime(
         ownershipScopeRow,
         allOwnedInstruments,
         storedPositions,
+        mcpToolWhitelist,
     ] = await Promise.all([
         backend.getStrategyOwnershipScope(strategy._id),
         backend.getAllOwnedInstrumentsByApp(app, strategy.accountId),
         storedPositionsPromise,
+        backend.getStrategyMcpToolWhitelist(strategy._id),
     ])
 
     let initialPositions: Position[]
@@ -262,6 +267,7 @@ export async function createScheduledRunRuntime(
         strategy,
         policy,
         strategySecrets,
+        mcpToolWhitelist,
         runId,
         runLogger,
         venue,
@@ -326,6 +332,7 @@ export async function prepareScheduledRunAgentTurn(
         strategy,
         policy,
         strategySecrets,
+        mcpToolWhitelist,
         runLogger,
         venue,
         pipeline,
@@ -338,9 +345,12 @@ export async function prepareScheduledRunAgentTurn(
     } = runtime
     let runRiskState = args.riskState
     let runtimeContextLines = args.runtimeContextLines
+    const mcpToolDiagnostics: McpToolDiagnostic[] = []
     const extraTools = await runtime.plugin.getExtraTools({
         secrets: strategySecrets,
         runLogger,
+        mcpToolWhitelist,
+        mcpToolDiagnostics,
     })
     const budgetedExtraTools = extraTools.map((tool) =>
         applyMcpResearchBudget(tool, args.isCallback)
@@ -441,6 +451,7 @@ export async function prepareScheduledRunAgentTurn(
         riskState: runRiskState,
         runtimeContextLines,
         toolManifest: tools.getManifest(),
+        mcpToolDiagnostics,
     }
 }
 

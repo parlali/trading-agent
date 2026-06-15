@@ -1,4 +1,5 @@
-import type { ToolBinding } from "@valiq-trading/agent"
+import type { McpToolDiagnostic, ToolBinding } from "@valiq-trading/agent"
+import type { StrategyMcpToolWhitelist } from "@valiq-trading/convex"
 import type { AccountState, Logger, Position, RiskValidator, VenueAdapter, VenueApp, WorkingOrder } from "@valiq-trading/core"
 import type { App } from "@valiq-trading/core"
 import type { AuditedSessionFlatResult } from "./session-flat"
@@ -31,6 +32,8 @@ export interface VenuePlugin {
 export interface ExtraToolsConfig {
     secrets: Record<string, string | null>
     runLogger: Logger
+    mcpToolWhitelist?: StrategyMcpToolWhitelist | null
+    mcpToolDiagnostics?: McpToolDiagnostic[]
 }
 
 export interface PreRunHookConfig {

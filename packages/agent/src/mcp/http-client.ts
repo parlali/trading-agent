@@ -58,6 +58,17 @@ export interface ListToolsOptions {
 
 const DEFAULT_MAX_LIST_PAGES = 10
 
+export class McpProviderRequestError extends Error {
+    constructor(
+        message: string,
+        readonly providerId: string,
+        readonly method: string
+    ) {
+        super(message)
+        this.name = "McpProviderRequestError"
+    }
+}
+
 export class HttpMcpClient {
     private requestId = 0
     private initialized = false
@@ -120,6 +131,14 @@ export class HttpMcpClient {
         }, signal))
     }
 
+    async discoverTools(signal?: AbortSignal): Promise<HttpMcpTool[]> {
+        await this.initialize(signal)
+        return validateToolsDiscoverResult(
+            this.config.id,
+            await this.request<unknown>("tools/discover", {}, signal)
+        )
+    }
+
     private async initialize(signal?: AbortSignal): Promise<void> {
         if (this.initialized) {
             return
@@ -171,7 +190,11 @@ export class HttpMcpClient {
         }
 
         if ("error" in payload) {
-            throw new Error(`MCP provider ${this.config.id} ${method} failed: ${payload.error.message}`)
+            throw new McpProviderRequestError(
+                `MCP provider ${this.config.id} ${method} failed with JSON-RPC error ${payload.error.code}`,
+                this.config.id,
+                method
+            )
         }
 
         return payload.result as T
@@ -198,7 +221,11 @@ export class HttpMcpClient {
             this.captureSessionId(response)
             const text = await response.text()
             if (!response.ok) {
-                throw new Error(`HTTP ${response.status}: ${text.slice(0, 500)}`)
+                throw new McpProviderRequestError(
+                    `MCP provider ${this.config.id} request failed with HTTP ${response.status}`,
+                    this.config.id,
+                    String(payload.method ?? "unknown")
+                )
             }
 
             if (text.trim().length === 0) {
@@ -329,6 +356,37 @@ function validateToolsListResult(providerId: string, value: unknown): { tools: H
         tools,
         nextCursor,
     }
+}
+
+function validateToolsDiscoverResult(providerId: string, value: unknown): HttpMcpTool[] {
+    if (Array.isArray(value)) {
+        return value.map((tool, index) => validateMcpTool(providerId, tool, index))
+    }
+
+    if (!value || typeof value !== "object") {
+        throw new Error(`MCP provider ${providerId} returned malformed tools/discover result`)
+    }
+
+    const record = value as Record<string, unknown>
+    const rawTools = Array.isArray(record.tools)
+        ? record.tools
+        : Array.isArray(record.results)
+            ? record.results
+            : Array.isArray(record.items)
+                ? record.items
+                : undefined
+
+    if (!rawTools) {
+        throw new Error(`MCP provider ${providerId} returned malformed tools/discover tools`)
+    }
+
+    return rawTools.map((tool, index) => {
+        if (tool && typeof tool === "object" && !Array.isArray(tool) && "tool" in tool) {
+            return validateMcpTool(providerId, (tool as Record<string, unknown>).tool, index)
+        }
+
+        return validateMcpTool(providerId, tool, index)
+    })
 }
 
 function validateMcpTool(providerId: string, value: unknown, index: number): HttpMcpTool {

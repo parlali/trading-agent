@@ -235,6 +235,19 @@ export async function deleteStrategyTableBatch(
         return true
     }
 
+    const mcpToolWhitelists = await ctx.db
+        .query("strategy_mcp_tool_whitelists")
+        .withIndex("by_strategy", (q) => q.eq("strategyId", strategyId))
+        .take(batchSize)
+
+    if (mcpToolWhitelists.length > 0) {
+        for (const whitelist of mcpToolWhitelists) {
+            await ctx.db.delete(whitelist._id)
+            deleted.strategyMcpToolWhitelists++
+        }
+        return true
+    }
+
     const strategy = await ctx.db.get(strategyId)
 
     if (!strategy) {
@@ -411,6 +424,7 @@ export async function cascadeDeleteStrategy(
     let accountSnapshots = 0
     let appHeartbeats = 0
     let manualRunRequests = 0
+    let strategyMcpToolWhitelists = 0
     let alerts = 0
 
     const strategyRuns = await ctx.db
@@ -511,6 +525,16 @@ export async function cascadeDeleteStrategy(
         manualRunRequests++
     }
 
+    const strategyMcpToolWhitelistRows = await ctx.db
+        .query("strategy_mcp_tool_whitelists")
+        .withIndex("by_strategy", (q) => q.eq("strategyId", strategyId))
+        .collect()
+
+    for (const whitelist of strategyMcpToolWhitelistRows) {
+        await ctx.db.delete(whitelist._id)
+        strategyMcpToolWhitelists++
+    }
+
     const strategyAlerts = (await ctx.db.query("alerts").collect()).filter(
         (alert) => alert.strategyId === strategyId
     )
@@ -603,6 +627,7 @@ export async function cascadeDeleteStrategy(
         accountSnapshots,
         appHeartbeats,
         manualRunRequests,
+        strategyMcpToolWhitelists,
         alerts,
     }
 }

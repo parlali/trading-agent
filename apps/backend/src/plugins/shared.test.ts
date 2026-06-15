@@ -10,17 +10,19 @@ vi.mock("@valiq-trading/agent", async (importOriginal) => {
     const actual = await importOriginal<typeof import("@valiq-trading/agent")>()
     return {
         ...actual,
-        createHttpMcpToolBindings: vi.fn(async ({ providers }: {
+        createHttpMcpToolBindingResolution: vi.fn(async ({ providers }: {
             providers: Array<{ id: string; category?: string }>
-        }) =>
-            providers.map((provider: { id: string; category?: string }) => ({
+        }) => ({
+            bindings: providers.map((provider: { id: string; category?: string }) => ({
                 name: `mcp_${provider.id}_research`,
                 description: "Remote research",
                 parameters: { safeParse: (value: unknown) => ({ success: true, data: value }) },
                 category: provider.category ?? "research",
                 handler: vi.fn(),
-            }))
-        ),
+            })),
+            inventory: [],
+            diagnostics: [],
+        })),
     }
 })
 
@@ -107,7 +109,7 @@ describe("backend plugin shared helpers", () => {
         expect(runLogger.warn).not.toHaveBeenCalled()
     })
 
-    it("registers MCP tools from generic single-provider config", async () => {
+    it("fails closed when generic MCP providers have no persisted strategy whitelist", async () => {
         const runLogger = createTestLogger()
 
         const tools = await createMcpTools({
@@ -116,6 +118,40 @@ describe("backend plugin shared helpers", () => {
                 MCP_SERVER_TOKEN: "token",
             },
             runLogger,
+        })
+
+        expect(tools).toEqual([])
+        expect(runLogger.warn).toHaveBeenCalledWith(
+            "MCP tool skipped by strategy scope",
+            expect.objectContaining({
+                providerId: "default",
+                reason: "strategy_whitelist_missing",
+            })
+        )
+    })
+
+    it("registers MCP tools from generic single-provider config and persisted strategy whitelist", async () => {
+        const runLogger = createTestLogger()
+
+        const tools = await createMcpTools({
+            secrets: {
+                MCP_SERVER_URL: "https://mcp.example",
+                MCP_SERVER_TOKEN: "token",
+            },
+            runLogger,
+            mcpToolWhitelist: {
+                _id: "whitelist-1" as never,
+                _creationTime: 1,
+                strategyId: "strategy-1" as never,
+                tools: [{
+                    providerId: "default",
+                    toolName: "research",
+                    registeredName: "mcp_default_research",
+                    schemaHash: "a".repeat(64),
+                }],
+                createdAt: 1,
+                updatedAt: 1,
+            },
         })
 
         expect(tools.map((tool) => tool.name)).toEqual(["mcp_default_research"])

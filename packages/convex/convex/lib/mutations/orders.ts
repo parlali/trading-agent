@@ -15,6 +15,7 @@ import {
     eventTypeV,
     orderCoreFieldsV,
     orderTransitionCoreFieldsV,
+    mcpToolDiagnosticV,
     runSystemContextDigestV,
     venueAppV,
 } from "../validators"
@@ -242,6 +243,7 @@ export const runDiagnosticsV = v.object({
     opportunityClosed: v.optional(v.number()),
     opportunityRealizedPnl: v.optional(v.number()),
     systemContextDigest: v.optional(runSystemContextDigestV),
+    mcpToolDiagnostics: v.optional(v.array(mcpToolDiagnosticV)),
     toolManifest: v.optional(v.array(v.object({
         name: v.string(),
         category: v.optional(v.string()),
@@ -279,6 +281,7 @@ const RUN_DIAGNOSTIC_PATCH_FIELDS = [
     "opportunityClosed",
     "opportunityRealizedPnl",
     "systemContextDigest",
+    "mcpToolDiagnostics",
     "toolManifest",
 ] as const
 

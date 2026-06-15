@@ -5,6 +5,7 @@ export {
     getStrategyConfigs,
     getStrategyById,
     getAllStrategies,
+    getStrategyMcpToolWhitelist,
     getStrategyOwnedInstruments,
     getStrategyOwnershipScope,
     getInstrumentClaimsForStrategy,

@@ -74,4 +74,24 @@ describe("run diagnostics persistence helpers", () => {
             reasoningTokens: 4,
         })
     })
+
+    it("keeps MCP skipped-tool diagnostics in the updateRun patch model", () => {
+        const diagnostics = [{
+            providerId: "macro",
+            upstreamToolName: "rates",
+            registeredName: "mcp_macro_rates",
+            source: "tools/list" as const,
+            reason: "schema_changed" as const,
+            message: "MCP tool skipped because its discovered input schema hash no longer matches the approved schema hash",
+            schemaReason: "expected old, discovered new",
+        }]
+        const patch = buildRunDiagnosticsPatch({
+            mcpToolDiagnostics: diagnostics,
+        })
+
+        expect(runDiagnosticsV).toBeDefined()
+        expect(patch).toEqual({
+            mcpToolDiagnostics: diagnostics,
+        })
+    })
 })

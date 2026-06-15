@@ -22,6 +22,8 @@ import {
     positionValueFieldsV,
     accountSnapshotValueFieldsV,
     agentChatToolPayloadV,
+    mcpToolApprovalV,
+    mcpToolDiagnosticV,
 } from "./lib/validators"
 
 const heartbeatStateFields = {
@@ -70,6 +72,13 @@ export default defineSchema({
         createdAt: v.number(),
         updatedAt: v.number(),
     }).index("by_key", ["key"]),
+
+    strategy_mcp_tool_whitelists: defineTable({
+        strategyId: v.id("strategies"),
+        tools: v.array(mcpToolApprovalV),
+        createdAt: v.number(),
+        updatedAt: v.number(),
+    }).index("by_strategy", ["strategyId"]),
 
     strategy_runs: defineTable({
         strategyId: v.id("strategies"),
@@ -123,6 +132,7 @@ export default defineSchema({
         opportunityClosed: v.optional(v.number()),
         opportunityRealizedPnl: v.optional(v.number()),
         systemContextDigest: v.optional(runSystemContextDigestV),
+        mcpToolDiagnostics: v.optional(v.array(mcpToolDiagnosticV)),
         toolManifest: v.optional(v.array(v.object({
             name: v.string(),
             category: v.optional(v.string()),

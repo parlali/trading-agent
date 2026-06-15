@@ -14,7 +14,8 @@ import {
     MCP_PROVIDER_SECRET_KEYS,
     ToolExecutionEngine,
     ToolRegistry,
-    createHttpMcpToolBindings,
+    createHttpMcpToolBindingResolution,
+    discoverHttpMcpToolInventory,
     resolveMcpProviderConfigs,
     withMcpToolCallBudget,
 } from "@valiq-trading/agent"
@@ -524,20 +525,57 @@ export const testMcpConnection = action({
                 },
             })
 
-            const toolBindings = await createHttpMcpToolBindings({
+            const inventory = await discoverHttpMcpToolInventory({
                 providers,
+                failOnProviderError: false,
             })
-            const registry = new ToolRegistry()
-            for (const tool of toolBindings) {
-                registry.register(withMcpToolCallBudget(tool, 4))
-            }
 
-            const toolNames = registry.getAll().map((tool) => tool.name).sort((left, right) => left.localeCompare(right))
-            steps.push({ name: "List Tools", ok: true, data: { toolNames } })
+            const toolNames = inventory.inventory
+                .map((tool) => tool.registeredName)
+                .sort((left, right) => left.localeCompare(right))
+            const providerUnavailable = inventory.diagnostics.some((diagnostic) =>
+                diagnostic.reason === "provider_unavailable"
+            )
+            steps.push({
+                name: "Discover Tools",
+                ok: !providerUnavailable,
+                data: {
+                    toolNames,
+                    diagnostics: inventory.diagnostics,
+                },
+                error: providerUnavailable ? "One or more MCP providers were unavailable" : undefined,
+            })
 
             if (args.toolName) {
-                if (!registry.has(args.toolName)) {
-                    steps.push({ name: "Call Tool", ok: false, error: `Tool ${args.toolName} is not registered in runtime ToolRegistry` })
+                const selectedTool = inventory.inventory.find((tool) =>
+                    tool.registeredName === args.toolName || tool.upstreamToolName === args.toolName
+                )
+                if (!selectedTool) {
+                    steps.push({ name: "Call Tool", ok: false, error: `Tool ${args.toolName} is not present in discovered safe MCP inventory` })
+                    return { ok: false, steps }
+                }
+
+                const toolBindings = await createHttpMcpToolBindingResolution({
+                    providers: providers
+                        .filter((provider) => provider.id === selectedTool.providerId)
+                        .map((provider) => ({
+                            ...provider,
+                            approvedTools: [{
+                                name: selectedTool.upstreamToolName,
+                                registeredName: selectedTool.registeredName,
+                                schemaHash: selectedTool.schemaHash,
+                            }],
+                        })),
+                    failOnProviderError: false,
+                })
+                const registry = new ToolRegistry()
+                for (const tool of toolBindings.bindings) {
+                    registry.register(withMcpToolCallBudget(tool, 4))
+                }
+
+                const callToolName = selectedTool.registeredName
+                if (!registry.has(callToolName)) {
+                    steps.push({ name: "Call Tool", ok: false, error: `Tool ${callToolName} is not registered in runtime ToolRegistry` })
                     return { ok: false, steps }
                 }
 
@@ -549,7 +587,7 @@ export const testMcpConnection = action({
                     runTimeoutMs: 60_000,
                     maxRepeatedToolErrors: 1,
                 })
-                const result = await engine.executeMcpCall(args.toolName, {}, "connection-test-call")
+                const result = await engine.executeMcpCall(callToolName, {}, "connection-test-call")
                 const outcome = engine.getOutcome()
                 steps.push({
                     name: "Call Tool",
