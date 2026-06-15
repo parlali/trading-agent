@@ -1,11 +1,15 @@
+"use node"
+
 import { action } from "./_generated/server"
 import { internal } from "./_generated/api"
 import { v } from "convex/values"
 import {
-    MCP_PROVIDER_SECRET_KEYS,
     compareCodeUnits,
-    discoverHttpMcpToolInventory,
     mcpDiscoveryRequestKey,
+} from "@valiq-trading/core"
+import {
+    MCP_PROVIDER_SECRET_KEYS,
+    discoverHttpMcpToolInventory,
     resolveMcpProviderConfigs,
     type McpToolApproval,
     type McpToolDiagnostic,
