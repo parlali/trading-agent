@@ -4,6 +4,32 @@
     "type": "module",
     "main": "src/index.ts",
     "types": "src/index.ts",
+    "exports": {
+        ".": {
+            "import": "./src/index.ts",
+            "types": "./src/index.ts"
+        },
+        "./mcp/http-tools": {
+            "import": "./src/mcp/http-tools.ts",
+            "types": "./src/mcp/http-tools.ts"
+        },
+        "./mcp/provider-config": {
+            "import": "./src/mcp/provider-config.ts",
+            "types": "./src/mcp/provider-config.ts"
+        },
+        "./mcp/provider-scope": {
+            "import": "./src/mcp/provider-scope.ts",
+            "types": "./src/mcp/provider-scope.ts"
+        },
+        "./tool-execution-engine": {
+            "import": "./src/tool-execution-engine.ts",
+            "types": "./src/tool-execution-engine.ts"
+        },
+        "./tool-registry": {
+            "import": "./src/tool-registry.ts",
+            "types": "./src/tool-registry.ts"
+        }
+    },
     "license": "UNLICENSED",
     "scripts": {
         "build": "tsc --noEmit",

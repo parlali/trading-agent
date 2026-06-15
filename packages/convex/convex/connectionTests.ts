@@ -12,14 +12,16 @@ import {
     type VenueApp,
 } from "@valiq-trading/core"
 import {
-    MCP_PROVIDER_SECRET_KEYS,
-    ToolExecutionEngine,
-    ToolRegistry,
     createHttpMcpToolBindingResolution,
     discoverHttpMcpToolInventory,
-    resolveMcpProviderConfigs,
     withMcpToolCallBudget,
-} from "@valiq-trading/agent"
+} from "@valiq-trading/agent/mcp/http-tools"
+import {
+    MCP_PROVIDER_SECRET_KEYS,
+    resolveMcpProviderConfigs,
+} from "@valiq-trading/agent/mcp/provider-config"
+import { ToolExecutionEngine } from "@valiq-trading/agent/tool-execution-engine"
+import { ToolRegistry } from "@valiq-trading/agent/tool-registry"
 import { createMcpConnectionProviderScope } from "./lib/mcpConnectionScope"
 import {
     ALPACA_RUNTIME_SECRET_KEYS,

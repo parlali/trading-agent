@@ -1,9 +1,11 @@
 import {
     createScopedMcpProviderConfig,
-    type HttpMcpProviderConfig,
-    type McpToolApproval,
-    type McpToolDiscoveryRequest,
-} from "@valiq-trading/agent"
+} from "@valiq-trading/agent/mcp/provider-scope"
+import type {
+    HttpMcpProviderConfig,
+    McpToolApproval,
+    McpToolDiscoveryRequest,
+} from "@valiq-trading/agent/mcp/http-tools"
 
 interface McpConnectionWhitelistScope {
     tools: McpToolApproval[]

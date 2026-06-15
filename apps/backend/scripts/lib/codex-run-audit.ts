@@ -7,7 +7,7 @@ import {
     type App,
     type Position,
 } from "@valiq-trading/core"
-import { listToolContracts } from "@valiq-trading/agent/src/tool-contracts.ts"
+import { listToolContracts } from "@valiq-trading/agent"
 import type {
     AgentLogRow,
     PortfolioFreshnessRow,

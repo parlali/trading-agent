@@ -8,14 +8,16 @@ import {
     mcpDiscoveryRequestKey,
 } from "@valiq-trading/core"
 import {
-    MCP_PROVIDER_SECRET_KEYS,
     discoverHttpMcpToolInventory,
-    resolveMcpProviderConfigs,
     type McpToolApproval,
     type McpToolDiagnostic,
     type McpToolDiscoveryRequest,
     type McpToolInventoryEntry,
-} from "@valiq-trading/agent"
+} from "@valiq-trading/agent/mcp/http-tools"
+import {
+    MCP_PROVIDER_SECRET_KEYS,
+    resolveMcpProviderConfigs,
+} from "@valiq-trading/agent/mcp/provider-config"
 import type { Id } from "./_generated/dataModel"
 import { readConvexEnv, requireServiceToken, requireUser } from "./lib/authGuards"
 import { mcpToolApprovalV, mcpToolDiscoveryRequestV } from "./lib/validators"
