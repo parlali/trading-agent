@@ -361,6 +361,105 @@ describe("HTTP MCP tool bindings", () => {
         })
     })
 
+    it("does not derive tool approvals from an unapproved discovery tool", async () => {
+        const server = await startMcpServer(async (request, response) => {
+            const body = await readJsonBody(request)
+
+            if (body.method === "initialize") {
+                writeJsonRpc(response, body.id, {
+                    protocolVersion: "2025-03-26",
+                    capabilities: {},
+                    serverInfo: { name: "unapproved-discovery-server", version: "1.0.0" },
+                })
+                return
+            }
+
+            if (body.method === "notifications/initialized") {
+                response.writeHead(202)
+                response.end()
+                return
+            }
+
+            if (body.method === "tools/list") {
+                writeJsonRpc(response, body.id, {
+                    tools: [
+                        {
+                            name: "discover_tools",
+                            description: "Discover hidden tools",
+                            inputSchema: {
+                                type: "object",
+                                properties: {
+                                    query: { type: "string" },
+                                },
+                            },
+                        },
+                        {
+                            name: "safe_status",
+                            description: "Read status",
+                            inputSchema: {
+                                type: "object",
+                                properties: {},
+                            },
+                        },
+                    ],
+                })
+                return
+            }
+
+            if (body.method === "tools/call") {
+                const params = body.params as Record<string, unknown>
+                if (params.name === "discover_tools") {
+                    writeJsonRpc(response, body.id, {
+                        structuredContent: {
+                            tools: [{
+                                name: "nested_search",
+                                description: "Nested search",
+                                inputSchema: {
+                                    type: "object",
+                                    properties: {
+                                        query: { type: "string" },
+                                    },
+                                },
+                            }],
+                        },
+                        content: [],
+                    })
+                    return
+                }
+
+                writeJsonRpc(response, body.id, {
+                    content: [{
+                        type: "text",
+                        text: "status",
+                    }],
+                })
+                return
+            }
+
+            writeJsonRpcError(response, body.id, -32601, "method not found")
+        })
+        servers.push(server)
+
+        const resolution = await createHttpMcpToolBindingResolution({
+            providers: [{
+                id: "macro",
+                url: server.url,
+                approvedTools: [{
+                    name: "safe_status",
+                }],
+            }],
+            logger: createLogger({ minLevel: "fatal" }),
+        })
+
+        expect(resolution.bindings.map((tool) => tool.name)).toEqual(["mcp_macro_safe_status"])
+        expect(resolution.diagnostics).toEqual(expect.arrayContaining([
+            expect.objectContaining({
+                upstreamToolName: "nested_search",
+                reason: "not_whitelisted",
+            }),
+        ]))
+    })
+
     it("deduplicates identical MCP tools across discovery refreshes without diagnostics", async () => {
         const sharedSearchTool = {
             name: "market_context",
@@ -694,7 +793,7 @@ describe("HTTP MCP tool bindings", () => {
         })
     })
 
-    it("dynamically registers approved MCP tools from a discovery tool call result", async () => {
+    it("treats tools returned by an approved discovery tool as derived approvals", async () => {
         const receivedToolCalls: Array<{ name: string, arguments: unknown }> = []
         const server = await startMcpServer(async (request, response) => {
             const body = await readJsonBody(request)
@@ -794,8 +893,6 @@ describe("HTTP MCP tool bindings", () => {
                 url: server.url,
                 approvedTools: [
                     { name: "discover_tools" },
-                    { name: "catalog_lookup" },
-                    { name: "dynamic_lookup" },
                 ],
             }],
             logger: createLogger({ minLevel: "fatal" }),
@@ -811,15 +908,10 @@ describe("HTTP MCP tool bindings", () => {
             "mcp_macro_discover_tools",
             "mcp_macro_catalog_lookup",
         ])
-        expect(resolution.diagnostics).toEqual(expect.arrayContaining([
-            expect.objectContaining({
-                upstreamToolName: "dynamic_lookup",
-                reason: "tool_disappeared",
-            }),
-        ]))
+        expect(resolution.diagnostics.some((diagnostic) => diagnostic.reason === "not_whitelisted")).toBe(false)
         expect(receivedToolCalls).toContainEqual({
             name: "discover_tools",
-            arguments: { query: "", limit: 50 },
+            arguments: { query: "", limit: 100 },
         })
         expect(registry.has("mcp_macro_dynamic_lookup")).toBe(false)
 

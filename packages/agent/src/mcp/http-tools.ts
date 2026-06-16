@@ -247,6 +247,7 @@ function resolveRemoteToolBindings(args: {
     const inventory: McpToolInventoryEntry[] = []
     const resolvedTools: Array<{ binding: ToolBinding, inventory: McpToolInventoryEntry }> = []
     const approvedTools = buildApprovedToolMap(args.provider)
+    const approvedDiscoveryToolNames = buildApprovedDiscoveryToolNames(args.provider, approvedTools)
     const deduplicatedRemoteTools: DiscoveredRemoteTool[] = []
     const deduplicationState = createMcpToolDeduplicationState<DiscoveredRemoteTool>()
     const discoveredToolNames = new Set(args.conflictedToolNames ?? [])
@@ -285,7 +286,11 @@ function resolveRemoteToolBindings(args: {
         }
 
         const approvedTool = approvedTools.get(remoteTool.tool.name)
-        if (!approvedTool) {
+        const discoveredByApprovedToolName = readApprovedDiscoverySource({
+            remoteTool,
+            approvedDiscoveryToolNames,
+        })
+        if (!approvedTool && !discoveredByApprovedToolName) {
             diagnostics.push({
                 providerId: args.provider.id,
                 upstreamToolName: remoteTool.tool.name,
@@ -297,7 +302,7 @@ function resolveRemoteToolBindings(args: {
             continue
         }
 
-        if (approvedTool.schemaHash && approvedTool.schemaHash !== candidate.inventory.schemaHash) {
+        if (approvedTool?.schemaHash && approvedTool.schemaHash !== candidate.inventory.schemaHash) {
             diagnostics.push({
                 providerId: args.provider.id,
                 upstreamToolName: remoteTool.tool.name,
@@ -310,7 +315,7 @@ function resolveRemoteToolBindings(args: {
             continue
         }
 
-        if (approvedTool.registeredName && approvedTool.registeredName !== candidate.inventory.registeredName) {
+        if (approvedTool?.registeredName && approvedTool.registeredName !== candidate.inventory.registeredName) {
             diagnostics.push({
                 providerId: args.provider.id,
                 upstreamToolName: remoteTool.tool.name,
@@ -379,6 +384,7 @@ function createDynamicRefreshForTool(args: {
                 config: args.config,
                 client: args.client,
                 result,
+                discoveryToolName: args.remoteTool.name,
             }),
         })
 
@@ -404,6 +410,7 @@ function resolveDynamicToolsFromDiscoveryResult(args: {
     config: CreateHttpMcpToolBindingsConfig
     client: HttpMcpClient
     result: ToolsCallResult
+    discoveryToolName: string
 }): ResolvedProviderTools {
     const diagnostics: McpToolDiagnostic[] = []
     const nested = readNestedDiscoveredTools(args.result)
@@ -418,7 +425,11 @@ function resolveDynamicToolsFromDiscoveryResult(args: {
         config: args.config,
         requireWhitelist: true,
         emitDisappearedDiagnostics: false,
-        remoteTools: nested.tools.map((tool) => ({ tool, source: "tool_search" as const })),
+        remoteTools: nested.tools.map((tool) => ({
+            tool,
+            source: "tool_search" as const,
+            discoveredByToolName: args.discoveryToolName,
+        })),
         client: args.client,
     })
 
@@ -430,6 +441,36 @@ function resolveDynamicToolsFromDiscoveryResult(args: {
         ],
         resolvedTools: resolved.resolvedTools,
     }
+}
+
+function buildApprovedDiscoveryToolNames(
+    provider: HttpMcpProviderConfig,
+    approvedTools: ReadonlyMap<string, unknown>
+): Set<string> {
+    const approvedDiscoveryToolNames = new Set<string>()
+
+    for (const toolName of approvedTools.keys()) {
+        if (isNestedDiscoveryTool(provider, toolName)) {
+            approvedDiscoveryToolNames.add(toolName)
+        }
+    }
+
+    return approvedDiscoveryToolNames
+}
+
+function readApprovedDiscoverySource(args: {
+    remoteTool: DiscoveredRemoteTool
+    approvedDiscoveryToolNames: ReadonlySet<string>
+}): string | undefined {
+    if (args.remoteTool.source !== "tool_search") {
+        return undefined
+    }
+    const discoveryToolName = args.remoteTool.discoveredByToolName
+    if (!discoveryToolName || !args.approvedDiscoveryToolNames.has(discoveryToolName)) {
+        return undefined
+    }
+
+    return discoveryToolName
 }
 
 function registerDynamicResolvedTools(args: {

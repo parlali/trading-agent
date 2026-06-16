@@ -22,9 +22,10 @@ import type {
 export interface DiscoveredRemoteTool {
     tool: HttpMcpTool
     source: McpToolDiscoverySource
+    discoveredByToolName?: string
 }
 
-export const DEFAULT_MCP_MAX_TOOLS_PER_PROVIDER = 50
+export const DEFAULT_MCP_MAX_TOOLS_PER_PROVIDER = 100
 
 const MAX_NESTED_DISCOVERY_CALLS_PER_PROVIDER = 4
 const DEFAULT_NESTED_DISCOVERY_TOOL_NAMES = [
@@ -200,6 +201,7 @@ async function discoverConfiguredNestedTools(args: {
                     tools: nested.tools.map((tool) => ({
                         tool,
                         source: "tool_search" as const,
+                        discoveredByToolName: discoveryTool.name,
                     })),
                     discoveredTools: args.discoveredTools,
                     deduplicationState: args.deduplicationState,
@@ -219,7 +221,11 @@ async function discoverConfiguredNestedTools(args: {
                 })
                 appendDiscoveredTools({
                     provider: args.provider,
-                    tools: refreshed.tools.map((tool) => ({ tool, source: "tool_search" as const })),
+                    tools: refreshed.tools.map((tool) => ({
+                        tool,
+                        source: "tool_search" as const,
+                        discoveredByToolName: discoveryTool.name,
+                    })),
                     discoveredTools: args.discoveredTools,
                     deduplicationState: args.deduplicationState,
                     diagnostics: args.diagnostics,
