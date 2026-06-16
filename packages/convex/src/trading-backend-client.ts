@@ -319,6 +319,17 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
 
             return result.recovered
         },
+        async recoverStaleAgentChatMessages(olderThanMs?: number): Promise<number> {
+            const result = await runWithTimeout(
+                "Convex mutation recoverStaleAgentChatMessages",
+                async () => await client.mutation(api.mutations.recoverStaleAgentChatMessages, {
+                    ...requireMachineAuth(),
+                    olderThanMs,
+                } as never) as { recovered: number }
+            )
+
+            return result.recovered
+        },
         async createRun(
             strategyId: Id<"strategies">,
             app: App,

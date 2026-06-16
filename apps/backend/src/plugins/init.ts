@@ -59,6 +59,11 @@ export async function validateAllEnvironments(apps: VenueApp[]): Promise<void> {
         }
 
         let appValidated = true
+        const failedAccounts: Array<{
+            accountId: string
+            label: string
+            error: string
+        }> = []
         const accounts = {
             ...(healthState.venues[app]?.accounts ?? {}),
         }
@@ -82,6 +87,11 @@ export async function validateAllEnvironments(apps: VenueApp[]): Promise<void> {
                 appValidated = false
                 const message = error instanceof Error ? error.message : String(error)
                 const previousError = accounts[accountId]?.error
+                failedAccounts.push({
+                    accountId,
+                    label: entry.account.label,
+                    error: message,
+                })
                 accounts[accountId] = {
                     ...accounts[accountId],
                     label: entry.account.label,
@@ -119,6 +129,7 @@ export async function validateAllEnvironments(apps: VenueApp[]): Promise<void> {
                 source: "environment_validation",
                 accountCount: entries.length,
                 validatedAccounts: Object.values(accounts).filter((account) => account.validated).length,
+                failedAccounts,
             },
         })
     }

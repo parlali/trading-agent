@@ -608,6 +608,7 @@ export interface TradingBackendClient extends TradeEventLogger, AgentMessageLogg
     getLastCompletedRunSummary(strategyId: Id<"strategies">): Promise<LastCompletedRunSummary | null>
     recoverRunningRuns(): Promise<number>
     recoverStaleRunningRuns(olderThanMs?: number): Promise<number>
+    recoverStaleAgentChatMessages(olderThanMs?: number): Promise<number>
     createRun(strategyId: Id<"strategies">, app: App, trigger?: RunTrigger, metadata?: CreateRunMetadata): Promise<Id<"strategy_runs">>
     updateRun(
         runId: Id<"strategy_runs">,

@@ -59,6 +59,7 @@ export interface ToolExecutionEngineConfig {
     runStartedAt: number
     runTimeoutMs: number
     maxToolTimeoutMs?: number
+    maxToolCalls?: number
     maxRepeatedToolErrors?: number
     nextTranscriptSequence?: () => number
 }
@@ -208,13 +209,22 @@ export class ToolExecutionEngine {
         const rawInput = typeof args === "string"
             ? args
             : JSON.stringify(args ?? {})
+        const budgetWarning = this.recordMcpToolCallAttempt(toolName)
+        if (budgetWarning) {
+            await this.logMcpToolResult(toolName, budgetWarning, rawInput)
+            return {
+                toolName,
+                content: budgetWarning,
+                isError: false,
+                fatal: false,
+            }
+        }
         const validation = this.validateToolCall({
             toolName,
             rawInput,
             args,
             callId,
         })
-        this.recordToolCallAttempt()
 
         if (validation.status !== "valid") {
             const modelContent = truncateToolResult(validation.content)
@@ -506,6 +516,23 @@ export class ToolExecutionEngine {
 
     private recordToolCallAttempts(count: number): void {
         this.toolCallCount += count
+    }
+
+    private recordMcpToolCallAttempt(toolName: string): string | undefined {
+        const maxToolCalls = this.config.maxToolCalls
+        if (maxToolCalls !== undefined && this.toolCallCount >= maxToolCalls) {
+            this.config.logger.warn("MCP tool call budget exhausted", {
+                toolName,
+                maxToolCalls,
+                runId: this.config.context?.runId,
+            })
+            return JSON.stringify({
+                warning: `Tool call budget reached after ${maxToolCalls} calls. Stop calling tools and answer from the evidence already collected.`,
+            })
+        }
+
+        this.recordToolCallAttempt()
+        return undefined
     }
 
     private async logMcpToolResult(

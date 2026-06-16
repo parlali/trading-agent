@@ -44,10 +44,31 @@ function isAccountScopedSecretKey(app: VenueApp, key: string): boolean {
 }
 
 function buildAccountScopedSecretKey(prefix: string, canonicalKey: string): string {
-    const separatorIndex = canonicalKey.indexOf("_")
-    const suffix = separatorIndex >= 0
-        ? canonicalKey.slice(separatorIndex + 1)
-        : canonicalKey
+    const normalizedPrefix = prefix.trim()
+    const normalizedKey = canonicalKey.trim()
+    const prefixParts = normalizedPrefix.split("_").filter((part) => part.length > 0)
+    const keyParts = normalizedKey.split("_").filter((part) => part.length > 0)
+    const base = prefixParts[0]
 
-    return `${prefix}_${suffix}`
+    if (!base || keyParts[0] !== base) {
+        return `${normalizedPrefix}_${normalizedKey}`
+    }
+
+    const keySuffixParts = keyParts.slice(1)
+    const prefixQualifier = prefixParts[1]
+    const startsWithSameQualifier = prefixQualifier !== undefined &&
+        keySuffixParts[0] === prefixQualifier
+    const startsWithCanonicalPrimary = keySuffixParts[0] === "PRIMARY" &&
+        prefixParts.length > 1
+    const shouldStripCanonicalQualifier = startsWithSameQualifier || startsWithCanonicalPrimary
+    const suffixParts = shouldStripCanonicalQualifier
+        ? keySuffixParts.slice(1)
+        : keySuffixParts
+    const suffix = suffixParts.join("_")
+
+    if (!suffix) {
+        return normalizedPrefix
+    }
+
+    return `${normalizedPrefix}_${suffix}`
 }

@@ -190,7 +190,8 @@ export default defineSchema({
         updatedAt: v.number(),
     })
         .index("by_session_created_at", ["sessionId", "createdAt"])
-        .index("by_session_message", ["sessionId", "messageId"]),
+        .index("by_session_message", ["sessionId", "messageId"])
+        .index("by_status_updated_at", ["status", "updatedAt"]),
 
     agent_chat_tool_events: defineTable({
         sessionId: v.string(),

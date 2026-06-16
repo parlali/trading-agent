@@ -245,6 +245,12 @@ export function startPeriodicSync(scheduler: Scheduler): void {
                     recoveredRuns,
                 })
             }
+            const recoveredAgentChatMessages = await backend.recoverStaleAgentChatMessages()
+            if (recoveredAgentChatMessages > 0) {
+                logger.warn("Recovered stale agent chat turns during periodic sync", {
+                    recoveredAgentChatMessages,
+                })
+            }
             await reconcileStrategies(scheduler)
             await validateAllEnvironments(ALL_APPS)
             await performPeriodicSync()

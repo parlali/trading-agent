@@ -30,10 +30,16 @@ async function main(): Promise<void> {
         logger,
     })
     const recoveredRuns = await backend.recoverRunningRuns()
+    const recoveredAgentChatMessages = await backend.recoverStaleAgentChatMessages()
 
     if (recoveredRuns > 0) {
         logger.warn("Recovered interrupted runs on backend startup", {
             recoveredRuns,
+        })
+    }
+    if (recoveredAgentChatMessages > 0) {
+        logger.warn("Recovered stale agent chat turns on backend startup", {
+            recoveredAgentChatMessages,
         })
     }
 

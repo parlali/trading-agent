@@ -2,6 +2,7 @@ export {
     recordAgentChatUserMessage,
     recordAgentChatAssistantMessage,
     recordAgentChatToolEvent,
+    recoverStaleAgentChatMessages,
 } from "./lib/mutations/agentChat"
 
 export {

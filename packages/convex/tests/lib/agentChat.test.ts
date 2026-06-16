@@ -3,6 +3,7 @@ import {
     recordAgentChatAssistantMessage,
     recordAgentChatToolEvent,
     recordAgentChatUserMessage,
+    recoverStaleAgentChatMessages,
 } from "../../convex/lib/mutations/agentChat"
 import { getAgentChatMessages } from "../../convex/lib/queries/agentChat"
 import { encodeAgentChatToolPayload } from "../../convex/lib/agentChatToolPayload"
@@ -282,6 +283,67 @@ describe("agent chat audit mutations", () => {
                     output: { accounts: ["acct-1"] },
                 }),
             ],
+        })
+    })
+
+    it("recovers stale running assistant turns without touching fresh or user rows", async () => {
+        process.env.BACKEND_SERVICE_TOKEN = "test-token"
+        const now = Date.now()
+        const db = new FakeDb({
+            agent_chat_messages: [
+                {
+                    _id: "stale-assistant",
+                    sessionId: "session-1",
+                    messageId: "message-1:assistant",
+                    role: "assistant",
+                    content: "",
+                    status: "running",
+                    modelProvider: "codex",
+                    modelId: "gpt-5.5",
+                    createdAt: now - 300_000,
+                    updatedAt: now - 300_000,
+                },
+                {
+                    _id: "fresh-assistant",
+                    sessionId: "session-1",
+                    messageId: "message-2:assistant",
+                    role: "assistant",
+                    content: "",
+                    status: "running",
+                    modelProvider: "codex",
+                    modelId: "gpt-5.5",
+                    createdAt: now,
+                    updatedAt: now,
+                },
+                {
+                    _id: "user-row",
+                    sessionId: "session-1",
+                    messageId: "message-3",
+                    role: "user",
+                    content: "hello",
+                    status: "running",
+                    createdAt: now - 300_000,
+                    updatedAt: now - 300_000,
+                },
+            ],
+        })
+
+        const result = await callRegistered(recoverStaleAgentChatMessages, { db } as never, {
+            serviceToken: "test-token",
+            olderThanMs: 120_000,
+        }) as { recovered: number }
+
+        expect(result).toEqual({ recovered: 1 })
+        expect(db.rows.agent_chat_messages?.find((row) => row._id === "stale-assistant")).toMatchObject({
+            status: "failed",
+            finishReason: "stale-running-recovered",
+            error: "Recovered stale agent chat turn after backend interruption or timeout",
+        })
+        expect(db.rows.agent_chat_messages?.find((row) => row._id === "fresh-assistant")).toMatchObject({
+            status: "running",
+        })
+        expect(db.rows.agent_chat_messages?.find((row) => row._id === "user-row")).toMatchObject({
+            status: "running",
         })
     })
 })

@@ -484,6 +484,123 @@ describe("agent chat handler", () => {
         }))
     })
 
+    it("records a cancelled Codex assistant turn when the request aborts", async () => {
+        const codexHome = `/tmp/valiq-agent-chat-codex-test-${crypto.randomUUID()}`
+        writeCodexChatGptAuthFileSync({
+            env: {
+                CODEX_HOME: codexHome,
+            },
+            tokens: {
+                idToken: "id-token",
+                accessToken: "access-token",
+                refreshToken: "refresh-token",
+                accountId: "account-1",
+            },
+        })
+        const backend = createBackendMock()
+        const controller = new AbortController()
+        let finishRun: ((result: {
+            summary: string
+            error?: string
+            iterations: number
+            usage: {
+                promptTokens: number
+                completionTokens: number
+                reasoningTokens: number
+                cost: number
+                responseIds: string[]
+            }
+            diagnostics: {
+                provider: "codex"
+                model: string
+                authMode: "chatgpt"
+                billingMode: "chatgpt"
+                responseIds: string[]
+            }
+        }) => void) | undefined
+        const provider = {
+            cancel: vi.fn(() => {
+                finishRun?.({
+                    summary: "",
+                    error: "Codex app-server transport closed",
+                    iterations: 1,
+                    usage: {
+                        promptTokens: 0,
+                        completionTokens: 0,
+                        reasoningTokens: 0,
+                        cost: 0,
+                        responseIds: [],
+                    },
+                    diagnostics: {
+                        provider: "codex" as const,
+                        model: "gpt-5.5",
+                        authMode: "chatgpt" as const,
+                        billingMode: "chatgpt" as const,
+                        responseIds: [],
+                    },
+                })
+            }),
+            run: vi.fn(async () => await new Promise<{
+                summary: string
+                error?: string
+                iterations: number
+                usage: {
+                    promptTokens: number
+                    completionTokens: number
+                    reasoningTokens: number
+                    cost: number
+                    responseIds: string[]
+                }
+                diagnostics: {
+                    provider: "codex"
+                    model: string
+                    authMode: "chatgpt"
+                    billingMode: "chatgpt"
+                    responseIds: string[]
+                }
+            }>((resolve) => {
+                finishRun = resolve
+            })),
+        }
+
+        const stream = await createAgentChatUiMessageStream({
+            request: runtimeChatRequest({
+                message: "Cancel this",
+                modelProvider: "codex",
+                modelId: "gpt-5.5",
+                chatSessionId: "session-1",
+                chatMessageId: "message-codex-cancel",
+            }),
+            abortSignal: controller.signal,
+            env: {
+                CODEX_HOME: codexHome,
+            },
+            secrets: {},
+            tradingBackend: backend,
+            toolRuntime: await buildAgentChatToolRuntime({
+                abortSignal: new AbortController().signal,
+                tradingBackend: backend,
+                secrets: {},
+                log: createLogger({ minLevel: "fatal" }),
+                discoverMcpInventory: async () => ({ inventory: [], diagnostics: [] }),
+            }),
+            createCodexProvider: () => provider,
+            logInfo: vi.fn(),
+            logError: vi.fn(),
+        })
+
+        const readPromise = createUIMessageStreamResponse({ stream }).text()
+        await waitFor(() => expect(provider.run).toHaveBeenCalled())
+        controller.abort()
+        await readPromise
+
+        expect(backend.recordAgentChatAssistantMessage).toHaveBeenCalledWith(expect.objectContaining({
+            messageId: "message-codex-cancel:assistant",
+            status: "cancelled",
+            finishReason: "abort",
+        }))
+    })
+
     it("persists failed provider streams as terminal failed assistant turns", async () => {
         const backend = createBackendMock()
         const model = new MockLanguageModelV3({
@@ -946,6 +1063,7 @@ function createBackendMock(args: {
         recordAgentChatUserMessage: vi.fn(async () => {}),
         recordAgentChatAssistantMessage: vi.fn(async () => {}),
         recordAgentChatToolEvent: vi.fn(async () => {}),
+        recoverStaleAgentChatMessages: vi.fn(async () => 0),
         getAllStrategies: vi.fn(async () => []),
         getStrategyById: vi.fn(async () => null),
         getStrategyMcpToolWhitelist: vi.fn<TradingBackendClient["getStrategyMcpToolWhitelist"]>(async () => null),

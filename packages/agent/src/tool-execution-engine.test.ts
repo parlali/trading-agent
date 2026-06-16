@@ -109,6 +109,22 @@ describe("ToolExecutionEngine", () => {
         expect(mcpResult.content).toContain("...[truncated from 8001 chars]")
     })
 
+    it("returns a bounded MCP warning after the configured tool call budget is exhausted", async () => {
+        const handler = vi.fn(async () => ({ accepted: true }))
+        const engine = createEngine(handler, {
+            maxToolCalls: 1,
+        })
+
+        const first = await engine.executeMcpCall("fake_tool", { value: "first" }, "call-1")
+        const second = await engine.executeMcpCall("fake_tool", { value: "second" }, "call-2")
+
+        expect(first.isError).toBe(false)
+        expect(second.isError).toBe(false)
+        expect(second.content).toContain("Tool call budget reached after 1 calls")
+        expect(handler).toHaveBeenCalledTimes(1)
+        expect(engine.getOutcome().toolCallCount).toBe(1)
+    })
+
     it("does not fail MCP tool calls when transcript logging fails", async () => {
         const agentLogger = {
             log: vi.fn(async () => {
@@ -449,6 +465,7 @@ function createEngine(
     options: {
         app?: "polymarket" | "mt5"
         maxToolTimeoutMs?: number
+        maxToolCalls?: number
         runStartedAt?: number
         runTimeoutMs?: number
         agentLogger?: {
@@ -494,6 +511,7 @@ function createEngine(
         runStartedAt: options.runStartedAt ?? Date.now(),
         runTimeoutMs: options.runTimeoutMs ?? 60_000,
         maxToolTimeoutMs: options.maxToolTimeoutMs,
+        maxToolCalls: options.maxToolCalls,
         maxRepeatedToolErrors: 3,
         nextTranscriptSequence: options.nextTranscriptSequence,
     })
