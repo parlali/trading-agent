@@ -52,6 +52,12 @@ export interface AgentChatToolRuntime {
     }>
 }
 
+interface AgentChatMcpInventoryContext {
+    strategyId?: Id<"strategies">
+    whitelist: StrategyMcpToolWhitelist | null
+    executableTools: ToolBinding[]
+}
+
 const MAX_LIST_LIMIT = 100
 const DEFAULT_LIST_LIMIT = 20
 const CHAT_TOOL_TIMEOUT_MS = 30_000
@@ -74,8 +80,13 @@ export async function buildAgentChatToolRuntime(
     const secrets = args.secrets ?? resolvedSecrets
     const registry = new ToolRegistry()
     const mcpToolDiagnostics: McpToolDiagnostic[] = []
+    const mcpInventoryContext: AgentChatMcpInventoryContext = {
+        strategyId: args.strategyId,
+        whitelist: null,
+        executableTools: [],
+    }
 
-    for (const binding of createReadOnlyChatTools(tradingBackend, secrets, log)) {
+    for (const binding of createReadOnlyChatTools(tradingBackend, secrets, log, mcpInventoryContext)) {
         registry.register(binding)
     }
 
@@ -93,6 +104,7 @@ export async function buildAgentChatToolRuntime(
     const mcpToolWhitelist = args.strategyId
         ? await tradingBackend.getStrategyMcpToolWhitelist(args.strategyId)
         : null
+    mcpInventoryContext.whitelist = mcpToolWhitelist
     const executableMcpTools = args.strategyId
         ? await (args.createScopedMcpTools ?? createMcpTools)({
             secrets: normalizeMcpSecrets(secrets),
@@ -102,6 +114,7 @@ export async function buildAgentChatToolRuntime(
             mcpToolRegistry: registry,
         })
         : []
+    mcpInventoryContext.executableTools = executableMcpTools
 
     for (const binding of executableMcpTools) {
         registry.register(binding)
@@ -172,7 +185,8 @@ function createAiSdkTools(
 function createReadOnlyChatTools(
     tradingBackend: TradingBackendClient,
     secrets: Record<string, string | null | undefined>,
-    log: Logger
+    log: Logger,
+    mcpInventoryContext: AgentChatMcpInventoryContext
 ): ToolBinding[] {
     return [
         createChatTool({
@@ -378,7 +392,9 @@ function createReadOnlyChatTools(
                     logger: log,
                     compatibleVenues: ALL_APPS,
                 })
+                const effectiveTools = describeEffectiveMcpTools(mcpInventoryContext)
                 return {
+                    strategyScope: describeMcpStrategyScope(mcpInventoryContext, effectiveTools.length),
                     providers: [
                         ...providerResolution.unavailable,
                         ...providerResolution.providers.map((provider) => ({
@@ -388,6 +404,10 @@ function createReadOnlyChatTools(
                             hasBearerToken: Boolean(provider.token),
                             allowedTools: provider.allowedTools ?? [],
                             blockedTools: provider.blockedTools ?? [],
+                            configuredAllowedTools: provider.allowedTools ?? null,
+                            configuredBlockedTools: provider.blockedTools ?? null,
+                            strategyApprovedTools: describeStrategyApprovedMcpTools(provider.id, mcpInventoryContext),
+                            effectiveTools: effectiveTools.filter((tool) => tool.providerId === provider.id),
                             status: "configured" as const,
                         })),
                     ],
@@ -456,6 +476,80 @@ function redactUrl(value: string): string {
 
 function isNonNullable<T>(value: T): value is NonNullable<T> {
     return value !== null && value !== undefined
+}
+
+function describeMcpStrategyScope(
+    context: AgentChatMcpInventoryContext,
+    effectiveToolCount: number
+) {
+    if (!context.strategyId) {
+        return {
+            selected: false,
+            strategyId: null,
+            whitelistStatus: "not_selected" as const,
+            approvedToolCount: 0,
+            discoveryToolCount: 0,
+            effectiveToolCount,
+        }
+    }
+
+    if (!context.whitelist) {
+        return {
+            selected: true,
+            strategyId: String(context.strategyId),
+            whitelistStatus: "missing" as const,
+            approvedToolCount: 0,
+            discoveryToolCount: 0,
+            effectiveToolCount,
+        }
+    }
+
+    return {
+        selected: true,
+        strategyId: String(context.strategyId),
+        whitelistStatus: context.whitelist.tools.length > 0 ? "configured" as const : "empty" as const,
+        approvedToolCount: context.whitelist.tools.length,
+        discoveryToolCount: context.whitelist.discoveryTools?.length ?? 0,
+        effectiveToolCount,
+    }
+}
+
+function describeStrategyApprovedMcpTools(
+    providerId: string,
+    context: AgentChatMcpInventoryContext
+) {
+    return (context.whitelist?.tools ?? [])
+        .filter((tool) => tool.providerId === providerId)
+        .map((tool) => ({
+            toolName: tool.toolName,
+            registeredName: tool.registeredName,
+            schemaHash: tool.schemaHash,
+        }))
+}
+
+function describeEffectiveMcpTools(context: AgentChatMcpInventoryContext) {
+    const approvedToolByRegisteredName = new Map(
+        (context.whitelist?.tools ?? []).map((tool) => [tool.registeredName, tool])
+    )
+
+    return context.executableTools.map((binding) => {
+        const approvedTool = approvedToolByRegisteredName.get(binding.name)
+
+        return {
+            providerId: approvedTool?.providerId ?? readMcpProviderId(binding.contractOwner) ?? "[unresolved-provider]",
+            toolName: approvedTool?.toolName ?? binding.name,
+            registeredName: binding.name,
+            category: binding.category ?? "research",
+            description: binding.description,
+        }
+    })
+}
+
+function readMcpProviderId(contractOwner: string | undefined): string | undefined {
+    const prefix = "mcp:"
+    return contractOwner?.startsWith(prefix)
+        ? contractOwner.slice(prefix.length)
+        : undefined
 }
 
 function normalizeMcpSecrets(secrets: Record<string, string | null | undefined>): Record<string, string | null> {

@@ -876,6 +876,13 @@ describe("agent chat handler", () => {
 
     it("registers executable MCP chat tools only for a selected strategy whitelist", async () => {
         const backend = createBackendMock()
+        const mcpSecrets = {
+            MCP_PROVIDER_CONFIGS: JSON.stringify([{
+                id: "secure",
+                url: "https://mcp.example.test/rpc?token=not-for-browser",
+                token: "secret-token",
+            }]),
+        }
         vi.mocked(backend.getStrategyMcpToolWhitelist).mockResolvedValue({
             _id: "whitelist-1" as Id<"strategy_mcp_tool_whitelists">,
             _creationTime: 1,
@@ -905,7 +912,7 @@ describe("agent chat handler", () => {
         const withoutStrategy = await buildAgentChatToolRuntime({
             abortSignal: new AbortController().signal,
             tradingBackend: backend,
-            secrets: {},
+            secrets: mcpSecrets,
             log: createLogger({ minLevel: "fatal" }),
             discoverMcpInventory: async () => ({ inventory: [], diagnostics: [] }),
             createScopedMcpTools,
@@ -914,7 +921,7 @@ describe("agent chat handler", () => {
             abortSignal: new AbortController().signal,
             strategyId: "strategy-1" as Id<"strategies">,
             tradingBackend: backend,
-            secrets: {},
+            secrets: mcpSecrets,
             log: createLogger({ minLevel: "fatal" }),
             discoverMcpInventory: async () => ({ inventory: [], diagnostics: [] }),
             createScopedMcpTools,
@@ -923,6 +930,38 @@ describe("agent chat handler", () => {
         expect(withoutStrategy.registry.has("mcp_secure_lookup")).toBe(false)
         expect(withStrategy.registry.has("mcp_secure_lookup")).toBe(true)
         expect(createScopedMcpTools).toHaveBeenCalledTimes(1)
+
+        const inspectInventory = withStrategy.registry.get("inspect_mcp_inventory")
+        expect(inspectInventory).toBeDefined()
+        const inventory = await inspectInventory?.handler({})
+
+        expect(inventory).toEqual(expect.objectContaining({
+            strategyScope: expect.objectContaining({
+                selected: true,
+                strategyId: "strategy-1",
+                whitelistStatus: "configured",
+                approvedToolCount: 1,
+                effectiveToolCount: 1,
+            }),
+            providers: [expect.objectContaining({
+                id: "secure",
+                configuredAllowedTools: null,
+                configuredBlockedTools: null,
+                strategyApprovedTools: [{
+                    toolName: "lookup",
+                    registeredName: "mcp_secure_lookup",
+                    schemaHash: "a".repeat(64),
+                }],
+                effectiveTools: [expect.objectContaining({
+                    providerId: "secure",
+                    toolName: "lookup",
+                    registeredName: "mcp_secure_lookup",
+                    category: "research",
+                })],
+            })],
+        }))
+        expect(JSON.stringify(inventory)).not.toContain("secret-token")
+        expect(JSON.stringify(inventory)).not.toContain("not-for-browser")
     })
 
     it("keeps local chat tools available when an MCP provider fails discovery", async () => {
