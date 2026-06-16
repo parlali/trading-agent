@@ -20,6 +20,7 @@ import type {
     AgentChatMessageRow,
     Id,
     StoredAccount,
+    StoredStrategy,
     TradingBackendClient,
 } from "@valiq-trading/convex"
 import { handleAgentChatRequest, type AgentChatRequest } from "./agent-chat"
@@ -828,6 +829,7 @@ describe("agent chat handler", () => {
 
     it("reports Convex provider freshness over stale in-memory venue health", async () => {
         const previousVenues = structuredClone(healthState.venues)
+        const previousStrategyCount = healthState.strategyCount
         const backend = createBackendMock()
         vi.mocked(backend.getPortfolioFreshness).mockResolvedValue([{
             app: "polymarket",
@@ -841,6 +843,27 @@ describe("agent chat handler", () => {
             pendingOrderCount: 0,
             positionCount: 1,
         }] as never)
+        vi.mocked(backend.getAllStrategies).mockResolvedValue([
+            {
+                _id: "strategy-1",
+                app: "polymarket",
+                accountId: "primary",
+                enabled: true,
+            },
+            {
+                _id: "strategy-2",
+                app: "polymarket",
+                accountId: "primary",
+                enabled: false,
+            },
+            {
+                _id: "strategy-3",
+                app: "mt5",
+                accountId: "primary",
+                enabled: true,
+            },
+        ] as StoredStrategy[])
+        healthState.strategyCount = 99
         healthState.venues = {
             polymarket: {
                 validated: true,
@@ -873,6 +896,7 @@ describe("agent chat handler", () => {
             const healthTool = runtime.registry.get("get_provider_health")
             const output = await healthTool?.handler({}) as {
                 backendHealth: {
+                    strategyCount: number
                     venues: {
                         polymarket: {
                             providerStatus?: string
@@ -883,12 +907,14 @@ describe("agent chat handler", () => {
                 }
             }
 
+            expect(output.backendHealth.strategyCount).toBe(2)
             expect(output.backendHealth.venues.polymarket.providerStatus).toBe("healthy")
             expect(output.backendHealth.venues.polymarket.driftDetected).toBe(false)
             expect(output.backendHealth.venues.polymarket.accounts?.primary?.providerStatus).toBe("healthy")
             expect(output.backendHealth.venues.polymarket.accounts?.primary?.driftDetected).toBe(false)
         } finally {
             healthState.venues = previousVenues
+            healthState.strategyCount = previousStrategyCount
         }
     })
 
@@ -1171,7 +1197,7 @@ function createBackendMock(args: {
         recordAgentChatAssistantMessage: vi.fn(async () => {}),
         recordAgentChatToolEvent: vi.fn(async () => {}),
         recoverStaleAgentChatMessages: vi.fn(async () => 0),
-        getAllStrategies: vi.fn(async () => []),
+        getAllStrategies: vi.fn<TradingBackendClient["getAllStrategies"]>(async () => []),
         getStrategyById: vi.fn(async () => null),
         getStrategyMcpToolWhitelist: vi.fn<TradingBackendClient["getStrategyMcpToolWhitelist"]>(async () => null),
         getRunHistory: vi.fn(async () => []),

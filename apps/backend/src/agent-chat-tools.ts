@@ -372,12 +372,21 @@ function createReadOnlyChatTools(
                     app: venueAppSchema.optional(),
                     accountId: boundedIdSchema.optional(),
                 }).parse(params)
-                const freshness = await tradingBackend.getPortfolioFreshness(input.app, input.accountId)
+                const [freshness, strategies] = await Promise.all([
+                    tradingBackend.getPortfolioFreshness(input.app, input.accountId),
+                    tradingBackend.getAllStrategies(),
+                ])
+                const strategyCount = strategies
+                    .filter((strategy) => strategy.enabled)
+                    .filter((strategy) => !input.app || strategy.app === input.app)
+                    .filter((strategy) => !input.accountId || strategy.accountId === input.accountId)
+                    .length
+
                 return {
                     backendHealth: {
                         ready: healthState.ready,
                         startedAt: healthState.startedAt,
-                        strategyCount: healthState.strategyCount,
+                        strategyCount,
                         venues: mergeVenueHealthWithFreshness(freshness),
                         lastRunAt: healthState.lastRunAt,
                         lastRunStatus: healthState.lastRunStatus,
