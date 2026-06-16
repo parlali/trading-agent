@@ -1,6 +1,7 @@
 import {
     createExecutionError,
     type AccountPnlEvent,
+    type ExecutionResult,
     type PriceVerification,
     type ProviderPositionClosure,
     type WorkingOrder,
@@ -33,17 +34,20 @@ export {
 
 type ParsedOptionContract = NonNullable<ReturnType<typeof parseOptionContractSymbol>>
 
-export function mapWorkingOrder(order: Awaited<ReturnType<AlpacaClient["getOpenOrders"]>>[number]): WorkingOrder {
-    const submittedAt = resolveOrderTimestamp(order)
-    const quantity = order.qty ? Number(order.qty) : 0
-    const filledQuantity = Number(order.filled_qty ?? 0)
+export function mapWorkingOrder(
+    order: Awaited<ReturnType<AlpacaClient["getOpenOrders"]>>[number],
+    verifiedStatus?: Pick<ExecutionResult, "status" | "filledQuantity" | "fillPrice" | "timestamp" | "intentUpdates">
+): WorkingOrder {
+    const submittedAt = verifiedStatus?.timestamp ?? resolveOrderTimestamp(order)
+    const quantity = verifiedStatus?.intentUpdates?.quantity ?? (order.qty ? Number(order.qty) : 0)
+    const filledQuantity = verifiedStatus?.filledQuantity ?? Number(order.filled_qty ?? 0)
 
     return {
         orderId: order.id,
         providerOrderId: order.id,
         providerClientOrderId: order.client_order_id,
         instrument: resolveOrderInstrument(order),
-        status: mapAlpacaOrderStatus(order.status),
+        status: verifiedStatus?.status ?? mapAlpacaOrderStatus(order.status),
         quantity,
         filledQuantity,
         remainingQuantity: Math.max(quantity - filledQuantity, 0),
@@ -52,7 +56,7 @@ export function mapWorkingOrder(order: Awaited<ReturnType<AlpacaClient["getOpenO
         side: order.side === "buy" || order.side === "sell" ? order.side : undefined,
         limitPrice: order.limit_price ? roundPrice(Math.abs(Number(order.limit_price))) : undefined,
         stopPrice: order.stop_price ? Number(order.stop_price) : undefined,
-        avgFillPrice: order.filled_avg_price ? Number(order.filled_avg_price) : undefined,
+        avgFillPrice: verifiedStatus?.fillPrice ?? (order.filled_avg_price ? Number(order.filled_avg_price) : undefined),
         metadata: {
             providerClientOrderId: order.client_order_id,
             legs: order.legs,

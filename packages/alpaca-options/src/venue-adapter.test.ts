@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest"
+import type { ExecutionResult } from "@valiq-trading/core"
 import type { AlpacaPositionResponse } from "./alpaca-client.ts"
 import { buildAlpacaStructureInstrumentFromLegs } from "./risk-rules.ts"
 import { AlpacaOptionsVenueAdapter } from "./venue-adapter.ts"
@@ -52,6 +53,12 @@ function createClientMock() {
             filledQuantity: 0,
             timestamp: Date.parse("2026-04-14T10:00:00Z"),
         }),
+        getOrder: vi.fn(async (orderId: string): Promise<ExecutionResult> => ({
+            orderId,
+            status: "pending",
+            filledQuantity: 0,
+            timestamp: Date.parse("2026-04-10T10:00:01Z"),
+        })),
         getAccount: vi.fn().mockResolvedValue({
             equity: "10050",
             portfolio_value: "10050",
@@ -246,6 +253,58 @@ describe("AlpacaOptionsVenueAdapter", () => {
         expect(orders).toHaveLength(1)
         expect(orders[0]?.orderId).toBe("order-live")
         expect(orders[0]?.status).toBe("pending")
+        expect(client.getOrder).toHaveBeenCalledTimes(1)
+        expect(client.getOrder).toHaveBeenCalledWith("order-live")
+    })
+
+    it("excludes Alpaca open-feed rows when direct order status is terminal", async () => {
+        const client = createClientMock()
+        client.getOpenOrders.mockResolvedValueOnce([{
+            id: "order-stale-open",
+            client_order_id: "client-order-stale-open",
+            symbol: "SPY260626P00730000",
+            order_class: "mleg",
+            side: "sell",
+            status: "new",
+            qty: "1",
+            filled_qty: "0",
+            limit_price: "-0.10",
+            submitted_at: "2026-06-16T19:01:58.372081Z",
+            updated_at: "2026-06-16T19:01:58.376498Z",
+            legs: [{
+                symbol: "SPY260626P00730000",
+                side: "sell",
+                position_intent: "sell_to_open",
+                ratio_qty: "1",
+                status: "new",
+                qty: "1",
+                filled_qty: "0",
+                replaces: "previous-leg-order",
+            }],
+        }])
+        client.getOrder.mockResolvedValueOnce({
+            orderId: "order-stale-open",
+            providerOrderId: "order-stale-open",
+            providerClientOrderId: "client-order-stale-open",
+            status: "filled",
+            filledQuantity: 1,
+            fillPrice: -0.1,
+            timestamp: Date.parse("2026-06-16T19:02:17.666Z"),
+            intentUpdates: {
+                quantity: 1,
+                limitPrice: 0.1,
+                metadata: {
+                    providerAccountingSource: "alpaca_order",
+                    providerOrderId: "order-stale-open",
+                    providerClientOrderId: "client-order-stale-open",
+                },
+            },
+        })
+
+        const adapter = new AlpacaOptionsVenueAdapter(client as never)
+        const orders = await adapter.getWorkingOrders()
+
+        expect(orders).toEqual([])
     })
 
     it("records filled Alpaca working orders as provider order accounting", async () => {
@@ -264,6 +323,14 @@ describe("AlpacaOptionsVenueAdapter", () => {
             updated_at: "2026-04-10T10:00:01Z",
             legs: [],
         }])
+        client.getOrder.mockResolvedValueOnce({
+            orderId: "order-partial",
+            providerOrderId: "order-partial",
+            status: "partially_filled",
+            filledQuantity: 1,
+            fillPrice: 1.2,
+            timestamp: Date.parse("2026-04-10T10:00:01Z"),
+        })
 
         const adapter = new AlpacaOptionsVenueAdapter(client as never)
         const orders = await adapter.getWorkingOrders()

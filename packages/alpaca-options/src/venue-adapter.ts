@@ -203,9 +203,17 @@ export class AlpacaOptionsVenueAdapter implements VenueAdapter, PriceVerifier {
 
     async getWorkingOrders(): Promise<WorkingOrder[]> {
         const orders = await this.client.getOpenOrders()
-        return orders
-            .filter((order) => ACTIVE_ORDER_STATUSES.includes(mapAlpacaOrderStatus(order.status)))
-            .map((order) => mapWorkingOrder(order))
+        const activeOpenOrders = orders.filter((order) =>
+            ACTIVE_ORDER_STATUSES.includes(mapAlpacaOrderStatus(order.status))
+        )
+        const verifiedOrders = await Promise.all(activeOpenOrders.map(async (order) => ({
+            order,
+            status: await this.client.getOrder(order.id),
+        })))
+
+        return verifiedOrders
+            .filter(({ status }) => ACTIVE_ORDER_STATUSES.includes(status.status))
+            .map(({ order, status }) => mapWorkingOrder(order, status))
     }
 
     async getRecentPositionClosures(): Promise<ProviderPositionClosure[]> {
