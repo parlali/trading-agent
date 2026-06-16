@@ -361,6 +361,217 @@ describe("HTTP MCP tool bindings", () => {
         })
     })
 
+    it("deduplicates identical MCP tools across discovery refreshes without diagnostics", async () => {
+        const sharedSearchTool = {
+            name: "market_context",
+            description: "Read market context",
+            inputSchema: {
+                type: "object",
+                properties: {
+                    query: { type: "string" },
+                },
+                required: ["query"],
+            },
+            annotations: {
+                readOnlyHint: true,
+            },
+        }
+        const discoveryTool = {
+            name: "discover_tools",
+            description: "Discover provider tools",
+            inputSchema: {
+                type: "object",
+                properties: {
+                    query: { type: "string" },
+                    limit: { type: "number" },
+                },
+                required: ["query"],
+            },
+            annotations: {
+                readOnlyHint: true,
+            },
+        }
+        const server = await startMcpServer(async (request, response) => {
+            const body = await readJsonBody(request)
+
+            if (body.method === "initialize") {
+                writeJsonRpc(response, body.id, {
+                    protocolVersion: "2025-03-26",
+                    capabilities: {},
+                    serverInfo: { name: "refresh-server", version: "1.0.0" },
+                })
+                return
+            }
+
+            if (body.method === "notifications/initialized") {
+                response.writeHead(202)
+                response.end()
+                return
+            }
+
+            if (body.method === "tools/list") {
+                writeJsonRpc(response, body.id, {
+                    tools: [discoveryTool, sharedSearchTool],
+                })
+                return
+            }
+
+            if (body.method === "tools/discover") {
+                writeJsonRpc(response, body.id, {
+                    tools: [sharedSearchTool],
+                })
+                return
+            }
+
+            if (body.method === "tools/call") {
+                writeJsonRpc(response, body.id, {
+                    structuredContent: {
+                        tools: [sharedSearchTool],
+                    },
+                    content: [],
+                })
+                return
+            }
+
+            writeJsonRpcError(response, body.id, -32601, "method not found")
+        })
+        servers.push(server)
+
+        const inventory = await discoverHttpMcpToolInventory({
+            providers: [{
+                id: "macro",
+                url: server.url,
+                discoveryTools: [{
+                    name: "discover_tools",
+                    inputs: [{ query: "", limit: 50 }],
+                }],
+            }],
+            logger: createLogger({ minLevel: "fatal" }),
+        })
+
+        expect(inventory.inventory.map((tool) => tool.upstreamToolName)).toEqual([
+            "discover_tools",
+            "market_context",
+        ])
+        expect(inventory.diagnostics.some((diagnostic) => diagnostic.reason === "duplicate_upstream_tool")).toBe(false)
+
+        const resolution = await createHttpMcpToolBindingResolution({
+            providers: [{
+                id: "macro",
+                url: server.url,
+                discoveryTools: [{
+                    name: "discover_tools",
+                    inputs: [{ query: "", limit: 50 }],
+                }],
+                approvedTools: [
+                    { name: "discover_tools" },
+                    { name: "market_context" },
+                ],
+            }],
+            logger: createLogger({ minLevel: "fatal" }),
+        })
+
+        expect(resolution.bindings.map((tool) => tool.name)).toEqual([
+            "mcp_macro_discover_tools",
+            "mcp_macro_market_context",
+        ])
+        expect(resolution.diagnostics.some((diagnostic) => diagnostic.reason === "duplicate_upstream_tool")).toBe(false)
+    })
+
+    it("fails closed and records a diagnostic for conflicting repeated upstream MCP tools", async () => {
+        const server = await startMcpServer(async (request, response) => {
+            const body = await readJsonBody(request)
+
+            if (body.method === "initialize") {
+                writeJsonRpc(response, body.id, {
+                    protocolVersion: "2025-03-26",
+                    capabilities: {},
+                    serverInfo: { name: "conflict-server", version: "1.0.0" },
+                })
+                return
+            }
+
+            if (body.method === "notifications/initialized") {
+                response.writeHead(202)
+                response.end()
+                return
+            }
+
+            if (body.method === "tools/list") {
+                writeJsonRpc(response, body.id, {
+                    tools: [{
+                        name: "market_context",
+                        inputSchema: {
+                            type: "object",
+                            properties: {
+                                query: { type: "string" },
+                            },
+                            required: ["query"],
+                        },
+                    }],
+                })
+                return
+            }
+
+            if (body.method === "tools/discover") {
+                writeJsonRpc(response, body.id, {
+                    tools: [{
+                        name: "market_context",
+                        inputSchema: {
+                            type: "object",
+                            properties: {
+                                symbol: { type: "string" },
+                            },
+                            required: ["symbol"],
+                        },
+                    }],
+                })
+                return
+            }
+
+            writeJsonRpcError(response, body.id, -32601, "method not found")
+        })
+        servers.push(server)
+
+        const inventory = await discoverHttpMcpToolInventory({
+            providers: [{
+                id: "macro",
+                url: server.url,
+            }],
+            logger: createLogger({ minLevel: "fatal" }),
+        })
+
+        expect(inventory.inventory).toEqual([])
+        expect(inventory.diagnostics).toContainEqual(expect.objectContaining({
+            providerId: "macro",
+            upstreamToolName: "market_context",
+            registeredName: "mcp_macro_market_context",
+            source: "tools/discover",
+            reason: "duplicate_upstream_tool",
+            schemaReason: expect.stringContaining("first tools/list schema"),
+        }))
+
+        const resolution = await createHttpMcpToolBindingResolution({
+            providers: [{
+                id: "macro",
+                url: server.url,
+                approvedTools: [{
+                    name: "market_context",
+                }],
+            }],
+            logger: createLogger({ minLevel: "fatal" }),
+        })
+
+        expect(resolution.bindings).toEqual([])
+        expect(resolution.diagnostics).toContainEqual(expect.objectContaining({
+            upstreamToolName: "market_context",
+            reason: "duplicate_upstream_tool",
+        }))
+        expect(resolution.diagnostics.some((diagnostic) =>
+            diagnostic.upstreamToolName === "market_context" && diagnostic.reason === "tool_disappeared"
+        )).toBe(false)
+    })
+
     it("replays persisted category discovery inputs before binding approved nested tools", async () => {
         const receivedDiscoveryInputs: unknown[] = []
         const marketContextInputSchema = {

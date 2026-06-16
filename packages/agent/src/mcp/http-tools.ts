@@ -8,6 +8,10 @@ import {
     type McpToolCandidate,
 } from "./http-tool-candidates"
 import {
+    appendDeduplicatedMcpTool,
+    createMcpToolDeduplicationState,
+} from "./http-tool-duplicates"
+import {
     DEFAULT_MCP_MAX_TOOLS_PER_PROVIDER,
     appendMcpToolParseIssueDiagnostics,
     discoverProviderRemoteTools,
@@ -215,6 +219,9 @@ async function resolveProviderTools(args: {
         emitDisappearedDiagnostics: args.emitDisappearedDiagnostics,
         remoteTools,
         client,
+        conflictedToolNames: new Set(diagnostics
+            .filter((diagnostic) => diagnostic.reason === "duplicate_upstream_tool" && diagnostic.upstreamToolName)
+            .map((diagnostic) => diagnostic.upstreamToolName as string)),
     })
 
     return {
@@ -234,25 +241,31 @@ function resolveRemoteToolBindings(args: {
     emitDisappearedDiagnostics: boolean
     remoteTools: DiscoveredRemoteTool[]
     client: HttpMcpClient
+    conflictedToolNames?: ReadonlySet<string>
 }): ResolvedProviderTools {
     const diagnostics: McpToolDiagnostic[] = []
     const inventory: McpToolInventoryEntry[] = []
     const resolvedTools: Array<{ binding: ToolBinding, inventory: McpToolInventoryEntry }> = []
     const approvedTools = buildApprovedToolMap(args.provider)
-    const discoveredToolNames = new Set<string>()
+    const deduplicatedRemoteTools: DiscoveredRemoteTool[] = []
+    const deduplicationState = createMcpToolDeduplicationState<DiscoveredRemoteTool>()
+    const discoveredToolNames = new Set(args.conflictedToolNames ?? [])
 
     for (const remoteTool of args.remoteTools) {
-        if (discoveredToolNames.has(remoteTool.tool.name)) {
-            diagnostics.push({
-                providerId: args.provider.id,
-                upstreamToolName: remoteTool.tool.name,
-                source: remoteTool.source,
-                reason: "duplicate_upstream_tool",
-                message: "MCP tool skipped because the provider discovered the same upstream tool name more than once",
-            })
-            continue
-        }
+        appendDeduplicatedMcpTool({
+            provider: args.provider,
+            entry: remoteTool,
+            entries: deduplicatedRemoteTools,
+            state: deduplicationState,
+            diagnostics,
+        })
+    }
 
+    for (const conflictedToolName of deduplicationState.conflictedNames) {
+        discoveredToolNames.add(conflictedToolName)
+    }
+
+    for (const remoteTool of deduplicatedRemoteTools) {
         discoveredToolNames.add(remoteTool.tool.name)
         const candidate = createCandidateForRemoteTool({
             provider: args.provider,
