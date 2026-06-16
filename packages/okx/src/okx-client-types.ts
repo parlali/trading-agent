@@ -2,6 +2,7 @@ export type OKXMarginMode = "cross" | "isolated"
 export type OKXPositionMode = "net_mode" | "long_short_mode"
 export type OKXApiPosSide = "net" | "long" | "short"
 export type OKXOrderType = "market" | "limit" | "ioc" | "fok" | "conditional"
+export type OKXAlgoOrderHistoryState = "effective" | "canceled" | "order_failed"
 
 export interface OKXCredentials {
     apiKey: string

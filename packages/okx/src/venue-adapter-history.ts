@@ -2,9 +2,14 @@ import { createExecutionError } from "@valiq-trading/core"
 import type {
     OKXAccountBill,
     OKXAlgoOrder,
+    OKXAlgoOrderHistoryState,
+    OKXAlgoOrderType,
     OKXClient,
     OKXFill,
 } from "./okx-client"
+
+const OKX_PROTECTION_ALGO_ORDER_TYPES: OKXAlgoOrderType[] = ["conditional", "oco"]
+const OKX_ALGO_ORDER_HISTORY_STATES: OKXAlgoOrderHistoryState[] = ["effective", "canceled", "order_failed"]
 
 export async function getRecentOKXFills(
     client: OKXClient,
@@ -24,24 +29,26 @@ export async function getRecentOKXAlgoOrders(
     client: OKXClient,
     begin: number
 ): Promise<OKXAlgoOrder[]> {
-    const fetchOrdType = (ordType: "conditional" | "oco") =>
+    const fetchOrdTypeState = (ordType: OKXAlgoOrderType, state: OKXAlgoOrderHistoryState) =>
         fetchBoundedOKXHistory<OKXAlgoOrder>({
-            label: `algo-order history (${ordType})`,
+            label: `algo-order history (${ordType}/${state})`,
             code: "ALGO_HISTORY_TRUNCATED",
             begin,
             fetchPage: (after, limit) =>
-                client.getAlgoOrdersHistory({ instType: "SWAP", ordType, begin, limit, after }),
+                client.getAlgoOrdersHistory({ instType: "SWAP", ordType, state, begin, limit, after }),
             getCursor: (order) => order.algoId,
             isOlderThanBegin: (order) => {
                 const createdAt = Number(order.cTime)
                 return Number.isFinite(createdAt) && createdAt < begin
             },
         })
-    const [conditional, oco] = await Promise.all([
-        fetchOrdType("conditional"),
-        fetchOrdType("oco"),
-    ])
-    return [...conditional, ...oco]
+
+    const histories = await Promise.all(
+        OKX_PROTECTION_ALGO_ORDER_TYPES.flatMap((ordType) =>
+            OKX_ALGO_ORDER_HISTORY_STATES.map((state) => fetchOrdTypeState(ordType, state))
+        )
+    )
+    return histories.flat()
 }
 
 export async function getRecentOKXAccountBills(

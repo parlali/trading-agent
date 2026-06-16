@@ -740,31 +740,42 @@ describe("OKXVenueAdapter account snapshot semantics", () => {
         expect(client.getAccountBills).toHaveBeenCalledTimes(10)
     })
 
-    it("paginates algo-order history per ordType and stops on short pages", async () => {
+    it("paginates algo-order history per ordType and state, sending OKX's required state filter", async () => {
         const recentCTime = String(Date.now())
-        const buildAlgoPage = (ordType: string, page: number, length: number) => Array.from({ length }, (_, index) => ({
-            algoId: `algo-${ordType}-${page}-${index}`,
+        const buildAlgoPage = (ordType: string, state: string, page: number, length: number) => Array.from({ length }, (_, index) => ({
+            algoId: `algo-${ordType}-${state}-${page}-${index}`,
             instId: "ETH-USDT-SWAP",
             ordType,
             side: "buy",
             posSide: "net",
-            state: "effective",
+            state,
             cTime: recentCTime,
         }))
-        const conditionalPages = [buildAlgoPage("conditional", 0, 100), buildAlgoPage("conditional", 1, 3)]
-        const ocoPages = [buildAlgoPage("oco", 0, 2)]
+        const pagesByKey = new Map<string, ReturnType<typeof buildAlgoPage>[]>([
+            ["conditional:effective", [
+                buildAlgoPage("conditional", "effective", 0, 100),
+                buildAlgoPage("conditional", "effective", 1, 3),
+            ]],
+            ["conditional:canceled", []],
+            ["conditional:order_failed", []],
+            ["oco:effective", [
+                buildAlgoPage("oco", "effective", 0, 2),
+            ]],
+            ["oco:canceled", []],
+            ["oco:order_failed", []],
+        ])
         const client = withOKXAccountingDefaults({
             getFillsHistory: vi.fn().mockResolvedValue([]),
             getInstruments: vi.fn().mockResolvedValue([
                 createSwapInstrument("ETH-USDT-SWAP", "0.1", "ETH"),
             ]),
-            getAlgoOrdersHistory: vi.fn().mockImplementation(async (params: { ordType: string }) => {
-                const pages = params.ordType === "conditional" ? conditionalPages : ocoPages
-                const next = pages.shift()
-                if (!next) {
-                    throw new Error(`unexpected extra ${params.ordType} page request`)
+            getAlgoOrdersHistory: vi.fn().mockImplementation(async (params: { ordType: string, state: string }) => {
+                const pages = pagesByKey.get(`${params.ordType}:${params.state}`)
+                if (!pages) {
+                    throw new Error(`unexpected ${params.ordType}/${params.state} request`)
                 }
-                return next
+                const next = pages.shift()
+                return next ?? []
             }),
         })
         const adapter = new OKXVenueAdapter(client as never, {
@@ -774,13 +785,17 @@ describe("OKXVenueAdapter account snapshot semantics", () => {
 
         await adapter.getRecentPositionClosures()
 
-        expect(client.getAlgoOrdersHistory).toHaveBeenCalledTimes(3)
+        expect(client.getAlgoOrdersHistory).toHaveBeenCalledTimes(7)
+        expect(client.getAlgoOrdersHistory.mock.calls.every((call) => {
+            const params = call[0] as { state?: string }
+            return params.state === "effective" || params.state === "canceled" || params.state === "order_failed"
+        })).toBe(true)
         const conditionalCalls = client.getAlgoOrdersHistory.mock.calls
-            .map((call) => call[0] as { ordType: string, after?: string })
-            .filter((params) => params.ordType === "conditional")
+            .map((call) => call[0] as { ordType: string, state: string, after?: string })
+            .filter((params) => params.ordType === "conditional" && params.state === "effective")
         expect(conditionalCalls).toHaveLength(2)
         expect(conditionalCalls[1]).toMatchObject({
-            after: "algo-conditional-0-99",
+            after: "algo-conditional-effective-0-99",
         })
     })
 

@@ -12,6 +12,7 @@ import type {
     OKXAccountConfig,
     OKXAlgoOrder,
     OKXAlgoOrderAck,
+    OKXAlgoOrderHistoryState,
     OKXAlgoOrderType,
     OKXAmendOrderParams,
     OKXCancelAlgoOrderParams,
@@ -38,6 +39,7 @@ export type {
     OKXAccountConfig,
     OKXAlgoOrder,
     OKXAlgoOrderAck,
+    OKXAlgoOrderHistoryState,
     OKXAlgoOrderType,
     OKXAmendOrderParams,
     OKXApiPosSide,
@@ -68,6 +70,23 @@ interface OKXResponseEnvelope<T> {
     msg: string
     data: T[]
 }
+
+type OKXAlgoOrderHistoryParams = {
+    instType?: "SWAP"
+    instId?: string
+    begin?: number
+    end?: number
+    limit?: number
+    after?: string
+} & ({
+    ordType: OKXAlgoOrderType
+    state: OKXAlgoOrderHistoryState
+    algoId?: string
+} | {
+    algoId: string
+    ordType?: OKXAlgoOrderType
+    state?: OKXAlgoOrderHistoryState
+})
 
 export class OKXApiError extends Error {
     readonly status: number
@@ -423,16 +442,7 @@ export class OKXClient {
         )
     }
 
-    async getAlgoOrdersHistory(params: {
-        instType?: "SWAP"
-        instId?: string
-        ordType?: OKXAlgoOrderType
-        state?: string
-        begin?: number
-        end?: number
-        limit?: number
-        after?: string
-    } = {}): Promise<OKXAlgoOrder[]> {
+    async getAlgoOrdersHistory(params: OKXAlgoOrderHistoryParams): Promise<OKXAlgoOrder[]> {
         return await this.privateRequest<OKXAlgoOrder>(
             "GET",
             "/api/v5/trade/orders-algo-history",
@@ -441,6 +451,7 @@ export class OKXClient {
                 instId: params.instId,
                 ordType: params.ordType,
                 state: params.state,
+                algoId: params.algoId,
                 begin: params.begin,
                 end: params.end,
                 limit: params.limit,
