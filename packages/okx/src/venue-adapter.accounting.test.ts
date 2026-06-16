@@ -82,6 +82,56 @@ describe("OKXVenueAdapter account snapshot semantics", () => {
         expect(account.marginAvailable).toBe(17000)
     })
 
+    it("uses settlement-currency equity instead of non-settlement account valuation", async () => {
+        const client = {
+            getBalance: vi.fn().mockResolvedValue(createBalance({
+                totalEq: "20900.72742954619",
+                upl: "",
+                availEq: "",
+                adjEq: "",
+                details: [
+                    {
+                        ccy: "USDT",
+                        eq: "8425.43689473387",
+                        eqUsd: "8417.601238421768",
+                        cashBal: "8425.43689473387",
+                        availEq: "8425.43689473387",
+                        availBal: "8425.43689473387",
+                    },
+                    {
+                        ccy: "OKB",
+                        eq: "100",
+                        eqUsd: "7582.5",
+                        cashBal: "100",
+                        availEq: "100",
+                        availBal: "100",
+                    },
+                    {
+                        ccy: "AED",
+                        eq: "18000",
+                        eqUsd: "4900.626191124421",
+                        cashBal: "18000",
+                        availEq: "18000",
+                        availBal: "18000",
+                    },
+                ],
+            })),
+            getPositions: vi.fn().mockResolvedValue([]),
+        }
+
+        const adapter = new OKXVenueAdapter(client as never, {
+            marginMode: "isolated",
+            positionMode: "net_mode",
+        })
+
+        const account = await adapter.getAccountState()
+
+        expect(account.equity).toBe(8425.43689473387)
+        expect(account.balance).toBe(8425.43689473387)
+        expect(account.buyingPower).toBe(8425.43689473387)
+        expect(account.openPnl).toBe(0)
+    })
+
     it("fails closed to non-negative balance when provider upl is negative", async () => {
         const client = {
             getBalance: vi.fn().mockResolvedValue(createBalance({

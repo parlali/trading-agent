@@ -9,13 +9,19 @@ import {
     type OKXInstrumentRules,
 } from "./venue-adapter-utils"
 
+const OKX_SETTLEMENT_CURRENCY = "USDT"
+
 export async function mapOKXAccountState(args: {
     balance: OKXAccountBalance
     positions: OKXPosition[]
     getInstrumentRules: (instId: string) => Promise<OKXInstrumentRules>
     contractsToBaseQuantity: (rules: OKXInstrumentRules, contracts: number) => number
 }): Promise<AccountState> {
-    const equity = readFiniteNumberString(args.balance.totalEq) ?? 0
+    const settlementBalance = resolveSettlementBalanceDetail(args.balance)
+    const equity = firstDefinedNumber(
+        settlementBalance?.eq,
+        args.balance.totalEq
+    ) ?? 0
     const positionOpenPnl = args.positions.reduce((sum, position) =>
         sum + (readFiniteNumberString(position.upl) ?? 0), 0)
     const accountOpenPnl = readFiniteNumberString(args.balance.upl)
@@ -28,6 +34,9 @@ export async function mapOKXAccountState(args: {
         ? accountMarginUsed
         : positionMarginUsed
     const available = firstDefinedNumber(
+        settlementBalance?.availEq,
+        settlementBalance?.availBal,
+        settlementBalance?.cashBal,
         args.balance.availEq,
         args.balance.adjEq,
         args.balance.details[0]?.availEq,
@@ -44,6 +53,14 @@ export async function mapOKXAccountState(args: {
         openPnl,
         dayPnl: 0,
     }
+}
+
+function resolveSettlementBalanceDetail(
+    balance: OKXAccountBalance
+): OKXAccountBalance["details"][number] | undefined {
+    return balance.details.find((detail) =>
+        detail.ccy.trim().toUpperCase() === OKX_SETTLEMENT_CURRENCY
+    )
 }
 
 async function resolvePositionMarginUsed(args: {

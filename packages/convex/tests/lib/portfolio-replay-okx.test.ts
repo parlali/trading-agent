@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import { resolveCloseOrderRealizedPnl } from "@valiq-trading/core"
 import { reconcileProviderPortfolio } from "../../convex/lib/mutations/portfolio"
 import { callRegistered, FakeMutationDb as FakeDb } from "./fakeMutationDb"
@@ -962,6 +962,8 @@ describe("Convex OKX net-mode closure replay", () => {
         })
         const ctx = { db } as never
 
+        vi.useFakeTimers()
+        vi.setSystemTime(CLOSED_AT)
         await callRegistered(reconcileProviderPortfolio, ctx, {
             ...buildReconcileArgs([]),
             accountState: {
@@ -991,6 +993,7 @@ describe("Convex OKX net-mode closure replay", () => {
         const syncState = (db.rows.provider_sync_state ?? [])[0]
         expect(syncState?.driftDetected).toBe(false)
 
+        vi.setSystemTime(CLOSED_AT + 60_000)
         await callRegistered(reconcileProviderPortfolio, ctx, {
             ...buildReconcileArgs([]),
             accountState: {
@@ -1018,16 +1021,17 @@ describe("Convex OKX net-mode closure replay", () => {
             message: expect.stringContaining("Money-level reconciliation mismatch"),
         }))
 
+        vi.setSystemTime(CLOSED_AT + 120_000)
         await callRegistered(reconcileProviderPortfolio, ctx, {
             ...buildReconcileArgs([]),
             accountState: {
-                balance: 9_998.77,
-                equity: 9_998.77,
-                buyingPower: 9_998.77,
+                balance: 9_990,
+                equity: 9_990,
+                buyingPower: 9_990,
                 marginUsed: 0,
-                marginAvailable: 9_998.77,
+                marginAvailable: 9_990,
                 openPnl: 0,
-                dayPnl: -1.23,
+                dayPnl: -10,
             },
             accountPnlEvents: [],
         })
@@ -1042,6 +1046,7 @@ describe("Convex OKX net-mode closure replay", () => {
             resolvedAt: expect.any(Number),
             resolutionNote: "Provider money-level reconciliation audit passed within tolerance",
         }))
+        vi.useRealTimers()
     })
 
     it("excludes account PnL events outside the snapshot window from money-level reconciliation", async () => {
