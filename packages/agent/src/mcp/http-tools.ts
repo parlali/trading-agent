@@ -19,7 +19,11 @@ import {
     readNestedDiscoveredTools,
     type DiscoveredRemoteTool,
 } from "./http-tool-discovery"
-import { hashMcpToolSchema } from "./http-tool-identity"
+import {
+    buildMcpToolName,
+    hashMcpToolSchema,
+    sanitizeToolNamePart,
+} from "./http-tool-identity"
 import { sanitizeMcpError } from "./mcp-error-sanitizer"
 import type {
     CreateHttpMcpToolBindingsConfig,
@@ -46,6 +50,30 @@ export type {
 } from "./http-tool-types"
 
 const remoteMcpParamsSchema = z.record(z.string(), z.unknown())
+const discoveredMcpToolDispatchParamsSchema = z.object({
+    toolName: z.string().trim().min(1).max(200),
+    arguments: remoteMcpParamsSchema.optional(),
+}).strict()
+const discoveredMcpToolDispatchJsonSchema = {
+    type: "object",
+    properties: {
+        toolName: {
+            type: "string",
+            description: "Upstream MCP tool name returned by an approved discovery tool in this run.",
+        },
+        arguments: {
+            type: "object",
+            description: "Arguments for the upstream MCP tool. Use the schema and guidance returned by the discovery step.",
+            additionalProperties: true,
+        },
+    },
+    required: ["toolName"],
+    additionalProperties: false,
+} as const
+
+interface DynamicDiscoveryState {
+    allowedToolNames: Set<string>
+}
 
 interface ResolvedProviderTools {
     inventory: McpToolInventoryEntry[]
@@ -171,9 +199,11 @@ async function resolveProviderTools(args: {
     config: CreateHttpMcpToolBindingsConfig
     requireWhitelist: boolean
     emitDisappearedDiagnostics: boolean
+    dynamicDiscoveryState?: DynamicDiscoveryState
+    client?: HttpMcpClient
 }): Promise<ResolvedProviderTools> {
     const diagnostics: McpToolDiagnostic[] = []
-    const client = new HttpMcpClient({
+    const client = args.client ?? new HttpMcpClient({
         id: args.provider.id,
         url: args.provider.url,
         token: args.provider.token,
@@ -183,6 +213,7 @@ async function resolveProviderTools(args: {
     })
     const maxTools = args.provider.maxTools ?? DEFAULT_MCP_MAX_TOOLS_PER_PROVIDER
     let remoteTools: DiscoveredRemoteTool[]
+    const dynamicDiscoveryState = args.dynamicDiscoveryState ?? createDynamicDiscoveryState()
 
     try {
         remoteTools = await discoverProviderRemoteTools({
@@ -219,6 +250,7 @@ async function resolveProviderTools(args: {
         emitDisappearedDiagnostics: args.emitDisappearedDiagnostics,
         remoteTools,
         client,
+        dynamicDiscoveryState,
         conflictedToolNames: new Set(diagnostics
             .filter((diagnostic) => diagnostic.reason === "duplicate_upstream_tool" && diagnostic.upstreamToolName)
             .map((diagnostic) => diagnostic.upstreamToolName as string)),
@@ -241,6 +273,7 @@ function resolveRemoteToolBindings(args: {
     emitDisappearedDiagnostics: boolean
     remoteTools: DiscoveredRemoteTool[]
     client: HttpMcpClient
+    dynamicDiscoveryState: DynamicDiscoveryState
     conflictedToolNames?: ReadonlySet<string>
 }): ResolvedProviderTools {
     const diagnostics: McpToolDiagnostic[] = []
@@ -289,6 +322,7 @@ function resolveRemoteToolBindings(args: {
         const discoveredByApprovedToolName = readApprovedDiscoverySource({
             remoteTool,
             approvedDiscoveryToolNames,
+            dynamicDiscoveryState: args.dynamicDiscoveryState,
         })
         if (!approvedTool && !discoveredByApprovedToolName) {
             diagnostics.push({
@@ -300,6 +334,10 @@ function resolveRemoteToolBindings(args: {
                 message: "MCP tool skipped because it is not whitelisted for this strategy",
             })
             continue
+        }
+
+        if (discoveredByApprovedToolName) {
+            args.dynamicDiscoveryState.allowedToolNames.add(remoteTool.tool.name)
         }
 
         if (approvedTool?.schemaHash && approvedTool.schemaHash !== candidate.inventory.schemaHash) {
@@ -338,10 +376,21 @@ function resolveRemoteToolBindings(args: {
                     remoteTool: remoteTool.tool,
                     config: args.config,
                     client: args.client,
+                    dynamicDiscoveryState: args.dynamicDiscoveryState,
                 }),
             }),
             inventory: candidate.inventory,
         })
+    }
+
+    const dispatcher = createDiscoveredToolDispatcherBinding({
+        provider: args.provider,
+        client: args.client,
+        approvedDiscoveryToolNames,
+        dynamicDiscoveryState: args.dynamicDiscoveryState,
+    })
+    if (dispatcher) {
+        resolvedTools.push(dispatcher)
     }
 
     if (args.requireWhitelist && args.emitDisappearedDiagnostics) {
@@ -370,12 +419,14 @@ function createDynamicRefreshForTool(args: {
     remoteTool: HttpMcpTool
     config: CreateHttpMcpToolBindingsConfig
     client: HttpMcpClient
+    dynamicDiscoveryState: DynamicDiscoveryState
 }): ((result: ToolsCallResult) => Promise<void>) | undefined {
-    if (!args.config.dynamicToolRegistry || !isNestedDiscoveryTool(args.provider, args.remoteTool.name)) {
+    if (!isNestedDiscoveryTool(args.provider, args.remoteTool.name)) {
         return undefined
     }
 
     return async (result) => {
+        rememberDiscoveredToolNames(args.dynamicDiscoveryState, readDiscoveredToolNames(result))
         registerDynamicResolvedTools({
             provider: args.provider,
             config: args.config,
@@ -385,6 +436,7 @@ function createDynamicRefreshForTool(args: {
                 client: args.client,
                 result,
                 discoveryToolName: args.remoteTool.name,
+                dynamicDiscoveryState: args.dynamicDiscoveryState,
             }),
         })
 
@@ -400,6 +452,8 @@ function createDynamicRefreshForTool(args: {
                 },
                 requireWhitelist: true,
                 emitDisappearedDiagnostics: false,
+                dynamicDiscoveryState: args.dynamicDiscoveryState,
+                client: args.client,
             }),
         })
     }
@@ -411,6 +465,7 @@ function resolveDynamicToolsFromDiscoveryResult(args: {
     client: HttpMcpClient
     result: ToolsCallResult
     discoveryToolName: string
+    dynamicDiscoveryState: DynamicDiscoveryState
 }): ResolvedProviderTools {
     const diagnostics: McpToolDiagnostic[] = []
     const nested = readNestedDiscoveredTools(args.result)
@@ -431,6 +486,7 @@ function resolveDynamicToolsFromDiscoveryResult(args: {
             discoveredByToolName: args.discoveryToolName,
         })),
         client: args.client,
+        dynamicDiscoveryState: args.dynamicDiscoveryState,
     })
 
     return {
@@ -461,7 +517,11 @@ function buildApprovedDiscoveryToolNames(
 function readApprovedDiscoverySource(args: {
     remoteTool: DiscoveredRemoteTool
     approvedDiscoveryToolNames: ReadonlySet<string>
+    dynamicDiscoveryState: DynamicDiscoveryState
 }): string | undefined {
+    if (args.dynamicDiscoveryState.allowedToolNames.has(args.remoteTool.tool.name)) {
+        return "discovery_result"
+    }
     if (args.remoteTool.source !== "tool_search") {
         return undefined
     }
@@ -471,6 +531,146 @@ function readApprovedDiscoverySource(args: {
     }
 
     return discoveryToolName
+}
+
+function createDynamicDiscoveryState(): DynamicDiscoveryState {
+    return {
+        allowedToolNames: new Set<string>(),
+    }
+}
+
+function rememberDiscoveredToolNames(state: DynamicDiscoveryState, toolNames: Iterable<string>): void {
+    for (const toolName of toolNames) {
+        const normalized = toolName.trim()
+        if (normalized) {
+            state.allowedToolNames.add(normalized)
+        }
+    }
+}
+
+function readDiscoveredToolNames(result: ToolsCallResult): string[] {
+    const names = new Set<string>()
+    const structured = readRecord(result.structuredContent)
+
+    appendStringArray(names, structured?.newly_available_tools)
+    appendStringArray(names, structured?.already_available_tools)
+    appendStringArray(names, structured?.available_tools)
+    appendToolNameArray(names, structured?.tools)
+
+    for (const item of result.content ?? []) {
+        const text = readRecord(item)?.text
+        if (typeof text !== "string") {
+            continue
+        }
+        try {
+            const parsed = JSON.parse(text) as unknown
+            const record = readRecord(parsed)
+            appendStringArray(names, record?.newly_available_tools)
+            appendStringArray(names, record?.already_available_tools)
+            appendStringArray(names, record?.available_tools)
+            appendToolNameArray(names, record?.tools)
+        } catch {
+            continue
+        }
+    }
+
+    return Array.from(names)
+}
+
+function appendStringArray(names: Set<string>, value: unknown): void {
+    if (!Array.isArray(value)) {
+        return
+    }
+
+    for (const entry of value) {
+        if (typeof entry === "string" && entry.trim()) {
+            names.add(entry.trim())
+        }
+    }
+}
+
+function appendToolNameArray(names: Set<string>, value: unknown): void {
+    if (!Array.isArray(value)) {
+        return
+    }
+
+    for (const entry of value) {
+        if (typeof entry === "string" && entry.trim()) {
+            names.add(entry.trim())
+            continue
+        }
+        const name = readRecord(entry)?.name
+        if (typeof name === "string" && name.trim()) {
+            names.add(name.trim())
+        }
+    }
+}
+
+function createDiscoveredToolDispatcherBinding(args: {
+    provider: HttpMcpProviderConfig
+    client: HttpMcpClient
+    approvedDiscoveryToolNames: ReadonlySet<string>
+    dynamicDiscoveryState: DynamicDiscoveryState
+}): { binding: ToolBinding, inventory: McpToolInventoryEntry } | undefined {
+    if (args.approvedDiscoveryToolNames.size === 0) {
+        return undefined
+    }
+
+    const providerPart = sanitizeToolNamePart(args.provider.id)
+    const toolPart = sanitizeToolNamePart("call_discovered_tool")
+    if (!providerPart || !toolPart) {
+        return undefined
+    }
+
+    const registeredName = buildMcpToolName(
+        providerPart,
+        toolPart,
+        args.provider.id,
+        "call_discovered_tool"
+    )
+    const description = [
+        "Call an upstream MCP tool that was returned by an approved discovery tool earlier in this run.",
+        "First call the provider discovery tool, then pass the discovered upstream tool name and arguments here.",
+        `Provider: ${args.provider.id}.`,
+    ].join(" ")
+
+    return {
+        binding: {
+            name: registeredName,
+            description,
+            parameters: discoveredMcpToolDispatchParamsSchema,
+            jsonSchema: discoveredMcpToolDispatchJsonSchema,
+            category: args.provider.category ?? "research",
+            compatibleVenues: args.provider.compatibleVenues,
+            contractBoundary: "shared",
+            contractOwner: `mcp:${args.provider.id}`,
+            outputDescription: "Returns the upstream MCP tool result for a tool discovered in this run.",
+            errorSemantics: "Rejects calls to upstream tools that have not been returned by an approved discovery tool in this run.",
+            handler: async (params, context) => {
+                const input = discoveredMcpToolDispatchParamsSchema.parse(params)
+                if (!args.dynamicDiscoveryState.allowedToolNames.has(input.toolName)) {
+                    throw new Error(`MCP discovered tool call rejected because ${input.toolName} was not returned by an approved discovery tool in this run`)
+                }
+
+                return await args.client.callTool(input.toolName, input.arguments ?? {}, context?.signal)
+            },
+        },
+        inventory: {
+            providerId: args.provider.id,
+            upstreamToolName: "call_discovered_tool",
+            registeredName,
+            description,
+            source: "tool_search",
+            schemaHash: hashMcpToolSchema(discoveredMcpToolDispatchJsonSchema),
+            inputSchema: discoveredMcpToolDispatchJsonSchema,
+        },
+    }
+}
+
+function readRecord(value: unknown): Record<string, unknown> | undefined {
+    return value && typeof value === "object" && !Array.isArray(value)
+        ? value as Record<string, unknown>
+        : undefined
 }
 
 function registerDynamicResolvedTools(args: {
