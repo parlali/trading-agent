@@ -414,6 +414,7 @@ export const reconcileProviderPortfolio = mutation({
             existingProviderPositions,
             livePositionKeys: new Set(nextProviderPositions.map((position) => position.positionKey)),
             positionClosures: providerPositionClosures,
+            expectedExternalInstruments,
             updatedAt: now,
         })
 

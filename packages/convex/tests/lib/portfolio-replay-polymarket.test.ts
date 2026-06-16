@@ -138,4 +138,87 @@ describe("Convex Polymarket settlement replay", () => {
             }),
         ])
     })
+
+    it("does not fault unmatched settlement closures for expected external Polymarket instruments", async () => {
+        process.env.BACKEND_SERVICE_TOKEN = "test-token"
+        const strategyId = "strategy-polymarket"
+        const accountId = "polymarket-account"
+        const tokenId = "token-external-settlement"
+        const marketSlug = "external-settlement-market"
+        const closedAt = Date.parse("2026-02-12T00:00:00.000Z")
+        const db = new FakeDb({
+            strategies: [{
+                _id: strategyId,
+                app: "polymarket",
+                accountId,
+                name: "Polymarket expected external",
+                policy: {
+                    dryRun: true,
+                    safety: {
+                        expectedExternalInstruments: [tokenId, marketSlug],
+                    },
+                },
+            }],
+            strategy_runs: [],
+            instrument_claims: [],
+            orders: [],
+            provider_positions: [],
+            provider_working_orders: [],
+            provider_sync_state: [],
+            position_syncs: [],
+            positions: [],
+            execution_safety_faults: [],
+            account_snapshots: [],
+            account_pnl_events: [],
+            control_plane_metrics: [],
+            alerts: [],
+            trade_events: [],
+            order_transitions: [],
+        })
+        const ctx = { db } as never
+
+        const result = await callRegistered(reconcileProviderPortfolio, ctx, {
+            serviceToken: "test-token",
+            app: "polymarket",
+            accountId,
+            venue: "polymarket",
+            source: "periodic_sync",
+            accountState: {
+                balance: 0,
+                equity: 0,
+                buyingPower: 0,
+                marginUsed: 0,
+                marginAvailable: 0,
+                openPnl: 0,
+                dayPnl: 0,
+            },
+            positions: [],
+            workingOrders: [],
+            positionClosures: [{
+                instrument: tokenId,
+                providerPositionId: tokenId,
+                side: "long",
+                quantity: 9.0909,
+                fillPrice: 0,
+                closedAt,
+                metadata: JSON.stringify({
+                    providerAccountingSource: "polymarket_position_settlement",
+                    providerPositionId: tokenId,
+                    tokenId,
+                    asset: tokenId,
+                    marketSlug,
+                    slug: marketSlug,
+                    conditionId: "condition-external",
+                    fillPnl: -0.9999,
+                    fee: 0,
+                    feeCcy: "USDC",
+                }),
+            }],
+        }) as { driftDetected: boolean; driftSummary?: string }
+
+        expect(result.driftDetected).toBe(false)
+        expect(result.driftSummary).toBeUndefined()
+        expect(db.rows.execution_safety_faults ?? []).toEqual([])
+        expect(db.rows.alerts ?? []).toEqual([])
+    })
 })

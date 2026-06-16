@@ -184,7 +184,7 @@ export function mapCurrentPosition(position: PolymarketCurrentPosition): Positio
 
 export function mapSettlementPositionClosure(
     position: PolymarketCurrentPosition,
-    closedAt: number = Date.now()
+    closedAt: number = resolveSettlementClosedAt(position)
 ): ProviderPositionClosure | undefined {
     if (position.size <= 0 || (!position.redeemable && !position.mergeable)) {
         return undefined
@@ -227,6 +227,11 @@ export function mapSettlementPositionClosure(
             feeCcy: "USDC",
         },
     }
+}
+
+function resolveSettlementClosedAt(position: PolymarketCurrentPosition): number {
+    const endDate = Date.parse(position.endDate)
+    return Number.isFinite(endDate) ? endDate : 0
 }
 
 function resolveSettlementFillPrice(position: PolymarketCurrentPosition): number {

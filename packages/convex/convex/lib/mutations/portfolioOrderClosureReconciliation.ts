@@ -9,6 +9,7 @@ import {
     isEntryLikeOrder,
     parseJson,
     readOrderIntentRecord,
+    isExpectedExternalProviderRow,
 } from "./portfolioUtils"
 import { resolveLatestRunIdForStrategy } from "./portfolioOrderRuns"
 import {
@@ -65,6 +66,7 @@ export async function reconcileProviderPositionClosures(
         existingProviderPositions: Doc<"provider_positions">[]
         livePositionKeys: Set<string>
         positionClosures: ProviderPositionClosureInput[]
+        expectedExternalInstruments: Set<string>
         updatedAt: number
     }
 ): Promise<ProviderClosureReconciliationResult> {
@@ -137,6 +139,11 @@ export async function reconcileProviderPositionClosures(
 
         const match = resolveMatchingCandidatePosition(candidates, closure)
         if (match.kind === "none") {
+            if (isExpectedExternalProviderRow(args.expectedExternalInstruments, closure)) {
+                importedClosureKeys.add(closureKey)
+                continue
+            }
+
             if (hasProviderAccountingEvidence(closure)) {
                 const description = `${describeClosure(closure)} (broker close has provider accounting but no canonical order or owned position candidate)`
                 unattributedClosures.push(description)

@@ -934,6 +934,7 @@ describe("PolymarketVenueAdapter.getPositions", () => {
                 side: "long",
                 quantity: 5,
                 fillPrice: 1,
+                closedAt: Date.parse("2026-02-11"),
                 metadata: expect.objectContaining({
                     providerAccountingSource: "polymarket_position_settlement",
                     tokenId: "token-redeemable",
@@ -947,6 +948,7 @@ describe("PolymarketVenueAdapter.getPositions", () => {
                 providerPositionId: "token-mergeable",
                 quantity: 2,
                 fillPrice: 0.5,
+                closedAt: Date.parse("2026-02-11"),
                 metadata: expect.objectContaining({
                     tokenId: "token-mergeable",
                     fillPnl: 0,
