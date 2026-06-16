@@ -459,6 +459,7 @@ describe("agent chat handler", () => {
         })
         const text = await createUIMessageStreamResponse({ stream }).text()
 
+        expect(text).toContain("\"type\":\"start\",\"messageId\":\"message-codex:assistant\"")
         expect(text).toContain("Codex answer.")
         expect(backend.recordAgentChatAssistantMessage).toHaveBeenNthCalledWith(1, expect.objectContaining({
             sessionId: "session-1",

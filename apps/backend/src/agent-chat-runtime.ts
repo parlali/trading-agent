@@ -342,7 +342,10 @@ async function createCodexAgentChatUiMessageStream(
                     return
                 }
 
-                writer.write({ type: "start" })
+                writer.write({
+                    type: "start",
+                    messageId: chatIds.assistantMessageId,
+                })
                 uiStreamStarted = true
             }
             const recordAssistantStarted = createAgentChatAssistantStartRecorder({
