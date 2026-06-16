@@ -3,6 +3,7 @@ import { createEmptyCascadeDeleteCounts } from "../../convex/lib/cascadeDelete"
 import {
     assertStrategyDeletionSafe,
     cascadeDeleteStrategy,
+    deleteFinalStrategyAccountRows,
     deleteFinalStrategyAppRows,
     deleteStrategyTableBatch,
 } from "../../convex/lib/mutations/strategyCascadeDelete"
@@ -48,6 +49,50 @@ function createLiveStrategy() {
 describe("portfolio safety guards", () => {
     it("fails closed when deleting a live strategy without provider verification state", async () => {
         await expect(assertStrategyDeletionSafe(createDeletionSafetyCtx({}) as never, createLiveStrategy() as never))
+            .rejects
+            .toThrow("provider ownership has not been recently verified")
+    })
+
+    it("allows force reset to delete unverified live strategies only when tracked provider state is empty", async () => {
+        await expect(assertStrategyDeletionSafe(createDeletionSafetyCtx({}) as never, createLiveStrategy() as never, {
+            allowUnverifiedEmptyProviderState: true,
+        }))
+            .resolves
+            .toBeUndefined()
+    })
+
+    it("does not allow force reset to delete unverified live strategies with tracked provider exposure", async () => {
+        await expect(assertStrategyDeletionSafe(createDeletionSafetyCtx({
+            provider_positions: [{
+                _id: "position-1",
+            }],
+        }) as never, createLiveStrategy() as never, {
+            allowUnverifiedEmptyProviderState: true,
+        }))
+            .rejects
+            .toThrow("provider ownership has not been recently verified")
+    })
+
+    it("allows force reset to delete stale provider rows only after external flat verification", async () => {
+        await expect(assertStrategyDeletionSafe(createDeletionSafetyCtx({
+            provider_positions: [{
+                _id: "position-1",
+            }],
+        }) as never, createLiveStrategy() as never, {
+            allowVerifiedFlatProviderState: true,
+        }))
+            .resolves
+            .toBeUndefined()
+    })
+
+    it("does not allow external flat verification to bypass pending order lifecycle state", async () => {
+        await expect(assertStrategyDeletionSafe(createDeletionSafetyCtx({
+            orders: [{
+                _id: "order-1",
+            }],
+        }) as never, createLiveStrategy() as never, {
+            allowVerifiedFlatProviderState: true,
+        }))
             .rejects
             .toThrow("provider ownership has not been recently verified")
     })
@@ -102,18 +147,23 @@ describe("portfolio safety guards", () => {
 
         await expect(deleteStrategyTableBatch(ctx as never, "strategy-live" as never, "mt5" as never, deleted, 50))
             .resolves
-            .toBe(true)
+            .toBe(false)
 
         expect(deleted.accountSnapshots).toBe(0)
-        expect(deleted.providerSyncStates).toBe(1)
+        expect(deleted.providerSyncStates).toBe(0)
         expect(deleted.appHeartbeats).toBe(0)
         expect(db.rows.account_snapshots).toHaveLength(1)
-        expect(db.rows.provider_sync_state).toHaveLength(0)
+        expect(db.rows.provider_sync_state).toHaveLength(1)
         expect(db.rows.app_heartbeats).toHaveLength(1)
 
-        await expect(deleteStrategyTableBatch(ctx as never, "strategy-live" as never, "mt5" as never, deleted, 50))
-            .resolves
-            .toBe(false)
+        await deleteFinalStrategyAccountRows(ctx as never, {
+            _id: "strategy-live",
+            app: "mt5",
+            accountId: "acct-1",
+        } as never, deleted)
+
+        expect(deleted.providerSyncStates).toBe(1)
+        expect(db.rows.provider_sync_state).toHaveLength(0)
 
         await deleteFinalStrategyAppRows(ctx as never, "mt5" as never, deleted)
 

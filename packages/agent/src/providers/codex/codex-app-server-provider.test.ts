@@ -660,6 +660,7 @@ function createFakeToolEngine(
                 closed: 0,
                 realizedPnl: 0,
             },
+            toolCallCount: 0,
             degradedResearch: () => ({
                 active: false,
                 reasons: [],

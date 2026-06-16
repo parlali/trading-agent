@@ -133,6 +133,7 @@ export default defineSchema({
         opportunityFilled: v.optional(v.number()),
         opportunityClosed: v.optional(v.number()),
         opportunityRealizedPnl: v.optional(v.number()),
+        toolCallCount: v.optional(v.number()),
         systemContextDigest: v.optional(runSystemContextDigestV),
         mcpToolDiagnostics: v.optional(v.array(mcpToolDiagnosticV)),
         toolManifest: v.optional(v.array(v.object({

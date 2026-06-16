@@ -295,6 +295,7 @@ function createAgentRunResult(): AgentRunResult {
             closed: 0,
             realizedPnl: 0,
         },
+        toolCallCount: 0,
         providerDiagnostics: {
             provider: "codex",
             model: "gpt-5.4",

@@ -10,6 +10,7 @@ import {
     assertStrategyDeletionSafe,
     cascadeDeleteRun,
     cascadeDeleteStrategy,
+    deleteFinalStrategyAccountRows,
     deleteFinalStrategyAppRows,
     createEmptyStrategyDeleteCounts,
     deleteRunBatch,
@@ -205,6 +206,8 @@ export const deleteStrategyBatch = mutation({
         strategyId: v.id("strategies"),
         serviceToken: v.optional(v.string()),
         batchSize: v.optional(v.number()),
+        allowUnverifiedEmptyProviderState: v.optional(v.boolean()),
+        allowVerifiedFlatProviderState: v.optional(v.boolean()),
     },
     handler: async (ctx, args) => {
         await requireUserOrServiceToken(ctx, args.serviceToken)
@@ -220,7 +223,10 @@ export const deleteStrategyBatch = mutation({
             }
         }
 
-        await assertStrategyDeletionSafe(ctx, strategy)
+        await assertStrategyDeletionSafe(ctx, strategy, {
+            allowUnverifiedEmptyProviderState: args.allowUnverifiedEmptyProviderState === true,
+            allowVerifiedFlatProviderState: args.allowVerifiedFlatProviderState === true,
+        })
 
         const batchSize = Math.max(1, Math.min(args.batchSize ?? 20, 50))
         await incrementControlPlaneMetric(ctx, {
@@ -277,6 +283,7 @@ export const deleteStrategyBatch = mutation({
             return partialResult()
         }
 
+        await deleteFinalStrategyAccountRows(ctx, strategy, deleted)
         await deleteFinalStrategyAppRows(ctx, strategy.app, deleted)
         await ctx.db.delete(args.strategyId)
         await recordDeletedDocs(sumDeletedCounts(deleted) + 1)

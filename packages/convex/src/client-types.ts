@@ -163,6 +163,7 @@ export interface RunDiagnostics {
     opportunityFilled?: number
     opportunityClosed?: number
     opportunityRealizedPnl?: number
+    toolCallCount?: number
     systemContextDigest?: RunSystemContextDigest
     mcpToolDiagnostics?: McpToolDiagnostic[]
     toolManifest?: ToolManifestEntry[]
@@ -683,7 +684,14 @@ export interface TradingBackendClient extends TradeEventLogger, AgentMessageLogg
     updateStrategy(id: Id<"strategies">, config: StrategyConfig): Promise<Id<"strategies">>
     disableStrategy(id: Id<"strategies">): Promise<void>
     deleteStrategy(id: Id<"strategies">): Promise<DeleteStrategyResult>
-    deleteStrategyBatch(id: Id<"strategies">, batchSize?: number): Promise<DeleteStrategyBatchResult>
+    deleteStrategyBatch(
+        id: Id<"strategies">,
+        batchSize?: number,
+        options?: {
+            allowUnverifiedEmptyProviderState?: boolean
+            allowVerifiedFlatProviderState?: boolean
+        }
+    ): Promise<DeleteStrategyBatchResult>
     deleteAllStrategies(): Promise<DeleteAllStrategiesResult>
     deleteOrphanedStrategyHistoryBatch(batchSize?: number): Promise<DeleteOrphanedStrategyHistoryBatchResult>
     clearFullResetState(): Promise<CascadeDeleteCounts>

@@ -996,7 +996,11 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
         },
         async deleteStrategyBatch(
             id: Id<"strategies">,
-            batchSize?: number
+            batchSize?: number,
+            options?: {
+                allowUnverifiedEmptyProviderState?: boolean
+                allowVerifiedFlatProviderState?: boolean
+            }
         ): Promise<DeleteStrategyBatchResult> {
             return await runWithTimeout(
                 "Convex mutation deleteStrategyBatch",
@@ -1004,6 +1008,8 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
                     ...requireMachineAuth(),
                     strategyId: id,
                     batchSize,
+                    allowUnverifiedEmptyProviderState: options?.allowUnverifiedEmptyProviderState,
+                    allowVerifiedFlatProviderState: options?.allowVerifiedFlatProviderState,
                 } as never) as DeleteStrategyBatchResult
             )
         },

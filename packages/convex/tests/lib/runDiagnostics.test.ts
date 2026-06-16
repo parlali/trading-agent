@@ -16,6 +16,7 @@ describe("run diagnostics persistence helpers", () => {
             completionTokens: 7,
             reasoningTokens: 3,
             llmCost: 0.012,
+            toolCallCount: 5,
         })
 
         expect(runDiagnosticsV).toBeDefined()
@@ -29,6 +30,7 @@ describe("run diagnostics persistence helpers", () => {
             completionTokens: 7,
             reasoningTokens: 3,
             llmCost: 0.012,
+            toolCallCount: 5,
         })
     })
 
@@ -56,6 +58,7 @@ describe("run diagnostics persistence helpers", () => {
             promptTokens: 17,
             completionTokens: 9,
             reasoningTokens: 4,
+            toolCallCount: 6,
         })
 
         expect(runDiagnosticsV).toBeDefined()
@@ -72,6 +75,7 @@ describe("run diagnostics persistence helpers", () => {
             promptTokens: 17,
             completionTokens: 9,
             reasoningTokens: 4,
+            toolCallCount: 6,
         })
     })
 

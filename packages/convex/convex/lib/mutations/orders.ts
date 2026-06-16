@@ -242,6 +242,7 @@ export const runDiagnosticsV = v.object({
     opportunityFilled: v.optional(v.number()),
     opportunityClosed: v.optional(v.number()),
     opportunityRealizedPnl: v.optional(v.number()),
+    toolCallCount: v.optional(v.number()),
     systemContextDigest: v.optional(runSystemContextDigestV),
     mcpToolDiagnostics: v.optional(v.array(mcpToolDiagnosticV)),
     toolManifest: v.optional(v.array(v.object({
@@ -280,6 +281,7 @@ const RUN_DIAGNOSTIC_PATCH_FIELDS = [
     "opportunityFilled",
     "opportunityClosed",
     "opportunityRealizedPnl",
+    "toolCallCount",
     "systemContextDigest",
     "mcpToolDiagnostics",
     "toolManifest",

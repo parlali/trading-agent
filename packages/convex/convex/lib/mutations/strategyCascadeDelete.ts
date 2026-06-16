@@ -10,6 +10,10 @@ import { incrementControlPlaneMetric } from "../controlPlaneMetrics"
 const PORTFOLIO_STALE_AFTER_MS = 10 * 60 * 1000
 
 type MutableCascadeDeleteCounts = CascadeDeleteCounts
+type StrategyDeletionSafetyOptions = {
+    allowUnverifiedEmptyProviderState?: boolean
+    allowVerifiedFlatProviderState?: boolean
+}
 export type StrategyDeleteCounts = CascadeDeleteCounts & {
     strategies: number
 }
@@ -296,22 +300,36 @@ export async function deleteStrategyTableBatch(
         return true
     }
 
+    return false
+}
+
+export async function deleteFinalStrategyAccountRows(
+    ctx: { db: DatabaseWriter },
+    strategy: Doc<"strategies">,
+    deleted: MutableCascadeDeleteCounts
+): Promise<void> {
+    const accountStrategies = await ctx.db
+        .query("strategies")
+        .withIndex("by_app_account", (q) =>
+            q.eq("app", strategy.app).eq("accountId", strategy.accountId)
+        )
+        .take(2)
+
+    if (accountStrategies.length !== 1) {
+        return
+    }
+
     const syncStates = await ctx.db
         .query("provider_sync_state")
         .withIndex("by_app_account", (q) =>
-            q.eq("app", app).eq("accountId", strategy.accountId)
+            q.eq("app", strategy.app).eq("accountId", strategy.accountId)
         )
-        .take(batchSize)
+        .collect()
 
-    if (syncStates.length > 0) {
-        for (const syncState of syncStates) {
-            await ctx.db.delete(syncState._id)
-            deleted.providerSyncStates++
-        }
-        return true
+    for (const syncState of syncStates) {
+        await ctx.db.delete(syncState._id)
+        deleted.providerSyncStates++
     }
-
-    return false
 }
 
 export async function deleteFinalStrategyAppRows(
@@ -635,7 +653,8 @@ export async function cascadeDeleteStrategy(
 
 export async function assertStrategyDeletionSafe(
     ctx: { db: DatabaseWriter },
-    strategy: Doc<"strategies">
+    strategy: Doc<"strategies">,
+    options: StrategyDeletionSafetyOptions = {}
 ): Promise<void> {
     const isDryRun = strategy.policy?.dryRun === true
     const [activeRun, providerState, trackedPositions, trackedWorkingOrders, pendingOrders, partiallyFilledOrders] = await Promise.all([
@@ -687,13 +706,39 @@ export async function assertStrategyDeletionSafe(
         providerState.providerStatus !== "healthy" ||
         isPortfolioStateStale(providerState.lastVerifiedAt)
 
-    if (!isDryRun && providerStateIsUnsafe) {
+    const hasTrackedProviderExposure =
+        trackedPositions.length > 0 ||
+        trackedWorkingOrders.length > 0 ||
+        pendingOrders.length > 0 ||
+        partiallyFilledOrders.length > 0
+    const hasPendingOrderLifecycle =
+        pendingOrders.length > 0 ||
+        partiallyFilledOrders.length > 0
+    const allowUnsafeProviderState =
+        (
+            options.allowUnverifiedEmptyProviderState === true &&
+            !hasTrackedProviderExposure
+        ) ||
+        (
+            options.allowVerifiedFlatProviderState === true &&
+            !hasPendingOrderLifecycle
+        )
+
+    if (
+        !isDryRun &&
+        providerStateIsUnsafe &&
+        !allowUnsafeProviderState
+    ) {
         throw new Error(
             `Cannot delete strategy while ${strategy.app} provider ownership has not been recently verified, is stale, or is drifted. Run the backend-admin reset flow after operator review.`
         )
     }
 
-    if (!isDryRun && (trackedPositions.length > 0 || trackedWorkingOrders.length > 0)) {
+    if (
+        !isDryRun &&
+        (trackedPositions.length > 0 || trackedWorkingOrders.length > 0) &&
+        options.allowVerifiedFlatProviderState !== true
+    ) {
         throw new Error(
             `Cannot delete strategy with live provider-tracked exposure or working orders. Run the backend-admin reset flow first.`
         )

@@ -28,6 +28,7 @@ describe("ToolExecutionEngine", () => {
         expect(unknown.content).toContain("Unknown tool: missing_tool")
         expect(unknown.isError).toBe(true)
         expect(openRouterResults[0]?.content).toContain("Invalid JSON arguments")
+        expect(engine.getOutcome().toolCallCount).toBe(2)
     })
 
     it("runs equivalent fake tool calls through OpenRouter batch mode and MCP single-call mode", async () => {
@@ -75,6 +76,8 @@ describe("ToolExecutionEngine", () => {
             rawInput: JSON.stringify({ value: "same-input" }),
         }])
         expect(mcpResult.isError).toBe(false)
+        expect(openRouterEngine.getOutcome().toolCallCount).toBe(1)
+        expect(mcpEngine.getOutcome().toolCallCount).toBe(1)
     })
 
     it("truncates model-facing tool results on both transports", async () => {
@@ -197,6 +200,8 @@ describe("ToolExecutionEngine", () => {
         expect(openRouterResults[0]?.content).toContain("Parameter validation failed")
         expect(mcpResult.content).toContain("Parameter validation failed")
         expect(mcpResult.isError).toBe(true)
+        expect(openRouterEngine.getOutcome().toolCallCount).toBe(1)
+        expect(mcpEngine.getOutcome().toolCallCount).toBe(1)
     })
 
     it("degrades repeated research failures instead of tripping the fatal circuit breaker", async () => {
@@ -338,6 +343,7 @@ describe("ToolExecutionEngine", () => {
         expect(handler).not.toHaveBeenCalled()
         expect(result.content).toContain("run timeout was exhausted")
         expect(result.isError).toBe(true)
+        expect(engine.getOutcome().toolCallCount).toBe(1)
     })
 
     it("aborts timed-out handlers through the tool signal", async () => {
@@ -430,6 +436,7 @@ describe("ToolExecutionEngine", () => {
 
         expect(handler).toHaveBeenCalledTimes(1)
         expect(openRouterResults).toHaveLength(1)
+        expect(engine.getOutcome().toolCallCount).toBe(1)
         expect(engine.getOutcome().fatalFault).toMatchObject({
             toolName: "fake_tool",
             reason: "safety-critical fake_tool tool failure",

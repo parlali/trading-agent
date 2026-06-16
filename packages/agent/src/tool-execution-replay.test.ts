@@ -53,6 +53,7 @@ describe("provider-neutral tool execution replays", () => {
                 toolName: "get_market_price",
                 reason: "repeated identical get_market_price tool error",
             })
+            expect(replay.outcome.toolCallCount, provider.name).toBe(3)
         }
     })
 
@@ -74,6 +75,7 @@ describe("provider-neutral tool execution replays", () => {
                 toolFailureCount: 1,
             })
             expect(degradedResearch.reasons.join("\n"), provider.name).toContain("search_markets")
+            expect(replay.outcome.toolCallCount, provider.name).toBe(3)
         }
     })
 
@@ -92,6 +94,7 @@ describe("provider-neutral tool execution replays", () => {
                 reason: "repeated identical fake_execution tool error",
             })
             expect(replay.outcome.abortReason, provider.name).toBe("repeated identical fake_execution tool error")
+            expect(replay.outcome.toolCallCount, provider.name).toBe(3)
         }
     })
 
@@ -101,6 +104,7 @@ describe("provider-neutral tool execution replays", () => {
 
         expect(codexMcp.syncedPositions).toEqual(openRouter.syncedPositions)
         expect(codexMcp.outcome.opportunityCoverage).toEqual(openRouter.outcome.opportunityCoverage)
+        expect(codexMcp.outcome.toolCallCount).toBe(openRouter.outcome.toolCallCount)
         expect(openRouter.outcome.fatalFault).toBeUndefined()
         expect(openRouter.outcome.opportunityCoverage).toMatchObject({
             qualified: 1,

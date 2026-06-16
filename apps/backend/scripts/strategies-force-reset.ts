@@ -43,6 +43,8 @@ runScript(async () => {
     const deferredStrategyIds = new Set<string>()
     const deferredProviderApps = new Set<StoredStrategy["app"]>()
     const deferredProviderReasons = new Map<StoredStrategy["app"], string>()
+    const unconfiguredEmptyProviderApps = new Set<StoredStrategy["app"]>()
+    const externallyVerifiedFlatProviderApps = new Set<StoredStrategy["app"]>()
     const deferProviderApp = (app: StoredStrategy["app"], reason: string) => {
         deferredProviderApps.add(app)
         deferredProviderReasons.set(app, reason)
@@ -54,13 +56,24 @@ runScript(async () => {
         console.log("Destructive force reset requested")
         console.log("Expecting backend schedulers and workers to already be stopped before this runs")
 
-        await preflightForceReset(client, representativeStrategies)
+        const preflight = await preflightForceReset(client, representativeStrategies)
+        for (const app of preflight.unconfiguredEmptyProviderApps) {
+            unconfiguredEmptyProviderApps.add(app)
+        }
+        for (const app of preflight.externallyVerifiedFlatProviderApps) {
+            externallyVerifiedFlatProviderApps.add(app)
+        }
 
         const recoveredBeforeDisable = await client.recoverRunningRuns()
         console.log(`Recovered running runs before disable: ${recoveredBeforeDisable}`)
 
         for (const strategy of representativeStrategies) {
-            if (isDryRunStrategy(strategy) || deferredProviderApps.has(strategy.app)) {
+            if (
+                isDryRunStrategy(strategy) ||
+                deferredProviderApps.has(strategy.app) ||
+                unconfiguredEmptyProviderApps.has(strategy.app) ||
+                externallyVerifiedFlatProviderApps.has(strategy.app)
+            ) {
                 continue
             }
 
@@ -82,6 +95,16 @@ runScript(async () => {
 
             if (isDryRunStrategy(strategy)) {
                 console.log("    skipping venue flatten because this strategy is dry-run only")
+                continue
+            }
+
+            if (unconfiguredEmptyProviderApps.has(strategy.app)) {
+                console.log("    skipping venue flatten because provider credentials are unavailable and Convex has no tracked provider exposure")
+                continue
+            }
+
+            if (externallyVerifiedFlatProviderApps.has(strategy.app)) {
+                console.log("    skipping venue flatten because fallback provider account is verified flat")
                 continue
             }
 
@@ -185,7 +208,11 @@ runScript(async () => {
                 }
             }
 
-            if (!deferredStrategyIds.has(String(strategy._id))) {
+            if (
+                !deferredStrategyIds.has(String(strategy._id)) &&
+                !unconfiguredEmptyProviderApps.has(strategy.app) &&
+                !externallyVerifiedFlatProviderApps.has(strategy.app)
+            ) {
                 await reconcileAndVerifyReset(client, strategy)
             }
         }
@@ -200,7 +227,9 @@ runScript(async () => {
             }
 
             console.log(`Deleting reset strategy: ${strategy.name} (${strategy.app})`)
-            const result = await deleteStrategyWithContext(client, strategy)
+            const result = await deleteStrategyWithContext(client, strategy, {
+                allowVerifiedFlatProviderState: externallyVerifiedFlatProviderApps.has(strategy.app),
+            })
             if (result.strategyDeleted) {
                 deleted.strategies++
             }
@@ -235,8 +264,13 @@ runScript(async () => {
 async function preflightForceReset(
     client: TradingBackendClient,
     strategies: StoredStrategy[]
-): Promise<void> {
+): Promise<{
+    unconfiguredEmptyProviderApps: Set<StoredStrategy["app"]>
+    externallyVerifiedFlatProviderApps: Set<StoredStrategy["app"]>
+}> {
     const failures: string[] = []
+    const unconfiguredEmptyProviderApps = new Set<StoredStrategy["app"]>()
+    const externallyVerifiedFlatProviderApps = new Set<StoredStrategy["app"]>()
 
     console.log("Preflighting venue access before destructive reset...")
 
@@ -252,6 +286,16 @@ async function preflightForceReset(
             console.log(`  ${strategy.app}: ${strategy.name} -> venue access OK`)
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error)
+            if (isMissingProviderCredentialError(message) && await hasNoTrackedProviderExposure(client, strategy.app)) {
+                unconfiguredEmptyProviderApps.add(strategy.app)
+                console.log(`  ${strategy.app}: ${strategy.name} -> provider credentials unavailable, no tracked provider exposure; provider preflight skipped for force reset`)
+                continue
+            }
+            if (isMissingProviderCredentialError(message) && await verifyFallbackProviderFlat(client, strategy)) {
+                externallyVerifiedFlatProviderApps.add(strategy.app)
+                console.log(`  ${strategy.app}: ${strategy.name} -> provider credentials unavailable, fallback provider account verified flat; stale provider rows may be deleted`)
+                continue
+            }
             failures.push(`${strategy.app}: ${strategy.name} -> ${message}`)
             console.log(`  ${strategy.app}: ${strategy.name} -> FAILED (${message})`)
         }
@@ -259,6 +303,54 @@ async function preflightForceReset(
 
     if (failures.length > 0) {
         throw new Error(`Force reset preflight failed:\n${failures.map((failure) => `  - ${failure}`).join("\n")}`)
+    }
+
+    return {
+        unconfiguredEmptyProviderApps,
+        externallyVerifiedFlatProviderApps,
+    }
+}
+
+async function hasNoTrackedProviderExposure(
+    client: TradingBackendClient,
+    app: StoredStrategy["app"]
+): Promise<boolean> {
+    const [positions, orders] = await Promise.all([
+        client.getPortfolioPositions(app),
+        client.getPortfolioPendingOrders(app),
+    ])
+
+    return positions.length === 0 && orders.length === 0
+}
+
+function isMissingProviderCredentialError(message: string): boolean {
+    return message.includes("Missing required secret:")
+}
+
+async function verifyFallbackProviderFlat(
+    client: TradingBackendClient,
+    strategy: StoredStrategy
+): Promise<boolean> {
+    const accounts = await client.getAccounts(strategy.app)
+    const fallback = accounts.find((account) => account.accountId === "legacy")
+    if (!fallback) {
+        return false
+    }
+
+    try {
+        const fallbackStrategy = {
+            ...strategy,
+            accountId: fallback.accountId,
+        }
+        const { venue } = await createVenue(fallbackStrategy, client)
+        const [positions, workingOrders] = await Promise.all([
+            venue.getPositions(),
+            venue.getWorkingOrders ? venue.getWorkingOrders() : Promise.resolve([]),
+        ])
+
+        return positions.length === 0 && workingOrders.length === 0
+    } catch {
+        return false
     }
 }
 
@@ -346,7 +438,10 @@ function printMarketClosedExecutionFailure(
 
 async function deleteStrategyWithContext(
     client: TradingBackendClient,
-    strategy: StoredStrategy
+    strategy: StoredStrategy,
+    options?: {
+        allowVerifiedFlatProviderState?: boolean
+    }
 ): Promise<{
     deleted: DeleteStrategyResult
     strategyDeleted: boolean
@@ -357,7 +452,7 @@ async function deleteStrategyWithContext(
 
     try {
         for (let batch = 1; batch <= STRATEGY_DELETE_MAX_BATCHES; batch++) {
-            const result = await deleteStrategyBatchWithRetry(client, strategy)
+            const result = await deleteStrategyBatchWithRetry(client, strategy, options)
             const deletedThisBatch = sumDeleteCounts(result)
             if (deletedThisBatch === 0 && !result.strategyDeleted) {
                 consecutiveNoProgressBatches++
@@ -397,13 +492,19 @@ async function deleteStrategyWithContext(
 
 async function deleteStrategyBatchWithRetry(
     client: TradingBackendClient,
-    strategy: StoredStrategy
+    strategy: StoredStrategy,
+    options?: {
+        allowVerifiedFlatProviderState?: boolean
+    }
 ): Promise<DeleteStrategyBatchResult> {
     let lastError: unknown
 
     for (let attempt = 1; attempt <= STRATEGY_DELETE_RETRY_ATTEMPTS; attempt++) {
         try {
-            return await client.deleteStrategyBatch(strategy._id, STRATEGY_DELETE_BATCH_SIZE)
+            return await client.deleteStrategyBatch(strategy._id, STRATEGY_DELETE_BATCH_SIZE, {
+                allowUnverifiedEmptyProviderState: true,
+                allowVerifiedFlatProviderState: options?.allowVerifiedFlatProviderState,
+            })
         } catch (error) {
             lastError = error
             const message = error instanceof Error ? error.message : String(error)

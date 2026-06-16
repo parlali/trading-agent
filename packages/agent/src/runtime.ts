@@ -31,6 +31,7 @@ export interface AgentRunResult {
     iterations: number
     usage: LLMUsage
     opportunityCoverage: OpportunityCoverageMetrics
+    toolCallCount: number
     degradedResearch?: DegradedResearchOutcome
     providerDiagnostics: AgentProviderDiagnostics
     toolManifest: ToolManifestEntry[]
@@ -139,6 +140,7 @@ export async function executeAgentRun(
             iterations: providerResult.iterations,
             usage: providerResult.usage,
             opportunityCoverage: outcome.opportunityCoverage,
+            toolCallCount: outcome.toolCallCount,
             degradedResearch: outcome.degradedResearch(decisionTaken),
             providerDiagnostics: providerResult.diagnostics,
             toolManifest: tools.getManifest(),

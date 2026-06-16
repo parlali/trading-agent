@@ -31,6 +31,7 @@ export interface ToolExecutionFatalFault {
 
 export interface ToolExecutionOutcome {
     opportunityCoverage: OpportunityCoverageMetrics
+    toolCallCount: number
     degradedResearch: (decisionTaken: boolean) => DegradedResearchOutcome
     fatalFault?: ToolExecutionFatalFault
     abortReason?: string
@@ -103,6 +104,7 @@ export class ToolExecutionEngine {
     private readonly degradedResearchReasons = new Set<string>()
     private degradedResearchToolFailureCount = 0
     private degradedResearchRetryCount = 0
+    private toolCallCount = 0
     private fatalFault: ToolExecutionFatalFault | undefined
 
     constructor(private readonly config: ToolExecutionEngineConfig) {
@@ -144,6 +146,7 @@ export class ToolExecutionEngine {
                 continue
             }
 
+            this.recordToolCallAttempt()
             await callbacks.onToolResult({
                 toolCallId: toolCall.id,
                 toolName: toolCall.function.name,
@@ -173,6 +176,7 @@ export class ToolExecutionEngine {
 
         if (executeSequentially) {
             for (const entry of valid) {
+                this.recordToolCallAttempt()
                 const result = await this.executeTool(entry, options.signal)
                 await this.emitOpenRouterToolResult(entry, result, callbacks)
 
@@ -183,6 +187,7 @@ export class ToolExecutionEngine {
             return
         }
 
+        this.recordToolCallAttempts(valid.length)
         const results = await this.executeToolsInParallel(valid, options.signal)
 
         for (let i = 0; i < valid.length; i++) {
@@ -209,6 +214,7 @@ export class ToolExecutionEngine {
             args,
             callId,
         })
+        this.recordToolCallAttempt()
 
         if (validation.status !== "valid") {
             const modelContent = truncateToolResult(validation.content)
@@ -246,6 +252,7 @@ export class ToolExecutionEngine {
     getOutcome(): ToolExecutionOutcome {
         return {
             opportunityCoverage: finalizeOpportunityCoverage(this.opportunityCoverage),
+            toolCallCount: this.toolCallCount,
             degradedResearch: (decisionTaken) => this.buildDegradedResearch(decisionTaken),
             fatalFault: this.fatalFault,
             abortReason: this.fatalFault?.reason,
@@ -491,6 +498,14 @@ export class ToolExecutionEngine {
             content: modelContent,
             rawInput: entry.rawInput,
         })
+    }
+
+    private recordToolCallAttempt(): void {
+        this.toolCallCount++
+    }
+
+    private recordToolCallAttempts(count: number): void {
+        this.toolCallCount += count
     }
 
     private async logMcpToolResult(

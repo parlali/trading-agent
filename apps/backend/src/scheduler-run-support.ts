@@ -98,7 +98,7 @@ export function buildRunDiagnostics(result: {
         retryCount: number
         decisionUnderDegradedContext: boolean
     }
-} & Pick<AgentRunResult, "toolManifest">, systemContextDigest?: RunSystemContextDigest): RunDiagnostics | undefined {
+} & Pick<AgentRunResult, "toolCallCount" | "toolManifest">, systemContextDigest?: RunSystemContextDigest): RunDiagnostics | undefined {
     const diagnostics: RunDiagnostics = {}
 
     diagnostics.promptTokens = result.usage.promptTokens
@@ -131,6 +131,7 @@ export function buildRunDiagnostics(result: {
     diagnostics.opportunityFilled = result.opportunityCoverage.filled
     diagnostics.opportunityClosed = result.opportunityCoverage.closed
     diagnostics.opportunityRealizedPnl = result.opportunityCoverage.realizedPnl
+    diagnostics.toolCallCount = result.toolCallCount
 
     if (result.degradedResearch) {
         diagnostics.degradedResearch = result.degradedResearch.active

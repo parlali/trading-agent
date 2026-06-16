@@ -459,6 +459,7 @@ function buildLlmDiagnostics(run: Record<string, unknown>): LlmDiagnosticsDispla
     addDiagnosticField(fields, "Completion Tokens", readNumberLabel(run.completionTokens))
     addDiagnosticField(fields, "Reasoning Tokens", readNumberLabel(run.reasoningTokens))
     addDiagnosticField(fields, "Cost", readCostLabel(run.llmCost))
+    addDiagnosticField(fields, "Tool Calls", readNumberLabel(run.toolCallCount))
     addDiagnosticField(fields, "Codex Thread", readString(run.codexThreadId))
     addDiagnosticField(fields, "Codex Turns", readStringArray(run.codexTurnIds).join(", "))
 
