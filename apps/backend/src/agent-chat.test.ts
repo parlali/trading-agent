@@ -32,6 +32,7 @@ import {
     listAgentChatTools,
 } from "./agent-chat-tools"
 import { writeCodexChatGptAuthFileSync } from "./codex-auth"
+import { healthState } from "./state"
 
 describe("agent chat handler", () => {
     it("rejects missing or invalid backend service tokens", async () => {
@@ -822,6 +823,72 @@ describe("agent chat handler", () => {
                 reason: undefined,
             },
         ])
+    })
+
+    it("reports Convex provider freshness over stale in-memory venue health", async () => {
+        const previousVenues = structuredClone(healthState.venues)
+        const backend = createBackendMock()
+        vi.mocked(backend.getPortfolioFreshness).mockResolvedValue([{
+            app: "polymarket",
+            accountId: "primary",
+            accountScope: "account",
+            providerStatus: "healthy",
+            driftDetected: false,
+            stale: false,
+            lastSyncedAt: 2,
+            lastVerifiedAt: 2,
+            pendingOrderCount: 0,
+            positionCount: 1,
+        }] as never)
+        healthState.venues = {
+            polymarket: {
+                validated: true,
+                providerStatus: "degraded",
+                driftDetected: true,
+                stale: false,
+                positionCount: 1,
+                pendingOrderCount: 0,
+                accounts: {
+                    primary: {
+                        validated: true,
+                        providerStatus: "degraded",
+                        driftDetected: true,
+                        stale: false,
+                        positionCount: 1,
+                        pendingOrderCount: 0,
+                    },
+                },
+            },
+        }
+
+        try {
+            const runtime = await buildAgentChatToolRuntime({
+                abortSignal: new AbortController().signal,
+                tradingBackend: backend,
+                secrets: {},
+                log: createLogger({ minLevel: "fatal" }),
+                discoverMcpInventory: async () => ({ inventory: [], diagnostics: [] }),
+            })
+            const healthTool = runtime.registry.get("get_provider_health")
+            const output = await healthTool?.handler({}) as {
+                backendHealth: {
+                    venues: {
+                        polymarket: {
+                            providerStatus?: string
+                            driftDetected?: boolean
+                            accounts?: Record<string, { providerStatus?: string; driftDetected?: boolean }>
+                        }
+                    }
+                }
+            }
+
+            expect(output.backendHealth.venues.polymarket.providerStatus).toBe("healthy")
+            expect(output.backendHealth.venues.polymarket.driftDetected).toBe(false)
+            expect(output.backendHealth.venues.polymarket.accounts?.primary?.providerStatus).toBe("healthy")
+            expect(output.backendHealth.venues.polymarket.accounts?.primary?.driftDetected).toBe(false)
+        } finally {
+            healthState.venues = previousVenues
+        }
     })
 
     it("uses backend MCP secrets for discovery and never exposes bearer tokens in inventory", async () => {

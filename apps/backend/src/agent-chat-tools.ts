@@ -18,6 +18,7 @@ import type {
 } from "@valiq-trading/core"
 import type {
     Id,
+    PortfolioFreshnessRow,
     StrategyMcpToolWhitelist,
     TradingBackendClient,
 } from "@valiq-trading/convex"
@@ -30,6 +31,10 @@ import {
     resolvedSecrets,
 } from "./state"
 import { createMcpTools } from "./plugins/shared"
+import type {
+    AccountHealthState,
+    VenueHealthState,
+} from "./types"
 
 export interface BuildAgentChatToolRuntimeArgs {
     abortSignal: AbortSignal
@@ -373,7 +378,7 @@ function createReadOnlyChatTools(
                         ready: healthState.ready,
                         startedAt: healthState.startedAt,
                         strategyCount: healthState.strategyCount,
-                        venues: healthState.venues,
+                        venues: mergeVenueHealthWithFreshness(freshness),
                         lastRunAt: healthState.lastRunAt,
                         lastRunStatus: healthState.lastRunStatus,
                         lastRunError: healthState.lastRunError,
@@ -415,6 +420,83 @@ function createReadOnlyChatTools(
             },
         }),
     ]
+}
+
+function mergeVenueHealthWithFreshness(
+    freshness: PortfolioFreshnessRow[]
+): Record<string, VenueHealthState> {
+    const venues = structuredClone(healthState.venues)
+
+    for (const row of freshness) {
+        const venue = venues[row.app] ?? {
+            validated: false,
+            accounts: {},
+        }
+        const accounts = {
+            ...(venue.accounts ?? {}),
+        }
+        const account = accounts[row.accountId] ?? {
+            validated: venue.validated,
+        }
+
+        accounts[row.accountId] = {
+            ...account,
+            lastSyncAt: row.lastSyncedAt,
+            lastVerifiedAt: row.lastVerifiedAt,
+            providerStatus: row.providerStatus,
+            stale: row.stale,
+            driftDetected: row.driftDetected,
+            positionCount: row.positionCount,
+            pendingOrderCount: row.pendingOrderCount,
+            lastSyncError: row.lastError,
+        }
+
+        venues[row.app] = {
+            ...venue,
+            accounts,
+            ...rollUpAccountFreshness(accounts),
+        }
+    }
+
+    return venues
+}
+
+function rollUpAccountFreshness(
+    accounts: Record<string, AccountHealthState>
+): Pick<
+    VenueHealthState,
+    "providerStatus" |
+    "stale" |
+    "driftDetected" |
+    "positionCount" |
+    "pendingOrderCount" |
+    "lastSyncError" |
+    "lastSyncAt" |
+    "lastVerifiedAt"
+> {
+    const values = Object.values(accounts)
+    const latestSync = maxDefined(values.map((account) => account.lastSyncAt))
+    const latestVerified = maxDefined(values.map((account) => account.lastVerifiedAt))
+
+    return {
+        providerStatus: values.some((account) => account.providerStatus === "stale")
+            ? "stale"
+            : values.some((account) => account.providerStatus === "degraded")
+                ? "degraded"
+                : "healthy",
+        stale: values.some((account) => account.stale === true),
+        driftDetected: values.some((account) => account.driftDetected === true),
+        positionCount: values.reduce((sum, account) => sum + (account.positionCount ?? 0), 0),
+        pendingOrderCount: values.reduce((sum, account) => sum + (account.pendingOrderCount ?? 0), 0),
+        lastSyncError: values.map((account) => account.lastSyncError).find((error) => error !== undefined),
+        lastSyncAt: latestSync,
+        lastVerifiedAt: latestVerified,
+    }
+}
+
+function maxDefined(values: Array<number | undefined>): number | undefined {
+    const finite = values.filter((value): value is number => value !== undefined && Number.isFinite(value))
+    return finite.length > 0 ? Math.max(...finite) : undefined
 }
 
 function createChatTool(config: {
