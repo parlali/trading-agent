@@ -6,6 +6,11 @@ import {
     type HttpMcpToolParseIssue,
     type ToolsCallResult,
 } from "./http-client"
+import {
+    appendDeduplicatedMcpTool,
+    createMcpToolDeduplicationState,
+    type McpToolDeduplicationState,
+} from "./http-tool-duplicates"
 import { readMcpSafetyBlock } from "./http-tool-schema"
 import { sanitizeMcpError } from "./mcp-error-sanitizer"
 import type {
@@ -38,7 +43,7 @@ export async function discoverProviderRemoteTools(args: {
     diagnostics: McpToolDiagnostic[]
 }): Promise<DiscoveredRemoteTool[]> {
     const discoveredTools: DiscoveredRemoteTool[] = []
-    const seenToolNames = new Set<string>()
+    const deduplicationState = createMcpToolDeduplicationState<DiscoveredRemoteTool>()
     const topLevelResult = await args.client.listToolsDetailed({
         signal: args.signal,
         maxTools: args.maxTools,
@@ -52,10 +57,10 @@ export async function discoverProviderRemoteTools(args: {
         diagnostics: args.diagnostics,
     })
     appendDiscoveredTools({
-        providerId: args.provider.id,
+        provider: args.provider,
         tools: topLevelTools.map((tool) => ({ tool, source: "tools/list" as const })),
         discoveredTools,
-        seenToolNames,
+        deduplicationState,
         diagnostics: args.diagnostics,
         maxTools: args.maxTools,
     })
@@ -73,10 +78,10 @@ export async function discoverProviderRemoteTools(args: {
             diagnostics: args.diagnostics,
         })
         appendDiscoveredTools({
-            providerId: args.provider.id,
+            provider: args.provider,
             tools: discoveredByMethod.tools.map((tool) => ({ tool, source: "tools/discover" as const })),
             discoveredTools,
-            seenToolNames,
+            deduplicationState,
             diagnostics: args.diagnostics,
             maxTools: args.maxTools,
         })
@@ -91,45 +96,29 @@ export async function discoverProviderRemoteTools(args: {
         ...args,
         topLevelTools,
         discoveredTools,
-        seenToolNames,
+        deduplicationState,
     })
 
     return discoveredTools
 }
 
 function appendDiscoveredTools(args: {
-    providerId: string
+    provider: HttpMcpProviderConfig
     tools: DiscoveredRemoteTool[]
     discoveredTools: DiscoveredRemoteTool[]
-    seenToolNames: Set<string>
+    deduplicationState: McpToolDeduplicationState<DiscoveredRemoteTool>
     diagnostics: McpToolDiagnostic[]
     maxTools: number
 }): void {
     for (const discoveredTool of args.tools) {
-        if (args.seenToolNames.has(discoveredTool.tool.name)) {
-            args.diagnostics.push({
-                providerId: args.providerId,
-                upstreamToolName: discoveredTool.tool.name,
-                source: discoveredTool.source,
-                reason: "duplicate_upstream_tool",
-                message: "MCP tool skipped because the provider discovered the same upstream tool name more than once",
-            })
-            continue
-        }
-
-        if (args.discoveredTools.length >= args.maxTools) {
-            args.diagnostics.push({
-                providerId: args.providerId,
-                upstreamToolName: discoveredTool.tool.name,
-                source: discoveredTool.source,
-                reason: "discovery_limit_exceeded",
-                message: "MCP tool skipped because provider discovery exceeded the configured maxTools limit",
-            })
-            continue
-        }
-
-        args.seenToolNames.add(discoveredTool.tool.name)
-        args.discoveredTools.push(discoveredTool)
+        appendDeduplicatedMcpTool({
+            provider: args.provider,
+            entry: discoveredTool,
+            entries: args.discoveredTools,
+            state: args.deduplicationState,
+            diagnostics: args.diagnostics,
+            maxTools: args.maxTools,
+        })
     }
 }
 
@@ -142,7 +131,7 @@ async function discoverConfiguredNestedTools(args: {
     diagnostics: McpToolDiagnostic[]
     topLevelTools: HttpMcpTool[]
     discoveredTools: DiscoveredRemoteTool[]
-    seenToolNames: Set<string>
+    deduplicationState: McpToolDeduplicationState<DiscoveredRemoteTool>
 }): Promise<void> {
     const configuredDiscoveryTools = resolveNestedDiscoveryToolConfigs(args.provider, args.topLevelTools)
     let discoveryCalls = 0
@@ -207,13 +196,13 @@ async function discoverConfiguredNestedTools(args: {
                     diagnostics: args.diagnostics,
                 })
                 appendDiscoveredTools({
-                    providerId: args.provider.id,
+                    provider: args.provider,
                     tools: nested.tools.map((tool) => ({
                         tool,
                         source: "tool_search" as const,
                     })),
                     discoveredTools: args.discoveredTools,
-                    seenToolNames: args.seenToolNames,
+                    deduplicationState: args.deduplicationState,
                     diagnostics: args.diagnostics,
                     maxTools: args.maxTools,
                 })
@@ -229,10 +218,10 @@ async function discoverConfiguredNestedTools(args: {
                     diagnostics: args.diagnostics,
                 })
                 appendDiscoveredTools({
-                    providerId: args.provider.id,
+                    provider: args.provider,
                     tools: refreshed.tools.map((tool) => ({ tool, source: "tool_search" as const })),
                     discoveredTools: args.discoveredTools,
-                    seenToolNames: args.seenToolNames,
+                    deduplicationState: args.deduplicationState,
                     diagnostics: args.diagnostics,
                     maxTools: args.maxTools,
                 })
