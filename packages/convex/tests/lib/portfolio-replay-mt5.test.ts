@@ -406,4 +406,204 @@ describe("Convex MT5 provider close replay", () => {
         expect(resolveCloseOrderRealizedPnl(retiredSyntheticAfterRerun as never)).toBeUndefined()
     })
 
+    it("clears inferred MT5 entry-fill accounting faults only after a clean provider money audit", async () => {
+        process.env.BACKEND_SERVICE_TOKEN = "test-token"
+        const strategyId = "strategy-mt5-us30"
+        const runId = "run-mt5-us30"
+        const openedAt = 1_779_900_000_000
+        const db = new FakeDb({
+            strategies: [{
+                _id: strategyId,
+                app: "mt5",
+                accountId,
+                name: "MT5 US30",
+                policy: { dryRun: false },
+            }],
+            strategy_runs: [{
+                _id: runId,
+                strategyId,
+                app: "mt5",
+                accountId,
+                status: "completed",
+                startedAt: openedAt,
+                endedAt: openedAt + 30_000,
+            }],
+            instrument_claims: [],
+            orders: [{
+                _id: "order-us30-inferred-entry",
+                orderId: "vmte01yfzuleedki",
+                canonicalOrderId: "vmte01yfzuleedki",
+                providerOrderId: "1710222012",
+                providerClientOrderId: "vmte01yfzuleedki",
+                providerOrderAliases: [],
+                runId,
+                strategyId,
+                app: "mt5",
+                accountId,
+                venue: "mt5",
+                instrument: "US30",
+                status: "filled",
+                action: "entry",
+                quantity: 0.1,
+                filledQuantity: 0.1,
+                remainingQuantity: 0,
+                avgFillPrice: 52064.1,
+                submittedAt: openedAt,
+                updatedAt: openedAt + 1_000,
+                intent: {
+                    instrument: "US30",
+                    limitPrice: 52060,
+                    metadata: {
+                        providerReconciliationInferredFill: true,
+                        providerAccountingBackfillMissing: true,
+                    },
+                    side: "sell",
+                    quantity: 0.1,
+                    orderType: "limit",
+                },
+                lastTransitionSequence: 1,
+                polling: {
+                    pollIntervalMs: 0,
+                    timeoutMs: 0,
+                    startedAt: openedAt,
+                    lastCheckedAt: openedAt + 1_000,
+                },
+            }],
+            provider_positions: [],
+            provider_working_orders: [],
+            provider_sync_state: [],
+            position_syncs: [],
+            positions: [],
+            execution_safety_faults: [
+                {
+                    _id: "fault-inferred-entry-fill",
+                    strategyId,
+                    app: "mt5",
+                    accountId,
+                    instrument: "US30",
+                    category: "accounting_mismatch",
+                    message: "Provider reconciliation inferred a filled entry order without provider accounting metadata",
+                    providerPayload: JSON.stringify({
+                        orderId: "vmte01yfzuleedki",
+                        providerOrderId: "1710222012",
+                        action: "entry",
+                    }),
+                    canonicalOrderId: "vmte01yfzuleedki",
+                    providerOrderId: "1710222012",
+                    providerClientOrderId: "vmte01yfzuleedki",
+                    providerOrderAliases: [],
+                    runId,
+                    venue: "mt5",
+                    blocked: true,
+                    occurredAt: openedAt + 1_000,
+                    resolvedAt: undefined,
+                    resolutionNote: undefined,
+                },
+                {
+                    _id: "fault-account-money",
+                    strategyId,
+                    app: "mt5",
+                    accountId,
+                    instrument: "account",
+                    category: "accounting_mismatch",
+                    message: "Money-level reconciliation mismatch: mt5 equity delta 3.000000, attributed realized 0.000000, account events 0.000000, open PnL delta -0.430000, residual 3.430000, tolerance 1.000000",
+                    providerPayload: JSON.stringify({ residual: 3.43 }),
+                    blocked: true,
+                    occurredAt: openedAt + 1_000,
+                    resolvedAt: undefined,
+                    resolutionNote: undefined,
+                },
+                {
+                    _id: "fault-refresh-missing-accounting",
+                    strategyId,
+                    app: "mt5",
+                    accountId,
+                    instrument: "US30",
+                    category: "accounting_mismatch",
+                    message: "Provider reconciliation refreshed a filled working order without provider accounting metadata",
+                    providerPayload: JSON.stringify({
+                        orderId: "other-order",
+                        action: "entry",
+                    }),
+                    canonicalOrderId: "other-order",
+                    providerOrderId: "other-provider-order",
+                    blocked: true,
+                    occurredAt: openedAt + 1_000,
+                    resolvedAt: undefined,
+                    resolutionNote: undefined,
+                },
+            ],
+            account_snapshots: [{
+                _id: "snapshot-mt5-clean-baseline",
+                app: "mt5",
+                accountId,
+                venue: "mt5",
+                balance: 1073.06,
+                equity: 1073.06,
+                buyingPower: 1073.06,
+                marginUsed: 0,
+                marginAvailable: 1073.06,
+                openPnl: 0,
+                dayPnl: 0,
+                timestamp: openedAt - 60_000,
+            }],
+            account_pnl_events: [],
+            control_plane_metrics: [],
+            alerts: [],
+        })
+        const ctx = { db } as never
+
+        await callRegistered(reconcileProviderPortfolio, ctx, {
+            serviceToken: "test-token",
+            app: "mt5",
+            accountId,
+            venue: "mt5",
+            source: "periodic_sync",
+            accountState: {
+                balance: 1073.06,
+                equity: 1073.06,
+                buyingPower: 1073.06,
+                marginUsed: 0,
+                marginAvailable: 1073.06,
+                openPnl: 0,
+                dayPnl: 0,
+            },
+            positions: [],
+            workingOrders: [],
+            positionClosures: [],
+            accountPnlEvents: [],
+        })
+
+        expect(db.rows.execution_safety_faults).toContainEqual(expect.objectContaining({
+            _id: "fault-inferred-entry-fill",
+            blocked: false,
+            resolvedAt: expect.any(Number),
+            resolutionNote: "Provider money-level reconciliation audit passed within tolerance after inferred entry fill accounting gap",
+        }))
+        expect(db.rows.execution_safety_faults).toContainEqual(expect.objectContaining({
+            _id: "fault-account-money",
+            blocked: false,
+            resolvedAt: expect.any(Number),
+            resolutionNote: "Provider money-level reconciliation audit passed within tolerance",
+        }))
+        expect(db.rows.execution_safety_faults).toContainEqual(expect.objectContaining({
+            _id: "fault-refresh-missing-accounting",
+            blocked: true,
+            resolvedAt: undefined,
+            resolutionNote: undefined,
+        }))
+        expect(db.rows.alerts).toEqual(expect.arrayContaining([
+            expect.objectContaining({
+                strategyId,
+                severity: "info",
+                message: "[execution-safety] Provider money-level reconciliation cleared 1 account fault(s) after a clean audit",
+            }),
+            expect.objectContaining({
+                strategyId,
+                severity: "info",
+                message: "[execution-safety] Provider money-level reconciliation cleared 1 inferred entry fill accounting fault(s) after a clean audit",
+            }),
+        ]))
+    })
+
 })

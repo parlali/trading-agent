@@ -9,6 +9,7 @@ import type { AccountPnlEventInput, PortfolioMutationCtx } from "./portfolioType
 type AccountSnapshotDoc = Doc<"account_snapshots">
 
 const MONEY_LEVEL_RECONCILIATION_FAULT_PREFIX = "Money-level reconciliation mismatch:"
+const INFERRED_ENTRY_FILL_ACCOUNTING_FAULT_MESSAGE = "Provider reconciliation inferred a filled entry order without provider accounting metadata"
 
 export async function reconcileAccountMoney(
     ctx: PortfolioMutationCtx,
@@ -299,17 +300,13 @@ async function resolveMoneyAuditMismatchFaults(
             q.eq("app", args.app).eq("accountId", args.accountId).eq("blocked", true)
         )
         .collect()
-    const openMoneyFaults = faults.filter((fault) =>
-        fault.resolvedAt === undefined &&
-        fault.category === "accounting_mismatch" &&
-        fault.instrument === "account" &&
-        fault.message.startsWith(MONEY_LEVEL_RECONCILIATION_FAULT_PREFIX)
-    )
-    if (openMoneyFaults.length === 0) {
+    const openMoneyFaults = faults.filter(isOpenMoneyAuditMismatchFault)
+    const openInferredFillFaults = faults.filter(isOpenInferredEntryFillAccountingFault)
+    if (openMoneyFaults.length === 0 && openInferredFillFaults.length === 0) {
         return
     }
 
-    const resolvedByStrategy = new Map<string, { strategyId: Doc<"strategies">["_id"]; count: number }>()
+    const resolvedMoneyFaultsByStrategy = new Map<string, { strategyId: Doc<"strategies">["_id"]; count: number }>()
     for (const fault of openMoneyFaults) {
         await ctx.db.patch(fault._id, {
             blocked: false,
@@ -317,15 +314,31 @@ async function resolveMoneyAuditMismatchFaults(
             resolutionNote: "Provider money-level reconciliation audit passed within tolerance",
         })
 
-        const entry = resolvedByStrategy.get(String(fault.strategyId)) ?? {
+        const entry = resolvedMoneyFaultsByStrategy.get(String(fault.strategyId)) ?? {
             strategyId: fault.strategyId,
             count: 0,
         }
         entry.count += 1
-        resolvedByStrategy.set(String(fault.strategyId), entry)
+        resolvedMoneyFaultsByStrategy.set(String(fault.strategyId), entry)
     }
 
-    for (const entry of resolvedByStrategy.values()) {
+    const resolvedInferredFillFaultsByStrategy = new Map<string, { strategyId: Doc<"strategies">["_id"]; count: number }>()
+    for (const fault of openInferredFillFaults) {
+        await ctx.db.patch(fault._id, {
+            blocked: false,
+            resolvedAt: args.updatedAt,
+            resolutionNote: "Provider money-level reconciliation audit passed within tolerance after inferred entry fill accounting gap",
+        })
+
+        const entry = resolvedInferredFillFaultsByStrategy.get(String(fault.strategyId)) ?? {
+            strategyId: fault.strategyId,
+            count: 0,
+        }
+        entry.count += 1
+        resolvedInferredFillFaultsByStrategy.set(String(fault.strategyId), entry)
+    }
+
+    for (const entry of resolvedMoneyFaultsByStrategy.values()) {
         await ctx.db.insert("alerts", {
             strategyId: entry.strategyId,
             app: args.app,
@@ -335,6 +348,30 @@ async function resolveMoneyAuditMismatchFaults(
             timestamp: args.updatedAt,
         })
     }
+
+    for (const entry of resolvedInferredFillFaultsByStrategy.values()) {
+        await ctx.db.insert("alerts", {
+            strategyId: entry.strategyId,
+            app: args.app,
+            severity: "info",
+            message: `[execution-safety] Provider money-level reconciliation cleared ${entry.count} inferred entry fill accounting fault(s) after a clean audit`,
+            acknowledged: false,
+            timestamp: args.updatedAt,
+        })
+    }
+}
+
+function isOpenMoneyAuditMismatchFault(fault: Doc<"execution_safety_faults">): boolean {
+    return fault.resolvedAt === undefined &&
+        fault.category === "accounting_mismatch" &&
+        fault.instrument === "account" &&
+        fault.message.startsWith(MONEY_LEVEL_RECONCILIATION_FAULT_PREFIX)
+}
+
+function isOpenInferredEntryFillAccountingFault(fault: Doc<"execution_safety_faults">): boolean {
+    return fault.resolvedAt === undefined &&
+        fault.category === "accounting_mismatch" &&
+        fault.message === INFERRED_ENTRY_FILL_ACCOUNTING_FAULT_MESSAGE
 }
 
 async function recordMoneyAuditMismatchFaults(
