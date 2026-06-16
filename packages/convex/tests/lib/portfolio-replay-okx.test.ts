@@ -1017,6 +1017,31 @@ describe("Convex OKX net-mode closure replay", () => {
             blocked: true,
             message: expect.stringContaining("Money-level reconciliation mismatch"),
         }))
+
+        await callRegistered(reconcileProviderPortfolio, ctx, {
+            ...buildReconcileArgs([]),
+            accountState: {
+                balance: 9_998.77,
+                equity: 9_998.77,
+                buyingPower: 9_998.77,
+                marginUsed: 0,
+                marginAvailable: 9_998.77,
+                openPnl: 0,
+                dayPnl: -1.23,
+            },
+            accountPnlEvents: [],
+        })
+
+        expect(db.rows.execution_safety_faults).toContainEqual(expect.objectContaining({
+            strategyId: "strategy-okx-a",
+            app: "okx-swap",
+            accountId,
+            instrument: "account",
+            category: "accounting_mismatch",
+            blocked: false,
+            resolvedAt: expect.any(Number),
+            resolutionNote: "Provider money-level reconciliation audit passed within tolerance",
+        }))
     })
 
     it("excludes account PnL events outside the snapshot window from money-level reconciliation", async () => {

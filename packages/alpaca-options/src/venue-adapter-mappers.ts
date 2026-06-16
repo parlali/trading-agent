@@ -58,8 +58,6 @@ export function mapWorkingOrder(order: Awaited<ReturnType<AlpacaClient["getOpenO
             legs: order.legs,
             ...(filledQuantity > 0 ? {
                 providerAccountingSource: "alpaca_order",
-                providerAccountingMissing: true,
-                providerAccountingMissingReason: "alpaca_working_order_fill_requires_account_activity_fee_reconciliation",
                 providerOrderId: order.id,
             } : {}),
         },

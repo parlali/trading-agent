@@ -248,7 +248,7 @@ describe("AlpacaOptionsVenueAdapter", () => {
         expect(orders[0]?.status).toBe("pending")
     })
 
-    it("marks filled Alpaca working orders as missing provider accounting until activities reconcile fees", async () => {
+    it("records filled Alpaca working orders as provider order accounting", async () => {
         const client = createClientMock()
         client.getOpenOrders.mockResolvedValueOnce([{
             id: "order-partial",
@@ -270,10 +270,9 @@ describe("AlpacaOptionsVenueAdapter", () => {
 
         expect(orders[0]?.metadata).toMatchObject({
             providerAccountingSource: "alpaca_order",
-            providerAccountingMissing: true,
-            providerAccountingMissingReason: "alpaca_working_order_fill_requires_account_activity_fee_reconciliation",
             providerOrderId: "order-partial",
         })
+        expect(orders[0]?.metadata?.providerAccountingMissing).toBeUndefined()
     })
 
     it("fails closed when an Alpaca working order has neither legs nor option symbol", async () => {

@@ -79,8 +79,6 @@ export function mapOrderResponse(order: AlpacaOrderResponse): ExecutionResult {
 function buildAlpacaOrderAccountingMetadata(order: AlpacaOrderResponse): Record<string, unknown> {
     return {
         providerAccountingSource: "alpaca_order",
-        providerAccountingMissing: true,
-        providerAccountingMissingReason: "alpaca_order_fill_requires_account_activity_fee_reconciliation",
         providerOrderId: order.id,
         providerClientOrderId: order.client_order_id,
     }

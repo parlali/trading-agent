@@ -8,6 +8,8 @@ import type { AccountPnlEventInput, PortfolioMutationCtx } from "./portfolioType
 
 type AccountSnapshotDoc = Doc<"account_snapshots">
 
+const MONEY_LEVEL_RECONCILIATION_FAULT_PREFIX = "Money-level reconciliation mismatch:"
+
 export async function reconcileAccountMoney(
     ctx: PortfolioMutationCtx,
     args: {
@@ -241,6 +243,11 @@ async function runMoneyLevelReconciliationAudit(
     const tolerance = Math.max(1, Math.abs(currentEquity) * 0.0001)
 
     if (Math.abs(residual) <= tolerance) {
+        await resolveMoneyAuditMismatchFaults(ctx, {
+            app: args.app,
+            accountId: args.accountId,
+            updatedAt: args.updatedAt,
+        })
         return []
     }
 
@@ -276,6 +283,58 @@ async function runMoneyLevelReconciliationAudit(
     })
 
     return [message]
+}
+
+async function resolveMoneyAuditMismatchFaults(
+    ctx: PortfolioMutationCtx,
+    args: {
+        app: Doc<"strategies">["app"]
+        accountId: string
+        updatedAt: number
+    }
+): Promise<void> {
+    const faults = await ctx.db
+        .query("execution_safety_faults")
+        .withIndex("by_app_account_blocked", (q) =>
+            q.eq("app", args.app).eq("accountId", args.accountId).eq("blocked", true)
+        )
+        .collect()
+    const openMoneyFaults = faults.filter((fault) =>
+        fault.resolvedAt === undefined &&
+        fault.category === "accounting_mismatch" &&
+        fault.instrument === "account" &&
+        fault.message.startsWith(MONEY_LEVEL_RECONCILIATION_FAULT_PREFIX)
+    )
+    if (openMoneyFaults.length === 0) {
+        return
+    }
+
+    const resolvedByStrategy = new Map<string, { strategyId: Doc<"strategies">["_id"]; count: number }>()
+    for (const fault of openMoneyFaults) {
+        await ctx.db.patch(fault._id, {
+            blocked: false,
+            resolvedAt: args.updatedAt,
+            resolutionNote: "Provider money-level reconciliation audit passed within tolerance",
+        })
+
+        const entry = resolvedByStrategy.get(String(fault.strategyId)) ?? {
+            strategyId: fault.strategyId,
+            count: 0,
+        }
+        entry.count += 1
+        resolvedByStrategy.set(String(fault.strategyId), entry)
+    }
+
+    for (const entry of resolvedByStrategy.values()) {
+        await ctx.db.insert("alerts", {
+            strategyId: entry.strategyId,
+            app: args.app,
+            severity: "info",
+            message: `[execution-safety] Provider money-level reconciliation cleared ${entry.count} account fault(s) after a clean audit`,
+            acknowledged: false,
+            timestamp: args.updatedAt,
+        })
+    }
 }
 
 async function recordMoneyAuditMismatchFaults(

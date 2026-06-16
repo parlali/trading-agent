@@ -249,7 +249,7 @@ describe("AlpacaClient multileg signed limit prices", () => {
         expect(replaceResult.intentUpdates?.limitPrice).toBe(1.1)
     })
 
-    it("marks filled Alpaca order results as requiring account-activity accounting reconciliation", async () => {
+    it("records filled Alpaca order results as provider order accounting", async () => {
         fetchMock.mockResolvedValue(createJsonResponse({
             ...createEntryOrderResponse(),
             status: "filled",
@@ -262,10 +262,9 @@ describe("AlpacaClient multileg signed limit prices", () => {
         expect(result.status).toBe("filled")
         expect(result.intentUpdates?.metadata).toMatchObject({
             providerAccountingSource: "alpaca_order",
-            providerAccountingMissing: true,
-            providerAccountingMissingReason: "alpaca_order_fill_requires_account_activity_fee_reconciliation",
             providerOrderId: "order-entry-1",
         })
+        expect(result.intentUpdates?.metadata?.providerAccountingMissing).toBeUndefined()
     })
 
     it("retrieves account activities by type with bounded page parameters", async () => {
