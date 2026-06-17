@@ -618,6 +618,69 @@ describe("OKXVenueAdapter account snapshot semantics", () => {
         })
     })
 
+    it("enriches triggered OKX protection close identity from the actual child order", async () => {
+        const client = withOKXAccountingDefaults({
+            getFillsHistory: vi.fn().mockResolvedValue([
+                {
+                    instId: "BTC-USDT-SWAP",
+                    tradeId: "trade-protection-child",
+                    ordId: "triggered-child-2",
+                    clOrdId: "Otriggeredchild2",
+                    side: "buy",
+                    posSide: "net",
+                    fillSz: "5.24",
+                    fillPx: "65755.1",
+                    fillPnl: "7.06876",
+                    fee: "-8.6139181",
+                    feeCcy: "USDT",
+                    ts: "1777279260000",
+                },
+            ]),
+            getAlgoOrdersHistory: vi.fn().mockResolvedValue([]),
+            getOrder: vi.fn().mockResolvedValue({
+                instId: "BTC-USDT-SWAP",
+                ordId: "triggered-child-2",
+                clOrdId: "Otriggeredchild2",
+                algoId: "algo-parent-2",
+                algoClOrdId: "vokt01bbbbbbbbbb",
+                state: "filled",
+                ordType: "market",
+                side: "buy",
+                sz: "5.24",
+                accFillSz: "5.24",
+                px: "",
+                avgPx: "65755.1",
+            }),
+            getInstruments: vi.fn().mockResolvedValue([
+                createSwapInstrument("BTC-USDT-SWAP", "0.01", "BTC"),
+            ]),
+        })
+        const adapter = new OKXVenueAdapter(client as never, {
+            marginMode: "cross",
+            positionMode: "net_mode",
+        })
+
+        const closures = await adapter.getRecentPositionClosures()
+
+        expect(client.getOrder).toHaveBeenCalledWith("BTC-USDT-SWAP", "triggered-child-2")
+        expect(closures[0]?.metadata).toMatchObject({
+            orderId: "triggered-child-2",
+            clientOrderId: "Otriggeredchild2",
+            triggeredOrderId: "triggered-child-2",
+            algoId: "algo-parent-2",
+            algoClOrdId: "vokt01bbbbbbbbbb",
+            actualOrdId: "triggered-child-2",
+            providerOrderAliases: expect.arrayContaining([
+                "triggered-child-2",
+                "Otriggeredchild2",
+                "algo-parent-2",
+                "vokt01bbbbbbbbbb",
+            ]),
+            fillPnl: 7.06876,
+            fee: -8.6139181,
+        })
+    })
+
     it("ingests OKX funding bills as account PnL events", async () => {
         const client = withOKXAccountingDefaults({
             getAccountBills: vi.fn().mockResolvedValue([

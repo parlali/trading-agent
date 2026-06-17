@@ -230,7 +230,50 @@ describe("Convex OKX net-mode closure replay", () => {
             provider_sync_state: [],
             position_syncs: [],
             positions: [],
-            execution_safety_faults: [],
+            execution_safety_faults: [{
+                _id: "fault-inferred-close",
+                strategyId,
+                app: "okx-swap",
+                accountId,
+                instrument: "ETH-USDT-SWAP",
+                category: "accounting_mismatch",
+                message: "Provider reconciliation inferred a filled close order without provider accounting metadata",
+                canonicalOrderId: closeOrderId,
+                providerOrderId: "algo:ETH-USDT-SWAP:algo-parent-1",
+                blocked: true,
+                occurredAt: closedAt,
+            }, {
+                _id: "fault-unattributed-close",
+                strategyId,
+                app: "okx-swap",
+                accountId,
+                instrument: "ETH-USDT-SWAP",
+                category: "unattributed_closure",
+                message: "Provider reconciliation found an unattributed money-bearing close: ETH-USDT-SWAP:short:2:2026-06-04T20:01:40.000Z (broker close has provider accounting but no canonical order or owned position candidate)",
+                providerPayload: JSON.stringify({
+                    closure: {
+                        instrument: "ETH-USDT-SWAP",
+                        side: "short",
+                        quantity: 2,
+                        fillPrice: 1877.49,
+                        closedAt,
+                        metadata: JSON.stringify({
+                            orderId: "triggered-child-1",
+                            triggeredOrderId: "triggered-child-1",
+                            algoId: "algo-parent-1",
+                            algoClOrdId: closeOrderId,
+                            actualOrdId: "triggered-child-1",
+                            providerOrderAliases: ["triggered-child-1", "algo-parent-1", closeOrderId],
+                            fillPnl: 12.5,
+                            fee: -0.25,
+                            feeCcy: "USDT",
+                            source: "okx_fills_history",
+                        }),
+                    },
+                }),
+                blocked: true,
+                occurredAt: closedAt,
+            }],
             account_snapshots: [],
             account_pnl_events: [],
             control_plane_metrics: [],
@@ -288,6 +331,18 @@ describe("Convex OKX net-mode closure replay", () => {
         })
         expect(resolveCloseOrderRealizedPnl(canonical as never)).toBeCloseTo(12.25)
         expect(orders.some((order) => String(order.orderId).startsWith("provider-close:"))).toBe(false)
+        expect(db.rows.execution_safety_faults ?? []).toEqual([
+            expect.objectContaining({
+                _id: "fault-inferred-close",
+                blocked: false,
+                resolutionNote: `Provider closure attached to canonical close order ${closeOrderId}`,
+            }),
+            expect.objectContaining({
+                _id: "fault-unattributed-close",
+                blocked: false,
+                resolutionNote: `Provider closure attached to canonical close order ${closeOrderId}`,
+            }),
+        ])
     })
 
     it("records a blocking accounting fault when OKX working-order polling fills without provider accounting", async () => {

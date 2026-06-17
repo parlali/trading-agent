@@ -8,6 +8,7 @@ import { appendOrderTransition, patchOrderRowFromDoc, upsertOrderRow } from "./o
 import { parseJson, readMetadataRecord, readOrderIntentRecord } from "./portfolioUtils"
 import {
     buildProviderCloseOrderId,
+    buildPositionClosureKey,
     isRetiredProviderCloseOrder,
     isSyntheticProviderCloseOrder,
     orderBelongsToAccount,
@@ -18,6 +19,9 @@ import {
     resolveProviderCloseOrderProviderId,
     type ProviderClosePositionCandidate,
 } from "./portfolioCloseIdentity"
+
+const INFERRED_FILL_ACCOUNTING_FAULT_PREFIX = "Provider reconciliation inferred a filled"
+const UNATTRIBUTED_CLOSURE_FAULT_PREFIX = "Provider reconciliation found an unattributed money-bearing close:"
 
 export async function attachClosureToCanonicalCloseOrder(
     ctx: PortfolioMutationCtx,
@@ -59,6 +63,14 @@ export async function attachClosureToCanonicalCloseOrder(
         await attachProviderClosureToCanonicalCloseOrder(ctx, args)
     }
 
+    await resolveProviderClosureFaultsAfterCanonicalAttach(ctx, {
+        app: args.order.app ?? args.order.venue as Doc<"strategies">["app"],
+        accountId: args.order.accountId,
+        order: args.order,
+        closure: args.closure,
+        updatedAt: args.updatedAt,
+    })
+
     const app = args.order.app ?? args.order.venue as Doc<"strategies">["app"]
     const duplicateSynthetic = await resolveExistingProviderCloseOrder(ctx, {
         app,
@@ -78,6 +90,108 @@ export async function attachClosureToCanonicalCloseOrder(
             updatedAt: args.updatedAt,
         })
     }
+}
+
+async function resolveProviderClosureFaultsAfterCanonicalAttach(
+    ctx: PortfolioMutationCtx,
+    args: {
+        app: Doc<"strategies">["app"]
+        accountId: string
+        order: Doc<"orders">
+        closure: ProviderPositionClosureInput
+        updatedAt: number
+    }
+): Promise<void> {
+    const faults = await ctx.db
+        .query("execution_safety_faults")
+        .withIndex("by_app_account_blocked", (q) =>
+            q.eq("app", args.app).eq("accountId", args.accountId).eq("blocked", true)
+        )
+        .collect()
+
+    const resolvedByStrategy = new Map<string, { strategyId: Id<"strategies">; count: number }>()
+    const resolutionNote = `Provider closure attached to canonical close order ${args.order.orderId}`
+
+    for (const fault of faults) {
+        if (
+            fault.category === "accounting_mismatch" &&
+            fault.canonicalOrderId === args.order.orderId &&
+            fault.message.startsWith(INFERRED_FILL_ACCOUNTING_FAULT_PREFIX)
+        ) {
+            await resolveProviderClosureFault(ctx, {
+                fault,
+                updatedAt: args.updatedAt,
+                resolutionNote,
+                resolvedByStrategy,
+            })
+            continue
+        }
+
+        if (
+            fault.category === "unattributed_closure" &&
+            fault.instrument === args.closure.instrument &&
+            providerClosureFaultMatchesClosure(fault, args.closure)
+        ) {
+            await resolveProviderClosureFault(ctx, {
+                fault,
+                updatedAt: args.updatedAt,
+                resolutionNote,
+                resolvedByStrategy,
+            })
+        }
+    }
+
+    for (const resolved of resolvedByStrategy.values()) {
+        await ctx.db.insert("alerts", {
+            strategyId: resolved.strategyId,
+            app: args.app,
+            severity: "info",
+            message: `[execution-safety] Provider closure replay cleared ${resolved.count} fault(s) after attaching broker accounting to ${args.order.orderId}`,
+            acknowledged: false,
+            timestamp: args.updatedAt,
+        })
+    }
+}
+
+async function resolveProviderClosureFault(
+    ctx: PortfolioMutationCtx,
+    args: {
+        fault: Doc<"execution_safety_faults">
+        updatedAt: number
+        resolutionNote: string
+        resolvedByStrategy: Map<string, { strategyId: Id<"strategies">; count: number }>
+    }
+): Promise<void> {
+    await ctx.db.patch(args.fault._id, {
+        blocked: false,
+        resolvedAt: args.updatedAt,
+        resolutionNote: args.resolutionNote,
+    })
+
+    const entry = args.resolvedByStrategy.get(String(args.fault.strategyId)) ?? {
+        strategyId: args.fault.strategyId,
+        count: 0,
+    }
+    entry.count += 1
+    args.resolvedByStrategy.set(String(args.fault.strategyId), entry)
+}
+
+function providerClosureFaultMatchesClosure(
+    fault: Doc<"execution_safety_faults">,
+    closure: ProviderPositionClosureInput
+): boolean {
+    if (!fault.message.startsWith(UNATTRIBUTED_CLOSURE_FAULT_PREFIX)) {
+        return false
+    }
+
+    const payload = parseJson<{
+        closure?: ProviderPositionClosureInput
+    }>(fault.providerPayload)
+    if (!payload?.closure) {
+        return false
+    }
+
+    return buildPositionClosureKey(payload.closure) === buildPositionClosureKey(closure)
 }
 
 export async function importSyntheticProviderClose(

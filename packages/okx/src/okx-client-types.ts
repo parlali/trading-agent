@@ -100,6 +100,8 @@ export interface OKXOrder {
     instId: string
     ordId: string
     clOrdId?: string
+    algoId?: string
+    algoClOrdId?: string
     state: string
     ordType: string
     side: "buy" | "sell"

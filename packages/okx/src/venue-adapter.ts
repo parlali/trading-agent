@@ -501,13 +501,47 @@ export class OKXVenueAdapter implements VenueAdapter, PriceVerifier {
             getRecentOKXFills(this.client, begin),
             getRecentOKXAlgoOrders(this.client, begin),
         ])
-        return await mapOKXRecentPositionClosures({
+        const closures = await mapOKXRecentPositionClosures({
             fills,
             algoOrders,
             getInstrumentRules: (instId) => this.getInstrumentRules(instId),
             contractsToBaseQuantity: (rules, contracts) =>
                 this.contractsToBaseQuantity(rules, contracts),
         })
+
+        return await this.attachTriggeredCloseOrderIdentity(closures)
+    }
+
+    private async attachTriggeredCloseOrderIdentity(
+        closures: ProviderPositionClosure[]
+    ): Promise<ProviderPositionClosure[]> {
+        const getOrder = (this.client as { getOrder?: OKXClient["getOrder"] }).getOrder
+        if (typeof getOrder !== "function") {
+            return closures
+        }
+
+        return await Promise.all(closures.map(async (closure) => {
+            const orderId = readStringMetadata(closure.metadata, "orderId")
+            if (!orderId) {
+                return closure
+            }
+
+            try {
+                const order = await getOrder.call(this.client, closure.instrument, orderId)
+                return {
+                    ...closure,
+                    metadata: mergeTriggeredCloseOrderMetadata(closure.metadata, order),
+                }
+            } catch (error) {
+                return {
+                    ...closure,
+                    metadata: {
+                        ...closure.metadata,
+                        providerOrderLookupError: error instanceof Error ? error.message : String(error),
+                    },
+                }
+            }
+        }))
     }
 
     async getAccountPnlEvents(): Promise<AccountPnlEvent[]> {
@@ -923,6 +957,58 @@ export class OKXVenueAdapter implements VenueAdapter, PriceVerifier {
             contractsToBaseQuantity: (rules, contracts) =>
                 this.contractsToBaseQuantity(rules, contracts),
         })
+    }
+}
+
+function mergeTriggeredCloseOrderMetadata(
+    metadata: Record<string, unknown> | undefined,
+    order: OKXOrder
+): Record<string, unknown> {
+    const aliases = new Set<string>()
+
+    addStringAlias(aliases, readStringMetadata(metadata, "orderId"))
+    addStringAlias(aliases, readStringMetadata(metadata, "clientOrderId"))
+    addStringAlias(aliases, readStringMetadata(metadata, "triggeredOrderId"))
+    addStringAlias(aliases, readStringMetadata(metadata, "algoId"))
+    addStringAlias(aliases, readStringMetadata(metadata, "algoClOrdId"))
+    addStringAlias(aliases, readStringMetadata(metadata, "actualOrdId"))
+    addStringAlias(aliases, order.ordId)
+    addStringAlias(aliases, order.clOrdId)
+    addStringAlias(aliases, order.algoId)
+    addStringAlias(aliases, order.algoClOrdId)
+
+    const existingAliases = metadata?.providerOrderAliases
+    if (Array.isArray(existingAliases)) {
+        for (const alias of existingAliases) {
+            addStringAlias(aliases, alias)
+        }
+    }
+
+    return {
+        ...metadata,
+        orderId: readStringMetadata(metadata, "orderId") ?? order.ordId,
+        clientOrderId: readStringMetadata(metadata, "clientOrderId") ?? order.clOrdId,
+        triggeredOrderId: readStringMetadata(metadata, "triggeredOrderId") ?? order.ordId,
+        algoId: readStringMetadata(metadata, "algoId") ?? order.algoId,
+        algoClOrdId: readStringMetadata(metadata, "algoClOrdId") ?? order.algoClOrdId,
+        actualOrdId: readStringMetadata(metadata, "actualOrdId") ?? order.ordId,
+        providerOrderAliases: Array.from(aliases).sort((left, right) => left.localeCompare(right)),
+    }
+}
+
+function readStringMetadata(
+    metadata: Record<string, unknown> | undefined,
+    key: string
+): string | undefined {
+    const value = metadata?.[key]
+    return typeof value === "string" && value.trim()
+        ? value.trim()
+        : undefined
+}
+
+function addStringAlias(aliases: Set<string>, value: unknown): void {
+    if (typeof value === "string" && value.trim()) {
+        aliases.add(value.trim())
     }
 }
 
