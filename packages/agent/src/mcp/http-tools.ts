@@ -552,9 +552,9 @@ function readDiscoveredToolNames(result: ToolsCallResult): string[] {
     const names = new Set<string>()
     const structured = readRecord(result.structuredContent)
 
-    appendStringArray(names, structured?.newly_available_tools)
-    appendStringArray(names, structured?.already_available_tools)
-    appendStringArray(names, structured?.available_tools)
+    appendToolNameArray(names, structured?.newly_available_tools)
+    appendToolNameArray(names, structured?.already_available_tools)
+    appendToolNameArray(names, structured?.available_tools)
     appendToolNameArray(names, structured?.tools)
 
     for (const item of result.content ?? []) {
@@ -565,9 +565,9 @@ function readDiscoveredToolNames(result: ToolsCallResult): string[] {
         try {
             const parsed = JSON.parse(text) as unknown
             const record = readRecord(parsed)
-            appendStringArray(names, record?.newly_available_tools)
-            appendStringArray(names, record?.already_available_tools)
-            appendStringArray(names, record?.available_tools)
+            appendToolNameArray(names, record?.newly_available_tools)
+            appendToolNameArray(names, record?.already_available_tools)
+            appendToolNameArray(names, record?.available_tools)
             appendToolNameArray(names, record?.tools)
         } catch {
             continue

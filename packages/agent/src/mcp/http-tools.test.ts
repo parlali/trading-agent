@@ -1090,6 +1090,164 @@ describe("HTTP MCP tool bindings", () => {
         })
     })
 
+    it("dispatches tools returned as MCP objects in named discovery fields", async () => {
+        let discovered = false
+        const receivedToolCalls: Array<{ name: string, arguments: unknown }> = []
+        const marketStructureTool = {
+            name: "identify_market_structure",
+            description: "Identify market structure",
+            inputSchema: {
+                type: "object",
+                properties: {
+                    symbol: { type: "string" },
+                    timeframe: { type: "string" },
+                },
+                required: ["symbol", "timeframe"],
+            },
+            annotations: {
+                readOnlyHint: true,
+                destructiveHint: false,
+                idempotentHint: true,
+                openWorldHint: false,
+            },
+        }
+        const server = await startMcpServer(async (request, response) => {
+            const body = await readJsonBody(request)
+
+            if (body.method === "initialize") {
+                writeJsonRpc(response, body.id, {
+                    protocolVersion: "2025-03-26",
+                    capabilities: {},
+                    serverInfo: { name: "object-discovery-server", version: "1.0.0" },
+                })
+                return
+            }
+
+            if (body.method === "notifications/initialized") {
+                response.writeHead(202)
+                response.end()
+                return
+            }
+
+            if (body.method === "tools/list") {
+                writeJsonRpc(response, body.id, {
+                    tools: [
+                        {
+                            name: "discover_tools",
+                            description: "Discover provider tools",
+                            inputSchema: {
+                                type: "object",
+                                properties: {
+                                    category: { type: "string" },
+                                },
+                                required: ["category"],
+                            },
+                        },
+                        ...(discovered ? [marketStructureTool] : []),
+                    ],
+                })
+                return
+            }
+
+            if (body.method === "tools/call") {
+                const params = body.params as Record<string, unknown>
+                receivedToolCalls.push({
+                    name: String(params.name),
+                    arguments: params.arguments,
+                })
+
+                if (params.name === "discover_tools") {
+                    const input = params.arguments as Record<string, unknown> | undefined
+                    if (input?.category !== "technical_structure") {
+                        writeJsonRpc(response, body.id, {
+                            structuredContent: {
+                                error: "category required",
+                            },
+                            isError: true,
+                            content: [],
+                        })
+                        return
+                    }
+
+                    discovered = true
+                    writeJsonRpc(response, body.id, {
+                        structuredContent: {
+                            category: "technical_structure",
+                            discovered_count: 1,
+                            newly_available_tools: [marketStructureTool],
+                            already_available_tools: [],
+                            total_available_tools: 1,
+                        },
+                        content: [],
+                    })
+                    return
+                }
+
+                if (params.name === "identify_market_structure") {
+                    writeJsonRpc(response, body.id, {
+                        content: [{
+                            type: "text",
+                            text: "structure result",
+                        }],
+                    })
+                    return
+                }
+            }
+
+            writeJsonRpcError(response, body.id, -32601, "method not found")
+        })
+        servers.push(server)
+
+        const registry = new ToolRegistry()
+        const diagnostics: McpToolDiagnostic[] = []
+        const resolution = await createHttpMcpToolBindingResolution({
+            providers: [{
+                id: "macro",
+                url: server.url,
+                approvedTools: [
+                    { name: "discover_tools" },
+                ],
+            }],
+            logger: createLogger({ minLevel: "fatal" }),
+            dynamicToolRegistry: registry,
+            dynamicDiagnostics: diagnostics,
+        })
+
+        for (const binding of resolution.bindings) {
+            registry.register(binding)
+        }
+
+        expect(registry.has("mcp_macro_identify_market_structure")).toBe(false)
+
+        await registry.get("mcp_macro_discover_tools")?.handler({ category: "technical_structure" })
+
+        expect(registry.has("mcp_macro_identify_market_structure")).toBe(true)
+        expect(diagnostics.some((diagnostic) =>
+            diagnostic.upstreamToolName === "identify_market_structure" && diagnostic.reason === "not_whitelisted"
+        )).toBe(false)
+
+        const dispatched = await registry.get("mcp_macro_call_discovered_tool")?.handler({
+            toolName: "identify_market_structure",
+            arguments: {
+                symbol: "BNB-USDT-SWAP",
+                timeframe: "1h",
+            },
+        })
+        expect(dispatched).toMatchObject({
+            content: [{
+                type: "text",
+                text: "structure result",
+            }],
+        })
+        expect(receivedToolCalls).toContainEqual({
+            name: "identify_market_structure",
+            arguments: {
+                symbol: "BNB-USDT-SWAP",
+                timeframe: "1h",
+            },
+        })
+    })
+
     it("fails closed when an approved MCP tool schema hash changes", async () => {
         const server = await createSingleToolServer("search")
         servers.push(server)

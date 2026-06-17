@@ -336,14 +336,34 @@ function readMcpToolEntriesFromUnknown(value: unknown): unknown[] {
             : Array.isArray(record.items)
                 ? record.items
                 : []
+    const discoveryTools = [
+        ...readObjectToolEntries(record.newly_available_tools),
+        ...readObjectToolEntries(record.already_available_tools),
+        ...readObjectToolEntries(record.available_tools),
+    ]
 
-    return rawTools.map((entry) => {
-        if (entry && typeof entry === "object" && !Array.isArray(entry) && "tool" in entry) {
-            return (entry as Record<string, unknown>).tool
-        }
+    return [
+        ...rawTools,
+        ...discoveryTools,
+    ].map(unwrapToolEntry)
+}
 
-        return entry
-    })
+function readObjectToolEntries(value: unknown): unknown[] {
+    if (!Array.isArray(value)) {
+        return []
+    }
+
+    return value
+        .map(unwrapToolEntry)
+        .filter((entry) => entry && typeof entry === "object" && !Array.isArray(entry))
+}
+
+function unwrapToolEntry(entry: unknown): unknown {
+    if (entry && typeof entry === "object" && !Array.isArray(entry) && "tool" in entry) {
+        return (entry as Record<string, unknown>).tool
+    }
+
+    return entry
 }
 
 export function appendMcpToolParseIssueDiagnostics(args: {
