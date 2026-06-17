@@ -612,6 +612,23 @@ export const deleteOrphanedStrategyHistoryBatch = mutation({
             }
         }
 
+        const orphanProviderPositionHistory = await ctx.db.query("provider_position_history").order("asc").take(batchSize)
+        for (const position of orphanProviderPositionHistory) {
+            if (!position.strategyId || await strategyExists(position.strategyId)) {
+                continue
+            }
+
+            await ctx.db.delete(position._id)
+            deleted.providerPositions++
+        }
+
+        if (sumDeletedCounts(deleted) > 0) {
+            return {
+                ...deleted,
+                hasMore: true,
+            }
+        }
+
         const orphanProviderOrders = await ctx.db.query("provider_working_orders").order("asc").take(batchSize)
         for (const order of orphanProviderOrders) {
             const hasValidStrategy = !order.strategyId || await strategyExists(order.strategyId)

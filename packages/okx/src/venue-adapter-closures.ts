@@ -18,8 +18,8 @@ export async function mapOKXRecentPositionClosures(args: {
     getInstrumentRules: (instId: string) => Promise<OKXInstrumentRules>
     contractsToBaseQuantity: (rules: OKXInstrumentRules, contracts: number) => number
 }): Promise<ProviderPositionClosure[]> {
-    const grouped = groupClosingFills(args.fills)
     const algoOrderByTriggeredOrderId = buildAlgoOrderByTriggeredOrderId(args.algoOrders ?? [])
+    const grouped = groupClosingFills(args.fills, algoOrderByTriggeredOrderId)
     const closures: ProviderPositionClosure[] = []
 
     for (const group of grouped.values()) {
@@ -44,10 +44,13 @@ function buildAlgoOrderByTriggeredOrderId(algoOrders: OKXAlgoOrder[]): Map<strin
     return lookup
 }
 
-function groupClosingFills(fills: OKXFill[]): Map<string, OKXFill[]> {
+function groupClosingFills(
+    fills: OKXFill[],
+    algoOrderByTriggeredOrderId: Map<string, OKXAlgoOrder>
+): Map<string, OKXFill[]> {
     const grouped = new Map<string, OKXFill[]>()
 
-    for (const fill of fills.filter(isOKXClosingFill)) {
+    for (const fill of fills.filter((entry) => isOKXClosingFill(entry) || hasTriggeredProtectionCloseEvidence(entry, algoOrderByTriggeredOrderId))) {
         const key = `${fill.instId}:${fill.posSide ?? "net"}:${fill.ordId || fill.tradeId}:${resolveOKXClosurePositionSide(fill)}`
         const existing = grouped.get(key) ?? []
         existing.push(fill)
@@ -55,6 +58,25 @@ function groupClosingFills(fills: OKXFill[]): Map<string, OKXFill[]> {
     }
 
     return grouped
+}
+
+function hasTriggeredProtectionCloseEvidence(
+    fill: OKXFill,
+    algoOrderByTriggeredOrderId: Map<string, OKXAlgoOrder>
+): boolean {
+    if (
+        !isFiniteNumberString(fill.fillSz) ||
+        Number(fill.fillSz) <= 0 ||
+        !isFiniteNumberString(fill.fillPx) ||
+        !isFiniteNumberString(fill.ts)
+    ) {
+        return false
+    }
+
+    const order = fill.ordId ? algoOrderByTriggeredOrderId.get(fill.ordId) : undefined
+    return order !== undefined &&
+        order.instId === fill.instId &&
+        order.side === fill.side
 }
 
 async function mapClosureGroup(
@@ -83,6 +105,7 @@ async function mapClosureGroup(
     }, 0) / contracts
     const closedAt = Math.max(...group.map((fill) => Number(fill.ts)).filter(Number.isFinite))
     const feeCcy = resolveClosureFeeCurrency(group)
+    const providerPositionId = resolveClosureProviderPositionId(group)
     const algoOrder = first.ordId ? algoOrderByTriggeredOrderId.get(first.ordId) : undefined
     const algoMetadata = algoOrder
         ? {
@@ -102,6 +125,7 @@ async function mapClosureGroup(
 
     return {
         instrument: first.instId,
+        providerPositionId,
         side: resolveOKXClosurePositionSide(first) as Position["side"],
         quantity,
         fillPrice: weightedPrice,
@@ -109,16 +133,50 @@ async function mapClosureGroup(
         metadata: {
             orderId: first.ordId,
             clientOrderId: first.clOrdId || undefined,
+            providerPositionId,
+            providerPositionKey: providerPositionId ? `${first.instId}:${providerPositionId}` : undefined,
             ...algoMetadata,
             tradeIds: group.map((fill) => fill.tradeId).filter(Boolean),
             side: first.side,
             posSide: first.posSide,
+            posId: providerPositionId,
             fillPnl: sumOptionalNumberStrings(group.map((fill) => fill.fillPnl)),
             fee: sumOptionalNumberStrings(group.map((fill) => fill.fee)),
             feeCcy,
             source: "okx_fills_history",
         },
     }
+}
+
+function resolveClosureProviderPositionId(group: OKXFill[]): string | undefined {
+    const providerPositionIds = new Set<string>()
+
+    for (const fill of group) {
+        const posId = fill.posId?.trim()
+        if (posId) {
+            providerPositionIds.add(posId)
+        }
+    }
+
+    if (providerPositionIds.size === 0) {
+        return undefined
+    }
+
+    if (providerPositionIds.size > 1) {
+        const first = group[0]
+        throw createExecutionError("venue", `OKX close fill group ${first?.ordId ?? "unknown"} has mixed provider position ids: ${Array.from(providerPositionIds).join(", ")}`, {
+            code: "OKX_CLOSE_POSITION_ID_MIXED",
+            retryable: false,
+            details: {
+                instId: first?.instId,
+                ordId: first?.ordId,
+                tradeIds: group.map((fill) => fill.tradeId).filter(Boolean),
+                providerPositionIds: Array.from(providerPositionIds).sort((left, right) => left.localeCompare(right)),
+            },
+        })
+    }
+
+    return providerPositionIds.values().next().value
 }
 
 function resolveClosureFeeCurrency(group: OKXFill[]): string | undefined {

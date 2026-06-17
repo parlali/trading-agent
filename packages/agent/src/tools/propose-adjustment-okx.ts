@@ -1,6 +1,7 @@
 import { z } from "zod"
 import type { OKXVenueAdapter } from "@valiq-trading/okx"
 import {
+    buildProviderPositionKey,
     createExecutionErrorDetail,
     formatExecutionError,
     getErrorMessage,
@@ -20,6 +21,7 @@ import {
     type OKXProtectionFailureCategory,
 } from "./okx-order-helpers"
 import { assertToolNotAborted, createToolAbortError } from "../tool-registry"
+import { resolveOKXPositionTarget } from "./okx-position-target"
 
 export function createOKXProposeAdjustmentTool(
     pipeline: ExecutionPipeline,
@@ -41,17 +43,18 @@ export function createOKXProposeAdjustmentTool(
 
             assertToolNotAborted(context?.signal)
             const positions = await pipeline.getPositions()
-            const position = positions.find((entry) => entry.instrument.toUpperCase() === validated.instrument.toUpperCase())
-            if (!position) {
+            const target = resolveOKXPositionTarget(positions, validated, "adjustment")
+            if (!target.ok) {
                 return createRejectedExecutionToolResult(
-                    `No open position found for ${validated.instrument.toUpperCase()}`,
+                    target.message,
                     {
-                        code: "POSITION_NOT_FOUND",
+                        code: target.code,
                     }
                 )
             }
 
-            const instrument = validated.instrument.toUpperCase()
+            const instrument = target.instrument
+            const position = target.position
             const requestedStopLoss = validated.stopLoss !== undefined
                 ? await venue.normalizePrice(instrument, validated.stopLoss)
                 : undefined
@@ -125,6 +128,7 @@ export function createOKXProposeAdjustmentTool(
                 instrument,
                 stopLoss: finalStopLoss,
                 takeProfit: finalTakeProfit,
+                position,
                 identity: protectionContext.identity,
                 signal: context?.signal,
             })
@@ -142,10 +146,14 @@ export function createOKXProposeAdjustmentTool(
                     },
                     providerPayload: {
                         phase: "updateProtectionOrders",
+                        providerPositionKey: buildProviderPositionKey(position),
+                        providerPositionId: position.providerPositionId,
+                        positionSide: position.side,
                         intendedStopLoss: finalStopLoss,
                         intendedTakeProfit: finalTakeProfit,
                         updateError: protectionUpdate.errorDetail ?? protectionUpdate.message,
                     },
+                    targetPosition: position,
                     canonicalOrderId: protectionContext.identity.canonicalOrderId,
                     providerClientOrderId: protectionContext.identity.providerClientOrderId,
                     providerOrderAliases: protectionContext.identity.providerOrderAliases,
@@ -176,10 +184,14 @@ export function createOKXProposeAdjustmentTool(
                     },
                     providerPayload: {
                         phase: "verifyProtection",
+                        providerPositionKey: buildProviderPositionKey(position),
+                        providerPositionId: position.providerPositionId,
+                        positionSide: position.side,
                         intendedStopLoss: finalStopLoss,
                         intendedTakeProfit: finalTakeProfit,
                         verificationError: errorDetail ?? getErrorMessage(error),
                     },
+                    targetPosition: position,
                     canonicalOrderId: protectionContext.identity.canonicalOrderId,
                     providerClientOrderId: protectionContext.identity.providerClientOrderId,
                     providerOrderAliases: protectionContext.identity.providerOrderAliases,
@@ -189,7 +201,44 @@ export function createOKXProposeAdjustmentTool(
                 })
                 return createProtectionRejectedResult(failure.error, failure.category, failure.flattened)
             }
-            const refreshed = refreshedPositions.find((entry) => entry.instrument.toUpperCase() === instrument)
+            const refreshedTarget = resolveOKXPositionTarget(refreshedPositions, {
+                instrument,
+                providerPositionId: position.providerPositionId,
+                providerPositionKey: buildProviderPositionKey(position),
+                positionSide: position.side,
+            }, "adjustment")
+            if (!refreshedTarget.ok) {
+                const message = `Protection verification failed: ${refreshedTarget.message}`
+                const failure = await flattenOKXPositionAfterProtectionFailure({
+                    pipeline,
+                    instrument,
+                    protectionError: message,
+                    category: "position_not_found_yet",
+                    flattenReason: "Protection verification failed after adjustment; flattening to fail closed",
+                    callbacks: {
+                        recordFault: options?.onExecutionSafetyFault,
+                        resolveFaults: options?.onExecutionSafetyRecovered,
+                    },
+                    providerPayload: {
+                        phase: "verifyProtection",
+                        providerPositionKey: buildProviderPositionKey(position),
+                        providerPositionId: position.providerPositionId,
+                        positionSide: position.side,
+                        intendedStopLoss: finalStopLoss,
+                        intendedTakeProfit: finalTakeProfit,
+                        verificationError: refreshedTarget.message,
+                    },
+                    targetPosition: position,
+                    canonicalOrderId: protectionContext.identity.canonicalOrderId,
+                    providerClientOrderId: protectionContext.identity.providerClientOrderId,
+                    providerOrderAliases: protectionContext.identity.providerOrderAliases,
+                    submitAttemptId: protectionContext.identity.submitAttemptId,
+                    submitAttemptSequence: protectionContext.identity.submitAttemptSequence,
+                    venue: "okx-swap",
+                })
+                return createProtectionRejectedResult(failure.error, failure.category, failure.flattened)
+            }
+            const refreshed = refreshedTarget.position
             const stopLossVerified = priceMatches(refreshed?.stopLoss, finalStopLoss)
             const takeProfitVerified = finalTakeProfit === undefined
                 ? options?.requireTakeProfit !== true
@@ -213,11 +262,15 @@ export function createOKXProposeAdjustmentTool(
                     },
                     providerPayload: {
                         phase: "verifyProtection",
+                        providerPositionKey: buildProviderPositionKey(position),
+                        providerPositionId: position.providerPositionId,
+                        positionSide: position.side,
                         intendedStopLoss: finalStopLoss,
                         intendedTakeProfit: finalTakeProfit,
                         stopLoss: refreshed?.stopLoss,
                         takeProfit: refreshed?.takeProfit,
                     },
+                    targetPosition: position,
                     canonicalOrderId: protectionContext.identity.canonicalOrderId,
                     providerClientOrderId: protectionContext.identity.providerClientOrderId,
                     providerOrderAliases: protectionContext.identity.providerOrderAliases,
@@ -254,6 +307,7 @@ async function updateProtectionOrdersWithRetry(args: {
     instrument: string
     stopLoss?: number
     takeProfit?: number
+    position: Awaited<ReturnType<OKXVenueAdapter["getPositions"]>>[number]
     identity: Parameters<OKXVenueAdapter["updateProtectionOrders"]>[0]["identity"]
     signal?: AbortSignal
 }): Promise<
@@ -278,6 +332,7 @@ async function updateProtectionOrdersWithRetry(args: {
                 instrument: args.instrument,
                 stopLoss: args.stopLoss,
                 takeProfit: args.takeProfit,
+                position: args.position,
                 identity: args.identity,
             })
             assertToolNotAborted(args.signal)

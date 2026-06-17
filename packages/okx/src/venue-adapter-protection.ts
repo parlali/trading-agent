@@ -115,14 +115,14 @@ export async function updateOKXProtectionOrders(args: {
     takeProfit?: number
     marginMode: OKXMarginMode
     getPositions: () => Promise<Position[]>
+    position?: Position
     getInstrumentRules: (instId: string) => Promise<OKXInstrumentRules>
     baseQuantityToContracts: (rules: OKXInstrumentRules, quantity: number) => number
     normalizePrice: (price: number) => Promise<number>
     resolvePositionPosSide: (side: Position["side"]) => OKXApiPosSide
     identity: ExecutionIdentityContext
 }): Promise<{ cancelledOrderIds: string[]; createdOrderIds: string[] }> {
-    const positions = await args.getPositions()
-    const position = positions.find((entry) => entry.instrument === args.instrument)
+    const position = args.position ?? (await args.getPositions()).find((entry) => entry.instrument === args.instrument)
 
     if (!position) {
         throw createExecutionError("pre_validation", `No open OKX swap position found for ${args.instrument}`, {
@@ -130,6 +130,19 @@ export async function updateOKXProtectionOrders(args: {
             retryable: false,
             details: {
                 instrument: args.instrument,
+            },
+        })
+    }
+
+    if (position.instrument !== args.instrument) {
+        throw createExecutionError("pre_validation", `OKX protection target ${position.instrument} does not match requested instrument ${args.instrument}`, {
+            code: "POSITION_IDENTITY_MISMATCH",
+            retryable: false,
+            details: {
+                requestedInstrument: args.instrument,
+                targetInstrument: position.instrument,
+                providerPositionId: position.providerPositionId,
+                side: position.side,
             },
         })
     }

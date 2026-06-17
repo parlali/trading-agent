@@ -211,6 +211,21 @@ export async function deleteStrategyTableBatch(
         return true
     }
 
+    const providerPositionHistory = await ctx.db
+        .query("provider_position_history")
+        .withIndex("by_app_strategy", (q) =>
+            q.eq("app", app).eq("strategyId", strategyId)
+        )
+        .take(batchSize)
+
+    if (providerPositionHistory.length > 0) {
+        for (const position of providerPositionHistory) {
+            await ctx.db.delete(position._id)
+            deleted.providerPositions++
+        }
+        return true
+    }
+
     const providerWorkingOrders = await ctx.db
         .query("provider_working_orders")
         .withIndex("by_app_strategy", (q) =>
@@ -279,6 +294,21 @@ export async function deleteStrategyTableBatch(
 
     if (remainingProviderPositions.length > 0) {
         for (const position of remainingProviderPositions) {
+            await ctx.db.delete(position._id)
+            deleted.providerPositions++
+        }
+        return true
+    }
+
+    const remainingProviderPositionHistory = await ctx.db
+        .query("provider_position_history")
+        .withIndex("by_app_account", (q) =>
+            q.eq("app", app).eq("accountId", strategy.accountId)
+        )
+        .take(batchSize)
+
+    if (remainingProviderPositionHistory.length > 0) {
+        for (const position of remainingProviderPositionHistory) {
             await ctx.db.delete(position._id)
             deleted.providerPositions++
         }
@@ -521,6 +551,18 @@ export async function cascadeDeleteStrategy(
         providerPositions++
     }
 
+    const strategyProviderPositionHistory = await ctx.db
+        .query("provider_position_history")
+        .withIndex("by_app_strategy", (q) =>
+            q.eq("app", strategy.app).eq("strategyId", strategyId)
+        )
+        .collect()
+
+    for (const position of strategyProviderPositionHistory) {
+        await ctx.db.delete(position._id)
+        providerPositions++
+    }
+
     const strategyProviderWorkingOrders = await ctx.db
         .query("provider_working_orders")
         .withIndex("by_app_strategy", (q) =>
@@ -579,6 +621,18 @@ export async function cascadeDeleteStrategy(
             .collect()
 
         for (const position of remainingProviderPositions) {
+            await ctx.db.delete(position._id)
+            providerPositions++
+        }
+
+        const remainingProviderPositionHistory = await ctx.db
+            .query("provider_position_history")
+            .withIndex("by_app_account", (q) =>
+                q.eq("app", strategy.app).eq("accountId", strategy.accountId)
+            )
+            .collect()
+
+        for (const position of remainingProviderPositionHistory) {
             await ctx.db.delete(position._id)
             providerPositions++
         }

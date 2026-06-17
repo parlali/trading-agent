@@ -6,7 +6,10 @@ import type {
 } from "./portfolioTypes"
 
 type ProviderPositionRow = Omit<Doc<"provider_positions">, "_id" | "_creationTime">
+type ProviderPositionHistoryRow = Omit<Doc<"provider_position_history">, "_id" | "_creationTime">
 type ProviderWorkingOrderRow = Omit<Doc<"provider_working_orders">, "_id" | "_creationTime">
+
+const OKX_PROVIDER_POSITION_HISTORY_RETENTION_MS = 24 * 60 * 60 * 1000
 
 const PROVIDER_POSITION_COMPARE_FIELDS = [
     "providerPositionId",
@@ -65,7 +68,8 @@ export async function upsertProviderPositionRows(
     ctx: PortfolioMutationCtx,
     app: Doc<"strategies">["app"],
     accountId: string,
-    rows: ProviderPositionRow[]
+    rows: ProviderPositionRow[],
+    updatedAt: number
 ): Promise<ReconciliationWriteStats> {
     const existing = await ctx.db
         .query("provider_positions")
@@ -75,6 +79,9 @@ export async function upsertProviderPositionRows(
     const existingByKey = new Map(existing.map((row) => [row.positionKey, row]))
     const nextKeySet = new Set(rows.map((row) => row.positionKey))
     const stats = createWriteStats()
+    const retainedHistoryByKey = app === "okx-swap"
+        ? await pruneProviderPositionHistory(ctx, app, accountId, nextKeySet, updatedAt)
+        : new Map<string, Doc<"provider_position_history">>()
 
     for (const row of rows) {
         const current = existingByKey.get(row.positionKey)
@@ -99,11 +106,99 @@ export async function upsertProviderPositionRows(
             continue
         }
 
+        if (app === "okx-swap") {
+            await upsertDisappearedProviderPositionHistory(ctx, {
+                row,
+                current: retainedHistoryByKey.get(row.positionKey),
+                disappearedAt: updatedAt,
+            })
+        }
+
         await ctx.db.delete(row._id)
         stats.deleted++
     }
 
     return stats
+}
+
+async function pruneProviderPositionHistory(
+    ctx: PortfolioMutationCtx,
+    app: Doc<"strategies">["app"],
+    accountId: string,
+    livePositionKeys: Set<string>,
+    updatedAt: number
+): Promise<Map<string, Doc<"provider_position_history">>> {
+    const history = await ctx.db
+        .query("provider_position_history")
+        .withIndex("by_app_account", (q) => q.eq("app", app).eq("accountId", accountId))
+        .collect()
+    const retainedByKey = new Map<string, Doc<"provider_position_history">>()
+
+    for (const row of history) {
+        if (row.retainedUntil < updatedAt || livePositionKeys.has(row.positionKey)) {
+            await ctx.db.delete(row._id)
+            continue
+        }
+
+        retainedByKey.set(row.positionKey, row)
+    }
+
+    return retainedByKey
+}
+
+async function upsertDisappearedProviderPositionHistory(
+    ctx: PortfolioMutationCtx,
+    args: {
+        row: Doc<"provider_positions">
+        current?: Doc<"provider_position_history">
+        disappearedAt: number
+    }
+): Promise<void> {
+    if (!shouldRetainProviderPositionHistory(args.row)) {
+        return
+    }
+
+    const historyRow = buildProviderPositionHistoryRow(args.row, args.disappearedAt)
+    if (args.current) {
+        await ctx.db.patch(args.current._id, historyRow)
+        return
+    }
+
+    await ctx.db.insert("provider_position_history", historyRow)
+}
+
+function shouldRetainProviderPositionHistory(row: Doc<"provider_positions">): boolean {
+    return row.app === "okx-swap" &&
+        row.ownershipStatus === "owned" &&
+        row.expectedExternal !== true &&
+        row.strategyId !== undefined
+}
+
+function buildProviderPositionHistoryRow(
+    row: Doc<"provider_positions">,
+    disappearedAt: number
+): ProviderPositionHistoryRow {
+    return {
+        app: row.app,
+        accountId: row.accountId,
+        positionKey: row.positionKey,
+        providerPositionId: row.providerPositionId,
+        strategyId: row.strategyId,
+        ownershipStatus: row.ownershipStatus,
+        expectedExternal: row.expectedExternal,
+        instrument: row.instrument,
+        side: row.side,
+        quantity: row.quantity,
+        entryPrice: row.entryPrice,
+        currentPrice: row.currentPrice,
+        unrealizedPnl: row.unrealizedPnl,
+        stopLoss: row.stopLoss,
+        takeProfit: row.takeProfit,
+        metadata: row.metadata,
+        lastSeenAt: row.syncedAt,
+        disappearedAt,
+        retainedUntil: disappearedAt + OKX_PROVIDER_POSITION_HISTORY_RETENTION_MS,
+    }
 }
 
 export async function upsertProviderWorkingOrderRows(

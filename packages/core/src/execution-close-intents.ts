@@ -4,6 +4,7 @@ import {
     readNumber,
     readPositionSide,
 } from "./execution-metadata"
+import { buildProviderPositionKey } from "./provider-position-key"
 
 export function resolveCloseOrderSide(position?: Pick<Position, "side">): "buy" | "sell" {
     return position?.side === "long" ? "sell" : "buy"
@@ -31,6 +32,8 @@ export function buildClosePositionIntent(args: {
                 ...venueMetadata,
                 action: "close",
                 reason: args.reason,
+                providerPositionId: args.position?.providerPositionId,
+                providerPositionKey: args.position ? buildProviderPositionKey(args.position) : undefined,
                 entryPrice: args.position?.entryPrice ?? venueEntryPrice,
                 positionSide: args.position?.side ?? venuePositionSide,
                 estimatedPrice: args.options.estimatedPrice ?? venueEstimatedPrice,
@@ -49,6 +52,8 @@ export function buildClosePositionIntent(args: {
             ...args.options.metadata,
             action: "close",
             reason: args.reason,
+            providerPositionId: args.position?.providerPositionId,
+            providerPositionKey: args.position ? buildProviderPositionKey(args.position) : undefined,
             entryPrice: args.position?.entryPrice,
             positionSide: args.position?.side,
             estimatedPrice: args.options.estimatedPrice,
@@ -73,6 +78,7 @@ export function buildProviderPositionCloseIntent(args: {
             action: "close",
             reason: args.reason,
             providerPositionId: args.position.providerPositionId,
+            providerPositionKey: buildProviderPositionKey(args.position),
             entryPrice: args.position.entryPrice,
             positionSide: args.position.side,
             estimatedPrice: args.options.estimatedPrice ?? args.position.currentPrice ?? args.position.entryPrice,

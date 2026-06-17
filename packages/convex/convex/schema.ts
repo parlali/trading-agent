@@ -411,6 +411,26 @@ export default defineSchema({
         .index("by_app_account", ["app", "accountId"])
         .index("by_app_strategy", ["app", "strategyId"]),
 
+    provider_position_history: defineTable({
+        app: venueAppV,
+        accountId: v.string(),
+        positionKey: v.string(),
+        providerPositionId: v.optional(v.string()),
+        strategyId: v.optional(v.id("strategies")),
+        ownershipStatus: providerOwnershipStatusV,
+        expectedExternal: v.optional(v.boolean()),
+        ...positionValueFieldsV,
+        metadata: v.optional(v.string()),
+        lastSeenAt: v.number(),
+        disappearedAt: v.number(),
+        retainedUntil: v.number(),
+    })
+        .index("by_app", ["app"])
+        .index("by_account", ["accountId"])
+        .index("by_app_account", ["app", "accountId"])
+        .index("by_app_strategy", ["app", "strategyId"])
+        .index("by_app_account_retained_until", ["app", "accountId", "retainedUntil"]),
+
     provider_working_orders: defineTable({
         app: venueAppV,
         accountId: v.string(),

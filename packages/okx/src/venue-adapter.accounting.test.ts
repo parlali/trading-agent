@@ -408,7 +408,8 @@ describe("OKXVenueAdapter account snapshot semantics", () => {
         await expect(adapter.getRecentPositionClosures()).rejects.toThrow("mixed fee currencies")
     })
 
-    it("excludes net-mode opening fills that report zero fillPnl and keeps canonical client ids on closures", async () => {
+    it("excludes net-mode opening fills and preserves zero-PnL canonical close accounting", async () => {
+        const providerPositionId = "3618122936764637184"
         const client = withOKXAccountingDefaults({
             getFillsHistory: vi.fn().mockResolvedValue([
                 {
@@ -428,11 +429,14 @@ describe("OKXVenueAdapter account snapshot semantics", () => {
                     tradeId: "trade-net-close",
                     ordId: "ord-net-close",
                     clOrdId: "vokc01aaaaaaaaaa",
+                    posId: providerPositionId,
                     side: "buy",
                     posSide: "net",
                     fillSz: "2",
                     fillPx: "3380",
-                    fillPnl: "4",
+                    fillPnl: "0",
+                    fee: "-0.12",
+                    feeCcy: "USDT",
                     ts: "1777279260000",
                 },
             ]),
@@ -450,15 +454,63 @@ describe("OKXVenueAdapter account snapshot semantics", () => {
         expect(closures).toHaveLength(1)
         expect(closures[0]).toMatchObject({
             instrument: "ETH-USDT-SWAP",
+            providerPositionId,
             side: "short",
             quantity: 0.2,
             fillPrice: 3380,
             metadata: {
                 orderId: "ord-net-close",
                 clientOrderId: "vokc01aaaaaaaaaa",
-                fillPnl: 4,
+                providerPositionId,
+                providerPositionKey: `ETH-USDT-SWAP:${providerPositionId}`,
+                posId: providerPositionId,
+                fillPnl: 0,
+                fee: -0.12,
+                feeCcy: "USDT",
             },
         })
+    })
+
+    it("fails loud when one OKX close fill group has mixed provider position ids", async () => {
+        const client = withOKXAccountingDefaults({
+            getFillsHistory: vi.fn().mockResolvedValue([
+                {
+                    instId: "ETH-USDT-SWAP",
+                    tradeId: "trade-pos-a",
+                    ordId: "ord-net-close",
+                    clOrdId: "vokc01aaaaaaaaaa",
+                    posId: "pos-a",
+                    side: "buy",
+                    posSide: "net",
+                    fillSz: "1",
+                    fillPx: "3380",
+                    fillPnl: "0",
+                    ts: "1777279260000",
+                },
+                {
+                    instId: "ETH-USDT-SWAP",
+                    tradeId: "trade-pos-b",
+                    ordId: "ord-net-close",
+                    clOrdId: "vokc01aaaaaaaaaa",
+                    posId: "pos-b",
+                    side: "buy",
+                    posSide: "net",
+                    fillSz: "1",
+                    fillPx: "3382",
+                    fillPnl: "0",
+                    ts: "1777279261000",
+                },
+            ]),
+            getInstruments: vi.fn().mockResolvedValue([
+                createSwapInstrument("ETH-USDT-SWAP", "0.1", "ETH"),
+            ]),
+        })
+        const adapter = new OKXVenueAdapter(client as never, {
+            marginMode: "cross",
+            positionMode: "net_mode",
+        })
+
+        await expect(adapter.getRecentPositionClosures()).rejects.toThrow("mixed provider position ids")
     })
 
     it("maps triggered OKX protection algo history onto closure aliases", async () => {
@@ -472,7 +524,7 @@ describe("OKXVenueAdapter account snapshot semantics", () => {
                     posSide: "net",
                     fillSz: "2",
                     fillPx: "3380",
-                    fillPnl: "4",
+                    fillPnl: "0",
                     fee: "-0.2",
                     feeCcy: "USDT",
                     ts: "1777279260000",
@@ -512,7 +564,7 @@ describe("OKXVenueAdapter account snapshot semantics", () => {
                 "algo-parent-1",
                 "vokt01aaaaaaaaaa",
             ]),
-            fillPnl: 4,
+            fillPnl: 0,
             fee: -0.2,
         })
     })

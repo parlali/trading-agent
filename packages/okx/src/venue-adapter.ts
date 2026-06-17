@@ -716,6 +716,7 @@ export class OKXVenueAdapter implements VenueAdapter, PriceVerifier {
         instrument: string
         stopLoss?: number
         takeProfit?: number
+        position?: Position
         identity: SubmitOrderContext["identity"]
     }): Promise<{ cancelledOrderIds: string[]; createdOrderIds: string[] }> {
         const instId = normalizeInstrument(config.instrument)
@@ -736,6 +737,7 @@ export class OKXVenueAdapter implements VenueAdapter, PriceVerifier {
             takeProfit: config.takeProfit,
             marginMode: this.config.marginMode,
             getPositions: () => this.getPositions(),
+            position: config.position,
             getInstrumentRules: (instrument) => this.getInstrumentRules(instrument),
             baseQuantityToContracts: (rules, quantity) =>
                 this.baseQuantityToContracts(rules, quantity),

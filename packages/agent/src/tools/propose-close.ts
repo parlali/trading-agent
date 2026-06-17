@@ -1,4 +1,5 @@
 import { z } from "zod"
+import { buildProviderPositionKey } from "@valiq-trading/core"
 import type { ExecutionPipeline, Position } from "@valiq-trading/core"
 import type { AlpacaOptionsVenueAdapter } from "@valiq-trading/alpaca-options"
 import type { MT5VenueAdapter } from "@valiq-trading/mt5"
@@ -9,12 +10,16 @@ import {
     createToolBinding,
 } from "../tool-contracts"
 import { assertToolNotAborted } from "../tool-registry"
-import { toExecutionToolResult } from "./execution-response"
+import {
+    createRejectedExecutionToolResult,
+    toExecutionToolResult,
+} from "./execution-response"
 import {
     resolveEstimatedPrice as resolvePolymarketEstimatedPrice,
     type PolymarketPriceProvider,
 } from "./polymarket-order-helpers"
 import { normalizePolymarketTokenId } from "./polymarket-market-handles"
+import { resolveOKXPositionTarget } from "./okx-position-target"
 
 interface ClosePriceResolverContext {
     instrument: string
@@ -132,11 +137,35 @@ export function createOKXProposeCloseTool(
     return createToolBinding({
         name: "propose_close",
         venue: "okx-swap",
-        handler: createProposeCloseTool(pipeline, {
-            resolveEstimatedPrice: async ({ instrument, signal }) => {
-                assertToolNotAborted(signal)
-                return await venue.getCurrentMarkPrice(instrument)
-            },
-        }).handler,
+        handler: async (params, context) => {
+            const validated = params as z.infer<typeof closeParamsSchema>
+            assertToolNotAborted(context?.signal)
+            const positions = await pipeline.getPositions()
+            const target = resolveOKXPositionTarget(positions, validated, "close")
+            if (!target.ok) {
+                return createRejectedExecutionToolResult(target.message, {
+                    code: target.code,
+                })
+            }
+
+            assertToolNotAborted(context?.signal)
+            const estimatedPrice = await venue.getCurrentMarkPrice(target.instrument)
+            assertToolNotAborted(context?.signal)
+            const { result, validation } = await pipeline.closeProviderPosition(
+                target.position,
+                validated.reason,
+                { estimatedPrice }
+            )
+
+            assertToolNotAborted(context?.signal)
+            return toExecutionToolResult(result, {
+                validation,
+                extra: {
+                    providerPositionId: target.position.providerPositionId,
+                    providerPositionKey: buildProviderPositionKey(target.position),
+                    positionSide: target.position.side,
+                },
+            })
+        },
     })
 }

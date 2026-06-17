@@ -243,6 +243,10 @@ export function readFiniteNumberString(value?: string): number | undefined {
     return isFiniteNumberString(value) ? Number(value) : undefined
 }
 
+export function isCanonicalOKXCloseClientOrderId(value?: string): boolean {
+    return typeof value === "string" && /^vokc[0-9a-z]{2}[a-z2-7]{10}$/.test(value)
+}
+
 export function isOKXClosingFill(fill: OKXFill): boolean {
     if (!isFiniteNumberString(fill.fillSz) ||
         Number(fill.fillSz) <= 0 ||
@@ -260,7 +264,9 @@ export function isOKXClosingFill(fill: OKXFill): boolean {
         return fill.side === "buy"
     }
 
-    return isFiniteNumberString(fill.fillPnl) && Number(fill.fillPnl) !== 0
+    return isCanonicalOKXCloseClientOrderId(fill.clOrdId) ||
+        fill.reduceOnly === "true" ||
+        isFiniteNumberString(fill.fillPnl) && Number(fill.fillPnl) !== 0
 }
 
 export function resolveOKXClosurePositionSide(fill: OKXFill): Position["side"] {

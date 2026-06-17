@@ -24,9 +24,10 @@ export type ProviderClosePositionCandidate = Pick<
 }
 
 export function buildProviderPositionIdentityCandidates(
-    position: Pick<ProviderClosePositionCandidate, "providerPositionId" | "metadata">
+    position: Pick<ProviderClosePositionCandidate, "providerPositionId" | "positionKey" | "metadata">
 ): Set<string> {
     const identifiers = new Set<string>()
+    addKnownIdentifier(identifiers, position.positionKey)
     if (position.providerPositionId) {
         identifiers.add(position.providerPositionId)
     }
@@ -59,6 +60,7 @@ export function buildPositionClosureIdentityCandidates(
     addKnownIdentifier(identifiers, metadata?.posId)
     addKnownIdentifier(identifiers, metadata?.positionId)
     addKnownIdentifier(identifiers, metadata?.providerPositionId)
+    addKnownIdentifier(identifiers, metadata?.providerPositionKey)
     addKnownIdentifier(identifiers, metadata?.tokenId)
     addKnownIdentifier(identifiers, metadata?.asset)
     if (Array.isArray(metadata?.providerOrderAliases)) {
