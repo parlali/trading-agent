@@ -916,6 +916,10 @@ describe("HTTP MCP tool bindings", () => {
             arguments: { query: "", limit: 100 },
         })
         expect(registry.has("mcp_macro_dynamic_lookup")).toBe(false)
+        const discoveryTool = registry.get("mcp_macro_discover_tools")
+        expect(discoveryTool?.callBudgetKey?.({ query: "rates" })).not.toEqual(
+            discoveryTool?.callBudgetKey?.({ query: "energy" })
+        )
 
         await registry.get("mcp_macro_discover_tools")?.handler({ query: "rates" })
 

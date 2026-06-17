@@ -1,4 +1,5 @@
 import { z } from "zod"
+import { stableJsonKey } from "@valiq-trading/core"
 import type { ToolBinding } from "../tool-registry"
 import { withCallBudget } from "../tools/with-call-budget"
 import { HttpMcpClient, type HttpMcpTool, type ToolsCallResult } from "./http-client"
@@ -173,6 +174,10 @@ function createBindingForCandidate(args: {
     client: HttpMcpClient
     dynamicRefresh?: (result: ToolsCallResult) => Promise<void>
 }): ToolBinding {
+    const discoveryBudgetKey = isNestedDiscoveryTool(args.provider, args.remoteTool.name)
+        ? (params: unknown) => `${args.candidate.inventory.registeredName}:${stableJsonKey(params ?? {})}`
+        : undefined
+
     return {
         name: args.candidate.inventory.registeredName,
         description: args.candidate.inventory.description,
@@ -182,6 +187,7 @@ function createBindingForCandidate(args: {
         compatibleVenues: args.provider.compatibleVenues,
         contractBoundary: "shared",
         contractOwner: `mcp:${args.provider.id}`,
+        callBudgetKey: discoveryBudgetKey,
         outputDescription: "Returns the upstream MCP tool result.",
         errorSemantics: "Remote MCP validation, transport, and provider errors throw and are handled by the registered tool category.",
         handler: async (params, context) => {
