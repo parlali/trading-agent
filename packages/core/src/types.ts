@@ -180,6 +180,100 @@ export interface WorkingOrder {
     metadata?: Record<string, unknown>
 }
 
+export const STRATEGY_OPERATIONAL_MEMORY_TYPES = [
+    "tool_argument_failure",
+    "tool_invocation_success",
+    "external_tool_discovery",
+    "run_handoff_fact",
+    "provider_truth_warning",
+    "run_diagnostic",
+] as const
+export type StrategyOperationalMemoryType = typeof STRATEGY_OPERATIONAL_MEMORY_TYPES[number]
+
+export const STRATEGY_OPERATIONAL_MEMORY_STATUSES = [
+    "active",
+    "superseded",
+    "expired",
+] as const
+export type StrategyOperationalMemoryStatus = typeof STRATEGY_OPERATIONAL_MEMORY_STATUSES[number]
+
+export const STRATEGY_OPERATIONAL_MEMORY_SEVERITIES = [
+    "critical",
+    "high",
+    "medium",
+    "low",
+] as const
+export type StrategyOperationalMemorySeverity = typeof STRATEGY_OPERATIONAL_MEMORY_SEVERITIES[number]
+
+export const STRATEGY_OPERATIONAL_MEMORY_PROVIDER_TRUTH = [
+    "provider_verified",
+    "not_verified",
+    "stale",
+] as const
+export type StrategyOperationalMemoryProviderTruth = typeof STRATEGY_OPERATIONAL_MEMORY_PROVIDER_TRUTH[number]
+
+export interface StrategyOperationalMemoryScope {
+    app: VenueApp
+    accountId: string
+    providerId?: string
+    toolName?: string
+    upstreamToolName?: string
+    schemaHash?: string
+    instrument?: string
+}
+
+export interface StrategyOperationalMemorySource {
+    runId?: string
+    agentLogId?: string
+    chatSessionId?: string
+    chatMessageId?: string
+    toolCallId?: string
+    timestamp: number
+}
+
+export interface StrategyOperationalMemoryEvidence {
+    attemptCount: number
+    successCount: number
+    failureCount: number
+    lastErrorSignature?: string
+    sanitizedInputFingerprint?: string
+    sanitizedOutputDigest?: string
+}
+
+export interface StrategyOperationalMemoryLesson {
+    summary: string
+    useWhen?: string
+    avoidWhen?: string
+    requiredArgumentShape?: unknown
+    correctedExample?: unknown
+    providerTruth: StrategyOperationalMemoryProviderTruth
+}
+
+export interface StrategyOperationalMemoryRanking {
+    score: number
+    expiresAt?: number
+    supersededBy?: string
+}
+
+export interface StrategyOperationalMemory {
+    schemaVersion: 1
+    memoryKey: string
+    strategyId: string
+    app: VenueApp
+    accountId: string
+    type: StrategyOperationalMemoryType
+    status: StrategyOperationalMemoryStatus
+    severity: StrategyOperationalMemorySeverity
+    confidence: number
+    scope: StrategyOperationalMemoryScope
+    sources: StrategyOperationalMemorySource[]
+    evidence: StrategyOperationalMemoryEvidence
+    lesson: StrategyOperationalMemoryLesson
+    ranking: StrategyOperationalMemoryRanking
+    createdAt: number
+    updatedAt: number
+}
+
 export interface StrategyRunContext {
     runId: string
     strategyId: string
@@ -193,11 +287,7 @@ export interface StrategyRunContext {
     runtimeContextLines?: string[]
     schedule?: string
     pendingOrders?: PendingOrderContext[]
-    previousRunSummary?: {
-        summary: string
-        endedAt: number
-        systemContextDigest?: RunSystemContextDigest
-    }
+    operationalMemory?: StrategyOperationalMemory[]
     promptSanitizer?: PromptSanitizerContext
 }
 

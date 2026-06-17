@@ -1,9 +1,5 @@
 import {
-    formatRunSystemContextDigestLines,
     getAccountEquity,
-    sanitizeRunSummary,
-    type RunSystemContextDigest,
-    truncateHandoffSummary,
     type StrategyRunContext,
 } from "@valiq-trading/core"
 
@@ -25,10 +21,9 @@ export function buildSystemPrompt(
     sections.push(buildRoleSection())
     sections.push(buildCurrentTimestamp(context.timestamp))
     sections.push(buildStrategyContext(context))
-    if (context.previousRunSummary) {
-        sections.push(buildPreviousRunSection(
-            context.previousRunSummary,
-            context.timestamp,
+    if (context.operationalMemory && context.operationalMemory.length > 0) {
+        sections.push(buildOperationalMemorySection(
+            context.operationalMemory,
             context.promptSanitizer?.blockedIdentifiers ?? []
         ))
     }
@@ -117,49 +112,6 @@ function buildPendingOrdersSection(context: StrategyRunContext): string {
     ].join("\n")
 }
 
-function buildPreviousRunSection(
-    previousRun: { summary: string; endedAt: number; systemContextDigest?: RunSystemContextDigest },
-    currentTimestamp: number,
-    blockedIdentifiers: string[] = []
-): string {
-    const minutesAgo = Math.round((currentTimestamp - previousRun.endedAt) / 60000)
-    const cleanSummary = sanitizePromptText(
-        truncateHandoffSummary(sanitizeRunSummary(previousRun.summary)),
-        blockedIdentifiers,
-        "Previous run handoff omitted because it referenced instruments outside this strategy's owned book."
-    )
-    const previousDigestLines = previousRun.systemContextDigest
-        ? sanitizePromptLines(formatRunSystemContextDigestLines(previousRun.systemContextDigest), blockedIdentifiers)
-        : []
-    return [
-        "## Previous Run Handoff",
-        "",
-        `The following is a summary written by the previous run of this strategy, ${minutesAgo} minutes ago. It is a snapshot of what the agent observed, decided, and recommends you start with.`,
-        "",
-        "**How to use this:**",
-        "- Treat this as stale context, not current truth. Prices, odds, and news may have changed.",
-        "- Use it to avoid redundant research. If the previous run already mapped out the landscape, you can start from where it left off instead of re-discovering everything from scratch.",
-        "- If you have open positions, this tells you why they were opened and what the thesis was.",
-        "- Do NOT blindly continue the previous run's plan. Verify key assumptions before acting.",
-        "- If the situation has materially changed, discard this context and start fresh.",
-        "",
-        "---",
-        "",
-        ...(previousDigestLines.length > 0
-            ? [
-                "Canonical previous-run system digest:",
-                ...previousDigestLines,
-                "",
-                "---",
-                "",
-            ]
-            : []),
-        cleanSummary,
-        "",
-        "---",
-    ].join("\n")
-}
-
 function buildRuntimeContextSection(runtimeContextLines: string[]): string {
     return [
         "## System Context Digest",
@@ -167,6 +119,66 @@ function buildRuntimeContextSection(runtimeContextLines: string[]): string {
         "Canonical system-authored state snapshot for this run:",
         ...runtimeContextLines,
     ].join("\n")
+}
+
+function buildOperationalMemorySection(
+    memories: NonNullable<StrategyRunContext["operationalMemory"]>,
+    blockedIdentifiers: string[]
+): string {
+    const lines = [
+        "## Strategy Operational Memory",
+        "",
+        "Typed strategy-scoped lessons derived from completed run evidence. These are advisory only.",
+        "Current provider truth, current positions, current account state, risk checks, ownership, accounting, and order lifecycle state always override memory.",
+        "",
+    ]
+
+    for (const memory of memories) {
+        const source = memory.sources[0]
+        const sourceText = source
+            ? `sourceRun=${source.runId ?? "unknown"} sourceTime=${formatTimestamp(source.timestamp)}`
+            : "sourceRun=unknown"
+        const scopeParts = [
+            `app=${memory.scope.app}`,
+            `account=${memory.scope.accountId}`,
+            memory.scope.providerId ? `provider=${memory.scope.providerId}` : undefined,
+            memory.scope.toolName ? `tool=${memory.scope.toolName}` : undefined,
+            memory.scope.upstreamToolName ? `upstream=${memory.scope.upstreamToolName}` : undefined,
+            memory.scope.schemaHash ? `schema=${memory.scope.schemaHash.slice(0, 12)}` : undefined,
+            memory.scope.instrument ? `instrument=${memory.scope.instrument}` : undefined,
+        ].filter((part): part is string => Boolean(part))
+        lines.push(
+            `- ${memory.type} | severity=${memory.severity} | confidence=${memory.confidence.toFixed(2)} | ${scopeParts.join(" ")} | ${sourceText}`,
+            `  Summary: ${memory.lesson.summary}`,
+            `  Evidence: attempts=${memory.evidence.attemptCount} successes=${memory.evidence.successCount} failures=${memory.evidence.failureCount}`,
+            `  Provider truth: ${memory.lesson.providerTruth}`
+        )
+        if (memory.lesson.useWhen) {
+            lines.push(`  Use when: ${memory.lesson.useWhen}`)
+        }
+        if (memory.lesson.avoidWhen) {
+            lines.push(`  Avoid when: ${memory.lesson.avoidWhen}`)
+        }
+        if (memory.lesson.requiredArgumentShape !== undefined) {
+            lines.push(`  Required argument shape: ${formatMemoryJson(memory.lesson.requiredArgumentShape)}`)
+        }
+        if (memory.lesson.correctedExample !== undefined) {
+            lines.push(`  Corrected example: ${formatMemoryJson(memory.lesson.correctedExample)}`)
+        }
+    }
+
+    return sanitizePromptLines(lines, blockedIdentifiers).join("\n")
+}
+
+function formatMemoryJson(value: unknown): string {
+    const json = JSON.stringify(value)
+    if (!json) {
+        return "null"
+    }
+
+    return json.length > 800
+        ? `${json.slice(0, 800)} [truncated]`
+        : json
 }
 
 function buildAccountSnapshot(context: StrategyRunContext): string {
@@ -295,14 +307,6 @@ function sanitizePromptLines(lines: string[], blockedIdentifiers: string[]): str
     return lines.filter((line) => !containsBlockedIdentifier(line, blocked))
 }
 
-function sanitizePromptText(text: string, blockedIdentifiers: string[], fallback: string): string {
-    const sanitized = sanitizePromptLines(text.split("\n"), blockedIdentifiers)
-        .join("\n")
-        .trim()
-
-    return sanitized.length > 0 ? sanitized : fallback
-}
-
 function normalizeBlockedIdentifiers(blockedIdentifiers: string[]): string[] {
     return Array.from(
         new Set(
@@ -390,7 +394,7 @@ function buildRulesSection(schedule?: string, trigger?: string): string {
         "4. If an order is rejected by the risk engine, do not retry with the same parameters.",
         "5. For limit orders, monitor fill status and adjust or cancel if not filling.",
         "6. When your analysis is complete and all actions are taken, respond with a final summary.",
-        "7. Your summary is handed off to the next run of this strategy as context. Write it as a briefing for your future self:",
+        "7. Your summary may be converted into short-lived structured run_handoff_fact memory after the run completes. Write it as a briefing for the next run:",
         "   - What is the current market landscape relevant to this strategy?",
         "   - What positions are open and what is the thesis behind each?",
         "   - What actions did you take (or chose not to) and why?",
@@ -417,9 +421,9 @@ function buildRulesSection(schedule?: string, trigger?: string): string {
             "",
             "This is a CALLBACK run, not a scheduled cron run. You requested this callback to manage positions or react to a known event.",
             "",
-            "- Do NOT redo full market research. The previous run already gathered that context and handed it off to you above.",
+            "- Do NOT redo full market research if the structured operational memory above already contains a fresh latest-run handoff.",
             "- Focus on: checking positions, evaluating if your thesis still holds, adjusting or closing positions, and monitoring fills.",
-            "- Use research tools (web_search, web_fetch, or configured MCP research tools) only if something specific changed that invalidates your previous analysis.",
+            "- Use research tools (web_search, web_fetch, or configured MCP research tools) only if something specific changed that invalidates the fresh latest-run handoff.",
             "- Configured MCP research tools have a two-call callback budget instead of the normal four-call scheduled-run budget. Use them wisely.",
             "- If nothing has changed and no action is needed, write a brief summary and exit. Do not burn tokens re-analyzing a static situation.",
         )

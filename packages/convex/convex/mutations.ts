@@ -18,6 +18,10 @@ export {
 } from "./lib/mutations/orders"
 
 export {
+    refreshStrategyOperationalMemoryFromRun,
+} from "./lib/mutations/operationalMemory"
+
+export {
     upsertAccount,
     upsertStrategy,
     setStrategyMcpToolWhitelist,

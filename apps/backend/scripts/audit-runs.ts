@@ -46,13 +46,13 @@ async function main() {
         }
     }
 
-    // Get the run count - each strategy's last completed run summary
     console.log("\n=== ALL STRATEGY SUMMARIES AND STATS ===")
     for (const s of strategies) {
         try {
             const policy = s.policy as Record<string, unknown>
             const llm = resolveStrategyLlmConfig(policy)
-            const lastRun = await client.getLastCompletedRunSummary(s._id)
+            const recentRuns = await client.getRunHistory(s._id, 20)
+            const lastRun = recentRuns.find((run) => run.status === "completed" && run.summary)
             const activeRun = await client.getActiveRun(s._id)
             console.log(`\n--- ${s.name} (${llm.provider}:${llm.model}) ---`)
             console.log(`  App: ${s.app} | DryRun: ${policy.dryRun ?? false} | Schedule: ${s.schedule}`)
@@ -60,7 +60,7 @@ async function main() {
                 console.log(`  ACTIVE RUN: since ${new Date(activeRun.startedAt).toISOString()} trigger=${activeRun.trigger}`)
             }
             if (lastRun) {
-                console.log(`  Last completed: ${new Date(lastRun.endedAt!).toISOString()}`)
+                console.log(`  Last completed: ${new Date((lastRun.endedAt ?? lastRun.startedAt)).toISOString()}`)
                 console.log(`  Summary: ${lastRun.summary}`)
             } else {
                 console.log(`  No completed runs`)

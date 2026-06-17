@@ -152,7 +152,7 @@ function createBackendMock(storedPositions: Position[], events: string[]) {
         createAlert: vi.fn(async () => undefined),
         createRun: vi.fn(async () => "run-1"),
         getAllOwnedInstrumentsByApp: vi.fn(async (_app, _accountId) => []),
-        getLastCompletedRunSummary: vi.fn(async () => null),
+        getApplicableStrategyOperationalMemory: vi.fn(async () => []),
         getLatestPositions: vi.fn(async () => storedPositions),
         getStrategyOrderHistory: vi.fn(async () => []),
         getStrategyOwnershipScope: vi.fn(async () => ({
@@ -163,6 +163,7 @@ function createBackendMock(storedPositions: Position[], events: string[]) {
         getStrategyMcpToolWhitelist: vi.fn(async () => null),
         recordExecutionSafetyFault: vi.fn(async () => undefined),
         recordRunCallback: vi.fn(async () => undefined),
+        refreshStrategyOperationalMemoryFromRun: vi.fn(async () => ({ upserted: 0 })),
         refreshStrategyRiskState: vi.fn(async () => ({
             strategyId: "strategy-1",
             app: "polymarket",

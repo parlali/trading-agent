@@ -247,6 +247,7 @@ export const runDiagnosticsV = v.object({
     mcpToolDiagnostics: v.optional(v.array(mcpToolDiagnosticV)),
     toolManifest: v.optional(v.array(v.object({
         name: v.string(),
+        schemaHash: v.optional(v.string()),
         category: v.optional(v.string()),
         contractBoundary: v.optional(v.string()),
         contractOwner: v.optional(v.string()),
