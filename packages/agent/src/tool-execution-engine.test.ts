@@ -3,6 +3,7 @@ import { z } from "zod"
 import { createLogger } from "@valiq-trading/core"
 import { ToolExecutionEngine } from "./tool-execution-engine"
 import { ToolRegistry } from "./tool-registry"
+import { withCallBudget } from "./tools"
 import type { ToolCall } from "./llm-client"
 
 describe("ToolExecutionEngine", () => {
@@ -123,6 +124,48 @@ describe("ToolExecutionEngine", () => {
         expect(second.content).toContain("Tool call budget reached after 1 calls")
         expect(handler).toHaveBeenCalledTimes(1)
         expect(engine.getOutcome().toolCallCount).toBe(1)
+    })
+
+    it("budgets generic discovered MCP dispatcher calls by upstream tool name", async () => {
+        const handler = vi.fn(async (params: unknown) => ({ params }))
+        const tools = new ToolRegistry()
+        tools.register(withCallBudget({
+            name: "mcp_provider_call_discovered_tool",
+            description: "Call discovered MCP tool",
+            parameters: z.object({
+                toolName: z.string(),
+                arguments: z.record(z.string(), z.unknown()).optional(),
+            }),
+            category: "research",
+            contractOwner: "mcp:provider",
+            callBudgetKey: (params) => {
+                const input = params as { toolName?: unknown }
+                return typeof input.toolName === "string"
+                    ? `mcp_provider_call_discovered_tool:${input.toolName}`
+                    : undefined
+            },
+            handler,
+        }, 2))
+        const engine = new ToolExecutionEngine({
+            tools,
+            context: createContext("polymarket"),
+            logger: createLogger({ minLevel: "fatal" }),
+            runStartedAt: Date.now(),
+            runTimeoutMs: 60_000,
+            maxRepeatedToolErrors: 3,
+        })
+
+        await engine.executeMcpCall("mcp_provider_call_discovered_tool", { toolName: "first" }, "call-1")
+        await engine.executeMcpCall("mcp_provider_call_discovered_tool", { toolName: "first" }, "call-2")
+        const firstExhausted = await engine.executeMcpCall("mcp_provider_call_discovered_tool", { toolName: "first" }, "call-3")
+        const secondFirst = await engine.executeMcpCall("mcp_provider_call_discovered_tool", { toolName: "second" }, "call-4")
+        const secondSecond = await engine.executeMcpCall("mcp_provider_call_discovered_tool", { toolName: "second" }, "call-5")
+
+        expect(firstExhausted.isError).toBe(true)
+        expect(firstExhausted.content).toContain("mcp_provider_call_discovered_tool:first")
+        expect(secondFirst.isError).toBe(false)
+        expect(secondSecond.isError).toBe(false)
+        expect(handler).toHaveBeenCalledTimes(4)
     })
 
     it("does not fail MCP tool calls when transcript logging fails", async () => {

@@ -28,6 +28,7 @@ export interface ToolBinding {
     errorSemantics?: string
     contractBoundary?: "shared" | "venue-owned"
     contractOwner?: string
+    callBudgetKey?: (params: unknown) => string | undefined
     handler: (params: unknown, context?: ToolHandlerContext) => Promise<unknown>
     category?: ToolCategory
     compatibleVenues?: readonly VenueApp[]

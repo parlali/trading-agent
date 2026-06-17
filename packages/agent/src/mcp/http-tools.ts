@@ -644,6 +644,13 @@ function createDiscoveredToolDispatcherBinding(args: {
             compatibleVenues: args.provider.compatibleVenues,
             contractBoundary: "shared",
             contractOwner: `mcp:${args.provider.id}`,
+            callBudgetKey: (params) => {
+                const input = readRecord(params)
+                const toolName = input?.toolName
+                return typeof toolName === "string" && toolName.trim()
+                    ? `${registeredName}:${toolName.trim()}`
+                    : registeredName
+            },
             outputDescription: "Returns the upstream MCP tool result for a tool discovered in this run.",
             errorSemantics: "Rejects calls to upstream tools that have not been returned by an approved discovery tool in this run.",
             handler: async (params, context) => {
