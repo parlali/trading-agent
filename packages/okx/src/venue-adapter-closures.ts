@@ -139,6 +139,7 @@ async function mapClosureGroup(
             tradeIds: group.map((fill) => fill.tradeId).filter(Boolean),
             side: first.side,
             posSide: first.posSide,
+            subType: first.subType,
             posId: providerPositionId,
             fillPnl: sumOptionalNumberStrings(group.map((fill) => fill.fillPnl)),
             fee: sumOptionalNumberStrings(group.map((fill) => fill.fee)),

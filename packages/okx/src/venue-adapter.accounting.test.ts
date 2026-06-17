@@ -471,6 +471,55 @@ describe("OKXVenueAdapter account snapshot semantics", () => {
         })
     })
 
+    it("detects documented OKX close subtypes for zero-PnL net-mode fills", async () => {
+        const client = withOKXAccountingDefaults({
+            getFillsHistory: vi.fn().mockResolvedValue([
+                {
+                    instId: "BTC-USDT-SWAP",
+                    tradeId: "trade-close-subtype",
+                    ordId: "ord-close-subtype",
+                    side: "sell",
+                    posSide: "net",
+                    fillSz: "3",
+                    fillPx: "80000",
+                    fillPnl: "0",
+                    fee: "-0.1",
+                    feeCcy: "USDT",
+                    subType: "5",
+                    ts: "1777279260000",
+                },
+            ]),
+            getInstruments: vi.fn().mockResolvedValue([
+                createSwapInstrument("BTC-USDT-SWAP", "0.01", "BTC"),
+            ]),
+        })
+        const adapter = new OKXVenueAdapter(client as never, {
+            marginMode: "cross",
+            positionMode: "net_mode",
+        })
+
+        const closures = await adapter.getRecentPositionClosures()
+
+        expect(closures).toHaveLength(1)
+        expect(closures[0]).toMatchObject({
+            instrument: "BTC-USDT-SWAP",
+            side: "long",
+            quantity: 0.03,
+            fillPrice: 80000,
+            metadata: {
+                orderId: "ord-close-subtype",
+                tradeIds: ["trade-close-subtype"],
+                side: "sell",
+                posSide: "net",
+                subType: "5",
+                fillPnl: 0,
+                fee: -0.1,
+                feeCcy: "USDT",
+                source: "okx_fills_history",
+            },
+        })
+    })
+
     it("fails loud when one OKX close fill group has mixed provider position ids", async () => {
         const client = withOKXAccountingDefaults({
             getFillsHistory: vi.fn().mockResolvedValue([

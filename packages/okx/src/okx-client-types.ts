@@ -75,6 +75,7 @@ export interface OKXFill {
     fee?: string
     feeCcy?: string
     execType?: string
+    subType?: string
     ts: string
 }
 
