@@ -556,6 +556,7 @@ function readToolError(
 
     if (
         text.includes("Parameter validation failed") ||
+        text.includes("Invalid tool arguments") ||
         text.includes("Invalid JSON arguments") ||
         text.includes("Unknown tool")
     ) {
@@ -579,9 +580,7 @@ function readToolError(
 
 function readRequiredArgumentShape(parsedOutput: Record<string, unknown> | undefined): unknown {
     const details = readRecord(parsedOutput?.details)
-    const issues = Array.isArray(details?.issues)
-        ? details.issues
-        : readIssuesFromMessage(details?.message)
+    const issues = readValidationIssues(parsedOutput, details)
 
     if (!issues || issues.length === 0) {
         return undefined
@@ -598,6 +597,20 @@ function readRequiredArgumentShape(parsedOutput: Record<string, unknown> | undef
             message: readStringField(issue, "message"),
         })),
     }
+}
+
+function readValidationIssues(
+    parsedOutput: Record<string, unknown> | undefined,
+    details: Record<string, unknown> | undefined
+): unknown[] | undefined {
+    if (Array.isArray(parsedOutput?.validationIssues)) {
+        return parsedOutput.validationIssues
+    }
+    if (Array.isArray(details?.issues)) {
+        return details.issues
+    }
+
+    return readIssuesFromMessage(details?.message)
 }
 
 function readIssuesFromMessage(value: unknown): unknown[] | undefined {

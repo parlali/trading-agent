@@ -55,6 +55,65 @@ describe("strategy operational memory", () => {
         expect(handoff?.lesson.providerTruth).toBe("stale")
     })
 
+    it("derives MCP argument failures from deployed Invalid tool arguments validationIssues", () => {
+        const completed = createCompletedRunEvidence()
+        const memories = buildStrategyOperationalMemoryFromRun({
+            ...completed,
+            run: {
+                ...completed.run,
+                summary: undefined,
+                systemContextDigest: undefined,
+                mcpToolDiagnostics: [],
+                toolManifest: [{
+                    name: "mcp_macro_rates",
+                    schemaHash: "a".repeat(64),
+                    category: "research",
+                    contractOwner: "mcp:macro",
+                }],
+            },
+            agentLogs: [{
+                _id: "log-mcp-validation",
+                runId: "run-1",
+                strategyId: "strategy-1",
+                sequence: 1,
+                role: "tool",
+                toolName: "mcp_macro_rates",
+                toolInput: JSON.stringify({ query: 123 }),
+                toolOutput: JSON.stringify({
+                    error: "Invalid tool arguments",
+                    validationIssues: [{
+                        path: ["query"],
+                        code: "invalid_type",
+                        expected: "string",
+                        message: "Expected string, received number",
+                    }],
+                }),
+                content: JSON.stringify({ error: "Invalid tool arguments" }),
+                timestamp: now,
+            }],
+        })
+
+        expect(memories.map((memory) => memory.type)).toEqual(["tool_argument_failure"])
+        expect(memories[0]).toMatchObject({
+            scope: {
+                providerId: "macro",
+                toolName: "mcp_macro_rates",
+                schemaHash: "a".repeat(64),
+            },
+            lesson: {
+                requiredArgumentShape: {
+                    requiredFields: ["query"],
+                    issues: [{
+                        path: "query",
+                        code: "invalid_type",
+                        expected: "string",
+                        message: "Expected string, received number",
+                    }],
+                },
+            },
+        })
+    })
+
     it("does not derive trusted memory from failed or running runs", () => {
         const completed = createCompletedRunEvidence()
 
