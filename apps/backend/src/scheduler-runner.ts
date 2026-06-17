@@ -4,6 +4,7 @@ import {
 } from "@valiq-trading/agent"
 import type {
     CreateRunMetadata,
+    Id,
     RunDiagnostics,
     RunTrigger,
     StoredStrategy,
@@ -220,6 +221,7 @@ export async function runStrategy(
 
                 const summary = hookResult.reason ?? "Strategy skipped by pre-run hook"
                 await backend.updateRun(runId, "completed", summary)
+                await refreshOperationalMemoryForCompletedRun(runId, strategy._id, app)
                 updateHealth("completed", summary)
                 return {
                     runId,
@@ -326,6 +328,7 @@ export async function runStrategy(
             }
 
             await backend.updateRun(runId, "completed", cleanSummary, undefined, runDiagnostics)
+            await refreshOperationalMemoryForCompletedRun(runId, strategy._id, app)
             updateHealth("completed", cleanSummary)
 
             if (scheduler && result.summary) {
@@ -424,6 +427,30 @@ export async function runStrategy(
         throw error
     } finally {
         runtime?.cleanup()
+    }
+}
+
+async function refreshOperationalMemoryForCompletedRun(
+    runId: Id<"strategy_runs">,
+    strategyId: Id<"strategies">,
+    app: VenueApp
+): Promise<void> {
+    try {
+        const result = await backend.refreshStrategyOperationalMemoryFromRun(runId)
+        logger.info("Refreshed strategy operational memory", {
+            runId,
+            strategyId,
+            app,
+            upserted: result.upserted,
+            skipped: result.skipped,
+        })
+    } catch (error) {
+        logger.warn("Strategy operational memory refresh failed after completed run", {
+            runId,
+            strategyId,
+            app,
+            error: error instanceof Error ? error.message : String(error),
+        })
     }
 }
 

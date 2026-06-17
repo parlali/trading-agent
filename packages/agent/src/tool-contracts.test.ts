@@ -4,6 +4,7 @@ import { toolContractDefinitions } from "./tool-contract-catalog-data.ts"
 import { createToolBinding, getToolContract, listToolContracts } from "./tool-contracts.ts"
 import { projectToolForMcp } from "./tool-projections/mcp.ts"
 import { projectToolForOpenRouter } from "./tool-projections/openrouter.ts"
+import { ToolRegistry } from "./tool-registry.ts"
 
 describe("tool contracts", () => {
     it("rejects truncated Polymarket token IDs while accepting run-local handles", () => {
@@ -115,6 +116,23 @@ describe("tool contracts", () => {
 
         expect(openRouterTools.map((tool) => tool.function.name).sort()).toEqual(contractNames)
         expect(mcpTools.map((tool) => tool.name).sort()).toEqual(contractNames)
+    })
+
+    it("persists deterministic schema hashes in tool manifests", () => {
+        const registry = new ToolRegistry()
+        registry.register(createToolBinding({
+            name: "get_positions",
+            venue: "polymarket",
+            handler: async () => ({ positions: [] }),
+        }))
+
+        const manifest = registry.getManifest()
+
+        expect(manifest).toEqual([expect.objectContaining({
+            name: "get_positions",
+            schemaHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+        })])
+        expect(registry.getManifest()[0]?.schemaHash).toBe(manifest[0]?.schemaHash)
     })
 
     it("rejects OpenRouter-incompatible projection schemas without rejecting canonical contracts", () => {

@@ -5,6 +5,7 @@ import {
     type AccountState,
     type ExecutionResult,
     type Position,
+    type StrategyOperationalMemory,
     type StrategyRunContext,
 } from "@valiq-trading/core"
 import { buildSystemPrompt } from "./prompt-builder"
@@ -43,7 +44,27 @@ function createContext(): StrategyRunContext {
     }
 }
 
-describe("buildSystemPrompt previous-run handoff", () => {
+describe("buildSystemPrompt operational memory", () => {
+    it("includes bounded structured memory before current account state", () => {
+        const context = createContext()
+        context.operationalMemory = [createMemory({
+            type: "tool_argument_failure",
+            severity: "high",
+            summary: "propose_order rejected missing limitPrice for this schema.",
+            toolName: "propose_order",
+            schemaHash: "a".repeat(64),
+        })]
+
+        const prompt = buildSystemPrompt(context, [])
+
+        expect(prompt).toContain("## Strategy Operational Memory")
+        expect(prompt).toContain("tool_argument_failure")
+        expect(prompt).toContain("propose_order rejected missing limitPrice")
+        expect(prompt).toContain("Current provider truth, current positions, current account state, risk checks, ownership, accounting, and order lifecycle state always override memory.")
+        expect(prompt.indexOf("## Strategy Operational Memory")).toBeLessThan(prompt.indexOf("## Current Account State"))
+        expect(prompt).not.toContain("## Previous Run Handoff")
+    })
+
     it("isolates manual Polymarket external positions from prompts and get_positions until adoption", async () => {
         const accountState: AccountState = {
             balance: 10_000,
@@ -83,10 +104,12 @@ describe("buildSystemPrompt previous-run handoff", () => {
             `Owned Polymarket token ${ownedPosition.instrument} remains eligible for management.`,
             "Manual external Polymarket row synthetic-external-market-2026 2000000000000000000000000000000000000002",
         ]
-        context.previousRunSummary = {
+        context.operationalMemory = [createMemory({
+            type: "run_handoff_fact",
+            severity: "low",
             summary: "Prior handoff mentioned synthetic-external-market-2026 and 2000000000000000000000000000000000000002.",
-            endedAt: Date.parse("2026-04-20T09:30:00.000Z"),
-        }
+            app: "polymarket",
+        })]
         context.promptSanitizer = {
             blockedIdentifiers: [
                 "synthetic-external-market-2026",
@@ -130,6 +153,55 @@ describe("buildSystemPrompt previous-run handoff", () => {
         expect(scopedResult.positions).toEqual([ownedPosition])
     })
 })
+
+function createMemory(args: {
+    type: StrategyOperationalMemory["type"]
+    severity: StrategyOperationalMemory["severity"]
+    summary: string
+    app?: StrategyOperationalMemory["app"]
+    toolName?: string
+    schemaHash?: string
+}): StrategyOperationalMemory {
+    const app = args.app ?? "okx-swap"
+    return {
+        schemaVersion: 1,
+        memoryKey: `memory-${args.type}`,
+        strategyId: "strategy-1",
+        app,
+        accountId: "test-account",
+        type: args.type,
+        status: "active",
+        severity: args.severity,
+        confidence: 0.9,
+        scope: {
+            app,
+            accountId: "test-account",
+            toolName: args.toolName,
+            schemaHash: args.schemaHash,
+        },
+        sources: [{
+            runId: "run-prior",
+            timestamp: Date.parse("2026-04-20T09:30:00.000Z"),
+        }],
+        evidence: {
+            attemptCount: 1,
+            successCount: args.type === "tool_argument_failure" ? 0 : 1,
+            failureCount: args.type === "tool_argument_failure" ? 1 : 0,
+        },
+        lesson: {
+            summary: args.summary,
+            useWhen: "test use",
+            avoidWhen: "test avoid",
+            providerTruth: args.type === "run_handoff_fact" ? "stale" : "not_verified",
+        },
+        ranking: {
+            score: 50,
+            expiresAt: Date.parse("2026-04-21T09:30:00.000Z"),
+        },
+        createdAt: Date.parse("2026-04-20T09:30:00.000Z"),
+        updatedAt: Date.parse("2026-04-20T09:30:00.000Z"),
+    }
+}
 
 function rejectedExecutionResult(): ExecutionResult {
     return {

@@ -27,11 +27,13 @@ import type {
     WorkingOrder,
     ExecutionResult,
     ExecutionSafetyFaultCategory,
+    StrategyOperationalMemory,
     ValidationResult,
 } from "@valiq-trading/core"
 
 export interface ToolManifestEntry {
     name: string
+    schemaHash?: string
     category?: string
     contractBoundary?: string
     contractOwner?: string
@@ -186,6 +188,8 @@ export interface StoredRun extends RunDiagnostics {
     callbackRequestedMinutes?: number
     callbackFiresAt?: number
 }
+
+export type StoredStrategyOperationalMemory = StrategyOperationalMemory
 
 export interface AgentLogRow {
     _id: Id<"agent_logs">
@@ -498,12 +502,6 @@ export function mapStrategyRiskStateRow(
     }
 }
 
-export interface LastCompletedRunSummary {
-    summary: string
-    endedAt: number
-    systemContextDigest?: RunSystemContextDigest
-}
-
 export interface RefreshStrategyRiskStateArgs {
     strategyId: Id<"strategies">
     app: Exclude<App, "backend">
@@ -605,7 +603,14 @@ export interface TradingBackendClient extends TradeEventLogger, AgentMessageLogg
     recordAgentChatAssistantMessage(args: RecordAgentChatAssistantMessageArgs): Promise<void>
     recordAgentChatToolEvent(args: RecordAgentChatToolEventArgs): Promise<void>
     getTradeEvents(runId: Id<"strategy_runs">): Promise<TradeEventRow[]>
-    getLastCompletedRunSummary(strategyId: Id<"strategies">): Promise<LastCompletedRunSummary | null>
+    refreshStrategyOperationalMemoryFromRun(runId: Id<"strategy_runs">): Promise<{ upserted: number; skipped?: string }>
+    getApplicableStrategyOperationalMemory(
+        strategyId: Id<"strategies">,
+        app: Exclude<App, "backend">,
+        accountId: string,
+        toolManifest: ToolManifestEntry[],
+        limit?: number
+    ): Promise<StoredStrategyOperationalMemory[]>
     recoverRunningRuns(): Promise<number>
     recoverStaleRunningRuns(olderThanMs?: number): Promise<number>
     recoverStaleAgentChatMessages(olderThanMs?: number): Promise<number>

@@ -1,4 +1,4 @@
-export { ToolRegistry } from "./tool-registry"
+export { ToolRegistry, hashToolBindingSchema } from "./tool-registry"
 export { TOOL_CATEGORIES } from "./tool-registry"
 export type { ToolBinding, ToolCategory, ToolManifestEntry } from "./tool-registry"
 export {

@@ -91,29 +91,6 @@ export const getRunById = query({
     },
 })
 
-export const getLastCompletedRunSummary = query({
-    args: {
-        serviceToken: v.string(),
-        strategyId: v.id("strategies"),
-    },
-    handler: async (ctx, args) => {
-        requireServiceToken(args.serviceToken)
-        const run = await ctx.db
-            .query("strategy_runs")
-            .withIndex("by_strategy_status", (q) =>
-                q.eq("strategyId", args.strategyId).eq("status", "completed")
-            )
-            .order("desc")
-            .first()
-        if (!run?.summary) return null
-        return {
-            summary: run.summary,
-            endedAt: run.endedAt ?? run.startedAt,
-            systemContextDigest: run.systemContextDigest,
-        }
-    },
-})
-
 export const getActiveRun = query({
     args: {
         serviceToken: v.optional(v.string()),

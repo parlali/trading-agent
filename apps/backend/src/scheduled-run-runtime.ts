@@ -392,9 +392,15 @@ export async function prepareScheduledRunAgentTurn(
     }
 
     const timestamp = Date.now()
-    const [allPositions, previousRunSummary, recentOrderHistory] = await Promise.all([
+    const toolManifest = tools.getManifest()
+    const [allPositions, operationalMemory, recentOrderHistory] = await Promise.all([
         isDryRun ? Promise.resolve(storedPositions ?? []) : venue.getPositions(),
-        backend.getLastCompletedRunSummary(strategy._id),
+        backend.getApplicableStrategyOperationalMemory(
+            strategy._id,
+            app,
+            strategy.accountId,
+            toolManifest
+        ),
         backend.getStrategyOrderHistory(strategy._id, 250),
     ])
     const recentTrades = computeRecentTradeDigest({
@@ -434,7 +440,7 @@ export async function prepareScheduledRunAgentTurn(
         runtimeContextLines,
         schedule: strategy.schedule,
         pendingOrders,
-        previousRunSummary: previousRunSummary ?? undefined,
+        operationalMemory,
         promptSanitizer: {
             blockedIdentifiers: buildPromptBlockedIdentifiers({
                 allPositions,
@@ -452,7 +458,7 @@ export async function prepareScheduledRunAgentTurn(
         runSystemContextDigest,
         riskState: runRiskState,
         runtimeContextLines,
-        toolManifest: tools.getManifest(),
+        toolManifest,
         mcpToolDiagnostics,
     }
 }

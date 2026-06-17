@@ -39,11 +39,14 @@ export {
 export {
     getRunHistory,
     getRunById,
-    getLastCompletedRunSummary,
     getActiveRun,
     getAgentLogs,
     getScheduleOverview,
 } from "./lib/queries/runs"
+
+export {
+    getApplicableStrategyOperationalMemory,
+} from "./lib/queries/operationalMemory"
 
 export {
     getDashboardOverview,

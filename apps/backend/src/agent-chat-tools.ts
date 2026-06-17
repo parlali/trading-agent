@@ -7,6 +7,7 @@ import {
     ToolExecutionEngine,
     ToolRegistry,
     discoverHttpMcpToolInventory,
+    hashToolBindingSchema,
     resolveMcpProviderConfigs,
     type McpToolDiagnostic,
     type ToolBinding,
@@ -152,6 +153,7 @@ export function listAgentChatTools(
 }> {
     return registry.getAll().map((binding) => ({
         name: binding.name,
+        schemaHash: hashToolBindingSchema(binding),
         category: binding.category,
         contractBoundary: binding.contractBoundary,
         contractOwner: binding.contractOwner,

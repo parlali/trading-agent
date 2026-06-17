@@ -9,6 +9,10 @@ import {
     STRATEGY_SAFETY_STATES,
     EXECUTION_SAFETY_FAULT_CATEGORIES,
     EXECUTION_COMMIT_OUTCOMES,
+    STRATEGY_OPERATIONAL_MEMORY_TYPES,
+    STRATEGY_OPERATIONAL_MEMORY_STATUSES,
+    STRATEGY_OPERATIONAL_MEMORY_SEVERITIES,
+    STRATEGY_OPERATIONAL_MEMORY_PROVIDER_TRUTH,
 } from "@valiq-trading/core"
 import { AGENT_CHAT_TOOL_PAYLOAD_SCHEMA_VERSION } from "./agentChatToolPayload"
 import {
@@ -117,6 +121,53 @@ export const portfolioProviderStatusV = stringLiterals(PORTFOLIO_PROVIDER_STATUS
 export const providerOwnershipStatusV = stringLiterals(PROVIDER_OWNERSHIP_STATUSES)
 export const strategySafetyStateV = stringLiterals(STRATEGY_SAFETY_STATES)
 export const executionSafetyFaultCategoryV = stringLiterals(EXECUTION_SAFETY_FAULT_CATEGORIES)
+export const strategyOperationalMemoryTypeV = stringLiterals(STRATEGY_OPERATIONAL_MEMORY_TYPES)
+export const strategyOperationalMemoryStatusV = stringLiterals(STRATEGY_OPERATIONAL_MEMORY_STATUSES)
+export const strategyOperationalMemorySeverityV = stringLiterals(STRATEGY_OPERATIONAL_MEMORY_SEVERITIES)
+export const strategyOperationalMemoryProviderTruthV = stringLiterals(STRATEGY_OPERATIONAL_MEMORY_PROVIDER_TRUTH)
+
+export const strategyOperationalMemoryScopeV = v.object({
+    app: venueAppV,
+    accountId: v.string(),
+    providerId: v.optional(v.string()),
+    toolName: v.optional(v.string()),
+    upstreamToolName: v.optional(v.string()),
+    schemaHash: v.optional(v.string()),
+    instrument: v.optional(v.string()),
+})
+
+export const strategyOperationalMemorySourceV = v.object({
+    runId: v.optional(v.string()),
+    agentLogId: v.optional(v.string()),
+    chatSessionId: v.optional(v.string()),
+    chatMessageId: v.optional(v.string()),
+    toolCallId: v.optional(v.string()),
+    timestamp: v.number(),
+})
+
+export const strategyOperationalMemoryEvidenceV = v.object({
+    attemptCount: v.number(),
+    successCount: v.number(),
+    failureCount: v.number(),
+    lastErrorSignature: v.optional(v.string()),
+    sanitizedInputFingerprint: v.optional(v.string()),
+    sanitizedOutputDigest: v.optional(v.string()),
+})
+
+export const strategyOperationalMemoryLessonV = v.object({
+    summary: v.string(),
+    useWhen: v.optional(v.string()),
+    avoidWhen: v.optional(v.string()),
+    requiredArgumentShape: v.optional(v.any()),
+    correctedExample: v.optional(v.any()),
+    providerTruth: strategyOperationalMemoryProviderTruthV,
+})
+
+export const strategyOperationalMemoryRankingV = v.object({
+    score: v.number(),
+    expiresAt: v.optional(v.number()),
+    supersededBy: v.optional(v.string()),
+})
 
 export const positionSideV = v.union(v.literal("long"), v.literal("short"))
 

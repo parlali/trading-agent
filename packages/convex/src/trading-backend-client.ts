@@ -39,7 +39,6 @@ import type {
     FullResetAudit,
     GetRecentAlertsArgs,
     KillSwitchState,
-    LastCompletedRunSummary,
     ManualRunRequest,
     PortfolioFreshnessRow,
     PortfolioAccountSnapshotRow,
@@ -59,6 +58,7 @@ import type {
     RunDiagnostics,
     RunTrigger,
     StoreCodexChatGptAuthArgs,
+    StoredStrategyOperationalMemory,
     StoredRun,
     StoredStrategy,
     StrategyMcpToolWhitelist,
@@ -68,6 +68,7 @@ import type {
     TradeEventRow,
     TradingBackendClient,
     TradingBackendClientConfig,
+    ToolManifestEntry,
 } from "./client-types"
 
 function toProviderPositionInput(position: Position) {
@@ -292,10 +293,32 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
                 } as never) as TradeEventRow[]
             )
         },
-        async getLastCompletedRunSummary(strategyId: Id<"strategies">): Promise<LastCompletedRunSummary | null> {
+        async refreshStrategyOperationalMemoryFromRun(runId: Id<"strategy_runs">): Promise<{ upserted: number; skipped?: string }> {
             return await runWithTimeout(
-                "Convex query getLastCompletedRunSummary",
-                async () => await client.query(api.queries.getLastCompletedRunSummary, { ...requireMachineAuth(), strategyId } as never) as LastCompletedRunSummary | null
+                "Convex mutation refreshStrategyOperationalMemoryFromRun",
+                async () => await client.mutation(api.mutations.refreshStrategyOperationalMemoryFromRun, {
+                    ...requireMachineAuth(),
+                    runId,
+                } as never) as { upserted: number; skipped?: string }
+            )
+        },
+        async getApplicableStrategyOperationalMemory(
+            strategyId: Id<"strategies">,
+            app: Exclude<App, "backend">,
+            accountId: string,
+            toolManifest: ToolManifestEntry[],
+            limit?: number
+        ): Promise<StoredStrategyOperationalMemory[]> {
+            return await runWithTimeout(
+                "Convex query getApplicableStrategyOperationalMemory",
+                async () => await client.query(api.queries.getApplicableStrategyOperationalMemory, {
+                    ...requireMachineAuth(),
+                    strategyId,
+                    app,
+                    accountId,
+                    toolManifest,
+                    limit,
+                } as never) as StoredStrategyOperationalMemory[]
             )
         },
         async recoverRunningRuns(): Promise<number> {

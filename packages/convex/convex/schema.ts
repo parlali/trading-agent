@@ -25,6 +25,14 @@ import {
     mcpToolApprovalV,
     mcpToolDiscoveryRequestV,
     mcpToolDiagnosticV,
+    strategyOperationalMemoryTypeV,
+    strategyOperationalMemoryStatusV,
+    strategyOperationalMemorySeverityV,
+    strategyOperationalMemoryScopeV,
+    strategyOperationalMemorySourceV,
+    strategyOperationalMemoryEvidenceV,
+    strategyOperationalMemoryLessonV,
+    strategyOperationalMemoryRankingV,
 } from "./lib/validators"
 
 const heartbeatStateFields = {
@@ -82,6 +90,28 @@ export default defineSchema({
         updatedAt: v.number(),
     }).index("by_strategy", ["strategyId"]),
 
+    strategy_operational_memories: defineTable({
+        schemaVersion: v.literal(1),
+        memoryKey: v.string(),
+        strategyId: v.id("strategies"),
+        app: venueAppV,
+        accountId: v.string(),
+        type: strategyOperationalMemoryTypeV,
+        status: strategyOperationalMemoryStatusV,
+        severity: strategyOperationalMemorySeverityV,
+        confidence: v.number(),
+        scope: strategyOperationalMemoryScopeV,
+        sources: v.array(strategyOperationalMemorySourceV),
+        evidence: strategyOperationalMemoryEvidenceV,
+        lesson: strategyOperationalMemoryLessonV,
+        ranking: strategyOperationalMemoryRankingV,
+        createdAt: v.number(),
+        updatedAt: v.number(),
+    })
+        .index("by_strategy_status", ["strategyId", "status"])
+        .index("by_strategy_type", ["strategyId", "type"])
+        .index("by_memory_key", ["memoryKey"]),
+
     strategy_runs: defineTable({
         strategyId: v.id("strategies"),
         app: venueAppV,
@@ -138,6 +168,7 @@ export default defineSchema({
         mcpToolDiagnostics: v.optional(v.array(mcpToolDiagnosticV)),
         toolManifest: v.optional(v.array(v.object({
             name: v.string(),
+            schemaHash: v.optional(v.string()),
             category: v.optional(v.string()),
             contractBoundary: v.optional(v.string()),
             contractOwner: v.optional(v.string()),
