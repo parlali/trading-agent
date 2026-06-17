@@ -128,6 +128,49 @@ describe("createOKXProposeAdjustmentTool", () => {
         }
     })
 
+    it("rejects ambiguous OKX same-instrument protection adjustments without side or provider identity", async () => {
+        const pipeline = {
+            ...createPipeline({ stopLoss: 95, takeProfit: 112 }),
+            getPositions: vi.fn(async () => [
+                {
+                    instrument: "BTC-USDT-SWAP",
+                    providerPositionId: "long-pos",
+                    side: "long" as const,
+                    quantity: 0.1,
+                    entryPrice: 100,
+                    currentPrice: 105,
+                    stopLoss: 95,
+                    takeProfit: 112,
+                },
+                {
+                    instrument: "BTC-USDT-SWAP",
+                    providerPositionId: "short-pos",
+                    side: "short" as const,
+                    quantity: 0.2,
+                    entryPrice: 100,
+                    currentPrice: 95,
+                    stopLoss: 105,
+                    takeProfit: 88,
+                },
+            ]),
+        }
+        const venue = createVenue({ stopLoss: 97, takeProfit: 118 })
+        const tool = createOKXProposeAdjustmentTool(pipeline as never, venue as never)
+
+        const result = await tool.handler({
+            instrument: "BTC-USDT-SWAP",
+            stopLoss: 97,
+            reason: "tighten stop",
+        }) as { status: string; errorDetail?: { code?: string } }
+
+        expect(result.status).toBe("rejected")
+        expect(result.errorDetail).toMatchObject({
+            code: "AMBIGUOUS_POSITION_IDENTITY",
+        })
+        expect(venue.updateProtectionOrders).not.toHaveBeenCalled()
+        expect(pipeline.closePosition).not.toHaveBeenCalled()
+    })
+
     it("fails closed when provider truth cannot prove the intended final protection state", async () => {
         const faultRecorder = vi.fn(async () => {})
         const pipeline = createPipeline({ stopLoss: 95, takeProfit: 112 })

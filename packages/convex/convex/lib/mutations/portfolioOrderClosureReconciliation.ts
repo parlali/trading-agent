@@ -84,9 +84,11 @@ export async function reconcileProviderPositionClosures(
         return { unattributedClosures: [], unmatchedClosedPositions: [] }
     }
 
-    const historicCandidates = (await resolveHistoricMT5ProviderCloseCandidates(ctx, args))
+    const mt5HistoricCandidates = (await resolveHistoricMT5ProviderCloseCandidates(ctx, args))
         .map((position) => trackCandidate(position, true))
-    const candidates = [...disappearedCandidates, ...historicCandidates]
+    const okxHistoricCandidates = (await resolveHistoricOKXProviderCloseCandidates(ctx, args))
+        .map((position) => trackCandidate(position, true))
+    const candidates = [...disappearedCandidates, ...mt5HistoricCandidates, ...okxHistoricCandidates]
     const latestRunIdsByStrategy = new Map<string, Id<"strategy_runs"> | undefined>()
     const importedClosureKeys = new Set<string>()
     const unattributedClosures: string[] = []
@@ -137,7 +139,7 @@ export async function reconcileProviderPositionClosures(
             continue
         }
 
-        const match = resolveMatchingCandidatePosition(candidates, closure)
+        const match = resolveMatchingCandidatePosition(candidates, closure, args.app)
         if (match.kind === "none") {
             if (isExpectedExternalProviderRow(args.expectedExternalInstruments, closure)) {
                 importedClosureKeys.add(closureKey)
@@ -362,7 +364,8 @@ function consumeCandidateForOrder(
 
 function resolveMatchingCandidatePosition(
     candidates: TrackedClosureCandidate[],
-    closure: ProviderPositionClosureInput
+    closure: ProviderPositionClosureInput,
+    app: Doc<"strategies">["app"]
 ): CandidateMatch {
     const closureIds = buildPositionClosureIdentityCandidates(closure)
     const eligible = candidates.filter((candidate) =>
@@ -389,7 +392,61 @@ function resolveMatchingCandidatePosition(
         return { kind: "ambiguous", reason: "multiple owned positions share the provider close identity" }
     }
 
+    if (
+        app === "okx-swap" &&
+        !hasExplicitProviderPositionIdentity(closure) &&
+        hasAuditedOKXCloseEvidence(closure)
+    ) {
+        if (eligible.length === 1) {
+            return { kind: "matched", candidate: eligible[0]! }
+        }
+
+        if (eligible.length > 1) {
+            return {
+                kind: "ambiguous",
+                reason: "multiple recently owned OKX positions match the close instrument, side, and time window without provider position identity",
+            }
+        }
+    }
+
     return { kind: "none" }
+}
+
+function hasExplicitProviderPositionIdentity(closure: ProviderPositionClosureInput): boolean {
+    const metadata = parseJson<Record<string, unknown>>(closure.metadata)
+    return readIdentifier(closure.providerPositionId) !== undefined ||
+        readIdentifier(metadata?.posId) !== undefined ||
+        readIdentifier(metadata?.positionId) !== undefined ||
+        readIdentifier(metadata?.providerPositionId) !== undefined ||
+        readIdentifier(metadata?.providerPositionKey) !== undefined
+}
+
+function hasAuditedOKXCloseEvidence(closure: ProviderPositionClosureInput): boolean {
+    const metadata = parseJson<Record<string, unknown>>(closure.metadata)
+    if (metadata?.source !== "okx_fills_history") {
+        return false
+    }
+
+    if (
+        readIdentifier(metadata?.orderId) ||
+        readIdentifier(metadata?.clientOrderId) ||
+        readIdentifier(metadata?.triggeredOrderId) ||
+        readIdentifier(metadata?.algoId) ||
+        readIdentifier(metadata?.algoClOrdId) ||
+        readIdentifier(metadata?.actualOrdId)
+    ) {
+        return true
+    }
+
+    if (Array.isArray(metadata?.tradeIds) && metadata.tradeIds.some((value) => readIdentifier(value))) {
+        return true
+    }
+
+    if (Array.isArray(metadata?.providerOrderAliases) && metadata.providerOrderAliases.some((value) => readIdentifier(value))) {
+        return true
+    }
+
+    return false
 }
 
 function hasProviderAccountingEvidence(closure: ProviderPositionClosureInput): boolean {
@@ -671,6 +728,50 @@ async function resolveHistoricMT5ProviderCloseCandidates(
     }
 
     return candidates
+}
+
+async function resolveHistoricOKXProviderCloseCandidates(
+    ctx: PortfolioMutationCtx,
+    args: {
+        app: Doc<"strategies">["app"]
+        accountId: string
+        strategyMap: Map<string, StrategyDoc>
+        existingProviderPositions: Doc<"provider_positions">[]
+        positionClosures: ProviderPositionClosureInput[]
+        updatedAt: number
+    }
+): Promise<ProviderClosePositionCandidate[]> {
+    if (args.app !== "okx-swap" || args.positionClosures.length === 0) {
+        return []
+    }
+
+    const existingPositionKeys = new Set(args.existingProviderPositions.map((position) => position.positionKey))
+    const history = await ctx.db
+        .query("provider_position_history")
+        .withIndex("by_app_account", (q) => q.eq("app", args.app).eq("accountId", args.accountId))
+        .collect()
+
+    return history
+        .filter((position) =>
+            position.retainedUntil >= args.updatedAt &&
+            position.ownershipStatus === "owned" &&
+            position.expectedExternal !== true &&
+            position.strategyId !== undefined &&
+            args.strategyMap.has(String(position.strategyId)) &&
+            !existingPositionKeys.has(position.positionKey)
+        )
+        .map((position) => ({
+            strategyId: position.strategyId!,
+            accountId: position.accountId,
+            instrument: position.instrument,
+            side: position.side,
+            quantity: position.quantity,
+            entryPrice: position.entryPrice,
+            metadata: position.metadata,
+            providerPositionId: position.providerPositionId,
+            positionKey: position.positionKey,
+            syncedAt: position.lastSeenAt,
+        }))
 }
 
 function isTerminalHistoricOrderStatus(status: Doc<"orders">["status"]): boolean {

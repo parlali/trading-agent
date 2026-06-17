@@ -36,6 +36,9 @@ export interface CompositeOrderId {
     rawId: string
 }
 
+const OKX_CLOSE_LONG_SUBTYPES = new Set(["5", "100", "125", "208", "274", "328"])
+const OKX_CLOSE_SHORT_SUBTYPES = new Set(["6", "101", "126", "209", "275", "329"])
+
 export function resolvePositionSide(
     position: OKXPosition,
     positionMode: OKXPositionMode
@@ -243,6 +246,16 @@ export function readFiniteNumberString(value?: string): number | undefined {
     return isFiniteNumberString(value) ? Number(value) : undefined
 }
 
+export function isCanonicalOKXCloseClientOrderId(value?: string): boolean {
+    return typeof value === "string" && /^vokc[0-9a-z]{2}[a-z2-7]{10}$/.test(value)
+}
+
+export function isOKXCloseSubType(value?: string): boolean {
+    const subType = value?.trim()
+    return subType !== undefined &&
+        (OKX_CLOSE_LONG_SUBTYPES.has(subType) || OKX_CLOSE_SHORT_SUBTYPES.has(subType))
+}
+
 export function isOKXClosingFill(fill: OKXFill): boolean {
     if (!isFiniteNumberString(fill.fillSz) ||
         Number(fill.fillSz) <= 0 ||
@@ -260,7 +273,10 @@ export function isOKXClosingFill(fill: OKXFill): boolean {
         return fill.side === "buy"
     }
 
-    return isFiniteNumberString(fill.fillPnl) && Number(fill.fillPnl) !== 0
+    return isOKXCloseSubType(fill.subType) ||
+        isCanonicalOKXCloseClientOrderId(fill.clOrdId) ||
+        fill.reduceOnly === "true" ||
+        isFiniteNumberString(fill.fillPnl) && Number(fill.fillPnl) !== 0
 }
 
 export function resolveOKXClosurePositionSide(fill: OKXFill): Position["side"] {
@@ -272,7 +288,29 @@ export function resolveOKXClosurePositionSide(fill: OKXFill): Position["side"] {
         return "short"
     }
 
+    const subTypeSide = resolveOKXCloseSubTypePositionSide(fill.subType)
+    if (subTypeSide) {
+        return subTypeSide
+    }
+
     return fill.side === "sell" ? "long" : "short"
+}
+
+function resolveOKXCloseSubTypePositionSide(value?: string): Position["side"] | undefined {
+    const subType = value?.trim()
+    if (!subType) {
+        return undefined
+    }
+
+    if (OKX_CLOSE_LONG_SUBTYPES.has(subType)) {
+        return "long"
+    }
+
+    if (OKX_CLOSE_SHORT_SUBTYPES.has(subType)) {
+        return "short"
+    }
+
+    return undefined
 }
 
 export function sumOptionalNumberStrings(values: Array<string | undefined>): number | undefined {

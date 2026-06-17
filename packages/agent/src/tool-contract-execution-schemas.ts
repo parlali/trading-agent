@@ -248,6 +248,9 @@ export const alpacaOrderJsonSchema = {
 
 export const okxAdjustmentParamsSchema = z.object({
     instrument: z.string(),
+    providerPositionId: z.string().optional(),
+    providerPositionKey: z.string().optional(),
+    positionSide: z.enum(["long", "short"]).optional(),
     stopLoss: z.number().optional(),
     takeProfit: z.number().optional(),
     reason: z.string(),
@@ -257,6 +260,9 @@ export const okxAdjustmentJsonSchema = {
     type: "object",
     properties: {
         instrument: { type: "string", description: "OKX swap instrument, e.g. BTC-USDT-SWAP or ETH-USDT-SWAP" },
+        providerPositionId: { type: "string", description: "Provider position id from get_positions. Required when an OKX instrument has multiple live positions unless positionSide uniquely identifies the target." },
+        providerPositionKey: { type: "string", description: "Canonical provider position key from the portfolio row. Use this when available to target an exact OKX position." },
+        positionSide: { type: "string", enum: ["long", "short"], description: "Position side to adjust. Required when an OKX instrument has both long and short exposure and providerPositionId is not provided." },
         stopLoss: { type: "number", description: "New stop-loss price" },
         takeProfit: { type: "number", description: "New take-profit price" },
         reason: { type: "string", description: "Why this adjustment is needed" },
@@ -266,6 +272,9 @@ export const okxAdjustmentJsonSchema = {
 
 export const closeParamsSchema = z.object({
     instrument: z.string(),
+    providerPositionId: z.string().optional(),
+    providerPositionKey: z.string().optional(),
+    positionSide: z.enum(["long", "short"]).optional(),
     reason: z.string(),
 })
 
@@ -273,6 +282,9 @@ export const closeJsonSchema = {
     type: "object",
     properties: {
         instrument: { type: "string", description: "The instrument to close the position for" },
+        providerPositionId: { type: "string", description: "Provider position id from get_positions. Required when the same instrument has multiple live positions unless positionSide uniquely identifies the target." },
+        providerPositionKey: { type: "string", description: "Canonical provider position key from the portfolio row. Use this when available to close an exact provider position." },
+        positionSide: { type: "string", enum: ["long", "short"], description: "Position side to close. Required when an instrument has both long and short exposure and providerPositionId is not provided." },
         reason: { type: "string", description: "Why the position is being closed" },
     },
     required: ["instrument", "reason"],

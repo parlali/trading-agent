@@ -824,6 +824,123 @@ describe("Convex OKX net-mode closure replay", () => {
         expect(resolveCloseOrderRealizedPnl(syntheticAfterRerun as never)).toBeCloseTo(-20.1)
     })
 
+    it("attributes late OKX close evidence to a recently disappeared owned position", async () => {
+        process.env.BACKEND_SERVICE_TOKEN = "test-token"
+        const providerPositionId = "3618122936764630001"
+        const db = new FakeDb({
+            strategies: [buildOkxStrategy("strategy-okx-a", "OKX A")],
+            strategy_runs: [buildOkxRun("run-okx-a", "strategy-okx-a")],
+            instrument_claims: [],
+            orders: [],
+            provider_positions: [
+                buildOwnedProviderPosition({
+                    id: "provider-position-late",
+                    strategyId: "strategy-okx-a",
+                    posId: providerPositionId,
+                    quantity: 5,
+                }),
+            ],
+            provider_working_orders: [],
+            provider_sync_state: [],
+            position_syncs: [],
+            positions: [],
+            execution_safety_faults: [],
+            account_snapshots: [],
+            control_plane_metrics: [],
+            alerts: [],
+        })
+        const ctx = { db } as never
+
+        await callRegistered(reconcileProviderPortfolio, ctx, buildReconcileArgs([]))
+
+        expect(db.rows.provider_positions ?? []).toHaveLength(0)
+        expect(db.rows.provider_position_history).toEqual([
+            expect.objectContaining({
+                positionKey: `ETH-USDT-SWAP:${providerPositionId}`,
+                strategyId: "strategy-okx-a",
+                ownershipStatus: "owned",
+            }),
+        ])
+        expect((db.rows.provider_sync_state ?? [])[0]).toMatchObject({
+            driftDetected: true,
+        })
+
+        await callRegistered(reconcileProviderPortfolio, ctx, buildReconcileArgs([
+            buildClosure({
+                quantity: 5,
+                fillPrice: 1877.49,
+                fillPnl: 0,
+                ordId: "3621806927858888888",
+            }),
+        ]))
+
+        const syntheticOrderId = `provider-close:okx-swap:ETH-USDT-SWAP:${providerPositionId}:${CLOSED_AT}`
+        const syntheticClose = (db.rows.orders ?? []).find((order) => order.orderId === syntheticOrderId)
+        expect(syntheticClose).toMatchObject({
+            strategyId: "strategy-okx-a",
+            status: "filled",
+            action: "close",
+            filledQuantity: 5,
+            avgFillPrice: 1877.49,
+        })
+        expect(resolveCloseOrderRealizedPnl(syntheticClose as never)).toBeCloseTo(0)
+
+        const syncState = (db.rows.provider_sync_state ?? [])[0]
+        expect(syncState).toMatchObject({
+            driftDetected: false,
+            lastDriftSummary: undefined,
+        })
+        expect(db.rows.execution_safety_faults ?? []).toEqual([])
+    })
+
+    it("fails closed when OKX close evidence has no safe owned position candidate", async () => {
+        process.env.BACKEND_SERVICE_TOKEN = "test-token"
+        const db = new FakeDb({
+            strategies: [buildOkxStrategy("strategy-okx-a", "OKX A")],
+            strategy_runs: [buildOkxRun("run-okx-a", "strategy-okx-a")],
+            instrument_claims: [],
+            orders: [],
+            provider_positions: [],
+            provider_working_orders: [],
+            provider_sync_state: [],
+            position_syncs: [],
+            positions: [],
+            execution_safety_faults: [],
+            account_snapshots: [],
+            control_plane_metrics: [],
+            alerts: [],
+        })
+        const ctx = { db } as never
+
+        await callRegistered(reconcileProviderPortfolio, ctx, buildReconcileArgs([{
+            instrument: "ETH-USDT-SWAP",
+            side: "short",
+            quantity: 5,
+            fillPrice: 1877.49,
+            closedAt: CLOSED_AT,
+            metadata: JSON.stringify({
+                orderId: "3621806927857777777",
+                tradeIds: ["trade-no-owner"],
+                fillPnl: 0,
+                fee: -0.12,
+                feeCcy: "USDT",
+                source: "okx_fills_history",
+            }),
+        }]))
+
+        expect(db.rows.orders ?? []).toHaveLength(0)
+        const syncState = (db.rows.provider_sync_state ?? [])[0]
+        expect(syncState?.driftDetected).toBe(true)
+        expect(String(syncState?.lastDriftSummary)).toContain("broker close has provider accounting")
+        expect(db.rows.execution_safety_faults ?? []).toEqual([
+            expect.objectContaining({
+                strategyId: "strategy-okx-a",
+                category: "unattributed_closure",
+                blocked: true,
+            }),
+        ])
+    })
+
     it("fails closed instead of quantity-matching a broker close without provider position identity", async () => {
         process.env.BACKEND_SERVICE_TOKEN = "test-token"
         const db = new FakeDb({
@@ -836,6 +953,12 @@ describe("Convex OKX net-mode closure replay", () => {
                     id: "provider-position-a",
                     strategyId: "strategy-okx-a",
                     posId: "3618122936764630001",
+                    quantity: 5,
+                }),
+                buildOwnedProviderPosition({
+                    id: "provider-position-b",
+                    strategyId: "strategy-okx-a",
+                    posId: "3618122936764630002",
                     quantity: 5,
                 }),
             ],
@@ -865,6 +988,7 @@ describe("Convex OKX net-mode closure replay", () => {
         const syncState = (db.rows.provider_sync_state ?? [])[0]
         expect(syncState?.driftDetected).toBe(true)
         expect(String(syncState?.lastDriftSummary)).toContain("broker close has provider accounting")
+        expect(String(syncState?.lastDriftSummary)).toContain("ambiguous")
 
         const driftAlert = (db.rows.alerts ?? []).find((alert) =>
             String(alert.message).includes("broker close has provider accounting")

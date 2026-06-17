@@ -655,8 +655,9 @@ async function createOKXProtectionOperationContext(config: {
 }
 
 export async function flattenOKXPositionAfterProtectionFailure(config: {
-    pipeline: Pick<ExecutionPipeline, "closePosition">
+    pipeline: Pick<ExecutionPipeline, "closePosition"> & Partial<Pick<ExecutionPipeline, "closeProviderPosition">>
     instrument: string
+    targetPosition?: Position
     protectionError: string
     category?: OKXProtectionFailureCategory
     flattenReason: string
@@ -681,17 +682,24 @@ export async function flattenOKXPositionAfterProtectionFailure(config: {
 
     try {
         assertToolNotAborted(config.signal)
-        const flattenResult = await config.pipeline.closePosition(
-            config.instrument,
-            config.flattenReason,
-            {
-                metadata: {
-                    forcedExit: true,
-                    executionSafetyCategory: faultCategory,
-                    executionSafetyReason: faultMessage,
-                },
-            }
-        )
+        const closeOptions = {
+            metadata: {
+                forcedExit: true,
+                executionSafetyCategory: faultCategory,
+                executionSafetyReason: faultMessage,
+            },
+        }
+        const flattenResult = config.targetPosition && config.pipeline.closeProviderPosition
+            ? await config.pipeline.closeProviderPosition(
+                config.targetPosition,
+                config.flattenReason,
+                closeOptions
+            )
+            : await config.pipeline.closePosition(
+                config.instrument,
+                config.flattenReason,
+                closeOptions
+            )
         assertToolNotAborted(config.signal)
         if (flattenResult.result.status !== "filled") {
             throw new Error(flattenResult.result.error ?? `Flatten did not prove flat position: ${flattenResult.result.status}`)
