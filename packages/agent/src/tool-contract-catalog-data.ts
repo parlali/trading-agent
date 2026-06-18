@@ -117,7 +117,7 @@ export const toolContractDefinitions = [
                 errorSemantics: "Broker or policy rejections are returned in the execution payload.",
             },
             polymarket: {
-                description: "Propose a Polymarket order using a canonical token ID plus exact market identity from search_markets or direct lookup. Never submit a condition ID, event slug, or question as the tradable instrument.",
+                description: "Propose a Polymarket order using a canonical token ID plus exact market identity from search_markets or direct lookup. Never submit a condition ID, event slug, question, already-held token, or another outcome from an already-held condition as the tradable instrument.",
                 parameters: executionSchemas.polymarketOrderParamsSchema,
                 jsonSchema: executionSchemas.polymarketOrderJsonSchema,
                 outputDescription: "Returns the normalized execution result, risk validation, and tracked order snapshot for the proposed order.",
