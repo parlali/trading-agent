@@ -14,6 +14,7 @@ export {
 export {
     normalizeMT5Symbol,
     resolveMT5AllowedSymbol,
+    resolveMT5AllowedSymbols,
     resolveMT5ConfiguredSymbols,
 } from "./symbols"
 export type { MT5MarketSnapshot } from "./market-context"

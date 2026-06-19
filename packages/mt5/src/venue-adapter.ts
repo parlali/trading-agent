@@ -31,7 +31,6 @@ import {
 } from "./mt5-client"
 import { toMT5MarketSnapshot, type MT5MarketSnapshot } from "./market-context"
 import {
-    normalizeMT5Symbol,
     resolveMT5AllowedSymbol,
 } from "./symbols"
 import {
@@ -591,7 +590,7 @@ export class MT5VenueAdapter implements VenueAdapter, PriceVerifier {
     private resolveAllowedSymbol(symbol: string): string {
         return this.allowedSymbols.length > 0
             ? resolveMT5AllowedSymbol(symbol, this.allowedSymbols)
-            : normalizeMT5Symbol(symbol)
+            : symbol.trim()
     }
 
     private async withRecoverableRead<T>(read: () => Promise<T>): Promise<T> {

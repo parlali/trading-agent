@@ -33,6 +33,8 @@ import {
 import type {
     ClosePositionOptions,
     ExecuteIntentResult,
+    ExecutionOrderOperation,
+    ExecutionOrderOperationLock,
     ExecutionSafetyFaultInput,
     ExecutionSafetyFaultRecorder,
     ExecutionPipelineConfig,
@@ -93,6 +95,8 @@ export type {
     ExecutionPipelineConfig,
     ExecutionSafetyFaultRecorder,
     OrderLifecycleConfig,
+    ExecutionOrderOperation,
+    ExecutionOrderOperationLock,
     OrderStatusCallback,
     OrderOperationContext,
     SubmitOrderContext,
@@ -123,6 +127,7 @@ export class ExecutionPipeline {
     private orderIdentitySequences = new Map<string, number>()
     private runtimeCommitUnknownBlockedInstruments = new Set<string>()
     private executionSafetyFaultRecorder?: ExecutionSafetyFaultRecorder
+    private orderOperationLock?: ExecutionOrderOperationLock
     private reservedSubmitAttemptIds = new Set<string>()
     private submitAttemptSnapshots = new Map<string, OrderSnapshot>()
 
@@ -142,6 +147,7 @@ export class ExecutionPipeline {
         this.strategyRealizedPnl = config.strategyRealizedPnl ?? 0
         this.dryRunBook = new DryRunExecutionBook(this.policy, this.runId)
         this.executionSafetyFaultRecorder = config.executionSafetyFaultRecorder
+        this.orderOperationLock = config.orderOperationLock
         this.lifecycleManager = new OrderLifecycleManager(
             config.venue,
             config.logger,
@@ -154,7 +160,8 @@ export class ExecutionPipeline {
             config.venueName,
             (previousSnapshot, currentSnapshot) => {
                 reconcileOwnedInstrumentsFromSnapshots(this.ownedInstruments, previousSnapshot, currentSnapshot)
-            }
+            },
+            config.orderOperationLock
         )
     }
 
@@ -163,6 +170,17 @@ export class ExecutionPipeline {
         accountState: AccountState,
         positions: Position[],
         lifecycleContext: OrderLifecycleContext = { action: getIntentAction(intent) }
+    ): Promise<ExecuteIntentResult> {
+        return await this.runOrderOperation("executeIntent", async () =>
+            await this.executeIntentWithoutOperationLock(intent, accountState, positions, lifecycleContext)
+        )
+    }
+
+    private async executeIntentWithoutOperationLock(
+        intent: OrderIntent,
+        accountState: AccountState,
+        positions: Position[],
+        lifecycleContext: OrderLifecycleContext
     ): Promise<ExecuteIntentResult> {
         const intentWithLifecycleMetadata = withLifecycleAction(intent, lifecycleContext)
 
@@ -327,6 +345,12 @@ export class ExecutionPipeline {
     }
 
     async cancelOrder(orderId: string, reason?: string): Promise<ExecutionResult> {
+        return await this.runOrderOperation("cancelOrder", async () =>
+            await this.cancelOrderWithoutOperationLock(orderId, reason)
+        )
+    }
+
+    private async cancelOrderWithoutOperationLock(orderId: string, reason?: string): Promise<ExecutionResult> {
         const existing = await this.lifecycleManager.getOrderSnapshot(orderId)
         const instrument = existing?.instrument ?? "order-cancel"
         const intent = createSyntheticIntent("cancel", instrument, "sell", 0, orderId, { reason })
@@ -413,6 +437,16 @@ export class ExecutionPipeline {
     }
 
     async modifyOrder(orderId: string, changes: Partial<OrderIntent>, reason?: string): Promise<ExecutionResult> {
+        return await this.runOrderOperation("modifyOrder", async () =>
+            await this.modifyOrderWithoutOperationLock(orderId, changes, reason)
+        )
+    }
+
+    private async modifyOrderWithoutOperationLock(
+        orderId: string,
+        changes: Partial<OrderIntent>,
+        reason?: string
+    ): Promise<ExecutionResult> {
         const hasChanges = hasIntentChanges(changes)
         const existing = await this.lifecycleManager.getOrderSnapshot(orderId)
         const canonicalOrderId = existing?.orderId ?? orderId
@@ -516,6 +550,16 @@ export class ExecutionPipeline {
     }
 
     async closePosition(
+        instrument: string,
+        reason?: string,
+        options: ClosePositionOptions = {}
+    ): Promise<ExecuteIntentResult> {
+        return await this.runOrderOperation("closePosition", async () =>
+            await this.closePositionWithoutOperationLock(instrument, reason, options)
+        )
+    }
+
+    private async closePositionWithoutOperationLock(
         instrument: string,
         reason?: string,
         options: ClosePositionOptions = {}
@@ -635,6 +679,16 @@ export class ExecutionPipeline {
         reason?: string,
         options: ClosePositionOptions = {}
     ): Promise<ExecuteIntentResult> {
+        return await this.runOrderOperation("closeProviderPosition", async () =>
+            await this.closeProviderPositionWithoutOperationLock(position, reason, options)
+        )
+    }
+
+    private async closeProviderPositionWithoutOperationLock(
+        position: Position,
+        reason?: string,
+        options: ClosePositionOptions = {}
+    ): Promise<ExecuteIntentResult> {
         const closeSide = resolveCloseOrderSide(position)
         const intent = buildProviderPositionCloseIntent({ position, reason, options })
 
@@ -704,6 +758,15 @@ export class ExecutionPipeline {
             result,
             preparedHandle,
         })
+    }
+
+    private async runOrderOperation<T>(
+        operation: ExecutionOrderOperation,
+        run: () => Promise<T>
+    ): Promise<T> {
+        return this.orderOperationLock
+            ? await this.orderOperationLock(operation, run)
+            : await run()
     }
 
     private async recordCloseResult(args: {
@@ -1048,6 +1111,12 @@ export class ExecutionPipeline {
     }
 
     async getOrderStatus(orderId: string): Promise<ExecutionResult> {
+        return await this.runOrderOperation("refreshOrderStatus", async () =>
+            await this.getOrderStatusWithoutOperationLock(orderId)
+        )
+    }
+
+    private async getOrderStatusWithoutOperationLock(orderId: string): Promise<ExecutionResult> {
         const existing = await this.lifecycleManager.getOrderSnapshot(orderId)
         const canonicalOrderId = existing?.orderId ?? orderId
         const providerOrderId = existing?.providerOrderId ?? orderId
@@ -1094,7 +1163,9 @@ export class ExecutionPipeline {
     }
 
     async resumeOpenOrders(onUpdate: OrderStatusCallback): Promise<OrderSnapshot[]> {
-        return this.lifecycleManager.resumeActiveOrders(onUpdate)
+        return await this.runOrderOperation("resumeOpenOrders", async () =>
+            await this.lifecycleManager.resumeActiveOrders(onUpdate)
+        )
     }
 
     getTrackedOrder(orderId: string): OrderSnapshot | null {

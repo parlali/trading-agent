@@ -6,7 +6,7 @@ describe("MT5 symbol allow-list tools", () => {
     it("projects and enforces the configured provider-verified symbol set", async () => {
         const venue = {
             getSymbolInfo: vi.fn(async (): Promise<MT5SymbolInfo> => ({
-                symbol: "XAUUSD",
+                symbol: "XAUUSD.ecn",
                 digits: 2,
                 point: 0.01,
                 pipSize: 0.1,
@@ -30,14 +30,14 @@ describe("MT5 symbol allow-list tools", () => {
             })),
         } as unknown as MT5VenueAdapter
 
-        const tool = createMT5GetSymbolInfoTool(venue, ["XAUUSD"])
+        const tool = createMT5GetSymbolInfoTool(venue, ["XAUUSD.ecn"])
 
-        expect(tool.parameters.safeParse({ symbol: "XAUUSD" }).success).toBe(true)
+        expect(tool.parameters.safeParse({ symbol: "XAUUSD.ecn" }).success).toBe(true)
         expect(tool.parameters.safeParse({ symbol: "EURUSD" }).success).toBe(false)
-        expect((tool.jsonSchema?.properties as Record<string, { enum?: string[] }>).symbol?.enum).toEqual(["XAUUSD"])
+        expect((tool.jsonSchema?.properties as Record<string, { enum?: string[] }>).symbol?.enum).toEqual(["XAUUSD.ecn"])
 
-        await tool.handler({ symbol: "xauusd" })
+        await tool.handler({ symbol: "xauusd.ecn" })
 
-        expect(venue.getSymbolInfo).toHaveBeenCalledWith("XAUUSD")
+        expect(venue.getSymbolInfo).toHaveBeenCalledWith("XAUUSD.ecn")
     })
 })

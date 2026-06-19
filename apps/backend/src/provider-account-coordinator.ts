@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks"
 import type { VenueApp } from "./types"
 import type { Logger } from "@valiq-trading/core"
 
@@ -31,9 +32,11 @@ interface ProviderAccountLockState {
 }
 
 const providerAccountLocks = new Map<string, ProviderAccountLockState>()
+const providerAccountOperationContext = new AsyncLocalStorage<string>()
 
 export function resetProviderAccountCoordinatorForTests(): void {
     providerAccountLocks.clear()
+    providerAccountOperationContext.disable()
 }
 
 export function getProviderAccountOperationState(
@@ -55,6 +58,13 @@ export async function runProviderAccountOperation<T>(
     operation: () => Promise<T>
 ): Promise<ProviderAccountOperationResult<T>> {
     const key = providerAccountKey(args.app, args.accountId)
+    if (providerAccountOperationContext.getStore() === key) {
+        return {
+            status: "completed",
+            value: await operation(),
+        }
+    }
+
     const state = providerAccountLocks.get(key) ?? createProviderAccountLockState()
     providerAccountLocks.set(key, state)
 
@@ -107,7 +117,7 @@ export async function runProviderAccountOperation<T>(
     })
 
     try {
-        const value = await operation()
+        const value = await providerAccountOperationContext.run(key, operation)
         return {
             status: "completed",
             value,

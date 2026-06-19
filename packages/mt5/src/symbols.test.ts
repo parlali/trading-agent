@@ -2,22 +2,31 @@ import { describe, expect, it } from "vitest"
 import type { MT5Policy } from "@valiq-trading/core"
 import {
     resolveMT5AllowedSymbol,
+    resolveMT5AllowedSymbols,
     resolveMT5ConfiguredSymbols,
 } from "./symbols"
+import { resolveMT5InstrumentRegions } from "./market-context"
 
 describe("MT5 symbol configuration", () => {
-    it("uses explicit broker symbols without falling back to trading-hour aliases", () => {
+    it("uses exact broker symbols without falling back to trading-hour aliases", () => {
         expect(resolveMT5ConfiguredSymbols(createPolicy())).toEqual([])
         expect(resolveMT5ConfiguredSymbols(createPolicy({
-            "xauusd.ecn": ["US"],
+            "XAUUSD.ecn": ["US"],
             " EURUSD ": ["EU"],
-        }))).toEqual(["EURUSD", "XAUUSD.ECN"])
+        }))).toEqual(["EURUSD", "XAUUSD.ecn"])
+        expect(Object.keys(resolveMT5InstrumentRegions(createPolicy({
+            "XAUUSD.ecn": ["US"],
+        })))).toEqual(["XAUUSD.ecn"])
     })
 
     it("fails closed when no configured broker symbols are available", () => {
         expect(() => resolveMT5AllowedSymbol("XAUUSD", [])).toThrow("no configured provider-verified symbols")
-        expect(() => resolveMT5AllowedSymbol("XAUUSD", ["XAUUSD.ECN"])).toThrow("outside the configured provider-verified symbol set")
-        expect(resolveMT5AllowedSymbol("xauusd.ecn", ["XAUUSD.ECN"])).toBe("XAUUSD.ECN")
+        expect(() => resolveMT5AllowedSymbol("XAUUSD", ["XAUUSD.ecn"])).toThrow("outside the configured provider-verified symbol set")
+        expect(resolveMT5AllowedSymbol("xauusd.ecn", ["XAUUSD.ecn"])).toBe("XAUUSD.ecn")
+    })
+
+    it("rejects ambiguous configured broker symbols", () => {
+        expect(() => resolveMT5AllowedSymbols(["XAUUSD.ecn", "xauusd.ECN"])).toThrow("duplicate provider symbols")
     })
 })
 

@@ -1,7 +1,7 @@
 import { z } from "zod"
 import {
-    normalizeMT5Symbol,
     resolveMT5AllowedSymbol,
+    resolveMT5AllowedSymbols,
 } from "@valiq-trading/mt5"
 import type { ToolBinding } from "../tool-registry"
 
@@ -10,9 +10,9 @@ export function withMT5SymbolAllowList(
     field: "symbol" | "instrument",
     allowedSymbols: readonly string[]
 ): ToolBinding {
-    const normalizedAllowedSymbols = normalizeAllowedSymbols(allowedSymbols)
-    const allowedLabel = normalizedAllowedSymbols.length > 0
-        ? normalizedAllowedSymbols.join(", ")
+    const resolvedAllowedSymbols = resolveMT5AllowedSymbols(allowedSymbols)
+    const allowedLabel = resolvedAllowedSymbols.length > 0
+        ? resolvedAllowedSymbols.join(", ")
         : "none"
 
     return {
@@ -24,7 +24,7 @@ export function withMT5SymbolAllowList(
             }
 
             try {
-                resolveMT5AllowedSymbol(value[field], normalizedAllowedSymbols)
+                resolveMT5AllowedSymbol(value[field], resolvedAllowedSymbols)
             } catch (error) {
                 ctx.addIssue({
                     code: z.ZodIssueCode.custom,
@@ -33,7 +33,7 @@ export function withMT5SymbolAllowList(
                 })
             }
         }),
-        jsonSchema: restrictJsonSchemaField(tool.jsonSchema, field, normalizedAllowedSymbols),
+        jsonSchema: restrictJsonSchemaField(tool.jsonSchema, field, resolvedAllowedSymbols),
     }
 }
 
@@ -62,14 +62,6 @@ function restrictJsonSchemaField(
         description: `${typeof property.description === "string" ? property.description : "MT5 symbol"} Allowed values: ${allowedSymbols.join(", ")}`,
     }
     return next
-}
-
-function normalizeAllowedSymbols(allowedSymbols: readonly string[]): string[] {
-    return Array.from(new Set(
-        allowedSymbols
-            .map(normalizeMT5Symbol)
-            .filter((symbol) => symbol.length > 0)
-    )).sort((left, right) => left.localeCompare(right))
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

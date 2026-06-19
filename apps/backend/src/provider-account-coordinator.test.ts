@@ -92,6 +92,42 @@ describe("provider account coordinator", () => {
         releaseSync.resolve(undefined)
         await activeSync
     })
+
+    it("allows nested operations for the same account inside the active boundary", async () => {
+        const events: string[] = []
+        const logger = createLogger()
+
+        const result = await runProviderAccountOperation({
+            app: "mt5",
+            accountId: "account-1",
+            source: "order_lifecycle",
+            label: "order lifecycle executeIntent",
+            logger,
+        }, async () => {
+            events.push("outer:start")
+            const nested = await runProviderAccountOperation({
+                app: "mt5",
+                accountId: "account-1",
+                source: "order_lifecycle",
+                label: "order lifecycle upsertOrder",
+                logger,
+            }, async () => {
+                events.push("nested")
+                return "nested"
+            })
+            events.push("outer:end")
+            return nested
+        })
+
+        expect(result).toMatchObject({
+            status: "completed",
+            value: {
+                status: "completed",
+                value: "nested",
+            },
+        })
+        expect(events).toEqual(["outer:start", "nested", "outer:end"])
+    })
 })
 
 function createDeferred<T>(): {

@@ -162,8 +162,8 @@ export class MT5Plugin implements VenuePlugin {
         }
 
         try {
-            const received = new Set(snapshots.map((snapshot) => snapshot.instrument))
-            const missing = instruments.filter((instrument) => !received.has(instrument))
+            const received = new Set(snapshots.map((snapshot) => normalizeMT5Symbol(snapshot.instrument)))
+            const missing = instruments.filter((instrument) => !received.has(normalizeMT5Symbol(instrument)))
 
             if (missing.length > 0) {
                 config.logger.warn("MT5 execution-cost data is incomplete for this run", {

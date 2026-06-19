@@ -182,6 +182,23 @@ export async function createScheduledRunRuntime(
 
     const pluginValidators = plugin.getRiskValidators()
     const guardedVenue = createKillSwitchGuardedVenue(venue, app, strategy._id)
+    const runOrderLifecycleOperation = async <T>(
+        operation: string,
+        run: () => Promise<T>
+    ): Promise<T> => {
+        const result = await runProviderAccountOperation({
+            app,
+            accountId: strategy.accountId,
+            source: "order_lifecycle",
+            label: `order lifecycle ${operation}`,
+            logger: runLogger,
+        }, run)
+        if (result.status === "skipped") {
+            throw new Error(result.reason)
+        }
+
+        return result.value
+    }
     const orderPersistence = createConvexOrderPersistenceAdapter({
         url: convexUrl,
         machineAuth: {
@@ -192,20 +209,7 @@ export async function createScheduledRunRuntime(
             accountId: strategy.accountId,
             strategyId: strategy._id,
         },
-        mutationLock: async (operation, run) => {
-            const result = await runProviderAccountOperation({
-                app,
-                accountId: strategy.accountId,
-                source: "order_lifecycle",
-                label: `order lifecycle ${operation}`,
-                logger: runLogger,
-            }, run)
-            if (result.status === "skipped") {
-                throw new Error(result.reason)
-            }
-
-            return result.value
-        },
+        mutationLock: runOrderLifecycleOperation,
     })
     const pipeline = new ExecutionPipeline({
         venue: guardedVenue,
@@ -224,6 +228,7 @@ export async function createScheduledRunRuntime(
         ownedInstruments,
         ownershipScope,
         strategyRealizedPnl: 0,
+        orderOperationLock: runOrderLifecycleOperation,
         executionSafetyFaultRecorder: async (fault) => {
             await backend.recordExecutionSafetyFault({
                 strategyId: strategy._id,
