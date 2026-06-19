@@ -103,6 +103,15 @@ describe("MT5Client transport retry policy", () => {
 
         throw new Error("Expected structured worker error")
     })
+
+    it("does not retry non-retryable symbol read failures", async () => {
+        const transport = createSymbolUnavailableTransport()
+        const client = createTransportClient(transport.fetch)
+
+        await expect(client.getSymbolInfo(credentials, ["DOESNOTEXIST"])).rejects.toThrow("symbol_select failed")
+
+        expect(transport.calls()).toBe(1)
+    })
 })
 
 describe("MT5Client account-scoped request identity", () => {
@@ -209,6 +218,19 @@ function createStructuredFailingTransport(): {
         detail: {
             error: "positions_get failed: IPC recv failed (-10002)",
             errorType: "query_failed",
+            retryable: false,
+        },
+    }, 503, "Service Unavailable")
+}
+
+function createSymbolUnavailableTransport(): {
+    fetch: typeof fetch
+    calls: () => number
+} {
+    return createStaticErrorTransport({
+        detail: {
+            error: "symbol_select failed for DOESNOTEXIST: Symbol not found (4302)",
+            errorType: "symbol_unavailable",
             retryable: false,
         },
     }, 503, "Service Unavailable")

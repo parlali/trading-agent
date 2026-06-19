@@ -4,6 +4,10 @@ import {
     type ExecutionCostAssessment,
 } from "@valiq-trading/core"
 import type { MT5SymbolInfo } from "./mt5-client"
+import {
+    normalizeMT5Symbol,
+    resolveMT5AllowedSymbols,
+} from "./symbols"
 
 type SpreadUnit = "pips" | "points"
 
@@ -88,7 +92,7 @@ export function toMT5MarketSnapshot(
 ): MT5MarketSnapshot {
     const spread = resolveMT5NormalizedSpread(symbolInfo)
     return {
-        instrument: normalizeInstrument(symbolInfo.symbol),
+        instrument: symbolInfo.symbol.trim(),
         bid: symbolInfo.bid,
         ask: symbolInfo.ask,
         spread: spread.value,
@@ -105,21 +109,29 @@ function normalizeConfiguredInstrumentRegions(
     }
 
     const entries = Object.entries(configured).flatMap(([instrument, regions]) => {
-        const normalizedInstrument = normalizeInstrument(instrument)
+        const configuredInstrument = instrument.trim()
         const normalizedRegions = [...new Set(
             regions
                 .map((region) => region.trim().toUpperCase())
                 .filter((region) => region.length > 0)
         )]
 
-        if (!normalizedInstrument || normalizedRegions.length === 0) {
+        if (!configuredInstrument || normalizedRegions.length === 0) {
             return []
         }
 
-        return [[normalizedInstrument, normalizedRegions] as const]
+        return [[configuredInstrument, normalizedRegions] as const]
     })
 
-    return Object.fromEntries(entries)
+    const configuredSymbols = resolveMT5AllowedSymbols(entries.map(([instrument]) => instrument))
+    const regionsByNormalizedSymbol = new Map(
+        entries.map(([instrument, regions]) => [normalizeMT5Symbol(instrument), regions])
+    )
+
+    return Object.fromEntries(configuredSymbols.map((symbol) => [
+        symbol,
+        regionsByNormalizedSymbol.get(normalizeMT5Symbol(symbol)) ?? [],
+    ]))
 }
 
 function resolveFallbackInstruments(policy: MT5Policy): string[] {
@@ -133,7 +145,7 @@ function resolveFallbackInstruments(policy: MT5Policy): string[] {
 }
 
 function normalizeInstrument(instrument: string): string {
-    return instrument.trim().toUpperCase()
+    return normalizeMT5Symbol(instrument)
 }
 
 export function resolveMT5NormalizedSpread(symbolInfo: MT5SymbolInfo): MT5NormalizedSpread {

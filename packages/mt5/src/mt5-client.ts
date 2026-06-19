@@ -376,7 +376,9 @@ export class MT5Client {
     private async postRead<T = unknown>(path: string, body: unknown): Promise<T> {
         return await retryWithBackoff(async () => {
             return await this.request<T>("POST", path, body, this.timeout)
-        }, 3, 1000)
+        }, 3, 1000, {
+            shouldRetry: (error) => getExecutionErrorDetail(error)?.retryable ?? true,
+        })
     }
 
     private async postMutation<T = unknown>(

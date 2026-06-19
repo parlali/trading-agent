@@ -28,6 +28,12 @@ function createClient(): MT5Client {
     return client
 }
 
+function createAdapter(client: MT5Client = createClient()): MT5VenueAdapter {
+    return new MT5VenueAdapter(client, credentials, undefined, {
+        allowedSymbols: ["XAUUSD"],
+    })
+}
+
 function createIdentityContext(canonicalOrderId: string, role: "entry" | "close" = "entry") {
     return {
         canonicalOrderId,
@@ -43,6 +49,15 @@ function createIdentityContext(canonicalOrderId: string, role: "entry" | "close"
 }
 
 describe("MT5VenueAdapter", () => {
+    it("fails closed for symbol-scoped access without a configured allow-list", async () => {
+        const client = createClient()
+        client.getSymbolInfo = vi.fn()
+        const adapter = new MT5VenueAdapter(client, credentials)
+
+        await expect(adapter.getSymbolInfo("XAUUSD")).rejects.toThrow("no configured provider-verified symbols")
+        expect(client.getSymbolInfo).not.toHaveBeenCalled()
+    })
+
     it("passes the bound account credentials on every account-scoped worker call", async () => {
         const client = createClient()
         const seenLogins: Array<{ method: string; login: number }> = []
@@ -76,7 +91,7 @@ describe("MT5VenueAdapter", () => {
             return createOrderResult({})
         }
 
-        const adapter = new MT5VenueAdapter(client, credentials)
+        const adapter = createAdapter(client)
         await adapter.getAccountState()
         await adapter.getPositions()
         await adapter.getWorkingOrders()
@@ -106,7 +121,7 @@ describe("MT5VenueAdapter", () => {
             login: 999999,
         })
 
-        const adapter = new MT5VenueAdapter(client, credentials)
+        const adapter = createAdapter(client)
 
         await expect(adapter.getAccountState()).rejects.toThrow("bound to login 123456")
         await expect(adapter.ensureConnected()).rejects.toThrow("bound to login 123456")
@@ -119,7 +134,7 @@ describe("MT5VenueAdapter", () => {
             currency: "EUR",
         })
 
-        const adapter = new MT5VenueAdapter(client, credentials)
+        const adapter = createAdapter(client)
 
         await expect(adapter.getAccountState()).rejects.toThrow("MT5 account currency EUR is unsupported")
     })
@@ -137,7 +152,7 @@ describe("MT5VenueAdapter", () => {
             )
         }
 
-        const adapter = new MT5VenueAdapter(client, credentials)
+        const adapter = createAdapter(client)
 
         await expect(adapter.getPositions()).rejects.toThrow("session login 222222")
     })
@@ -156,7 +171,7 @@ describe("MT5VenueAdapter", () => {
             return createAccountInfo()
         }
 
-        const adapter = new MT5VenueAdapter(client, credentials)
+        const adapter = createAdapter(client)
         const state = await adapter.getAccountState()
 
         expect(state.equity).toBe(1000)
@@ -195,7 +210,7 @@ describe("MT5VenueAdapter", () => {
             metadata: {},
         }]
 
-        const adapter = new MT5VenueAdapter(client, credentials)
+        const adapter = createAdapter(client)
         const state = await adapter.getAccountState()
 
         expect(state.openPnl).toBe(4.5)
@@ -214,7 +229,7 @@ describe("MT5VenueAdapter", () => {
             })
         }
 
-        const adapter = new MT5VenueAdapter(client, credentials)
+        const adapter = createAdapter(client)
         const result = await adapter.submitOrder(createSubmissionIntent({
             orderType: "limit",
             limitPrice: 4715.5,
@@ -240,7 +255,7 @@ describe("MT5VenueAdapter", () => {
             price: 4715.5,
         })
 
-        const adapter = new MT5VenueAdapter(client, credentials)
+        const adapter = createAdapter(client)
         const result = await adapter.submitOrder(createSubmissionIntent({
             orderType: "limit",
             limitPrice: 4715.5,
@@ -254,7 +269,7 @@ describe("MT5VenueAdapter", () => {
     })
 
     it("treats a closed submit socket as commit-unknown", () => {
-        const adapter = new MT5VenueAdapter(createClient(), credentials)
+        const adapter = createAdapter(createClient())
         const outcome = adapter.classifySubmitError(
             new Error("The socket connection was closed unexpectedly. For more information, pass `verbose: true` in the second argument to fetch()")
         )
@@ -280,7 +295,7 @@ describe("MT5VenueAdapter", () => {
             timeDone: 0,
         }]
 
-        const adapter = new MT5VenueAdapter(client, credentials)
+        const adapter = createAdapter(client)
         const recovery = await adapter.recoverSubmittedOrder(
             createSubmissionIntent({
                 orderType: "limit",
@@ -311,7 +326,7 @@ describe("MT5VenueAdapter", () => {
             comment: "vmte01filled1234",
         }]
 
-        const adapter = new MT5VenueAdapter(client, credentials)
+        const adapter = createAdapter(client)
         const recovery = await adapter.recoverSubmittedOrder(
             createSubmissionIntent({
                 orderType: "market",
@@ -354,7 +369,7 @@ describe("MT5VenueAdapter", () => {
             timeDone: 0,
         }))
 
-        const adapter = new MT5VenueAdapter(client, credentials)
+        const adapter = createAdapter(client)
         const recovery = await adapter.recoverSubmittedOrder(
             createSubmissionIntent({
                 orderType: "limit",
@@ -401,7 +416,7 @@ describe("MT5VenueAdapter", () => {
         }
         client.getOrderStatus = async () => null
 
-        const adapter = new MT5VenueAdapter(client, credentials)
+        const adapter = createAdapter(client)
         const result = await adapter.cancelOrder("1607001000", {
             providerOrderAliases: ["1607001001", "1607001002"],
         })
@@ -445,7 +460,7 @@ describe("MT5VenueAdapter", () => {
             state: "filled",
         })
 
-        const adapter = new MT5VenueAdapter(client, credentials)
+        const adapter = createAdapter(client)
         const result = await adapter.cancelOrder("1607001002")
 
         expect(cancelledTickets).toEqual([1607001002])
@@ -468,7 +483,7 @@ describe("MT5VenueAdapter", () => {
             })
         }
 
-        const adapter = new MT5VenueAdapter(client, credentials)
+        const adapter = createAdapter(client)
         const result = await adapter.cancelOrder("vmtx01abcde23456", {
             canonicalOrderId: "vmtx01abcde23456",
             providerOrderAliases: ["1607001001"],
@@ -492,7 +507,7 @@ describe("MT5VenueAdapter", () => {
             })
         }
 
-        const adapter = new MT5VenueAdapter(client, credentials)
+        const adapter = createAdapter(client)
         await adapter.cancelOrder("vmtx01abcde23456", {
             providerOrderId: "1607001001",
             providerOrderAliases: ["1607001001", "1607001002"],
@@ -508,7 +523,7 @@ describe("MT5VenueAdapter", () => {
             dealId: "1588140268",
         })
 
-        const adapter = new MT5VenueAdapter(client, credentials)
+        const adapter = createAdapter(client)
         const result = await adapter.submitOrder(createSubmissionIntent({
             orderType: "market",
         }), {
@@ -533,7 +548,7 @@ describe("MT5VenueAdapter", () => {
             })
         }
 
-        const adapter = new MT5VenueAdapter(client, credentials)
+        const adapter = createAdapter(client)
         const result = await adapter.submitOrder(createSubmissionIntent({
             orderType: "market",
             stopPrice: 0,
@@ -573,7 +588,7 @@ describe("MT5VenueAdapter", () => {
             })
         }
 
-        const adapter = new MT5VenueAdapter(client, credentials)
+        const adapter = createAdapter(client)
         const result = await adapter.modifyOrder("1607001002", {
             limitPrice: 4716,
             metadata: {
@@ -603,7 +618,7 @@ describe("MT5VenueAdapter", () => {
             success: false,
         })
 
-        const adapter = new MT5VenueAdapter(client, credentials)
+        const adapter = createAdapter(client)
         const result = await adapter.modifyOrder("1607001002", {
             metadata: {
                 stopLoss: 4705,
@@ -626,7 +641,7 @@ describe("MT5VenueAdapter", () => {
             state: "placed",
         })
 
-        const adapter = new MT5VenueAdapter(client, credentials)
+        const adapter = createAdapter(client)
         const result = await adapter.getOrderStatus("1588167645")
 
         expect(result.status).toBe("pending")
@@ -645,7 +660,7 @@ describe("MT5VenueAdapter", () => {
             state: "filled",
         })
 
-        const adapter = new MT5VenueAdapter(client, credentials)
+        const adapter = createAdapter(client)
         const result = await adapter.getOrderStatus("1593774587")
 
         expect(result.status).toBe("pending")
@@ -665,7 +680,7 @@ describe("MT5VenueAdapter", () => {
             state: "filled",
         })
 
-        const adapter = new MT5VenueAdapter(client, credentials)
+        const adapter = createAdapter(client)
         const result = await adapter.getOrderStatus("1594203775")
 
         expect(result.status).toBe("filled")
@@ -689,7 +704,7 @@ describe("MT5VenueAdapter", () => {
             state: "filled",
         })
 
-        const adapter = new MT5VenueAdapter(client, credentials)
+        const adapter = createAdapter(client)
         const result = await adapter.getOrderStatus("1594203775")
 
         expect(result.intentUpdates?.metadata).toMatchObject({
@@ -714,7 +729,7 @@ describe("MT5VenueAdapter", () => {
             state: "filled",
         })
 
-        const adapter = new MT5VenueAdapter(client, credentials)
+        const adapter = createAdapter(client)
         const result = await adapter.getOrderStatus("1594203775")
 
         expect(result.intentUpdates?.metadata).toMatchObject({
@@ -759,7 +774,7 @@ describe("MT5VenueAdapter", () => {
             }
         }
 
-        const adapter = new MT5VenueAdapter(client, credentials)
+        const adapter = createAdapter(client)
         const result = await adapter.closePosition("XAUUSD", {
             instrument: "XAUUSD",
             side: "sell",
@@ -789,7 +804,7 @@ describe("MT5VenueAdapter", () => {
         client.getPositions = vi.fn(async () => [])
         client.closePosition = vi.fn(async () => createOrderResult({}))
 
-        const adapter = new MT5VenueAdapter(client, credentials)
+        const adapter = createAdapter(client)
 
         await expect(adapter.closePosition("XAUUSD")).rejects.toThrow("MT5 close requires canonical execution identity")
 
@@ -802,7 +817,7 @@ describe("MT5VenueAdapter", () => {
         client.getPositions = vi.fn(async () => [createPosition(1588140268, "XAUUSD", 4715.5)])
         client.closePosition = vi.fn(async () => createOrderResult({}))
 
-        const adapter = new MT5VenueAdapter(client, credentials)
+        const adapter = createAdapter(client)
         const result = await adapter.closePosition("XAUUSD", undefined, {
             identity: createIdentityContext("vmtc01abcde23456", "close"),
         })
@@ -825,7 +840,7 @@ describe("MT5VenueAdapter", () => {
             })
         }
 
-        const adapter = new MT5VenueAdapter(client, credentials)
+        const adapter = createAdapter(client)
         const result = await adapter.closeProviderPosition({
             instrument: "XAUUSD",
             providerPositionId: "1607003000",
@@ -862,7 +877,7 @@ describe("MT5VenueAdapter", () => {
             reason: 4,
         }]
 
-        const adapter = new MT5VenueAdapter(client, credentials)
+        const adapter = createAdapter(client)
         const closures = await adapter.getRecentPositionClosures()
 
         expect(closures).toEqual([{
@@ -918,7 +933,7 @@ describe("MT5VenueAdapter", () => {
             },
         ]
 
-        const adapter = new MT5VenueAdapter(client, credentials)
+        const adapter = createAdapter(client)
         await expect(adapter.getAccountPnlEvents()).resolves.toEqual([
             {
                 providerEventId: "mt5-deal:1607001002:entry-charges",
@@ -959,7 +974,7 @@ describe("MT5VenueAdapter", () => {
             occurredAt: 1_714_240_002_000,
         }]
 
-        const adapter = new MT5VenueAdapter(client, credentials)
+        const adapter = createAdapter(client)
 
         await expect(adapter.getAccountPnlEvents()).rejects.toThrow("MT5 account currency EUR is unsupported")
     })
@@ -992,7 +1007,7 @@ describe("MT5VenueAdapter", () => {
                 timeDone: Date.UTC(2026, 3, 23, 16, 42, 16),
             }]
 
-            const adapter = new MT5VenueAdapter(client, credentials)
+            const adapter = createAdapter(client)
             const [positions, orders] = await Promise.all([
                 adapter.getPositions(),
                 adapter.getWorkingOrders(),

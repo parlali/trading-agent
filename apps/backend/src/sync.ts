@@ -18,7 +18,11 @@ import {
 } from "./state"
 import { getRequiredVenueApps } from "./required-apps"
 import { resolveAllSecrets, validateAllEnvironments } from "./plugins/init"
-import { reconcileProviderPortfolio, recordProviderSyncFailure } from "./provider-sync"
+import {
+    reconcileProviderPortfolio,
+    reconcileProviderPortfolioIfIdle,
+    recordProviderSyncFailure,
+} from "./provider-sync"
 import { writeHeartbeatSnapshot } from "./health-write"
 import {
     registerStrategyWithScheduler,
@@ -65,13 +69,30 @@ async function syncProviderPortfolioForApp(
     for (const entry of entriesByAccount.values()) {
         try {
             const venue = plugin.createVenueAdapter(entry.policy, entry.secrets)
-            const result = await reconcileProviderPortfolio({
-                app,
-                accountId: entry.account.accountId,
-                venueName: plugin.venueName,
-                source,
-                venue,
-            })
+            const syncResult = source === "periodic_sync"
+                ? await reconcileProviderPortfolioIfIdle({
+                    app,
+                    accountId: entry.account.accountId,
+                    venueName: plugin.venueName,
+                    source,
+                    venue,
+                })
+                : {
+                    status: "completed" as const,
+                    value: await reconcileProviderPortfolio({
+                        app,
+                        accountId: entry.account.accountId,
+                        venueName: plugin.venueName,
+                        source,
+                        venue,
+                    }),
+                }
+
+            if (syncResult.status === "skipped") {
+                continue
+            }
+
+            const result = syncResult.value
 
             await writeHeartbeatSnapshot({
                 app,

@@ -57,6 +57,10 @@ export interface ConvexOrderPersistenceConfig {
         accountId?: string
         strategyId?: string
     }
+    mutationLock?: <T>(
+        operation: "upsertOrder" | "logOrderTransition",
+        run: () => Promise<T>
+    ) => Promise<T>
 }
 
 export interface TradingBackendClientConfig {

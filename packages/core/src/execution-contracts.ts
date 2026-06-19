@@ -101,6 +101,19 @@ export interface ExecutionSafetyFaultInput {
 }
 
 export type ExecutionSafetyFaultRecorder = (fault: ExecutionSafetyFaultInput) => Promise<void>
+export type ExecutionOrderOperation =
+    | "executeIntent"
+    | "cancelOrder"
+    | "modifyOrder"
+    | "closePosition"
+    | "closeProviderPosition"
+    | "refreshOrderStatus"
+    | "resumeOpenOrders"
+    | "pollOrderStatus"
+export type ExecutionOrderOperationLock = <T>(
+    operation: ExecutionOrderOperation,
+    run: () => Promise<T>
+) => Promise<T>
 
 export interface ExecutionPipelineConfig {
     venue: VenueAdapter
@@ -119,6 +132,7 @@ export interface ExecutionPipelineConfig {
     ownedInstruments?: Set<string>
     ownershipScope?: ProviderOwnershipScope
     strategyRealizedPnl?: number
+    orderOperationLock?: ExecutionOrderOperationLock
 }
 
 export interface ExecuteIntentResult {

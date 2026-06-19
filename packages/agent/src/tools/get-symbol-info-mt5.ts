@@ -1,26 +1,33 @@
 import { z } from "zod"
-import { resolveMT5NormalizedSpread, type MT5VenueAdapter } from "@valiq-trading/mt5"
+import {
+    resolveMT5AllowedSymbol,
+    resolveMT5NormalizedSpread,
+    type MT5VenueAdapter,
+} from "@valiq-trading/mt5"
 import type { ToolBinding } from "../tool-registry"
 import {
     createToolBinding,
     singleSymbolParamsSchema,
 } from "../tool-contracts"
+import { withMT5SymbolAllowList } from "./mt5-symbol-allow-list"
 
 export function createMT5GetSymbolInfoTool(
-    venue: MT5VenueAdapter
+    venue: MT5VenueAdapter,
+    allowedSymbols: readonly string[] = []
 ): ToolBinding {
-    return createToolBinding({
+    return withMT5SymbolAllowList(createToolBinding({
         name: "get_symbol_info",
         venue: "mt5",
         handler: async (params) => {
             const validated = params as z.infer<typeof singleSymbolParamsSchema>
-            const info = await venue.getSymbolInfo(validated.symbol)
+            const symbol = resolveMT5AllowedSymbol(validated.symbol, allowedSymbols)
+            const info = await venue.getSymbolInfo(symbol)
 
             if (!info) {
                 return {
-                    symbol: validated.symbol.toUpperCase(),
+                    symbol,
                     found: false,
-                    message: `No MT5 symbol info found for ${validated.symbol}`,
+                    message: `No MT5 symbol info found for ${symbol}`,
                 }
             }
 
@@ -48,5 +55,5 @@ export function createMT5GetSymbolInfoTool(
                 executionCost,
             }
         },
-    })
+    }), "symbol", allowedSymbols)
 }

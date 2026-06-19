@@ -44,7 +44,10 @@ import {
 } from "@valiq-trading/core"
 import { AlpacaOptionsVenueAdapter } from "@valiq-trading/alpaca-options"
 import { OKXVenueAdapter } from "@valiq-trading/okx"
-import { MT5VenueAdapter } from "@valiq-trading/mt5"
+import {
+    MT5VenueAdapter,
+    resolveMT5ConfiguredSymbols,
+} from "@valiq-trading/mt5"
 import { PolymarketVenueAdapter } from "@valiq-trading/polymarket"
 import type { VenueApp } from "./types"
 import { backend, searchProvider } from "./state"
@@ -130,6 +133,8 @@ export function buildToolPool(config: BuildToolPoolConfig): ToolPool {
     const polymarketHandles = app === "polymarket"
         ? new PolymarketMarketHandleRegistry()
         : undefined
+    const mt5Policy = app === "mt5" ? mt5PolicySchema.parse(policy) : undefined
+    const mt5AllowedSymbols = mt5Policy ? resolveMT5ConfiguredSymbols(mt5Policy) : []
 
     for (const tool of extraTools) {
         toolPool.registerTool({
@@ -188,7 +193,7 @@ export function buildToolPool(config: BuildToolPoolConfig): ToolPool {
                 return null
             }
 
-            return createMT5GetSymbolInfoTool(venue)
+            return createMT5GetSymbolInfoTool(venue, mt5AllowedSymbols)
         },
     })
     registerCanonicalTool(toolPool, {
@@ -201,7 +206,7 @@ export function buildToolPool(config: BuildToolPoolConfig): ToolPool {
                     return null
                 }
 
-                return createMT5ProposeOrderTool(pipeline, venue, mt5PolicySchema.parse(policy))
+                return createMT5ProposeOrderTool(pipeline, venue, mt5Policy!, mt5AllowedSymbols)
             }
 
             if (app === "alpaca-options") {
@@ -307,7 +312,8 @@ export function buildToolPool(config: BuildToolPoolConfig): ToolPool {
                 return createMT5ProposeAdjustmentTool(
                     pipeline,
                     venue,
-                    mt5PolicySchema.parse(policy)
+                    mt5Policy!,
+                    mt5AllowedSymbols
                 )
             }
 

@@ -12,6 +12,7 @@ import {
 import { assessExecutionCost, resolveExecutionCostMetrics } from "./execution-cost.ts"
 import { createLogger } from "./logger.ts"
 import { createExecutionError } from "./utils.ts"
+import type { OrderPersistenceAdapter } from "./orders.ts"
 import type { AccountState, ExecutionResult, OrderIntent, Position, ValidationResult } from "./types.ts"
 
 const account: AccountState = {
@@ -109,6 +110,63 @@ function createBlockedExecutionCost() {
         })
     )
 }
+
+describe("ExecutionPipeline order operation lock", () => {
+    it("wraps provider submit and lifecycle persistence in one operation boundary", async () => {
+        const events: string[] = []
+        const venue = {
+            ...createVenue(),
+            submitOrder: vi.fn(async () => {
+                events.push("provider:submit")
+                return {
+                    orderId: "live-order",
+                    status: "filled" as const,
+                    filledQuantity: 1,
+                    timestamp: Date.now(),
+                }
+            }),
+        }
+        const orderPersistence = {
+            upsertOrder: vi.fn(async () => {
+                events.push("persist:upsert")
+            }),
+            logOrderTransition: vi.fn(async () => {
+                events.push("persist:transition")
+                return 1
+            }),
+            getOrder: vi.fn(async () => null),
+            listActiveOrders: vi.fn(async () => []),
+        } satisfies OrderPersistenceAdapter
+        const pipeline = createPipeline({
+            venue,
+            orderPersistence,
+            orderOperationLock: async (operation, run) => {
+                events.push(`lock:start:${operation}`)
+                const result = await run()
+                events.push(`lock:end:${operation}`)
+                return result
+            },
+        })
+
+        await pipeline.executeIntent({
+            instrument: "XAUUSD",
+            side: "buy",
+            quantity: 1,
+            orderType: "market",
+            timeInForce: "gtc",
+        }, account, [])
+
+        expect(events).toEqual([
+            "lock:start:executeIntent",
+            "persist:upsert",
+            "persist:transition",
+            "provider:submit",
+            "persist:upsert",
+            "persist:transition",
+            "lock:end:executeIntent",
+        ])
+    })
+})
 
 describe("ExecutionPipeline commit-unknown safety", () => {
     it("blocks same-run same-instrument entry retries after submit uncertainty", async () => {

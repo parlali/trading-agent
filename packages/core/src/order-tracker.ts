@@ -20,7 +20,15 @@ import {
     type TrackedOrderHandle,
     type WaitForOrderUpdateOptions,
 } from "./orders"
-import type { VenueAdapter, TradeEventLogger, OrderLifecycleConfig, OrderOperationContext, OrderStatusCallback } from "./execution-contracts"
+import type {
+    ExecutionOrderOperation,
+    ExecutionOrderOperationLock,
+    VenueAdapter,
+    TradeEventLogger,
+    OrderLifecycleConfig,
+    OrderOperationContext,
+    OrderStatusCallback,
+} from "./execution-contracts"
 import type { Logger } from "./logger"
 import { hasIntentChanges } from "./intent"
 import { toRecoverableOperationResult } from "./execution-result-helpers"
@@ -44,6 +52,7 @@ export class OrderLifecycleManager {
     private accountId?: string
     private venueName: string
     private onSnapshotUpdate?: (previousSnapshot: OrderSnapshot, currentSnapshot: OrderSnapshot) => void
+    private orderOperationLock?: ExecutionOrderOperationLock
     private trackedOrders = new Map<string, TrackedOrderState>()
 
     constructor(
@@ -56,7 +65,8 @@ export class OrderLifecycleManager {
         strategyId: string = "",
         accountId: string | undefined = undefined,
         venueName: string = "unknown",
-        onSnapshotUpdate?: (previousSnapshot: OrderSnapshot, currentSnapshot: OrderSnapshot) => void
+        onSnapshotUpdate?: (previousSnapshot: OrderSnapshot, currentSnapshot: OrderSnapshot) => void,
+        orderOperationLock?: ExecutionOrderOperationLock
     ) {
         this.venue = venue
         this.logger = logger
@@ -69,6 +79,7 @@ export class OrderLifecycleManager {
         this.accountId = accountId
         this.venueName = venueName
         this.onSnapshotUpdate = onSnapshotUpdate
+        this.orderOperationLock = orderOperationLock
     }
 
     async registerSubmittedOrder(
@@ -292,6 +303,12 @@ export class OrderLifecycleManager {
     }
 
     private async pollOrder(orderId: string): Promise<void> {
+        await this.runOrderOperation("pollOrderStatus", async () =>
+            await this.pollOrderWithoutOperationLock(orderId)
+        )
+    }
+
+    private async pollOrderWithoutOperationLock(orderId: string): Promise<void> {
         const tracked = this.trackedOrders.get(orderId)
         if (!tracked) {
             return
@@ -553,6 +570,15 @@ export class OrderLifecycleManager {
             })
             return null
         }
+    }
+
+    private async runOrderOperation<T>(
+        operation: ExecutionOrderOperation,
+        run: () => Promise<T>
+    ): Promise<T> {
+        return this.orderOperationLock
+            ? await this.orderOperationLock(operation, run)
+            : await run()
     }
 
     private findTrackedOrder(orderId: string): TrackedOrderState | undefined {

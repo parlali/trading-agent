@@ -7,19 +7,21 @@ import {
     type MT5OrderParams,
 } from "./mt5-order-helpers"
 import { assertToolNotAborted } from "../tool-registry"
+import { withMT5SymbolAllowList } from "./mt5-symbol-allow-list"
 
 export function createMT5ProposeOrderTool(
     pipeline: ExecutionPipeline,
     venue: MT5VenueAdapter,
-    policy: MT5Policy
+    policy: MT5Policy,
+    allowedSymbols: readonly string[] = []
 ): ToolBinding {
-    return createToolBinding({
+    return withMT5SymbolAllowList(createToolBinding({
         name: "propose_order",
         venue: "mt5",
         handler: async (params, context) => {
             const validated = params as MT5OrderParams
             assertToolNotAborted(context?.signal)
-            return await prepareMT5Order(validated, pipeline, venue, policy, "entry")
+            return await prepareMT5Order(validated, pipeline, venue, policy, "entry", allowedSymbols)
         },
-    })
+    }), "instrument", allowedSymbols)
 }

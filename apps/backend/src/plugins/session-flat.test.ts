@@ -218,6 +218,69 @@ describe("session-flat ownership scope", () => {
         expect(closeAllPositions).not.toHaveBeenCalled()
     })
 
+    it("MT5 fails closed when configured symbols are not provider-verified before a run", async () => {
+        const policy = createPolicy("mt5")
+        policy.safety.sessionFlat.enabled = false
+
+        await expect(new MT5Plugin().preRunHooks({
+            venue: {
+                getMarketSnapshot: vi.fn(async () => []),
+            } as never,
+            policy,
+            strategyId: "gold-strategy",
+            ownedInstruments: new Set(["XAUUSD"]),
+            ownedPositions: [],
+            ownedWorkingOrders: [],
+            strategyAccountState: {
+                balance: 10_000,
+                equity: 10_000,
+                buyingPower: 10_000,
+                marginUsed: 0,
+                marginAvailable: 10_000,
+                openPnl: 0,
+                dayPnl: 0,
+            },
+            logger,
+            createAlert: vi.fn(async () => {}),
+            sessionFlat: {
+                execute: vi.fn(),
+            },
+        })).rejects.toThrow("configured broker symbol(s) were not returned by the provider")
+    })
+
+    it("MT5 fails closed before provider preflight when no broker symbols are configured", async () => {
+        const policy = createPolicy("mt5")
+        policy.safety.sessionFlat.enabled = false
+        policy.marketRegionsByInstrument = undefined
+        const getMarketSnapshot = vi.fn()
+
+        await expect(new MT5Plugin().preRunHooks({
+            venue: {
+                getMarketSnapshot,
+            } as never,
+            policy,
+            strategyId: "gold-strategy",
+            ownedInstruments: new Set(["XAUUSD"]),
+            ownedPositions: [],
+            ownedWorkingOrders: [],
+            strategyAccountState: {
+                balance: 10_000,
+                equity: 10_000,
+                buyingPower: 10_000,
+                marginUsed: 0,
+                marginAvailable: 10_000,
+                openPnl: 0,
+                dayPnl: 0,
+            },
+            logger,
+            createAlert: vi.fn(async () => {}),
+            sessionFlat: {
+                execute: vi.fn(),
+            },
+        })).rejects.toThrow("requires at least one configured broker symbol")
+        expect(getMarketSnapshot).not.toHaveBeenCalled()
+    })
+
     it("records audited close lifecycle state through the shared session-flat executor", async () => {
         const snapshots = new Map<string, OrderSnapshot>()
         const persistence: OrderPersistenceAdapter = {
