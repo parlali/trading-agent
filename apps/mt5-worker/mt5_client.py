@@ -41,6 +41,20 @@ from mt5_mappers import (
 log = structlog.get_logger()
 
 
+def is_transient_symbol_select_failure(code: int, message: str) -> bool:
+    normalized = message.lower()
+    return (
+        code in {-1, -10000, -10001, -10002, -10003, -10004, -10005}
+        or "terminal" in normalized and "call failed" in normalized
+        or "ipc" in normalized
+        or "socket" in normalized
+        or "timeout" in normalized
+        or "timed out" in normalized
+        or "connection" in normalized
+        or "not connected" in normalized
+    )
+
+
 # ---------------------------------------------------------------------------
 # MT5 Client
 # ---------------------------------------------------------------------------
@@ -290,6 +304,31 @@ class MT5Client:
             retryable=retryable,
         )
 
+    def _raise_symbol_select_error(self, symbol: str) -> NoReturn:
+        detail = self._last_error_details()
+        transient = is_transient_symbol_select_failure(detail["code"], detail["message"])
+        if transient:
+            self._connected = False
+
+        error_type = "query_failed" if transient else "symbol_unavailable"
+        retryable = transient
+        log.error(
+            "mt5_sdk_call_failed",
+            login=self.login,
+            operation="symbol_select",
+            symbol=symbol,
+            code=detail["code"],
+            message=detail["message"],
+            rawError=detail["raw"],
+            errorType=error_type,
+            retryable=retryable,
+        )
+        raise MT5ConnectionError(
+            f"symbol_select failed for {symbol}: {detail['message']} ({detail['code']})",
+            error_type=error_type,
+            retryable=retryable,
+        )
+
     def _require_mt5_result(
         self,
         operation: str,
@@ -415,7 +454,7 @@ class MT5Client:
 
         selected = mt5.symbol_select(symbol, True)
         if not selected:
-            self._raise_mt5_error("symbol_select", error_type="symbol_unavailable", retryable=False)
+            self._raise_symbol_select_error(symbol)
 
         tick = self._require_mt5_result("symbol_info_tick", mt5.symbol_info_tick(symbol))
 
@@ -630,7 +669,7 @@ class MT5Client:
         self.ensure_connected()
         selected = mt5.symbol_select(symbol, True)
         if not selected:
-            self._raise_mt5_error("symbol_select", error_type="symbol_unavailable", retryable=False)
+            self._raise_symbol_select_error(symbol)
 
         info = self._require_mt5_result("symbol_info", mt5.symbol_info(symbol))
 

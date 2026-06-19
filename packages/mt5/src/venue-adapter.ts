@@ -31,6 +31,10 @@ import {
 } from "./mt5-client"
 import { toMT5MarketSnapshot, type MT5MarketSnapshot } from "./market-context"
 import {
+    normalizeMT5Symbol,
+    resolveMT5AllowedSymbol,
+} from "./symbols"
+import {
     aggregateMT5CloseResults,
     aggregateMT5FilledStats,
     buildMT5ExecutionCostSnapshot,
@@ -55,7 +59,8 @@ export class MT5VenueAdapter implements VenueAdapter, PriceVerifier {
     constructor(
         private readonly client: MT5Client,
         private readonly credentials: MT5WorkerCredentials,
-        private readonly executionCostTracker: ExecutionCostTracker = new ExecutionCostTracker()
+        private readonly executionCostTracker: ExecutionCostTracker = new ExecutionCostTracker(),
+        private readonly allowedSymbols: readonly string[] = []
     ) {}
 
     async ensureConnected(): Promise<void> {
@@ -161,8 +166,9 @@ export class MT5VenueAdapter implements VenueAdapter, PriceVerifier {
 
         const providerClientOrderId = context.identity.providerClientOrderId
 
+        const symbol = this.resolveAllowedSymbol(intent.instrument)
         const result = await this.client.submitOrder(this.credentials, {
-            symbol: intent.instrument,
+            symbol,
             side: intent.side,
             volume: intent.quantity,
             orderType: intent.orderType,
@@ -482,8 +488,9 @@ export class MT5VenueAdapter implements VenueAdapter, PriceVerifier {
     }
 
     async getSymbolInfo(symbol: string): Promise<MT5SymbolInfo | null> {
+        const allowedSymbol = this.resolveAllowedSymbol(symbol)
         return await this.withRecoverableRead(async () => {
-            const results = await this.client.getSymbolInfo(this.credentials, [symbol])
+            const results = await this.client.getSymbolInfo(this.credentials, [allowedSymbol])
             return results.length > 0 ? (results[0] ?? null) : null
         })
     }
@@ -542,7 +549,8 @@ export class MT5VenueAdapter implements VenueAdapter, PriceVerifier {
         }
 
         return await this.withRecoverableRead(async () => {
-            const results = await this.client.getSymbolInfo(this.credentials, symbols)
+            const requestedSymbols = symbols.map((symbol) => this.resolveAllowedSymbol(symbol))
+            const results = await this.client.getSymbolInfo(this.credentials, requestedSymbols)
             return await Promise.all(
                 results.map(async (symbolInfo) => toMT5MarketSnapshot(
                     symbolInfo,
@@ -578,6 +586,12 @@ export class MT5VenueAdapter implements VenueAdapter, PriceVerifier {
 
     private buildExecutionCostSnapshot(symbolInfo: MT5SymbolInfo): ExecutionCostSnapshot {
         return buildMT5ExecutionCostSnapshot(symbolInfo)
+    }
+
+    private resolveAllowedSymbol(symbol: string): string {
+        return this.allowedSymbols.length > 0
+            ? resolveMT5AllowedSymbol(symbol, this.allowedSymbols)
+            : normalizeMT5Symbol(symbol)
     }
 
     private async withRecoverableRead<T>(read: () => Promise<T>): Promise<T> {

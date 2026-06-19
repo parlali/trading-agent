@@ -11,6 +11,11 @@ export {
     resolveMT5InstrumentRegions,
     resolveMT5NormalizedSpread,
 } from "./market-context"
+export {
+    normalizeMT5Symbol,
+    resolveMT5AllowedSymbol,
+    resolveMT5ConfiguredSymbols,
+} from "./symbols"
 export type { MT5MarketSnapshot } from "./market-context"
 export { HolidayGuard } from "./holiday-guard"
 export type { HolidayCheckResult } from "./holiday-guard"

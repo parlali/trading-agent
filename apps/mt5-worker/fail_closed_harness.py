@@ -36,6 +36,22 @@ class FakeMT5:
         return None
 
 
+class FakeTransientSymbolSelectMT5(FakeMT5):
+    def last_error(self) -> tuple[int, str]:
+        return (-1, "Terminal: Call failed")
+
+    def symbol_select(self, symbol: str, enabled: bool) -> bool:
+        return False
+
+
+class FakeMissingSymbolMT5(FakeMT5):
+    def last_error(self) -> tuple[int, str]:
+        return (4302, "Symbol not found")
+
+    def symbol_select(self, symbol: str, enabled: bool) -> bool:
+        return False
+
+
 class FakeOrder:
     ticket = 101
 
@@ -174,6 +190,34 @@ def assert_query_failure(call: Callable[[], object]) -> None:
     raise AssertionError("Expected MT5ConnectionError")
 
 
+def assert_transient_symbol_select_failure(client: MT5Client, call: Callable[[], object]) -> None:
+    client._connected = True
+    try:
+        call()
+    except MT5ConnectionError as exc:
+        assert exc.error_type == "query_failed"
+        assert exc.retryable is True
+        assert "Terminal: Call failed" in str(exc)
+        assert client._connected is False
+        return
+
+    raise AssertionError("Expected transient MT5ConnectionError")
+
+
+def assert_missing_symbol_failure(client: MT5Client, call: Callable[[], object]) -> None:
+    client._connected = True
+    try:
+        call()
+    except MT5ConnectionError as exc:
+        assert exc.error_type == "symbol_unavailable"
+        assert exc.retryable is False
+        assert "Symbol not found" in str(exc)
+        assert client._connected is True
+        return
+
+    raise AssertionError("Expected symbol_unavailable MT5ConnectionError")
+
+
 async def assert_route_http_error(call: Callable[[], object]) -> None:
     import main
 
@@ -232,6 +276,22 @@ def run_harness() -> None:
         assert_query_failure(client.get_open_orders)
         assert_query_failure(client.get_position_closures)
         assert_query_failure(lambda: client.get_symbol_info("XAUUSD"))
+
+        mt5_client.mt5 = FakeTransientSymbolSelectMT5()
+        assert_transient_symbol_select_failure(client, lambda: client.get_symbol_info("XAUUSD"))
+        assert_transient_symbol_select_failure(client, lambda: client.submit_order(
+            symbol="XAUUSD",
+            side="buy",
+            volume=0.01,
+        ))
+
+        mt5_client.mt5 = FakeMissingSymbolMT5()
+        assert_missing_symbol_failure(client, lambda: client.get_symbol_info("DOESNOTEXIST"))
+        assert_missing_symbol_failure(client, lambda: client.submit_order(
+            symbol="DOESNOTEXIST",
+            side="buy",
+            volume=0.01,
+        ))
 
         mt5_client.mt5 = FakeBulkCancelMT5()
         assert_query_failure(client.cancel_all_orders)

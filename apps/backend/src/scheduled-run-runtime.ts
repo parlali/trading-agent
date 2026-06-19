@@ -47,6 +47,7 @@ import {
 } from "./scheduler-run-support"
 import type { VenueApp, VenuePlugin } from "./types"
 import { reconcilePendingOrdersForRun } from "./pending-orders"
+import { runProviderAccountOperation } from "./provider-account-coordinator"
 
 interface CreateScheduledRunRuntimeArgs {
     app: VenueApp
@@ -190,6 +191,20 @@ export async function createScheduledRunRuntime(
             app,
             accountId: strategy.accountId,
             strategyId: strategy._id,
+        },
+        mutationLock: async (operation, run) => {
+            const result = await runProviderAccountOperation({
+                app,
+                accountId: strategy.accountId,
+                source: "order_lifecycle",
+                label: `order lifecycle ${operation}`,
+                logger: runLogger,
+            }, run)
+            if (result.status === "skipped") {
+                throw new Error(result.reason)
+            }
+
+            return result.value
         },
     })
     const pipeline = new ExecutionPipeline({

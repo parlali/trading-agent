@@ -3,10 +3,21 @@ import {
     backend,
     healthState,
     logger,
-    syncStrategies,
 } from "./state"
 import type { AccountHealthState, VenueApp } from "./types"
 import { readProviderPortfolioForSync } from "./provider-portfolio-read"
+import {
+    runProviderAccountOperation,
+    type ProviderAccountOperationResult,
+} from "./provider-account-coordinator"
+
+type ProviderSyncResult = {
+    accountState: AccountState
+    positions: Position[]
+    workingOrders: WorkingOrder[]
+    driftDetected: boolean
+    driftSummary?: string
+}
 
 export async function reconcileProviderPortfolio(args: {
     app: VenueApp
@@ -14,13 +25,49 @@ export async function reconcileProviderPortfolio(args: {
     venueName: string
     source: "startup_sync" | "periodic_sync" | "post_run_sync"
     venue: VenueAdapter
-}): Promise<{
-    accountState: AccountState
-    positions: Position[]
-    workingOrders: WorkingOrder[]
-    driftDetected: boolean
-    driftSummary?: string
-}> {
+}): Promise<ProviderSyncResult> {
+    const result = await runReconcileProviderPortfolio(args, false)
+    if (result.status === "skipped") {
+        throw new Error(result.reason)
+    }
+
+    return result.value
+}
+
+export async function reconcileProviderPortfolioIfIdle(args: {
+    app: VenueApp
+    accountId: string
+    venueName: string
+    source: "periodic_sync"
+    venue: VenueAdapter
+}): Promise<ProviderAccountOperationResult<ProviderSyncResult>> {
+    return await runReconcileProviderPortfolio(args, true)
+}
+
+async function runReconcileProviderPortfolio(args: {
+    app: VenueApp
+    accountId: string
+    venueName: string
+    source: "startup_sync" | "periodic_sync" | "post_run_sync"
+    venue: VenueAdapter
+}, skipIfBusy: boolean): Promise<ProviderAccountOperationResult<ProviderSyncResult>> {
+    return await runProviderAccountOperation({
+        app: args.app,
+        accountId: args.accountId,
+        source: args.source,
+        label: `provider reconciliation ${args.source}`,
+        logger,
+        skipIfBusy,
+    }, async () => await executeProviderPortfolioReconciliation(args))
+}
+
+async function executeProviderPortfolioReconciliation(args: {
+    app: VenueApp
+    accountId: string
+    venueName: string
+    source: "startup_sync" | "periodic_sync" | "post_run_sync"
+    venue: VenueAdapter
+}): Promise<ProviderSyncResult> {
     const {
         accountState,
         positions,

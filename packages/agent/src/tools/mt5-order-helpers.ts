@@ -13,6 +13,7 @@ import {
     calculateLotSize,
     computeTakeProfitFromRR,
     computeImpliedRR,
+    resolveMT5AllowedSymbol,
 } from "@valiq-trading/mt5"
 import { createRejectedExecutionToolResult } from "./execution-response"
 
@@ -102,8 +103,10 @@ export async function prepareMT5Order(
     pipeline: ExecutionPipeline,
     venue: MT5VenueAdapter,
     policy: MT5Policy,
-    action: "entry" | "adjustment"
+    action: "entry" | "adjustment",
+    allowedSymbols: readonly string[] = []
 ): Promise<MT5OrderResult> {
+    const instrument = resolveMT5AllowedSymbol(params.instrument, allowedSymbols)
     const hasTP = params.takeProfit !== undefined
     const hasRR = typeof params.riskRewardRatio === "number" && params.riskRewardRatio > 0
 
@@ -115,9 +118,9 @@ export async function prepareMT5Order(
         return rejected("riskRewardRatio must be greater than 0 when takeProfit is not provided")
     }
 
-    const symbolInfo = await venue.getSymbolInfo(params.instrument)
+    const symbolInfo = await venue.getSymbolInfo(instrument)
     if (!symbolInfo) {
-        return rejected(`Symbol ${params.instrument} not found or unavailable`)
+        return rejected(`Symbol ${instrument} not found or unavailable`)
     }
 
     const entryPrice = resolveEntryPrice(params, symbolInfo.bid, symbolInfo.ask)
@@ -168,7 +171,7 @@ export async function prepareMT5Order(
 
     const exposureViolation = await checkMT5ExposureGuards(
         pipeline,
-        params.instrument,
+        instrument,
         policy,
         action
     )
@@ -193,7 +196,7 @@ export async function prepareMT5Order(
     }
 
     const intent: OrderIntent = {
-        instrument: params.instrument,
+        instrument,
         side: params.side,
         quantity: lotResult.volume,
         orderType: params.orderType,
