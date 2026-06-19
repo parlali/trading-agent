@@ -58,13 +58,6 @@ export async function runProviderAccountOperation<T>(
     operation: () => Promise<T>
 ): Promise<ProviderAccountOperationResult<T>> {
     const key = providerAccountKey(args.app, args.accountId)
-    if (providerAccountOperationContext.getStore() === key) {
-        return {
-            status: "completed",
-            value: await operation(),
-        }
-    }
-
     const state = providerAccountLocks.get(key) ?? createProviderAccountLockState()
     providerAccountLocks.set(key, state)
 
@@ -86,6 +79,13 @@ export async function runProviderAccountOperation<T>(
             status: "skipped",
             reason,
             active: state.active,
+        }
+    }
+
+    if (providerAccountOperationContext.getStore() === key) {
+        return {
+            status: "completed",
+            value: await operation(),
         }
     }
 

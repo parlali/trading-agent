@@ -52,15 +52,28 @@ import {
     resolveMT5VerificationPrice,
 } from "./venue-mappers"
 
+export interface MT5VenueAdapterOptions {
+    allowedSymbols?: readonly string[]
+    allowUnscopedSymbolAccess?: boolean
+}
+
 export class MT5VenueAdapter implements VenueAdapter, PriceVerifier {
     readonly identityCapability = "native_client_id" as const
+    private readonly allowedSymbols: readonly string[]
+    private readonly allowUnscopedSymbolAccess: boolean
 
     constructor(
         private readonly client: MT5Client,
         private readonly credentials: MT5WorkerCredentials,
         private readonly executionCostTracker: ExecutionCostTracker = new ExecutionCostTracker(),
-        private readonly allowedSymbols: readonly string[] = []
-    ) {}
+        options: MT5VenueAdapterOptions | readonly string[] = {}
+    ) {
+        const resolvedOptions: MT5VenueAdapterOptions = isSymbolArray(options)
+            ? { allowedSymbols: options }
+            : options
+        this.allowedSymbols = resolvedOptions.allowedSymbols ?? []
+        this.allowUnscopedSymbolAccess = resolvedOptions.allowUnscopedSymbolAccess === true
+    }
 
     async ensureConnected(): Promise<void> {
         const info = await this.client.getAccount(this.credentials)
@@ -588,9 +601,15 @@ export class MT5VenueAdapter implements VenueAdapter, PriceVerifier {
     }
 
     private resolveAllowedSymbol(symbol: string): string {
-        return this.allowedSymbols.length > 0
-            ? resolveMT5AllowedSymbol(symbol, this.allowedSymbols)
-            : symbol.trim()
+        if (this.allowedSymbols.length > 0) {
+            return resolveMT5AllowedSymbol(symbol, this.allowedSymbols)
+        }
+
+        if (this.allowUnscopedSymbolAccess) {
+            return symbol.trim()
+        }
+
+        return resolveMT5AllowedSymbol(symbol, this.allowedSymbols)
     }
 
     private async withRecoverableRead<T>(read: () => Promise<T>): Promise<T> {
@@ -650,6 +669,12 @@ export class MT5VenueAdapter implements VenueAdapter, PriceVerifier {
             return cancelResult
         }
     }
+}
+
+function isSymbolArray(
+    value: MT5VenueAdapterOptions | readonly string[]
+): value is readonly string[] {
+    return Array.isArray(value)
 }
 
 async function sleep(delayMs: number): Promise<void> {

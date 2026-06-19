@@ -128,6 +128,34 @@ describe("provider account coordinator", () => {
         })
         expect(events).toEqual(["outer:start", "nested", "outer:end"])
     })
+
+    it("does not let inherited async context bypass skipIfBusy", async () => {
+        const logger = createLogger()
+        const result = await runProviderAccountOperation({
+            app: "mt5",
+            accountId: "account-1",
+            source: "post_run_sync",
+            label: "post-run provider sync",
+            logger,
+        }, async () => await runProviderAccountOperation({
+            app: "mt5",
+            accountId: "account-1",
+            source: "periodic_sync",
+            label: "periodic provider sync",
+            logger,
+            skipIfBusy: true,
+        }, async () => "periodic"))
+
+        expect(result).toMatchObject({
+            status: "completed",
+            value: {
+                status: "skipped",
+                active: {
+                    source: "post_run_sync",
+                },
+            },
+        })
+    })
 })
 
 function createDeferred<T>(): {

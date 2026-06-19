@@ -6,6 +6,7 @@ export {
     resolveMT5RuntimeConfig,
 } from "./runtime-config"
 export { MT5VenueAdapter } from "./venue-adapter"
+export type { MT5VenueAdapterOptions } from "./venue-adapter"
 export {
     createMT5SpreadContextLine,
     resolveMT5InstrumentRegions,

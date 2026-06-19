@@ -176,7 +176,9 @@ export const testMT5Connection = action({
             return { ok: false, steps }
         }
 
-        const venue = new MT5VenueAdapter(client, runtimeConfig.credentials)
+        const venue = new MT5VenueAdapter(client, runtimeConfig.credentials, undefined, {
+            allowUnscopedSymbolAccess: true,
+        })
 
         try {
             const accountState = await venue.getAccountState()

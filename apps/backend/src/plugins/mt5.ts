@@ -57,7 +57,9 @@ export class MT5Plugin implements VenuePlugin {
             workerUrl: runtimeConfig.workerUrl,
             accessKey: runtimeConfig.accessKey,
         })
-        const venue = new MT5VenueAdapter(client, runtimeConfig.credentials, this.executionCostTracker)
+        const venue = new MT5VenueAdapter(client, runtimeConfig.credentials, this.executionCostTracker, {
+            allowUnscopedSymbolAccess: true,
+        })
         await venue.ensureConnected()
     }
 
@@ -71,7 +73,9 @@ export class MT5Plugin implements VenuePlugin {
             accessKey: resolved.accessKey,
         })
         const allowedSymbols = resolveMT5ConfiguredSymbols(mt5PolicySchema.parse(_policy))
-        return new MT5VenueAdapter(client, resolved.credentials, this.executionCostTracker, allowedSymbols)
+        return new MT5VenueAdapter(client, resolved.credentials, this.executionCostTracker, {
+            allowedSymbols,
+        })
     }
 
     getRiskValidators(): readonly RiskValidator[] {
