@@ -17,7 +17,8 @@ export async function restoreCodexChatGptAuthFromControlPlane(args: {
 }): Promise<void> {
     const env = args.env ?? process.env
     const localStatus = inspectCodexChatGptAuthStatusSync(env)
-    if (localStatus.ready) {
+    const persisted = await args.backend.getCodexChatGptAuth()
+    if (localStatus.ready && !shouldRestorePersistedAuth(localStatus.lastRefresh, persisted?.lastRefresh ?? null)) {
         args.logger.info("Codex ChatGPT auth already available locally", {
             hasAccountId: Boolean(localStatus.accountId),
             lastRefresh: localStatus.lastRefresh,
@@ -25,7 +26,6 @@ export async function restoreCodexChatGptAuthFromControlPlane(args: {
         return
     }
 
-    const persisted = await args.backend.getCodexChatGptAuth()
     if (!persisted) {
         args.logger.warn("Codex ChatGPT auth is not available locally and no persisted auth record exists")
         return
@@ -46,6 +46,26 @@ export async function restoreCodexChatGptAuthFromControlPlane(args: {
             error: error instanceof Error ? error.message : String(error),
         })
     }
+}
+
+function shouldRestorePersistedAuth(localLastRefresh: string | null, persistedLastRefresh: string | null): boolean {
+    if (!persistedLastRefresh) {
+        return false
+    }
+    if (!localLastRefresh) {
+        return true
+    }
+
+    const localTime = Date.parse(localLastRefresh)
+    const persistedTime = Date.parse(persistedLastRefresh)
+    if (!Number.isFinite(persistedTime)) {
+        return false
+    }
+    if (!Number.isFinite(localTime)) {
+        return true
+    }
+
+    return persistedTime > localTime
 }
 
 export async function persistCodexChatGptAuthToControlPlane(args: {
