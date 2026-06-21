@@ -78,6 +78,9 @@ describe("CodexAppServerProvider", () => {
         })
         expect(client?.requests.map((request) => request.method)).toContain("thread/start")
         expect(client?.requests.map((request) => request.method)).toContain("turn/start")
+        expect(client?.requests.find((request) => request.method === "account/read")?.params).toMatchObject({
+            refreshToken: true,
+        })
         const threadStart = client?.requests.find((request) => request.method === "thread/start")
         expect(threadStart?.params).toMatchObject({
             runtimeWorkspaceRoots: [],
@@ -316,6 +319,73 @@ describe("CodexAppServerProvider", () => {
         }
     })
 
+    it("persists refreshed isolated ChatGPT auth back to the source Codex auth file", async () => {
+        const originalEnv = process.env
+        const sourceCodexHome = await mkdtemp(join(tmpdir(), "valiq-codex-source-"))
+        const runDirectory = await mkdtemp(join(tmpdir(), "valiq-codex-run-"))
+        const staleAuth = JSON.stringify({
+            auth_mode: "chatgpt",
+            tokens: {
+                id_token: "old-id",
+                access_token: "old-access",
+                refresh_token: "refresh",
+                account_id: "account-1",
+            },
+            last_refresh: "2026-06-19T16:00:00.000Z",
+        }, null, 4)
+        const refreshedAuth = JSON.stringify({
+            auth_mode: "chatgpt",
+            tokens: {
+                id_token: "new-id",
+                access_token: "new-access",
+                refresh_token: "refresh",
+                account_id: "account-1",
+            },
+            last_refresh: "2026-06-21T21:00:00.000Z",
+        }, null, 4)
+
+        process.env = {
+            PATH: "/usr/bin",
+            HOME: "/home/test",
+            CODEX_HOME: sourceCodexHome,
+        }
+
+        try {
+            await writeFile(join(sourceCodexHome, "auth.json"), staleAuth)
+
+            const provider = createProvider({
+                config: {
+                    runDirectory,
+                },
+                createClient: (args) => new FakeCodexClient(args, async (fake) => {
+                    fake.emitNotification({
+                        method: "turn/completed",
+                        params: {
+                            threadId: "thread-1",
+                            turn: {
+                                id: "turn-1",
+                                status: "completed",
+                            },
+                        },
+                    })
+                }, {
+                    accountReadSideEffect: async () => {
+                        await writeFile(join(args.env.CODEX_HOME!, "auth.json"), refreshedAuth)
+                    },
+                }),
+            })
+
+            const result = await provider.run(createRunArgs())
+
+            expect(result.error).toBeUndefined()
+            await expect(readFile(join(sourceCodexHome, "auth.json"), "utf8")).resolves.toBe(refreshedAuth)
+        } finally {
+            process.env = originalEnv
+            await rm(sourceCodexHome, { recursive: true, force: true })
+            await rm(runDirectory, { recursive: true, force: true })
+        }
+    })
+
     it("does not infer access-token identity from requiresOpenaiAuth alone", async () => {
         const provider = createProvider({
             config: {
@@ -494,6 +564,7 @@ class FakeCodexClient implements CodexAppServerClient {
         private readonly options: {
             completeTurnBeforeResponse?: boolean
             accountRead?: unknown
+            accountReadSideEffect?: () => Promise<void> | void
             rateLimitAfterError?: Error
         } = {}
     ) {}
@@ -507,6 +578,7 @@ class FakeCodexClient implements CodexAppServerClient {
         this.requests.push({ method, params })
 
         if (method === "account/read") {
+            await this.options.accountReadSideEffect?.()
             return this.options.accountRead ?? {
                 account: {
                     type: "chatgpt",

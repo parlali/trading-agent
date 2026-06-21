@@ -1,4 +1,4 @@
-import { copyFile, mkdir, mkdtemp, rm } from "node:fs/promises"
+import { chmod, copyFile, mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises"
 import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
 import { safeLogAgentMessage } from "../../agent-transcript"
@@ -89,6 +89,8 @@ export class CodexAppServerProvider implements AgentModelProvider {
     private rateLimitSnapshotAfterNotification: unknown
     private forbiddenCapabilityError: string | undefined
     private cancellationRequested = false
+    private sourceChatGptAuthFile: string | undefined
+    private isolatedChatGptAuthFile: string | undefined
 
     constructor(
         private readonly config: CodexAppServerProviderConfig,
@@ -124,6 +126,7 @@ export class CodexAppServerProvider implements AgentModelProvider {
             await this.client.initialize()
 
             const authStatus = await this.readAuthStatus()
+            await this.persistRefreshedChatGptAuth(args)
             diagnostics.authMode = authStatus.authMethod ?? "missing"
             diagnostics.billingMode = resolveBillingMode(this.config.authMode)
             assertCodexAuthMode(this.config.authMode, authStatus)
@@ -298,8 +301,11 @@ export class CodexAppServerProvider implements AgentModelProvider {
         })
 
         const sourceAuthFile = join(sourceCodexHome, "auth.json")
+        const isolatedAuthFile = join(isolatedCodexHome, "auth.json")
+        this.sourceChatGptAuthFile = sourceAuthFile
+        this.isolatedChatGptAuthFile = isolatedAuthFile
         try {
-            await copyFile(sourceAuthFile, join(isolatedCodexHome, "auth.json"))
+            await copyFile(sourceAuthFile, isolatedAuthFile)
         } catch (error) {
             if (isNotFoundError(error)) {
                 throw new Error(`Cannot run Codex provider: ChatGPT auth file missing at ${sourceAuthFile}`)
@@ -315,12 +321,60 @@ export class CodexAppServerProvider implements AgentModelProvider {
 
     private async readAuthStatus(): Promise<CodexAuthStatus> {
         const result = await this.requireClient().request("account/read", {
-            refreshToken: false,
+            refreshToken: this.config.authMode === "chatgpt",
         })
         return normalizeCodexAuthStatus(
             readRecord(result) as CodexAccountReadResponse | CodexAuthStatus | undefined,
             this.config.authMode
         )
+    }
+
+    private async persistRefreshedChatGptAuth(args: AgentProviderRunArgs): Promise<void> {
+        const sourceAuthFile = this.sourceChatGptAuthFile
+        const isolatedAuthFile = this.isolatedChatGptAuthFile
+        if (!sourceAuthFile || !isolatedAuthFile) {
+            return
+        }
+
+        let sourceAuthJson: string
+        let isolatedAuthJson: string
+        try {
+            [sourceAuthJson, isolatedAuthJson] = await Promise.all([
+                readFile(sourceAuthFile, "utf8"),
+                readFile(isolatedAuthFile, "utf8"),
+            ])
+        } catch (error) {
+            args.logger.warn("Codex ChatGPT auth refresh persistence read failed", {
+                runId: args.context.runId,
+                error: error instanceof Error ? error.message : String(error),
+            })
+            return
+        }
+
+        if (!shouldPersistChatGptAuthUpdate(sourceAuthJson, isolatedAuthJson)) {
+            return
+        }
+
+        const temporaryAuthFile = `${sourceAuthFile}.${process.pid}.${Date.now()}.tmp`
+        try {
+            await writeFile(temporaryAuthFile, isolatedAuthJson, {
+                mode: 0o600,
+            })
+            await chmod(temporaryAuthFile, 0o600)
+            await rename(temporaryAuthFile, sourceAuthFile)
+            await chmod(sourceAuthFile, 0o600)
+            args.logger.info("Persisted refreshed Codex ChatGPT auth", {
+                runId: args.context.runId,
+            })
+        } catch (error) {
+            await rm(temporaryAuthFile, {
+                force: true,
+            }).catch(() => undefined)
+            args.logger.warn("Codex ChatGPT auth refresh persistence failed", {
+                runId: args.context.runId,
+                error: error instanceof Error ? error.message : String(error),
+            })
+        }
     }
 
     private async readRateLimits(): Promise<unknown> {
@@ -696,6 +750,51 @@ export class CodexAppServerProvider implements AgentModelProvider {
         this.rateLimitSnapshotAfterNotification = undefined
         this.forbiddenCapabilityError = undefined
         this.cancellationRequested = false
+        this.sourceChatGptAuthFile = undefined
+        this.isolatedChatGptAuthFile = undefined
+    }
+}
+
+function shouldPersistChatGptAuthUpdate(sourceAuthJson: string, isolatedAuthJson: string): boolean {
+    if (sourceAuthJson === isolatedAuthJson) {
+        return false
+    }
+
+    const source = readChatGptAuthMetadata(sourceAuthJson)
+    const isolated = readChatGptAuthMetadata(isolatedAuthJson)
+    if (!isolated.accountId) {
+        return false
+    }
+    if (source.accountId && source.accountId !== isolated.accountId) {
+        return false
+    }
+
+    return isolated.lastRefreshMs >= source.lastRefreshMs
+}
+
+function readChatGptAuthMetadata(authJson: string): {
+    accountId: string | undefined
+    lastRefreshMs: number
+} {
+    try {
+        const auth = readRecord(JSON.parse(authJson) as unknown)
+        const tokens = readRecord(auth?.tokens)
+        const accountId = typeof tokens?.account_id === "string" && tokens.account_id.trim()
+            ? tokens.account_id
+            : undefined
+        const lastRefresh = typeof auth?.last_refresh === "string"
+            ? Date.parse(auth.last_refresh)
+            : NaN
+
+        return {
+            accountId,
+            lastRefreshMs: Number.isFinite(lastRefresh) ? lastRefresh : 0,
+        }
+    } catch {
+        return {
+            accountId: undefined,
+            lastRefreshMs: 0,
+        }
     }
 }
 
