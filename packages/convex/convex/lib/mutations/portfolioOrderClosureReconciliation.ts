@@ -6,6 +6,7 @@ import type {
 } from "./portfolioTypes"
 import {
     almostEqual,
+    hasNonZeroProviderAccountingMetadata,
     isEntryLikeOrder,
     parseJson,
     readOrderIntentRecord,
@@ -455,20 +456,7 @@ function hasAuditedOKXCloseEvidence(closure: ProviderPositionClosureInput): bool
 
 function hasProviderAccountingEvidence(closure: ProviderPositionClosureInput): boolean {
     const metadata = parseJson<Record<string, unknown>>(closure.metadata)
-    return isNonZeroNumber(metadata?.fillPnl) ||
-        isNonZeroNumber(metadata?.profit) ||
-        isNonZeroNumber(metadata?.fee) ||
-        isNonZeroNumber(metadata?.commission) ||
-        isNonZeroNumber(metadata?.swap)
-}
-
-function isNonZeroNumber(value: unknown): boolean {
-    const number = typeof value === "number"
-        ? value
-        : typeof value === "string" && value.trim()
-            ? Number(value)
-            : undefined
-    return number !== undefined && Number.isFinite(number) && number !== 0
+    return hasNonZeroProviderAccountingMetadata(metadata)
 }
 
 async function recordUnattributedClosureFaults(
@@ -595,21 +583,13 @@ function isAuditedOKXCloseOrderMatch(
         metadata?.providerReconciledClose !== true ||
         metadata.source !== "okx_fills_history" ||
         metadata.positionSide !== position.side ||
-        !hasProviderAccountingMetadata(metadata)
+        !hasNonZeroProviderAccountingMetadata(metadata)
     ) {
         return false
     }
 
     const filledQuantity = order.filledQuantity > 0 ? order.filledQuantity : order.quantity
     return almostEqual(filledQuantity, position.quantity)
-}
-
-function hasProviderAccountingMetadata(metadata: Record<string, unknown>): boolean {
-    return isNonZeroNumber(metadata.fillPnl) ||
-        isNonZeroNumber(metadata.profit) ||
-        isNonZeroNumber(metadata.fee) ||
-        isNonZeroNumber(metadata.commission) ||
-        isNonZeroNumber(metadata.swap)
 }
 
 async function resolveCloseOrderByProviderIdentity(

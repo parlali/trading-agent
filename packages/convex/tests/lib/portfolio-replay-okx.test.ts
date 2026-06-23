@@ -1499,6 +1499,141 @@ describe("Convex OKX net-mode closure replay", () => {
         expect(db.rows.alerts ?? []).toHaveLength(0)
     })
 
+    it("clears stale inferred OKX close accounting faults only when a matching audited close exists", async () => {
+        process.env.BACKEND_SERVICE_TOKEN = "test-token"
+        vi.useFakeTimers()
+        vi.setSystemTime(CLOSED_AT + 120_000)
+
+        try {
+            const inferredClose = buildCanonicalCloseOrder({
+                id: "order-inferred-close",
+                orderId: "vokt01inferredclose",
+                ordId: "inferred-close-provider",
+                runId: "run-okx-a",
+                strategyId: "strategy-okx-a",
+                quantity: 5,
+                fillPrice: 1877.49,
+            })
+            const unmatchedInferredClose = buildCanonicalCloseOrder({
+                id: "order-unmatched-inferred-close",
+                orderId: "vokt01unmatchedclose",
+                ordId: "unmatched-inferred-close-provider",
+                runId: "run-okx-a",
+                strategyId: "strategy-okx-a",
+                quantity: 7,
+                fillPrice: 1877.49,
+            })
+            const auditedClose = buildCanonicalCloseOrder({
+                id: "order-audited-close",
+                orderId: "vokc01auditedclose",
+                ordId: "audited-close-provider",
+                runId: "run-okx-a",
+                strategyId: "strategy-okx-a",
+                quantity: 5,
+                fillPrice: 1877.49,
+            })
+            const db = new FakeDb({
+                strategies: [buildOkxStrategy("strategy-okx-a", "OKX A")],
+                strategy_runs: [buildOkxRun("run-okx-a", "strategy-okx-a")],
+                instrument_claims: [],
+                orders: [
+                    inferredClose,
+                    unmatchedInferredClose,
+                    {
+                        ...auditedClose,
+                        updatedAt: CLOSED_AT + 30_000,
+                        intent: {
+                            ...auditedClose.intent,
+                            metadata: {
+                                orderId: "audited-close-provider",
+                                clientOrderId: "vokc01auditedclose",
+                                tradeIds: ["audited-close-trade"],
+                                source: "okx_fills_history",
+                                providerReconciledClose: true,
+                                positionSide: "short",
+                                fillPnl: 12.4,
+                                fee: -0.2,
+                            },
+                        },
+                    },
+                ],
+                provider_positions: [],
+                provider_working_orders: [],
+                provider_sync_state: [],
+                position_syncs: [],
+                positions: [],
+                execution_safety_faults: [{
+                    _id: "fault-inferred-close-with-audit",
+                    strategyId: "strategy-okx-a",
+                    app: "okx-swap",
+                    accountId,
+                    instrument: "ETH-USDT-SWAP",
+                    category: "accounting_mismatch",
+                    message: "Provider reconciliation inferred a filled close order without provider accounting metadata",
+                    canonicalOrderId: "vokt01inferredclose",
+                    providerOrderId: "algo:ETH-USDT-SWAP:inferred-close-provider",
+                    blocked: true,
+                    occurredAt: CLOSED_AT,
+                }, {
+                    _id: "fault-inferred-close-without-audit",
+                    strategyId: "strategy-okx-a",
+                    app: "okx-swap",
+                    accountId,
+                    instrument: "ETH-USDT-SWAP",
+                    category: "accounting_mismatch",
+                    message: "Provider reconciliation inferred a filled close order without provider accounting metadata",
+                    canonicalOrderId: "vokt01unmatchedclose",
+                    providerOrderId: "algo:ETH-USDT-SWAP:unmatched-inferred-close-provider",
+                    blocked: true,
+                    occurredAt: CLOSED_AT,
+                }],
+                account_snapshots: [{
+                    _id: "snapshot-before-close-fault-audit",
+                    app: "okx-swap",
+                    accountId,
+                    venue: "okx",
+                    balance: 40_000,
+                    equity: 40_000,
+                    buyingPower: 20_000,
+                    marginUsed: 0,
+                    marginAvailable: 20_000,
+                    openPnl: 0,
+                    dayPnl: 0,
+                    timestamp: CLOSED_AT - 60_000,
+                }],
+                account_pnl_events: [],
+                control_plane_metrics: [],
+                alerts: [],
+            })
+            const ctx = { db } as never
+
+            await callRegistered(reconcileProviderPortfolio, ctx, buildReconcileArgs([]))
+
+            expect(db.rows.execution_safety_faults).toContainEqual(expect.objectContaining({
+                _id: "fault-inferred-close-with-audit",
+                blocked: false,
+                resolvedAt: CLOSED_AT + 120_000,
+                resolutionNote: "Provider reconciliation found audited canonical close order vokc01auditedclose for inferred close vokt01inferredclose",
+            }))
+            const unmatchedFault = db.rows.execution_safety_faults.find((fault) =>
+                fault._id === "fault-inferred-close-without-audit"
+            )
+            expect(unmatchedFault).toMatchObject({
+                blocked: true,
+            })
+            expect(unmatchedFault?.resolvedAt).toBeUndefined()
+            expect(unmatchedFault?.resolutionNote).toBeUndefined()
+            expect(db.rows.alerts).toContainEqual(expect.objectContaining({
+                strategyId: "strategy-okx-a",
+                app: "okx-swap",
+                severity: "info",
+                message: "[execution-safety] Provider reconciliation cleared 1 inferred close accounting fault(s) after matching audited canonical close evidence",
+            }))
+        } finally {
+            vi.useRealTimers()
+        }
+    })
+
     it("fails closed when an owned position disappears without broker close evidence", async () => {
         process.env.BACKEND_SERVICE_TOKEN = "test-token"
         const db = new FakeDb({

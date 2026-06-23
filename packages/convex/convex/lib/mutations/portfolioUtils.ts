@@ -121,10 +121,27 @@ export function almostEqual(left: number, right: number): boolean {
     return Math.abs(left - right) <= 0.000001
 }
 
+export function hasNonZeroProviderAccountingMetadata(metadata: Record<string, unknown> | undefined): boolean {
+    return isNonZeroFiniteNumber(metadata?.fillPnl) ||
+        isNonZeroFiniteNumber(metadata?.profit) ||
+        isNonZeroFiniteNumber(metadata?.fee) ||
+        isNonZeroFiniteNumber(metadata?.commission) ||
+        isNonZeroFiniteNumber(metadata?.swap)
+}
+
 export function readOrderIntentRecord(intent: unknown): Record<string, unknown> | undefined {
     return intent && typeof intent === "object"
         ? intent as Record<string, unknown>
         : undefined
+}
+
+function isNonZeroFiniteNumber(value: unknown): boolean {
+    const number = typeof value === "number"
+        ? value
+        : typeof value === "string" && value.trim()
+            ? Number(value)
+            : undefined
+    return number !== undefined && Number.isFinite(number) && number !== 0
 }
 
 export function createDriftSummary(args: {

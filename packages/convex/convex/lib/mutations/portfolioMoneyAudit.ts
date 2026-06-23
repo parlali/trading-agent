@@ -5,11 +5,18 @@ import {
 } from "@valiq-trading/core"
 import { incrementControlPlaneMetric } from "../controlPlaneMetrics"
 import type { AccountPnlEventInput, PortfolioMutationCtx } from "./portfolioTypes"
+import {
+    almostEqual,
+    hasNonZeroProviderAccountingMetadata,
+    readOrderIntentRecord,
+} from "./portfolioUtils"
 
 type AccountSnapshotDoc = Doc<"account_snapshots">
 
 const MONEY_LEVEL_RECONCILIATION_FAULT_PREFIX = "Money-level reconciliation mismatch:"
 const INFERRED_ENTRY_FILL_ACCOUNTING_FAULT_MESSAGE = "Provider reconciliation inferred a filled entry order without provider accounting metadata"
+const INFERRED_CLOSE_FILL_ACCOUNTING_FAULT_MESSAGE = "Provider reconciliation inferred a filled close order without provider accounting metadata"
+const INFERRED_CLOSE_AUDIT_MATCH_WINDOW_MS = 24 * 60 * 60 * 1000
 
 export async function reconcileAccountMoney(
     ctx: PortfolioMutationCtx,
@@ -302,7 +309,8 @@ async function resolveMoneyAuditMismatchFaults(
         .collect()
     const openMoneyFaults = faults.filter(isOpenMoneyAuditMismatchFault)
     const openInferredFillFaults = faults.filter(isOpenInferredEntryFillAccountingFault)
-    if (openMoneyFaults.length === 0 && openInferredFillFaults.length === 0) {
+    const openInferredCloseFaults = faults.filter(isOpenInferredCloseFillAccountingFault)
+    if (openMoneyFaults.length === 0 && openInferredFillFaults.length === 0 && openInferredCloseFaults.length === 0) {
         return
     }
 
@@ -338,6 +346,27 @@ async function resolveMoneyAuditMismatchFaults(
         resolvedInferredFillFaultsByStrategy.set(String(fault.strategyId), entry)
     }
 
+    const resolvedInferredCloseFaultsByStrategy = new Map<string, { strategyId: Doc<"strategies">["_id"]; count: number }>()
+    for (const fault of openInferredCloseFaults) {
+        const auditedClose = await resolveAuditedCloseOrderForInferredCloseFault(ctx, fault)
+        if (!auditedClose) {
+            continue
+        }
+
+        await ctx.db.patch(fault._id, {
+            blocked: false,
+            resolvedAt: args.updatedAt,
+            resolutionNote: `Provider reconciliation found audited canonical close order ${auditedClose.orderId} for inferred close ${fault.canonicalOrderId}`,
+        })
+
+        const entry = resolvedInferredCloseFaultsByStrategy.get(String(fault.strategyId)) ?? {
+            strategyId: fault.strategyId,
+            count: 0,
+        }
+        entry.count += 1
+        resolvedInferredCloseFaultsByStrategy.set(String(fault.strategyId), entry)
+    }
+
     for (const entry of resolvedMoneyFaultsByStrategy.values()) {
         await ctx.db.insert("alerts", {
             strategyId: entry.strategyId,
@@ -359,6 +388,17 @@ async function resolveMoneyAuditMismatchFaults(
             timestamp: args.updatedAt,
         })
     }
+
+    for (const entry of resolvedInferredCloseFaultsByStrategy.values()) {
+        await ctx.db.insert("alerts", {
+            strategyId: entry.strategyId,
+            app: args.app,
+            severity: "info",
+            message: `[execution-safety] Provider reconciliation cleared ${entry.count} inferred close accounting fault(s) after matching audited canonical close evidence`,
+            acknowledged: false,
+            timestamp: args.updatedAt,
+        })
+    }
 }
 
 function isOpenMoneyAuditMismatchFault(fault: Doc<"execution_safety_faults">): boolean {
@@ -372,6 +412,129 @@ function isOpenInferredEntryFillAccountingFault(fault: Doc<"execution_safety_fau
     return fault.resolvedAt === undefined &&
         fault.category === "accounting_mismatch" &&
         fault.message === INFERRED_ENTRY_FILL_ACCOUNTING_FAULT_MESSAGE
+}
+
+function isOpenInferredCloseFillAccountingFault(fault: Doc<"execution_safety_faults">): boolean {
+    return fault.resolvedAt === undefined &&
+        fault.category === "accounting_mismatch" &&
+        fault.message === INFERRED_CLOSE_FILL_ACCOUNTING_FAULT_MESSAGE
+}
+
+async function resolveAuditedCloseOrderForInferredCloseFault(
+    ctx: PortfolioMutationCtx,
+    fault: Doc<"execution_safety_faults">
+): Promise<Doc<"orders"> | undefined> {
+    if (fault.app !== "okx-swap" || !fault.canonicalOrderId) {
+        return undefined
+    }
+
+    const canonicalOrderId = fault.canonicalOrderId
+    const inferredCloseOrder = await ctx.db
+        .query("orders")
+        .withIndex("by_order_id", (q) => q.eq("orderId", canonicalOrderId))
+        .first()
+    if (!inferredCloseOrder || !isInferredCloseFaultOrder(inferredCloseOrder, fault)) {
+        return undefined
+    }
+
+    const closeSide = resolveClosedPositionSide(inferredCloseOrder)
+    if (!closeSide) {
+        return undefined
+    }
+
+    const quantity = resolveOrderFilledQuantity(inferredCloseOrder)
+    const effectiveAt = resolveOrderEffectiveAt(inferredCloseOrder)
+    if (quantity <= 0 || effectiveAt === undefined) {
+        return undefined
+    }
+
+    const candidates = (
+        await Promise.all([
+            ctx.db
+                .query("orders")
+                .withIndex("by_strategy_status", (q) => q.eq("strategyId", fault.strategyId).eq("status", "filled"))
+                .collect(),
+            ctx.db
+                .query("orders")
+                .withIndex("by_strategy_status", (q) => q.eq("strategyId", fault.strategyId).eq("status", "partially_filled"))
+                .collect(),
+        ])
+    ).flat()
+
+    const matches = candidates.filter((candidate) =>
+        candidate._id !== inferredCloseOrder._id &&
+        isAuditedOkxCloseOrder(candidate) &&
+        candidate.app === inferredCloseOrder.app &&
+        candidate.accountId === inferredCloseOrder.accountId &&
+        candidate.instrument === inferredCloseOrder.instrument &&
+        resolveClosedPositionSide(candidate) === closeSide &&
+        almostEqual(resolveOrderFilledQuantity(candidate), quantity) &&
+        isWithinInferredCloseAuditWindow(resolveOrderEffectiveAt(candidate), effectiveAt)
+    )
+
+    return matches.length === 1
+        ? matches[0]
+        : undefined
+}
+
+function isInferredCloseFaultOrder(order: Doc<"orders">, fault: Doc<"execution_safety_faults">): boolean {
+    return order.app === fault.app &&
+        order.accountId === fault.accountId &&
+        order.strategyId === fault.strategyId &&
+        order.instrument === fault.instrument &&
+        order.action === "close" &&
+        (order.status === "filled" || order.status === "partially_filled") &&
+        !hasNonZeroProviderAccountingMetadata(readOrderIntentMetadata(order.intent))
+}
+
+function isAuditedOkxCloseOrder(order: Doc<"orders">): boolean {
+    const metadata = readOrderIntentMetadata(order.intent)
+    return order.app === "okx-swap" &&
+        order.action === "close" &&
+        (order.status === "filled" || order.status === "partially_filled") &&
+        metadata?.providerReconciledClose === true &&
+        metadata.source === "okx_fills_history" &&
+        hasNonZeroProviderAccountingMetadata(metadata)
+}
+
+function resolveClosedPositionSide(order: Doc<"orders">): "long" | "short" | undefined {
+    const metadata = readOrderIntentMetadata(order.intent)
+    if (metadata?.positionSide === "long" || metadata?.positionSide === "short") {
+        return metadata.positionSide
+    }
+
+    const intent = readOrderIntentRecord(order.intent)
+    if (intent?.side === "buy") {
+        return "short"
+    }
+    if (intent?.side === "sell") {
+        return "long"
+    }
+
+    return undefined
+}
+
+function resolveOrderFilledQuantity(order: Doc<"orders">): number {
+    if (typeof order.filledQuantity === "number" && Number.isFinite(order.filledQuantity) && order.filledQuantity > 0) {
+        return order.filledQuantity
+    }
+
+    return typeof order.quantity === "number" && Number.isFinite(order.quantity)
+        ? order.quantity
+        : 0
+}
+
+function resolveOrderEffectiveAt(order: Doc<"orders">): number | undefined {
+    const metadata = readOrderIntentMetadata(order.intent)
+    return readFiniteMetadataNumber(metadata?.providerAccountingOccurredAt) ??
+        readFiniteMetadataNumber(order.updatedAt) ??
+        readFiniteMetadataNumber(order.submittedAt)
+}
+
+function isWithinInferredCloseAuditWindow(candidateAt: number | undefined, inferredAt: number): boolean {
+    return candidateAt !== undefined &&
+        candidateAt >= inferredAt &&
+        candidateAt - inferredAt <= INFERRED_CLOSE_AUDIT_MATCH_WINDOW_MS
 }
 
 async function recordMoneyAuditMismatchFaults(
