@@ -37,6 +37,7 @@ import {
 } from "./portfolioOrderClosureWrites"
 
 const PROVIDER_CLOSURE_TIME_SKEW_MS = 5 * 60 * 1000
+const HISTORIC_CANONICAL_CLOSE_MATCH_WINDOW_MS = 24 * 60 * 60 * 1000
 
 const CLOSURE_TRUTH_APPS = new Set<Doc<"strategies">["app"]>(["mt5", "okx-swap"])
 
@@ -238,7 +239,10 @@ export async function reconcileProviderPositionClosures(
         importedClosureKeys.add(closureKey)
     }
 
-    const unmatchedClosedPositions = await resolveUnmatchedClosedPositions(ctx, candidates)
+    const unmatchedClosedPositions = await resolveUnmatchedClosedPositions(ctx, {
+        app: args.app,
+        candidates,
+    })
 
     if (!CLOSURE_TRUTH_APPS.has(args.app)) {
         await recordVanishedPositionFaults(ctx, {
@@ -520,16 +524,19 @@ async function recordUnattributedClosureFaults(
 
 async function resolveUnmatchedClosedPositions(
     ctx: PortfolioMutationCtx,
-    candidates: TrackedClosureCandidate[]
+    args: {
+        app: Doc<"strategies">["app"]
+        candidates: TrackedClosureCandidate[]
+    }
 ): Promise<string[]> {
     const unmatched: string[] = []
 
-    for (const candidate of candidates) {
+    for (const candidate of args.candidates) {
         if (candidate.attributedQuantity > 0) {
             continue
         }
 
-        if (await hasRecentFilledCanonicalClose(ctx, candidate.position)) {
+        if (await hasRecentFilledCanonicalClose(ctx, args.app, candidate.position)) {
             continue
         }
 
@@ -541,6 +548,7 @@ async function resolveUnmatchedClosedPositions(
 
 async function hasRecentFilledCanonicalClose(
     ctx: PortfolioMutationCtx,
+    app: Doc<"strategies">["app"],
     position: ProviderClosePositionCandidate
 ): Promise<boolean> {
     const statuses = ["filled", "partially_filled"] as const
@@ -554,10 +562,15 @@ async function hasRecentFilledCanonicalClose(
         const match = orders.some((order) =>
             order.action === "close" &&
             order.instrument === position.instrument &&
+            orderBelongsToAccount(order, app, position.accountId) &&
             order.updatedAt >= position.syncedAt - PROVIDER_CLOSURE_TIME_SKEW_MS &&
-            hasSharedProviderPositionIdentity(
-                buildOrderCloseIdentityCandidates(order),
-                buildProviderPositionIdentityCandidates(position)
+            order.updatedAt <= position.syncedAt + HISTORIC_CANONICAL_CLOSE_MATCH_WINDOW_MS &&
+            (
+                hasSharedProviderPositionIdentity(
+                    buildOrderCloseIdentityCandidates(order),
+                    buildProviderPositionIdentityCandidates(position)
+                ) ||
+                isAuditedOKXCloseOrderMatch(app, order, position)
             )
         )
         if (match) {
@@ -566,6 +579,37 @@ async function hasRecentFilledCanonicalClose(
     }
 
     return false
+}
+
+function isAuditedOKXCloseOrderMatch(
+    app: Doc<"strategies">["app"],
+    order: Doc<"orders">,
+    position: ProviderClosePositionCandidate
+): boolean {
+    if (app !== "okx-swap") {
+        return false
+    }
+
+    const metadata = readOrderIntentMetadata(order)
+    if (
+        metadata?.providerReconciledClose !== true ||
+        metadata.source !== "okx_fills_history" ||
+        metadata.positionSide !== position.side ||
+        !hasProviderAccountingMetadata(metadata)
+    ) {
+        return false
+    }
+
+    const filledQuantity = order.filledQuantity > 0 ? order.filledQuantity : order.quantity
+    return almostEqual(filledQuantity, position.quantity)
+}
+
+function hasProviderAccountingMetadata(metadata: Record<string, unknown>): boolean {
+    return isNonZeroNumber(metadata.fillPnl) ||
+        isNonZeroNumber(metadata.profit) ||
+        isNonZeroNumber(metadata.fee) ||
+        isNonZeroNumber(metadata.commission) ||
+        isNonZeroNumber(metadata.swap)
 }
 
 async function resolveCloseOrderByProviderIdentity(

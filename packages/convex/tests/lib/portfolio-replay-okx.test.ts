@@ -1423,6 +1423,82 @@ describe("Convex OKX net-mode closure replay", () => {
         expect(db.rows.alerts ?? []).toHaveLength(0)
     })
 
+    it("clears retained OKX drift when an audited canonical close lacks provider position identity", async () => {
+        process.env.BACKEND_SERVICE_TOKEN = "test-token"
+        const closeOrder = buildCanonicalCloseOrder({
+            id: "order-close-without-pos-id",
+            orderId: "vokc01closewithout",
+            ordId: "3621806927850020005",
+            runId: "run-okx-a",
+            strategyId: "strategy-okx-a",
+            quantity: 5,
+            fillPrice: 1877.49,
+        })
+        const db = new FakeDb({
+            strategies: [buildOkxStrategy("strategy-okx-a", "OKX A")],
+            strategy_runs: [buildOkxRun("run-okx-a", "strategy-okx-a")],
+            instrument_claims: [],
+            orders: [{
+                ...closeOrder,
+                intent: {
+                    ...closeOrder.intent,
+                    metadata: {
+                        orderId: "3621806927850020005",
+                        clientOrderId: "vokc01closewithout",
+                        tradeIds: ["trade-close-without-pos-id"],
+                        source: "okx_fills_history",
+                        providerReconciledClose: true,
+                        positionSide: "short",
+                        fillPnl: -14.4,
+                        fee: -4.2,
+                    },
+                },
+            }],
+            provider_positions: [],
+            provider_position_history: [{
+                _id: "provider-position-history-okx",
+                app: "okx-swap",
+                accountId,
+                positionKey: `ETH-USDT-SWAP:${SHARED_POS_ID}`,
+                providerPositionId: SHARED_POS_ID,
+                strategyId: "strategy-okx-a",
+                ownershipStatus: "owned",
+                expectedExternal: false,
+                instrument: "ETH-USDT-SWAP",
+                side: "short",
+                quantity: 5,
+                entryPrice: 1893.06,
+                currentPrice: 1877.49,
+                unrealizedPnl: 50,
+                metadata: JSON.stringify({
+                    posId: SHARED_POS_ID,
+                    positionMode: "net_mode",
+                }),
+                lastSeenAt: OPENED_AT,
+                disappearedAt: CLOSED_AT - 30_000,
+                retainedUntil: CLOSED_AT + 60_000,
+            }],
+            provider_working_orders: [],
+            provider_sync_state: [],
+            position_syncs: [],
+            positions: [],
+            execution_safety_faults: [],
+            account_snapshots: [],
+            account_pnl_events: [],
+            control_plane_metrics: [],
+            alerts: [],
+        })
+        const ctx = { db } as never
+
+        await callRegistered(reconcileProviderPortfolio, ctx, buildReconcileArgs([]))
+
+        const syncState = (db.rows.provider_sync_state ?? [])[0]
+        expect(syncState?.driftDetected).toBe(false)
+        expect(syncState?.providerStatus).toBe("healthy")
+        expect(syncState?.lastDriftSummary).toBeUndefined()
+        expect(db.rows.alerts ?? []).toHaveLength(0)
+    })
+
     it("fails closed when an owned position disappears without broker close evidence", async () => {
         process.env.BACKEND_SERVICE_TOKEN = "test-token"
         const db = new FakeDb({
