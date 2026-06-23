@@ -9,7 +9,8 @@ type ProviderPositionRow = Omit<Doc<"provider_positions">, "_id" | "_creationTim
 type ProviderPositionHistoryRow = Omit<Doc<"provider_position_history">, "_id" | "_creationTime">
 type ProviderWorkingOrderRow = Omit<Doc<"provider_working_orders">, "_id" | "_creationTime">
 
-const OKX_PROVIDER_POSITION_HISTORY_RETENTION_MS = 24 * 60 * 60 * 1000
+const PROVIDER_POSITION_HISTORY_RETENTION_MS = 24 * 60 * 60 * 1000
+const PROVIDER_POSITION_HISTORY_APPS = new Set<Doc<"strategies">["app"]>(["mt5", "okx-swap"])
 
 const PROVIDER_POSITION_COMPARE_FIELDS = [
     "providerPositionId",
@@ -79,7 +80,7 @@ export async function upsertProviderPositionRows(
     const existingByKey = new Map(existing.map((row) => [row.positionKey, row]))
     const nextKeySet = new Set(rows.map((row) => row.positionKey))
     const stats = createWriteStats()
-    const retainedHistoryByKey = app === "okx-swap"
+    const retainedHistoryByKey = PROVIDER_POSITION_HISTORY_APPS.has(app)
         ? await pruneProviderPositionHistory(ctx, app, accountId, nextKeySet, updatedAt)
         : new Map<string, Doc<"provider_position_history">>()
 
@@ -106,7 +107,7 @@ export async function upsertProviderPositionRows(
             continue
         }
 
-        if (app === "okx-swap") {
+        if (PROVIDER_POSITION_HISTORY_APPS.has(app)) {
             await upsertDisappearedProviderPositionHistory(ctx, {
                 row,
                 current: retainedHistoryByKey.get(row.positionKey),
@@ -168,7 +169,7 @@ async function upsertDisappearedProviderPositionHistory(
 }
 
 function shouldRetainProviderPositionHistory(row: Doc<"provider_positions">): boolean {
-    return row.app === "okx-swap" &&
+    return PROVIDER_POSITION_HISTORY_APPS.has(row.app) &&
         row.ownershipStatus === "owned" &&
         row.expectedExternal !== true &&
         row.strategyId !== undefined
@@ -197,7 +198,7 @@ function buildProviderPositionHistoryRow(
         metadata: row.metadata,
         lastSeenAt: row.syncedAt,
         disappearedAt,
-        retainedUntil: disappearedAt + OKX_PROVIDER_POSITION_HISTORY_RETENTION_MS,
+        retainedUntil: disappearedAt + PROVIDER_POSITION_HISTORY_RETENTION_MS,
     }
 }
 

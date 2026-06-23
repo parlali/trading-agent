@@ -86,12 +86,49 @@ class FakePendingModifyOrder:
     tp = 4730.0
 
 
+class FakeHistoryStatusOrder:
+    ticket = 505
+    symbol = "XAGUSD"
+    type = 1
+    volume_initial = 0.01
+    volume_current = 0.0
+    price_open = 62.048
+    sl = 62.105
+    tp = 61.51
+    state = 4
+    time_done_msc = 1_782_203_000_000
+    time_done = 1_782_203_000
+
+
 class FakeBulkCancelMT5(FakeMT5):
     def orders_get(self, *args: object, **kwargs: object) -> tuple[FakeOrder, ...] | None:
         if "ticket" in kwargs:
             return None
 
         return (FakeOrder(),)
+
+
+class FakeInvalidTicketHistoryMT5(FakeMT5):
+    def last_error(self) -> tuple[int, str]:
+        return (-2, "Terminal: Invalid params")
+
+    def orders_get(self, *args: object, **kwargs: object) -> tuple[object, ...]:
+        return ()
+
+    def positions_get(self, *args: object, **kwargs: object) -> tuple[object, ...]:
+        return ()
+
+    def history_deals_get(self, *args: object, **kwargs: object) -> tuple[object, ...] | None:
+        if "ticket" in kwargs:
+            return None
+
+        return ()
+
+    def history_orders_get(self, *args: object, **kwargs: object) -> tuple[FakeHistoryStatusOrder, ...] | None:
+        if "ticket" in kwargs:
+            return None
+
+        return (FakeHistoryStatusOrder(),)
 
 
 class FakeCancelRequestMT5(FakeMT5):
@@ -295,6 +332,12 @@ def run_harness() -> None:
 
         mt5_client.mt5 = FakeBulkCancelMT5()
         assert_query_failure(client.cancel_all_orders)
+
+        mt5_client.mt5 = FakeInvalidTicketHistoryMT5()
+        status = client.get_order(FakeHistoryStatusOrder.ticket)
+        assert status["ticket"] == FakeHistoryStatusOrder.ticket
+        assert status["symbol"] == "XAGUSD"
+        assert status["state"] == "filled"
 
         cancel_mt5 = FakeCancelRequestMT5()
         mt5_client.mt5 = cancel_mt5

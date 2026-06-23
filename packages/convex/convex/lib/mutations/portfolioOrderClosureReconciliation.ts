@@ -80,15 +80,15 @@ export async function reconcileProviderPositionClosures(
         )
         .map((position) => trackCandidate({ ...position, strategyId: position.strategyId! }, false))
 
-    if (args.positionClosures.length === 0 && disappearedCandidates.length === 0) {
-        return { unattributedClosures: [], unmatchedClosedPositions: [] }
-    }
-
     const mt5HistoricCandidates = (await resolveHistoricMT5ProviderCloseCandidates(ctx, args))
         .map((position) => trackCandidate(position, true))
     const okxHistoricCandidates = (await resolveHistoricOKXProviderCloseCandidates(ctx, args))
         .map((position) => trackCandidate(position, true))
     const candidates = [...disappearedCandidates, ...mt5HistoricCandidates, ...okxHistoricCandidates]
+
+    if (args.positionClosures.length === 0 && candidates.length === 0) {
+        return { unattributedClosures: [], unmatchedClosedPositions: [] }
+    }
     const latestRunIdsByStrategy = new Map<string, Id<"strategy_runs"> | undefined>()
     const importedClosureKeys = new Set<string>()
     const unattributedClosures: string[] = []
@@ -525,7 +525,7 @@ async function resolveUnmatchedClosedPositions(
     const unmatched: string[] = []
 
     for (const candidate of candidates) {
-        if (candidate.historic || candidate.attributedQuantity > 0) {
+        if (candidate.attributedQuantity > 0) {
             continue
         }
 
@@ -687,10 +687,48 @@ async function resolveHistoricMT5ProviderCloseCandidates(
         accountId: string
         strategyMap: Map<string, StrategyDoc>
         positionClosures: ProviderPositionClosureInput[]
+        updatedAt: number
     }
 ): Promise<ProviderClosePositionCandidate[]> {
-    if (args.app !== "mt5" || args.positionClosures.length === 0) {
+    if (args.app !== "mt5") {
         return []
+    }
+
+    const candidates: ProviderClosePositionCandidate[] = []
+    const seenPositionKeys = new Set<string>()
+    const history = await ctx.db
+        .query("provider_position_history")
+        .withIndex("by_app_account", (q) => q.eq("app", args.app).eq("accountId", args.accountId))
+        .collect()
+
+    for (const position of history) {
+        if (
+            position.retainedUntil < args.updatedAt ||
+            position.ownershipStatus !== "owned" ||
+            position.expectedExternal === true ||
+            position.strategyId === undefined ||
+            !args.strategyMap.has(String(position.strategyId))
+        ) {
+            continue
+        }
+
+        seenPositionKeys.add(position.positionKey)
+        candidates.push({
+            strategyId: position.strategyId,
+            accountId: position.accountId,
+            instrument: position.instrument,
+            side: position.side,
+            quantity: position.quantity,
+            entryPrice: position.entryPrice,
+            providerPositionId: position.providerPositionId,
+            positionKey: position.positionKey,
+            syncedAt: position.lastSeenAt,
+            metadata: position.metadata,
+        })
+    }
+
+    if (args.positionClosures.length === 0) {
+        return candidates
     }
 
     const closureIdentityCandidates = new Set<string>()
@@ -700,7 +738,6 @@ async function resolveHistoricMT5ProviderCloseCandidates(
         }
     }
 
-    const candidates: ProviderClosePositionCandidate[] = []
     const seenOrderIds = new Set<string>()
 
     for (const identifier of closureIdentityCandidates) {
@@ -722,7 +759,8 @@ async function resolveHistoricMT5ProviderCloseCandidates(
 
         seenOrderIds.add(order.orderId)
         const candidate = resolveMT5HistoricProviderCloseCandidate(order)
-        if (candidate) {
+        if (candidate && !seenPositionKeys.has(candidate.positionKey)) {
+            seenPositionKeys.add(candidate.positionKey)
             candidates.push(candidate)
         }
     }
@@ -741,7 +779,7 @@ async function resolveHistoricOKXProviderCloseCandidates(
         updatedAt: number
     }
 ): Promise<ProviderClosePositionCandidate[]> {
-    if (args.app !== "okx-swap" || args.positionClosures.length === 0) {
+    if (args.app !== "okx-swap") {
         return []
     }
 

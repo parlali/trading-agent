@@ -161,6 +161,148 @@ describe("Convex MT5 provider close replay", () => {
         ]))
     })
 
+    it("keeps vanished MT5 provider positions degraded until late broker close evidence arrives", async () => {
+        process.env.BACKEND_SERVICE_TOKEN = "test-token"
+        const strategyId = "strategy-mt5-silver"
+        const runId = "run-mt5-silver"
+        const providerPositionId = "900100200"
+        const openedAt = 1_782_203_000_000
+        const closedAt = openedAt + 120_000
+        const db = new FakeDb({
+            strategies: [{
+                _id: strategyId,
+                app: "mt5",
+                accountId,
+                name: "MT5 Silver",
+                policy: { dryRun: false },
+            }],
+            strategy_runs: [{
+                _id: runId,
+                strategyId,
+                app: "mt5",
+                accountId,
+                status: "completed",
+                startedAt: openedAt,
+                endedAt: openedAt + 30_000,
+            }],
+            instrument_claims: [],
+            orders: [],
+            provider_positions: [{
+                _id: "provider-position-silver",
+                app: "mt5",
+                accountId,
+                positionKey: `XAGUSD:${providerPositionId}`,
+                providerPositionId,
+                strategyId,
+                ownershipStatus: "owned",
+                instrument: "XAGUSD",
+                side: "short",
+                quantity: 0.01,
+                entryPrice: 62.048,
+                currentPrice: 62.071,
+                unrealizedPnl: -0.23,
+                syncedAt: openedAt + 60_000,
+            }],
+            provider_position_history: [],
+            provider_working_orders: [],
+            provider_sync_state: [],
+            position_syncs: [],
+            positions: [],
+            execution_safety_faults: [],
+            account_snapshots: [],
+            control_plane_metrics: [],
+            alerts: [],
+        })
+        const ctx = { db } as never
+        const baseArgs = {
+            serviceToken: "test-token",
+            app: "mt5",
+            accountId,
+            venue: "mt5",
+            source: "periodic_sync",
+            accountState: {
+                balance: 1000,
+                equity: 1000,
+                buyingPower: 1000,
+                marginUsed: 0,
+                marginAvailable: 1000,
+                openPnl: 0,
+                dayPnl: -1,
+            },
+            positions: [],
+            workingOrders: [],
+        }
+
+        await callRegistered(reconcileProviderPortfolio, ctx, {
+            ...baseArgs,
+            positionClosures: [],
+        })
+
+        expect(db.rows.provider_positions ?? []).toHaveLength(0)
+        expect(db.rows.provider_position_history).toEqual([
+            expect.objectContaining({
+                app: "mt5",
+                positionKey: `XAGUSD:${providerPositionId}`,
+                strategyId,
+                ownershipStatus: "owned",
+            }),
+        ])
+        expect((db.rows.provider_sync_state ?? [])[0]).toMatchObject({
+            driftDetected: true,
+            providerStatus: "degraded",
+            lastDriftSummary: expect.stringContaining(`XAGUSD:${providerPositionId}`),
+        })
+
+        await callRegistered(reconcileProviderPortfolio, ctx, {
+            ...baseArgs,
+            positionClosures: [],
+        })
+
+        expect((db.rows.provider_sync_state ?? [])[0]).toMatchObject({
+            driftDetected: true,
+            providerStatus: "degraded",
+            lastDriftSummary: expect.stringContaining(`XAGUSD:${providerPositionId}`),
+        })
+
+        await callRegistered(reconcileProviderPortfolio, ctx, {
+            ...baseArgs,
+            positionClosures: [{
+                instrument: "XAGUSD",
+                providerPositionId,
+                side: "short",
+                quantity: 0.01,
+                fillPrice: 62.105,
+                closedAt,
+                metadata: JSON.stringify({
+                    orderId: 900100201,
+                    positionId: Number(providerPositionId),
+                    fillPnl: -0.57,
+                    profit: -0.57,
+                }),
+            }],
+        })
+
+        const closeOrder = (db.rows.orders ?? []).find((order) => order.action === "close")
+        if (!closeOrder) {
+            throw new Error("Expected late MT5 provider-close order")
+        }
+        expect(closeOrder).toMatchObject({
+            orderId: `provider-close:mt5:XAGUSD:${providerPositionId}:${closedAt}`,
+            strategyId,
+            runId,
+            status: "filled",
+            action: "close",
+            filledQuantity: 0.01,
+            avgFillPrice: 62.105,
+        })
+        expect(resolveCloseOrderRealizedPnl(closeOrder as never)).toBe(-0.57)
+        expect((db.rows.provider_sync_state ?? [])[0]).toMatchObject({
+            driftDetected: false,
+            providerStatus: "healthy",
+            lastDriftSummary: undefined,
+        })
+    })
+
     it("attaches MT5 broker close PnL to an existing close order and retires the duplicate synthetic close", async () => {
         process.env.BACKEND_SERVICE_TOKEN = "test-token"
         const strategyId = "strategy-mt5-us30"

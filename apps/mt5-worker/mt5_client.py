@@ -341,6 +341,20 @@ class MT5Client:
 
         return result
 
+    def _optional_mt5_result(self, operation: str, result: Any) -> Any:
+        try:
+            return self._require_mt5_result(operation, result)
+        except MT5ConnectionError as exc:
+            log.warning(
+                "mt5_optional_sdk_call_failed",
+                login=self.login,
+                operation=operation,
+                error=str(exc),
+                errorType=exc.error_type,
+                retryable=exc.retryable,
+            )
+            return ()
+
     def assert_session_login(self, expected_login: int) -> None:
         self.ensure_connected()
         info = self._require_mt5_result("account_info", mt5.account_info())
@@ -727,37 +741,55 @@ class MT5Client:
         if positions and len(positions) > 0:
             return map_position_status(positions[0])
 
-        deals = self._require_mt5_result(
+        deals = self._optional_mt5_result(
             "history_deals_get.ticket",
             mt5.history_deals_get(ticket=order_id),
         )
         if len(deals) == 0:
             epoch = datetime(2020, 1, 1, tzinfo=timezone.utc)
             now = datetime.now(timezone.utc)
-            deals = self._require_mt5_result(
-                "history_deals_get.range",
+            deals = self._optional_mt5_result(
+                "history_deals_get.range_ticket",
                 mt5.history_deals_get(epoch, now, ticket=order_id),
             )
+            if len(deals) == 0:
+                deals = self._require_mt5_result(
+                    "history_deals_get.range",
+                    mt5.history_deals_get(epoch, now),
+                )
 
         if deals and len(deals) > 0:
             mapped_deal = map_deal_status(mt5, order_id, deals)
             if mapped_deal is not None:
                 return mapped_deal
 
-        history_orders = self._require_mt5_result(
+        history_orders = self._optional_mt5_result(
             "history_orders_get.ticket",
             mt5.history_orders_get(ticket=order_id),
         )
         if len(history_orders) == 0:
             epoch = datetime(2020, 1, 1, tzinfo=timezone.utc)
             now = datetime.now(timezone.utc)
-            history_orders = self._require_mt5_result(
-                "history_orders_get.range",
+            history_orders = self._optional_mt5_result(
+                "history_orders_get.range_ticket",
                 mt5.history_orders_get(epoch, now, ticket=order_id),
             )
+            if len(history_orders) == 0:
+                history_orders = self._require_mt5_result(
+                    "history_orders_get.range",
+                    mt5.history_orders_get(epoch, now),
+                )
 
         if history_orders and len(history_orders) > 0:
-            return map_history_order_status(history_orders[0])
+            history_order = next(
+                (
+                    order for order in history_orders
+                    if int(getattr(order, "ticket", 0) or 0) == order_id
+                ),
+                None,
+            )
+            if history_order is not None:
+                return map_history_order_status(history_order)
 
         return None
 
