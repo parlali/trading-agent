@@ -11,6 +11,7 @@ import {
     detectMarketClosedResetBlock,
     flattenVenueExposure,
     reconcileAndVerifyReset,
+    refreshProviderPortfolioState,
     resetStrategySafely,
 } from "./safe-strategy-reset.ts"
 
@@ -238,6 +239,58 @@ describe("resetStrategySafely", () => {
 
         expect(client.reconcileProviderPortfolio).toHaveBeenCalledTimes(2)
         setTimeoutSpy.mockRestore()
+    })
+
+    it("includes provider close and account event evidence during portfolio refresh", async () => {
+        const strategy = createStrategy("okx-swap")
+        const positionClosure = {
+            instrument: "BTC-USDT-SWAP",
+            side: "short",
+            quantity: 1,
+            fillPrice: 50000,
+            closedAt: Date.now(),
+        }
+        const accountPnlEvent = {
+            providerEventId: "funding-event",
+            eventType: "funding_fee",
+            instrument: "BTC-USDT-SWAP",
+            amount: -0.1,
+            currency: "USDT",
+            occurredAt: Date.now(),
+        }
+        const venue = createVenueMock({
+            getRecentPositionClosures: vi.fn().mockResolvedValue([positionClosure]),
+            getAccountPnlEvents: vi.fn().mockResolvedValue([accountPnlEvent]),
+        })
+
+        vi.spyOn(OKXPlugin.prototype, "resolveSecretKeys").mockReturnValue([])
+        vi.spyOn(OKXPlugin.prototype, "createVenueAdapter").mockReturnValue(venue as never)
+
+        const client = {
+            getAccountByAppAndId: vi.fn().mockResolvedValue({
+                app: "okx-swap",
+                accountId: "test-account",
+                label: "Test account",
+                credentialEnvPrefix: "OKX_TEST",
+                status: "active",
+            }),
+            resolveSecrets: vi.fn().mockResolvedValue({}),
+            reconcileProviderPortfolio: vi.fn().mockResolvedValue(undefined),
+        } as unknown as TradingBackendClient
+
+        await refreshProviderPortfolioState(client, strategy)
+
+        expect(client.reconcileProviderPortfolio).toHaveBeenCalledWith(
+            "okx-swap",
+            "test-account",
+            expect.any(String),
+            "periodic_sync",
+            createAccountState(),
+            [],
+            [],
+            [positionClosure],
+            [accountPnlEvent]
+        )
     })
 
     it("includes remaining exposure identifiers in verification failures", async () => {

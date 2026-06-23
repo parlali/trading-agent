@@ -587,11 +587,11 @@ export async function refreshProviderPortfolioState(
     strategy: StoredStrategy
 ): Promise<void> {
     const { venue, venueName } = await createVenue(strategy, client)
-    const [accountState, positions, workingOrders] = await Promise.all([
-        venue.getAccountState(),
-        venue.getPositions(),
-        venue.getWorkingOrders ? venue.getWorkingOrders() : Promise.resolve([]),
-    ])
+    const accountState = await venue.getAccountState()
+    const positions = await venue.getPositions()
+    const workingOrders = venue.getWorkingOrders ? await venue.getWorkingOrders() : []
+    const positionClosures = venue.getRecentPositionClosures ? await venue.getRecentPositionClosures() : []
+    const accountPnlEvents = venue.getAccountPnlEvents ? await venue.getAccountPnlEvents() : []
 
     await client.reconcileProviderPortfolio(
         strategy.app,
@@ -600,7 +600,9 @@ export async function refreshProviderPortfolioState(
         "periodic_sync",
         accountState,
         positions,
-        workingOrders
+        workingOrders,
+        positionClosures,
+        accountPnlEvents
     )
 }
 
