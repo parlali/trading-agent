@@ -37,6 +37,7 @@ export type {
     CodexAppServerProviderDependencies,
     CodexAppServerProviderConfig,
     CodexAuthMode,
+    CodexChatGptAuthRefreshSnapshot,
     CodexReasoningEffort,
     CodexReasoningSummary,
 } from "./providers/codex/codex-app-server-provider"

@@ -18,6 +18,13 @@ export interface CodexAppServerProviderConfig {
     turnTimeoutMs?: number
     runDirectory?: string
     appServerArgs?: string[]
+    onChatGptAuthRefreshed?: (auth: CodexChatGptAuthRefreshSnapshot) => Promise<void>
+}
+
+export interface CodexChatGptAuthRefreshSnapshot {
+    authJson: string
+    accountId: string
+    lastRefresh?: string
 }
 
 export const DEFAULT_REQUEST_TIMEOUT_MS = 60_000

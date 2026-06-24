@@ -323,6 +323,7 @@ describe("CodexAppServerProvider", () => {
         const originalEnv = process.env
         const sourceCodexHome = await mkdtemp(join(tmpdir(), "valiq-codex-source-"))
         const runDirectory = await mkdtemp(join(tmpdir(), "valiq-codex-run-"))
+        const onChatGptAuthRefreshed = vi.fn(async () => undefined)
         const staleAuth = JSON.stringify({
             auth_mode: "chatgpt",
             tokens: {
@@ -356,6 +357,7 @@ describe("CodexAppServerProvider", () => {
             const provider = createProvider({
                 config: {
                     runDirectory,
+                    onChatGptAuthRefreshed,
                 },
                 createClient: (args) => new FakeCodexClient(args, async (fake) => {
                     fake.emitNotification({
@@ -379,10 +381,92 @@ describe("CodexAppServerProvider", () => {
 
             expect(result.error).toBeUndefined()
             await expect(readFile(join(sourceCodexHome, "auth.json"), "utf8")).resolves.toBe(refreshedAuth)
+            expect(onChatGptAuthRefreshed).toHaveBeenCalledWith({
+                authJson: refreshedAuth,
+                accountId: "account-1",
+                lastRefresh: "2026-06-21T21:00:00.000Z",
+            })
         } finally {
             process.env = originalEnv
             await rm(sourceCodexHome, { recursive: true, force: true })
             await rm(runDirectory, { recursive: true, force: true })
+        }
+    })
+
+    it("serializes ChatGPT auth refresh across concurrent provider runs", async () => {
+        const originalEnv = process.env
+        const sourceCodexHome = await mkdtemp(join(tmpdir(), "valiq-codex-source-"))
+        const runDirectoryA = await mkdtemp(join(tmpdir(), "valiq-codex-run-"))
+        const runDirectoryB = await mkdtemp(join(tmpdir(), "valiq-codex-run-"))
+        const observedRefreshTokens: string[] = []
+
+        process.env = {
+            PATH: "/usr/bin",
+            HOME: "/home/test",
+            CODEX_HOME: sourceCodexHome,
+        }
+
+        try {
+            await writeFile(join(sourceCodexHome, "auth.json"), buildAuthJson({
+                idToken: "id-0",
+                accessToken: "access-0",
+                refreshToken: "refresh-0",
+                lastRefresh: "2026-06-19T16:00:00.000Z",
+            }))
+
+            const createLockedProvider = (runDirectory: string) => createProvider({
+                config: {
+                    runDirectory,
+                },
+                createClient: (args) => new FakeCodexClient(args, async (fake) => {
+                    fake.emitNotification({
+                        method: "turn/completed",
+                        params: {
+                            threadId: "thread-1",
+                            turn: {
+                                id: "turn-1",
+                                status: "completed",
+                            },
+                        },
+                    })
+                }, {
+                    accountReadSideEffect: async () => {
+                        const auth = JSON.parse(await readFile(join(args.env.CODEX_HOME!, "auth.json"), "utf8")) as {
+                            tokens: {
+                                refresh_token: string
+                            }
+                        }
+                        observedRefreshTokens.push(auth.tokens.refresh_token)
+                        const refreshIndex = observedRefreshTokens.length
+                        await writeFile(join(args.env.CODEX_HOME!, "auth.json"), buildAuthJson({
+                            idToken: `id-${refreshIndex}`,
+                            accessToken: `access-${refreshIndex}`,
+                            refreshToken: `refresh-${refreshIndex}`,
+                            lastRefresh: `2026-06-21T21:00:0${refreshIndex}.000Z`,
+                        }))
+                    },
+                }),
+            })
+
+            const [first, second] = await Promise.all([
+                createLockedProvider(runDirectoryA).run(createRunArgs()),
+                createLockedProvider(runDirectoryB).run(createRunArgs()),
+            ])
+
+            expect(first.error).toBeUndefined()
+            expect(second.error).toBeUndefined()
+            expect(observedRefreshTokens).toEqual(["refresh-0", "refresh-1"])
+            const sourceAuth = JSON.parse(await readFile(join(sourceCodexHome, "auth.json"), "utf8")) as {
+                tokens: {
+                    refresh_token: string
+                }
+            }
+            expect(sourceAuth.tokens.refresh_token).toBe("refresh-2")
+        } finally {
+            process.env = originalEnv
+            await rm(sourceCodexHome, { recursive: true, force: true })
+            await rm(runDirectoryA, { recursive: true, force: true })
+            await rm(runDirectoryB, { recursive: true, force: true })
         }
     })
 
@@ -652,6 +736,24 @@ function createProvider(
         startRunToolServer: async () => createFakeMcpServer(),
         ...providerDependencies,
     })
+}
+
+function buildAuthJson(args: {
+    idToken: string
+    accessToken: string
+    refreshToken: string
+    lastRefresh: string
+}): string {
+    return JSON.stringify({
+        auth_mode: "chatgpt",
+        tokens: {
+            id_token: args.idToken,
+            access_token: args.accessToken,
+            refresh_token: args.refreshToken,
+            account_id: "account-1",
+        },
+        last_refresh: args.lastRefresh,
+    }, null, 4)
 }
 
 function createRunArgs(

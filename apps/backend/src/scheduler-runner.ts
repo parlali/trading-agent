@@ -1,5 +1,6 @@
 import {
     executeAgentRun,
+    type CodexChatGptAuthRefreshSnapshot,
     type ToolManifestEntry,
 } from "@valiq-trading/agent"
 import type {
@@ -48,6 +49,7 @@ import {
     resolveScheduledRunRiskSnapshot,
     type ScheduledRunRuntime,
 } from "./scheduled-run-runtime"
+import { persistCodexChatGptAuthToControlPlane } from "./codex-auth-persistence"
 
 interface RunStrategyOptions {
     userMessage?: string
@@ -256,10 +258,27 @@ export async function runStrategy(
             mcpToolDiagnostics = preparedTurn.mcpToolDiagnostics
             currentAccountState = preparedTurn.context.accountState
 
+            const providerConfig = createAgentProviderConfig(llmConfig, strategySecrets)
+            const runtimeProviderConfig = providerConfig.provider === "codex" && providerConfig.authMode === "chatgpt"
+                ? {
+                    ...providerConfig,
+                    onChatGptAuthRefreshed: async (auth: CodexChatGptAuthRefreshSnapshot) => {
+                        await persistCodexChatGptAuthToControlPlane({
+                            backend,
+                            auth: {
+                                ...auth,
+                                lastRefresh: auth.lastRefresh ?? null,
+                            },
+                            logger: runLogger,
+                        })
+                    },
+                }
+                : providerConfig
+
             const result = await executeAgentRun(
                 preparedTurn.context,
                 {
-                    provider: createAgentProviderConfig(llmConfig, strategySecrets),
+                    provider: runtimeProviderConfig,
                     tools: preparedTurn.tools,
                     logger: runLogger,
                     agentLogger: backend,

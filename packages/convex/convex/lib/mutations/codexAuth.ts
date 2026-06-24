@@ -19,6 +19,14 @@ export const storeCodexChatGptAuth = mutation({
             .first()
 
         if (existing) {
+            if (existing.accountId !== args.accountId) {
+                throw new Error("Codex ChatGPT auth account mismatch")
+            }
+
+            if (isOlderRefresh(args.lastRefresh, existing.lastRefresh)) {
+                return existing._id
+            }
+
             await ctx.db.patch(existing._id, {
                 authJson: args.authJson,
                 accountId: args.accountId,
@@ -38,3 +46,26 @@ export const storeCodexChatGptAuth = mutation({
         })
     },
 })
+
+function isOlderRefresh(incoming: string | undefined, existing: string | undefined): boolean {
+    const existingTime = parseRefreshTime(existing)
+    if (existingTime === null) {
+        return false
+    }
+
+    const incomingTime = parseRefreshTime(incoming)
+    if (incomingTime === null) {
+        return true
+    }
+
+    return incomingTime < existingTime
+}
+
+function parseRefreshTime(value: string | undefined): number | null {
+    if (!value) {
+        return null
+    }
+
+    const time = Date.parse(value)
+    return Number.isFinite(time) ? time : null
+}

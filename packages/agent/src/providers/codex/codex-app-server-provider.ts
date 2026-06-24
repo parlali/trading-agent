@@ -17,6 +17,7 @@ import {
     resolveBillingMode,
     type CodexAppServerProviderConfig,
     type CodexAuthMode,
+    type CodexChatGptAuthRefreshSnapshot,
 } from "./codex-app-server-config"
 import {
     CodexJsonRpcClient,
@@ -36,6 +37,7 @@ export { buildCodexEnvironment } from "./codex-app-server-config"
 export type {
     CodexAppServerProviderConfig,
     CodexAuthMode,
+    CodexChatGptAuthRefreshSnapshot,
     CodexReasoningEffort,
     CodexReasoningSummary,
 } from "./codex-app-server-config"
@@ -72,6 +74,7 @@ export interface CodexAppServerProviderDependencies {
 }
 
 const KILL_SWITCH_POLL_MS = 1000
+let codexChatGptAuthRefreshLock: Promise<void> = Promise.resolve()
 
 export class CodexAppServerProvider implements AgentModelProvider {
     readonly provider = "codex" as const
@@ -121,12 +124,7 @@ export class CodexAppServerProvider implements AgentModelProvider {
                 },
             })
 
-            const clientEnv = await this.buildRunCodexEnvironment(runDirectory, this.mcpServer.token)
-            this.client = this.createClient(args, this.mcpServer, runDirectory, clientEnv)
-            await this.client.initialize()
-
-            const authStatus = await this.readAuthStatus()
-            await this.persistRefreshedChatGptAuth(args)
+            const authStatus = await this.startClientAndReadAuth(args, this.mcpServer, runDirectory)
             diagnostics.authMode = authStatus.authMethod ?? "missing"
             diagnostics.billingMode = resolveBillingMode(this.config.authMode)
             assertCodexAuthMode(this.config.authMode, authStatus)
@@ -135,7 +133,7 @@ export class CodexAppServerProvider implements AgentModelProvider {
             diagnostics.rateLimitSnapshotBefore = rateLimitSnapshotBefore
 
             const { baseInstructions, userMessage } = readCodexPromptParts(args.conversation)
-            const threadResponse = await this.client.request("thread/start", {
+            const threadResponse = await this.requireClient().request("thread/start", {
                 model: this.config.model,
                 serviceTier: this.config.serviceTier ?? null,
                 cwd: runDirectory,
@@ -284,6 +282,28 @@ export class CodexAppServerProvider implements AgentModelProvider {
         })
     }
 
+    private async startClientAndReadAuth(
+        args: AgentProviderRunArgs,
+        mcpServer: RunToolServer,
+        runDirectory: string
+    ): Promise<CodexAuthStatus> {
+        const start = async () => {
+            const clientEnv = await this.buildRunCodexEnvironment(runDirectory, mcpServer.token)
+            this.client = this.createClient(args, mcpServer, runDirectory, clientEnv)
+            await this.client.initialize()
+
+            const authStatus = await this.readAuthStatus()
+            await this.persistRefreshedChatGptAuth(args)
+            return authStatus
+        }
+
+        if (this.config.authMode !== "chatgpt") {
+            return await start()
+        }
+
+        return await withCodexChatGptAuthRefreshLock(start)
+    }
+
     private async buildRunCodexEnvironment(
         runDirectory: string,
         mcpToken: string
@@ -366,11 +386,37 @@ export class CodexAppServerProvider implements AgentModelProvider {
             args.logger.info("Persisted refreshed Codex ChatGPT auth", {
                 runId: args.context.runId,
             })
+            const metadata = readChatGptAuthMetadata(isolatedAuthJson)
+            if (metadata.accountId) {
+                await this.persistRefreshedChatGptAuthSnapshot({
+                    authJson: isolatedAuthJson,
+                    accountId: metadata.accountId,
+                    lastRefresh: metadata.lastRefresh,
+                }, args)
+            }
         } catch (error) {
             await rm(temporaryAuthFile, {
                 force: true,
             }).catch(() => undefined)
             args.logger.warn("Codex ChatGPT auth refresh persistence failed", {
+                runId: args.context.runId,
+                error: error instanceof Error ? error.message : String(error),
+            })
+        }
+    }
+
+    private async persistRefreshedChatGptAuthSnapshot(
+        auth: CodexChatGptAuthRefreshSnapshot,
+        args: AgentProviderRunArgs
+    ): Promise<void> {
+        if (!this.config.onChatGptAuthRefreshed) {
+            return
+        }
+
+        try {
+            await this.config.onChatGptAuthRefreshed(auth)
+        } catch (error) {
+            args.logger.warn("Codex ChatGPT auth control-plane persistence failed", {
                 runId: args.context.runId,
                 error: error instanceof Error ? error.message : String(error),
             })
@@ -774,6 +820,7 @@ function shouldPersistChatGptAuthUpdate(sourceAuthJson: string, isolatedAuthJson
 
 function readChatGptAuthMetadata(authJson: string): {
     accountId: string | undefined
+    lastRefresh: string | undefined
     lastRefreshMs: number
 } {
     try {
@@ -788,13 +835,36 @@ function readChatGptAuthMetadata(authJson: string): {
 
         return {
             accountId,
+            lastRefresh: typeof auth?.last_refresh === "string" && auth.last_refresh.trim()
+                ? auth.last_refresh
+                : undefined,
             lastRefreshMs: Number.isFinite(lastRefresh) ? lastRefresh : 0,
         }
     } catch {
         return {
             accountId: undefined,
+            lastRefresh: undefined,
             lastRefreshMs: 0,
         }
+    }
+}
+
+async function withCodexChatGptAuthRefreshLock<T>(run: () => Promise<T>): Promise<T> {
+    const previous = codexChatGptAuthRefreshLock
+    let release: () => void = () => undefined
+    const current = new Promise<void>((resolve) => {
+        release = resolve
+    })
+    codexChatGptAuthRefreshLock = previous.then(
+        () => current,
+        () => current
+    )
+
+    await previous.catch(() => undefined)
+    try {
+        return await run()
+    } finally {
+        release()
     }
 }
 
