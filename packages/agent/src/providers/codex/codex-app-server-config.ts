@@ -163,6 +163,9 @@ function buildCodexConfigOverrides(
     if (config.serviceTier) {
         overrides.push(["service_tier", tomlString(config.serviceTier)])
     }
+    if (config.authMode === "chatgpt") {
+        overrides.push(["cli_auth_credentials_store", tomlString("file")])
+    }
 
     return overrides
 }

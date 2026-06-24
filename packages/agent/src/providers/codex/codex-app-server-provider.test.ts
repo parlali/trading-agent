@@ -16,6 +16,7 @@ import {
     type CodexAppServerProviderConfig,
     type CodexAppServerProviderDependencies,
 } from "./codex-app-server-provider"
+import { buildCodexAppServerArgs } from "./codex-app-server-config"
 
 describe("CodexAppServerProvider", () => {
     it("accumulates assistant deltas, token usage, and final summary from notifications", async () => {
@@ -317,6 +318,21 @@ describe("CodexAppServerProvider", () => {
             await rm(sourceCodexHome, { recursive: true, force: true })
             await rm(runDirectory, { recursive: true, force: true })
         }
+    })
+
+    it("uses file-backed ChatGPT credentials for app-server runs", () => {
+        const args = buildCodexAppServerArgs({
+            provider: "codex",
+            model: "codex-test",
+            authMode: "chatgpt",
+        }, {
+            url: "http://127.0.0.1:1234/mcp",
+            token: "mcp-token",
+            toolNames: ["fake_tool"],
+            close: async () => undefined,
+        })
+
+        expect(args).toContain("cli_auth_credentials_store=\"file\"")
     })
 
     it("persists refreshed isolated ChatGPT auth back to the source Codex auth file", async () => {
