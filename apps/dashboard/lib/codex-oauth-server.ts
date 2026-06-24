@@ -20,7 +20,8 @@ export async function requireDashboardUser(request: Request): Promise<void> {
 }
 
 export async function proxyCodexOAuthRequest(
-    action: CodexOAuthAction
+    action: CodexOAuthAction,
+    options: { force?: boolean } = {}
 ): Promise<Response> {
     const serviceToken = process.env.BACKEND_SERVICE_TOKEN?.trim()
     if (!serviceToken) {
@@ -28,6 +29,9 @@ export async function proxyCodexOAuthRequest(
     }
 
     const target = new URL(`/codex/oauth/${action}`, readBackendUrl())
+    if (action === "start" && options.force) {
+        target.searchParams.set("force", "1")
+    }
     const response = await fetch(target, {
         method: action === "status" ? "GET" : "POST",
         headers: {

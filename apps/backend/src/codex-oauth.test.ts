@@ -132,6 +132,48 @@ describe("Codex OAuth control handler", () => {
         }
     })
 
+    it("starts a forced device-code login even when a ChatGPT auth file is present", async () => {
+        const codexHome = createTempCodexHome()
+        const deviceLogin = new FakeCodexDeviceLoginProcess()
+        const spawnDeviceLogin = vi.fn(() => deviceLogin)
+        const handler = createCodexOAuthControlHandler({
+            serviceToken: "service-token",
+            env: { CODEX_HOME: codexHome },
+            spawnDeviceLogin,
+        })
+
+        try {
+            writeCodexChatGptAuthFileSync({
+                env: { CODEX_HOME: codexHome },
+                tokens: {
+                    idToken: fakeJwt({}),
+                    accessToken: fakeJwt({}),
+                    refreshToken: "refresh-token",
+                    accountId: "account-1",
+                },
+            })
+
+            const pendingResponse = handler(new Request("http://backend/codex/oauth/start?force=1", {
+                method: "POST",
+                headers: {
+                    authorization: "Bearer service-token",
+                },
+            }))
+            deviceLogin.writeStdout("https://auth.openai.com/codex/device\nTEST-12345\n")
+            const response = await pendingResponse
+            const body = await response!.json() as Record<string, unknown>
+
+            expect(response!.status).toBe(200)
+            expect(body.status).toBe("awaiting_device")
+            expect(body.deviceVerificationUrl).toBe("https://auth.openai.com/codex/device")
+            expect(body.userCode).toBe("TEST-12345")
+            expect(spawnDeviceLogin).toHaveBeenCalledTimes(1)
+        } finally {
+            deviceLogin.kill("SIGTERM")
+            rmSync(codexHome, { recursive: true, force: true })
+        }
+    })
+
     it("fails closed when Codex device auth falls back to localhost callback login", async () => {
         const codexHome = createTempCodexHome()
         const deviceLogin = new FakeCodexDeviceLoginProcess()

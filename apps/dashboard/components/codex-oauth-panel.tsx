@@ -45,13 +45,19 @@ export function CodexOAuthPanel() {
             : "secondary"
 
     const requestCodexOAuth = useCallback(async (
-        action: "status" | "start"
+        action: "status" | "start",
+        options: { force?: boolean } = {}
     ): Promise<CodexOAuthSnapshot> => {
         if (!authToken) {
             throw new Error("Dashboard authentication is not ready")
         }
 
-        const response = await fetch(`/api/codex-oauth?action=${action}`, {
+        const params = new URLSearchParams({ action })
+        if (options.force) {
+            params.set("force", "1")
+        }
+
+        const response = await fetch(`/api/codex-oauth?${params.toString()}`, {
             method: action === "status" ? "GET" : "POST",
             headers: {
                 "authorization": `Bearer ${authToken}`,
@@ -99,10 +105,10 @@ export function CodexOAuthPanel() {
         return () => window.clearInterval(timer)
     }, [loginActive, refreshStatus])
 
-    async function startLogin() {
+    async function startLogin(force = false) {
         setLoadingAction("start")
         try {
-            const next = await requestCodexOAuth("start")
+            const next = await requestCodexOAuth("start", { force })
             setSnapshot(next)
             if (next.deviceVerificationUrl) {
                 window.open(next.deviceVerificationUrl, "_blank", "noopener,noreferrer")
@@ -151,13 +157,13 @@ export function CodexOAuthPanel() {
                 </div>
 
                 <div className="flex flex-wrap items-center gap-2">
-                    <Button type="button" onClick={startLogin} disabled={!authToken || isBusy || snapshot?.ready || loginActive}>
+                    <Button type="button" onClick={() => startLogin(snapshot?.ready === true)} disabled={!authToken || isBusy || loginActive}>
                         {loadingAction === "start" ? (
                             <Loader2 className="h-4 w-4 animate-spin" />
                         ) : (
                             <LogIn className="h-4 w-4" />
                         )}
-                        Sign in with ChatGPT
+                        {snapshot?.ready ? "Re-authenticate ChatGPT" : "Sign in with ChatGPT"}
                     </Button>
                     {snapshot?.deviceVerificationUrl ? (
                         <Button type="button" variant="outline" onClick={() => window.open(snapshot.deviceVerificationUrl!, "_blank", "noopener,noreferrer")}>

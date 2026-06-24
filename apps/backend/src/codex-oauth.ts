@@ -53,6 +53,7 @@ interface CodexDeviceLoginSession {
     process: CodexDeviceLoginProcess
     stdout: string
     stderr: string
+    initialAuthJson: string | null
     deviceVerificationUrl: string | null
     userCode: string | null
     startedAt: number
@@ -116,7 +117,8 @@ export function createCodexOAuthControlHandler(config: {
             }
 
             if (request.method === "POST" && pathname === "/codex/oauth/start") {
-                const snapshot = await controller.start()
+                const force = new URL(request.url).searchParams.get("force") === "1"
+                const snapshot = await controller.start({ force })
                 await persistAuthIfReady({
                     env: config.env ?? process.env,
                     snapshot,
@@ -182,13 +184,16 @@ export class CodexOAuthController {
         }) => CodexDeviceLoginProcess
     }) {}
 
-    async start(): Promise<CodexOAuthSnapshot> {
+    async start(args: { force?: boolean } = {}): Promise<CodexOAuthSnapshot> {
         const authStatus = inspectCodexChatGptAuthStatusSync(this.config.env)
-        if (authStatus.ready) {
+        if (authStatus.ready && !args.force) {
             return this.getSnapshot()
         }
 
         this.expireActiveSessionIfNeeded()
+        if (args.force) {
+            this.clearActiveSession()
+        }
         if (this.activeSession) {
             return await this.waitForDeviceChallenge(this.activeSession)
         }
@@ -212,7 +217,7 @@ export class CodexOAuthController {
         this.expireActiveSessionIfNeeded()
         const authStatus = inspectCodexChatGptAuthStatusSync(this.config.env)
 
-        if (authStatus.ready) {
+        if (authStatus.ready && (!this.activeSession || this.activeSessionHasFreshAuth(this.activeSession))) {
             this.clearActiveSession()
             this.terminalState = null
             return buildSnapshot({
@@ -262,6 +267,7 @@ export class CodexOAuthController {
         chmodSync(codexHome, 0o700)
 
         const codexBin = this.config.env.CODEX_BIN?.trim() || "codex"
+        const initialAuthJson = readCodexChatGptAuthFileSync(this.config.env)?.authJson ?? null
         const child = (this.config.spawnDeviceLogin ?? spawnCodexDeviceLogin)({
             codexBin,
             codexHome,
@@ -273,6 +279,7 @@ export class CodexOAuthController {
             process: child,
             stdout: "",
             stderr: "",
+            initialAuthJson,
             deviceVerificationUrl: null,
             userCode: null,
             startedAt: now,
@@ -443,6 +450,10 @@ export class CodexOAuthController {
         for (const waiter of session.waiters) {
             waiter()
         }
+    }
+
+    private activeSessionHasFreshAuth(session: CodexDeviceLoginSession): boolean {
+        return readCodexChatGptAuthFileSync(this.config.env)?.authJson !== session.initialAuthJson
     }
 }
 
