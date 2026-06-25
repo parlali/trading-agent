@@ -88,6 +88,74 @@ describe("provider identity preflight", () => {
         ])
     })
 
+    it("rejects duplicate live MT5 configured instruments on one account", () => {
+        const failures: string[] = []
+
+        providerIdentityPreflightTestables.inspectMT5ConfiguredInstrumentConflicts([
+            createStrategy({
+                _id: "mt5-gold-a" as never,
+                app: "mt5",
+                accountId: "primary",
+                name: "MT5 Gold A",
+                enabled: true,
+                policy: createMT5Policy("XAUUSD"),
+            }),
+            createStrategy({
+                _id: "mt5-gold-b" as never,
+                app: "mt5",
+                accountId: "primary",
+                name: "MT5 Gold B",
+                enabled: true,
+                policy: createMT5Policy("xauusd"),
+            }),
+            createStrategy({
+                _id: "mt5-gold-disabled" as never,
+                app: "mt5",
+                accountId: "primary",
+                name: "MT5 Gold Disabled",
+                enabled: false,
+                policy: createMT5Policy("XAUUSD"),
+            }),
+        ], failures)
+
+        expect(failures).toEqual([
+            "MT5 configured instrument conflict: account primary instrument XAUUSD is enabled in multiple live strategies: MT5 Gold A (mt5-gold-a), MT5 Gold B (mt5-gold-b). MT5 accounting requires one live strategy per account/instrument.",
+        ])
+    })
+
+    it("allows live MT5 configured instruments when each account/instrument is unique", () => {
+        const failures: string[] = []
+
+        providerIdentityPreflightTestables.inspectMT5ConfiguredInstrumentConflicts([
+            createStrategy({
+                _id: "mt5-gold" as never,
+                app: "mt5",
+                accountId: "primary",
+                name: "MT5 Gold",
+                enabled: true,
+                policy: createMT5Policy("XAUUSD"),
+            }),
+            createStrategy({
+                _id: "mt5-eurusd" as never,
+                app: "mt5",
+                accountId: "primary",
+                name: "MT5 EURUSD",
+                enabled: true,
+                policy: createMT5Policy("EURUSD"),
+            }),
+            createStrategy({
+                _id: "mt5-gold-secondary" as never,
+                app: "mt5",
+                accountId: "secondary",
+                name: "MT5 Gold Secondary",
+                enabled: true,
+                policy: createMT5Policy("XAUUSD"),
+            }),
+        ], failures)
+
+        expect(failures).toEqual([])
+    })
+
     it("rejects active commit-unknown orders and unresolved blocked safety faults", () => {
         const strategy = createStrategy()
         const failures: string[] = []
@@ -111,6 +179,26 @@ describe("provider identity preflight", () => {
         ])
     })
 })
+
+function createMT5Policy(instrument: string): Record<string, unknown> {
+    return {
+        llm: {
+            provider: "codex",
+            model: "gpt-5.5",
+            authMode: "chatgpt",
+        },
+        maxRiskPercent: 2,
+        minRiskReward: 0.5,
+        tradingHours: {
+            start: "00:00",
+            end: "23:59",
+            timezone: "UTC",
+        },
+        marketRegionsByInstrument: {
+            [instrument]: ["US"],
+        },
+    }
+}
 
 function createProviderOrder(
     overrides: Partial<PortfolioPendingOrder>

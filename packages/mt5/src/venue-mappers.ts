@@ -1,4 +1,5 @@
 import {
+    createExecutionError,
     createExecutionErrorDetail,
     formatExecutionError,
     type ExecutionCostSnapshot,
@@ -22,10 +23,11 @@ const MT5_PROVIDER_FUTURE_SKEW_MS = 60_000
 
 export function mapMT5Position(raw: MT5Position, observedAt: number = Date.now()): Position {
     const openTime = normalizeMT5ProviderTimestamp(raw.openTime, observedAt)
+    const providerPositionIdentity = resolveMT5ProviderPositionIdentity(raw)
 
     return {
         instrument: raw.symbol,
-        providerPositionId: String(raw.ticket),
+        providerPositionId: providerPositionIdentity.providerPositionId,
         side: raw.type === "buy" ? "long" : "short",
         quantity: raw.volume,
         entryPrice: raw.openPrice,
@@ -43,22 +45,28 @@ export function mapMT5Position(raw: MT5Position, observedAt: number = Date.now()
             magic: raw.magic,
             comment: raw.comment,
             openTime,
+            providerPositionIdSource: providerPositionIdentity.source,
         },
     }
 }
 
 export function readMT5Ticket(position: Position): number | undefined {
-    const fromProviderPositionId = Number(position.providerPositionId)
-    if (Number.isInteger(fromProviderPositionId) && fromProviderPositionId > 0) {
-        return fromProviderPositionId
-    }
-
-    const fromMetadata = Number(position.metadata?.ticket)
-    if (Number.isInteger(fromMetadata) && fromMetadata > 0) {
+    const fromMetadata = readMT5MetadataTicket(position.metadata?.ticket)
+    if (fromMetadata !== undefined) {
         return fromMetadata
     }
 
-    return undefined
+    const providerPositionId = readMT5MetadataTicket(position.providerPositionId)
+    const metadataIdentifier = readMT5MetadataTicket(position.metadata?.identifier)
+    if (
+        providerPositionId !== undefined &&
+        metadataIdentifier !== undefined &&
+        providerPositionId === metadataIdentifier
+    ) {
+        return undefined
+    }
+
+    return providerPositionId
 }
 
 export function parseMT5Ticket(orderId: string): number | undefined {
@@ -68,6 +76,16 @@ export function parseMT5Ticket(orderId: string): number | undefined {
     }
 
     return ticket
+}
+
+export function readMT5MetadataTicket(value: unknown): number | undefined {
+    if (typeof value === "number" && Number.isInteger(value) && value > 0) {
+        return value
+    }
+    if (typeof value === "string") {
+        return parseMT5Ticket(value)
+    }
+    return undefined
 }
 
 export function rejectMT5PreValidation(params: {
@@ -288,6 +306,37 @@ export function aggregateMT5CloseResults(
         error: errorDetail ? formatExecutionError(errorDetail) : undefined,
         errorDetail,
     }
+}
+
+function resolveMT5ProviderPositionIdentity(raw: MT5Position): {
+    providerPositionId: string
+    source: "identifier" | "ticket"
+} {
+    const identifier = readMT5MetadataTicket(raw.identifier)
+    if (identifier !== undefined) {
+        return {
+            providerPositionId: String(identifier),
+            source: "identifier",
+        }
+    }
+
+    const ticket = readMT5MetadataTicket(raw.ticket)
+    if (ticket !== undefined) {
+        return {
+            providerPositionId: String(ticket),
+            source: "ticket",
+        }
+    }
+
+    throw createExecutionError("venue", `MT5 position for ${raw.symbol} has no provider position identity`, {
+        code: "MT5_POSITION_IDENTITY_MISSING",
+        retryable: false,
+        details: {
+            symbol: raw.symbol,
+            ticket: raw.ticket,
+            identifier: raw.identifier,
+        },
+    })
 }
 
 export function mapMT5PositionClosure(raw: MT5PositionClosure, observedAt: number = Date.now()): ProviderPositionClosure {

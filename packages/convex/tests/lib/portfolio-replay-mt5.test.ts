@@ -12,6 +12,8 @@ describe("Convex MT5 provider close replay", () => {
         const runId = "run-mt5"
         const openedAt = 1_779_900_000_000
         const closedAt = openedAt + 600_000
+        const entryTicket = "1671162537"
+        const providerPositionId = "1671162000"
         const db = new FakeDb({
             strategies: [{
                 _id: strategyId,
@@ -32,9 +34,9 @@ describe("Convex MT5 provider close replay", () => {
             instrument_claims: [],
             orders: [{
                 _id: "order-entry",
-                orderId: "1671162537",
-                canonicalOrderId: "1671162537",
-                providerOrderId: "1671162537",
+                orderId: entryTicket,
+                canonicalOrderId: entryTicket,
+                providerOrderId: entryTicket,
                 providerClientOrderId: "vmte01goldclose",
                 providerOrderAliases: [],
                 runId,
@@ -55,6 +57,9 @@ describe("Convex MT5 provider close replay", () => {
                     limitPrice: 4434.18,
                     metadata: {
                         estimatedPrice: 4434.18,
+                        positionId: Number(providerPositionId),
+                        providerPositionId,
+                        identifier: Number(providerPositionId),
                     },
                     side: "sell",
                     quantity: 0.01,
@@ -99,14 +104,14 @@ describe("Convex MT5 provider close replay", () => {
             workingOrders: [],
             positionClosures: [{
                 instrument: "XAUUSD",
-                providerPositionId: "1671162537",
+                providerPositionId,
                 side: "short",
                 quantity: 0.01,
                 fillPrice: 4457.5,
                 closedAt,
                 metadata: JSON.stringify({
                     orderId: 1672000000,
-                    positionId: 1671162537,
+                    positionId: Number(providerPositionId),
                     fillPnl: -23.32,
                     profit: -23.32,
                 }),
@@ -114,7 +119,7 @@ describe("Convex MT5 provider close replay", () => {
         })
 
         const orders = db.rows.orders ?? []
-        const entryOrder = orders.find((order) => order.orderId === "1671162537")
+        const entryOrder = orders.find((order) => order.orderId === entryTicket)
         expect(entryOrder).toMatchObject({
             status: "filled",
             filledQuantity: 0.01,
@@ -127,7 +132,7 @@ describe("Convex MT5 provider close replay", () => {
             throw new Error("Expected MT5 provider-close order")
         }
         expect(closeOrder).toMatchObject({
-            orderId: `provider-close:mt5:XAUUSD:1671162537:${closedAt}`,
+            orderId: `provider-close:mt5:XAUUSD:${providerPositionId}:${closedAt}`,
             providerOrderId: "1672000000",
             runId,
             strategyId,
@@ -142,20 +147,20 @@ describe("Convex MT5 provider close replay", () => {
             fillPnl: -23.32,
             profit: -23.32,
             providerReconciledClose: true,
-            providerPositionId: "1671162537",
-            providerPositionKey: "XAUUSD:1671162537",
+            providerPositionId,
+            providerPositionKey: `XAUUSD:${providerPositionId}`,
             entryPrice: 4434.18,
             positionSide: "short",
         })
         expect(resolveCloseOrderRealizedPnl(closeOrder as never)).toBe(-23.32)
         expect(db.rows.order_transitions).toEqual(expect.arrayContaining([
             expect.objectContaining({
-                orderId: "1671162537",
+                orderId: entryTicket,
                 previousStatus: "cancelled",
                 status: "filled",
             }),
             expect.objectContaining({
-                orderId: `provider-close:mt5:XAUUSD:1671162537:${closedAt}`,
+                orderId: `provider-close:mt5:XAUUSD:${providerPositionId}:${closedAt}`,
                 status: "filled",
             }),
         ]))

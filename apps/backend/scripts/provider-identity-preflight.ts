@@ -23,6 +23,10 @@ import {
     isDryRunStrategy,
     refreshProviderPortfolioState,
 } from "./lib/safe-strategy-reset"
+import {
+    findMT5ConfiguredInstrumentConflicts,
+    formatMT5ConfiguredInstrumentConflict,
+} from "../src/mt5-configured-instrument-governance"
 
 type VenueApp = Exclude<App, "backend">
 
@@ -46,6 +50,7 @@ export async function runProviderIdentityPreflight(): Promise<void> {
     await refreshProviderTruth(client, accountScopes, strategies, failures, {
         requireLiveStrategy: appFilter !== undefined,
     })
+    inspectMT5ConfiguredInstrumentConflicts(strategies, failures)
     await inspectProviderFreshness(client, accountScopes, failures)
     await inspectProviderExposure(client, accountScopes, failures)
     await inspectActiveOrders(strategies, orderPersistence, client, failures)
@@ -61,6 +66,15 @@ export async function runProviderIdentityPreflight(): Promise<void> {
     console.log(
         `Provider identity preflight passed for ${formatAccountScopes(accountScopes)} with ${strategies.length} strategy record(s) checked`
     )
+}
+
+function inspectMT5ConfiguredInstrumentConflicts(
+    strategies: StoredStrategy[],
+    failures: string[]
+): void {
+    for (const conflict of findMT5ConfiguredInstrumentConflicts(strategies)) {
+        failures.push(formatMT5ConfiguredInstrumentConflict(conflict))
+    }
 }
 
 async function refreshProviderTruth(
@@ -403,6 +417,7 @@ function isExecutedDirectly(): boolean {
 }
 
 export const providerIdentityPreflightTestables = {
+    inspectMT5ConfiguredInstrumentConflicts,
     inspectActiveOrder,
     inspectProviderPosition,
     inspectProviderOrder,

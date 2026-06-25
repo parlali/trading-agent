@@ -55,6 +55,20 @@ def is_transient_symbol_select_failure(code: int, message: str) -> bool:
     )
 
 
+def resolve_margin_mode_name(margin_mode: int) -> str:
+    if mt5 is None:
+        return "unknown"
+
+    if margin_mode == getattr(mt5, "ACCOUNT_MARGIN_MODE_RETAIL_HEDGING", -1):
+        return "retail_hedging"
+    if margin_mode == getattr(mt5, "ACCOUNT_MARGIN_MODE_RETAIL_NETTING", -1):
+        return "retail_netting"
+    if margin_mode == getattr(mt5, "ACCOUNT_MARGIN_MODE_EXCHANGE", -1):
+        return "exchange"
+
+    return "unknown"
+
+
 # ---------------------------------------------------------------------------
 # MT5 Client
 # ---------------------------------------------------------------------------
@@ -264,6 +278,7 @@ class MT5Client:
     def _log_account_info(self) -> None:
         info = mt5.account_info()
         if info:
+            margin_mode = int(getattr(info, "margin_mode", -1))
             log.info(
                 "mt5_connected",
                 login=self.login,
@@ -273,6 +288,8 @@ class MT5Client:
                 equity=info.equity,
                 currency=info.currency,
                 leverage=info.leverage,
+                marginMode=margin_mode,
+                marginModeName=resolve_margin_mode_name(margin_mode),
             )
 
     def _last_error_details(self) -> dict[str, Any]:
@@ -377,6 +394,7 @@ class MT5Client:
     def get_account_info(self) -> dict[str, Any]:
         self.ensure_connected()
         info = self._require_mt5_result("account_info", mt5.account_info())
+        margin_mode = int(getattr(info, "margin_mode", -1))
 
         return {
             "login": info.login,
@@ -391,6 +409,8 @@ class MT5Client:
             "currency": info.currency,
             "leverage": info.leverage,
             "profit": float(info.profit),
+            "marginMode": margin_mode,
+            "marginModeName": resolve_margin_mode_name(margin_mode),
         }
 
     def get_positions(self) -> list[dict[str, Any]]:

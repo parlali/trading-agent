@@ -34,6 +34,8 @@ export interface MT5ClientConfig {
     fetchImpl?: typeof fetch
 }
 
+export type MT5MarginModeName = "retail_hedging" | "retail_netting" | "exchange" | "unknown"
+
 export interface MT5AccountInfo {
     login: number
     name: string
@@ -47,6 +49,8 @@ export interface MT5AccountInfo {
     currency: string
     leverage: number
     profit: number
+    marginMode?: number
+    marginModeName?: MT5MarginModeName
 }
 
 export interface MT5Position {
@@ -299,6 +303,7 @@ export class MT5Client {
         commission?: number
         swap?: number
         fee?: number
+        positionId?: number
         state: string
     } | null> {
         try {

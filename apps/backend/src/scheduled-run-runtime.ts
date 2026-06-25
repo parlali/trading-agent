@@ -39,6 +39,7 @@ import {
     backend,
     backendServiceToken,
     convexUrl,
+    syncStrategies,
 } from "./state"
 import {
     createKillSwitchGuardedVenue,
@@ -48,6 +49,7 @@ import {
 import type { VenueApp, VenuePlugin } from "./types"
 import { reconcilePendingOrdersForRun } from "./pending-orders"
 import { runProviderAccountOperation } from "./provider-account-coordinator"
+import { assertNoMT5ConfiguredInstrumentConflicts } from "./mt5-configured-instrument-governance"
 
 interface CreateScheduledRunRuntimeArgs {
     app: VenueApp
@@ -113,6 +115,9 @@ export async function createScheduledRunRuntime(
     } = args
     const venue = plugin.createVenueAdapter(policy, strategySecrets)
     const isDryRun = Boolean(policy.dryRun)
+    if (app === "mt5" && !isDryRun) {
+        assertNoMT5ConfiguredInstrumentConflicts(resolveCurrentMT5RuntimeStrategies(strategy))
+    }
     const storedPositionsPromise = isDryRun
         ? backend.getLatestPositions(strategy._id)
         : Promise.resolve(undefined)
@@ -312,6 +317,15 @@ export async function createScheduledRunRuntime(
             pipeline.stopAllTracking()
         },
     }
+}
+
+function resolveCurrentMT5RuntimeStrategies(strategy: StoredStrategy): StoredStrategy[] {
+    const strategiesById = new Map<string, StoredStrategy>()
+    for (const entry of syncStrategies.mt5 ?? []) {
+        strategiesById.set(String(entry.strategy._id), entry.strategy)
+    }
+    strategiesById.set(String(strategy._id), strategy)
+    return Array.from(strategiesById.values())
 }
 
 export async function resolveScheduledRunRiskSnapshot(

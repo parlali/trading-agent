@@ -24,7 +24,9 @@ import {
 import {
     isRecoverableMT5ConnectionError,
     MT5Client,
+    type MT5AccountInfo,
     type MT5AccountPnlEvent,
+    type MT5Position,
     type MT5PositionClosure,
     type MT5SymbolInfo,
     type MT5WorkerCredentials,
@@ -43,6 +45,7 @@ import {
     mapMT5SubmissionResult,
     mapMT5WorkingOrder,
     parseMT5Ticket,
+    readMT5MetadataTicket,
     readMT5Ticket,
     rejectInvalidMT5Ticket,
     rejectMT5PreValidation,
@@ -80,6 +83,12 @@ export class MT5VenueAdapter implements VenueAdapter, PriceVerifier {
         this.assertAccountIdentity(info.login)
     }
 
+    async getAccountInfo(): Promise<MT5AccountInfo> {
+        return await this.withRecoverableRead(async () =>
+            await this.readVerifiedAccountInfo()
+        )
+    }
+
     private assertAccountIdentity(reportedLogin: number): void {
         if (reportedLogin !== this.credentials.login) {
             throw createExecutionError(
@@ -108,8 +117,7 @@ export class MT5VenueAdapter implements VenueAdapter, PriceVerifier {
 
     async getAccountState(): Promise<AccountState> {
         return await this.withRecoverableRead(async () => {
-            const info = await this.client.getAccount(this.credentials)
-            this.assertAccountIdentity(info.login)
+            const info = await this.readVerifiedAccountInfo()
             assertMT5AccountCurrency(info.currency)
             const [closures, accountPnlEvents] = await Promise.all([
                 this.client.getPositionClosures(this.credentials, 24),
@@ -392,8 +400,8 @@ export class MT5VenueAdapter implements VenueAdapter, PriceVerifier {
         context?: SubmitOrderContext
     ): Promise<ExecutionResult> {
         const providerClientOrderId = requireMT5CloseProviderClientOrderId(context, instrument)
-        const ticket = readMT5CloseTicket(preparedIntent)
-        if (ticket === undefined) {
+        const closeIdentity = readMT5CloseIdentity(preparedIntent)
+        if (!closeIdentity) {
             return rejectMT5PreValidation({
                 message: `MT5 close for ${instrument} requires provider position identity`,
                 code: "MISSING_PROVIDER_POSITION_ID",
@@ -404,15 +412,17 @@ export class MT5VenueAdapter implements VenueAdapter, PriceVerifier {
         }
 
         const positions = await this.client.getPositions(this.credentials)
-        const matchingPositions = positions.filter((position) => position.symbol === instrument && position.ticket === ticket)
+        const matchingPositions = positions.filter((position) =>
+            mt5PositionMatchesCloseIdentity(position, instrument, closeIdentity)
+        )
 
         if (matchingPositions.length === 0) {
             return rejectMT5PreValidation({
-                message: `No open MT5 position found for ${instrument} ticket ${ticket}`,
+                message: `No open MT5 position found for ${instrument} provider position identity ${formatMT5CloseIdentity(closeIdentity)}`,
                 code: "POSITION_NOT_FOUND",
                 details: {
                     instrument,
-                    ticket,
+                    ...closeIdentity,
                 },
             })
         }
@@ -442,10 +452,10 @@ export class MT5VenueAdapter implements VenueAdapter, PriceVerifier {
         context?: SubmitOrderContext
     ): Promise<ExecutionResult> {
         const providerClientOrderId = requireMT5CloseProviderClientOrderId(context, position.instrument)
-        const ticket = readMT5Ticket(position)
+        const ticket = readMT5Ticket(position) ?? await this.resolveLivePositionTicket(position)
         if (ticket === undefined) {
             return rejectMT5PreValidation({
-                message: `No MT5 provider ticket found for ${position.instrument}`,
+                message: `No open MT5 provider ticket found for ${position.instrument}`,
                 code: "POSITION_NOT_FOUND",
                 details: {
                     instrument: position.instrument,
@@ -624,6 +634,39 @@ export class MT5VenueAdapter implements VenueAdapter, PriceVerifier {
         }
     }
 
+    private async readVerifiedAccountInfo(): Promise<MT5AccountInfo> {
+        const info = await this.client.getAccount(this.credentials)
+        this.assertAccountIdentity(info.login)
+        return info
+    }
+
+    private async resolveLivePositionTicket(position: Position): Promise<number | undefined> {
+        const providerPositionId = readMT5MetadataTicket(position.providerPositionId)
+        if (providerPositionId === undefined) {
+            return undefined
+        }
+
+        const positions = await this.client.getPositions(this.credentials)
+        const matches = positions.filter((candidate) =>
+            mt5PositionMatchesCloseIdentity(candidate, position.instrument, { providerPositionId })
+        )
+
+        if (matches.length > 1) {
+            throw createExecutionError("pre_validation", `MT5 provider position identity ${providerPositionId} is ambiguous for ${position.instrument}`, {
+                code: "MT5_PROVIDER_POSITION_ID_AMBIGUOUS",
+                retryable: false,
+                details: {
+                    instrument: position.instrument,
+                    providerPositionId: position.providerPositionId,
+                    tickets: matches.map((match) => match.ticket),
+                    identifiers: matches.map((match) => match.identifier),
+                },
+            })
+        }
+
+        return matches[0]?.ticket
+    }
+
     private async withTicket(
         orderId: string,
         handler: (ticket: number) => Promise<ExecutionResult>
@@ -718,19 +761,43 @@ function finiteOrZero(value: number | undefined): number {
     return typeof value === "number" && Number.isFinite(value) ? value : 0
 }
 
-function readMT5CloseTicket(intent: OrderIntent | undefined): number | undefined {
-    const metadata = intent?.metadata
-    return readMT5MetadataTicket(metadata?.providerPositionId) ?? readMT5MetadataTicket(metadata?.ticket)
+interface MT5CloseIdentity {
+    ticket?: number
+    providerPositionId?: number
 }
 
-function readMT5MetadataTicket(value: unknown): number | undefined {
-    if (typeof value === "number" && Number.isInteger(value) && value > 0) {
-        return value
+function readMT5CloseIdentity(intent: OrderIntent | undefined): MT5CloseIdentity | undefined {
+    const metadata = intent?.metadata
+    const ticket = readMT5MetadataTicket(metadata?.ticket)
+    if (ticket !== undefined) {
+        return { ticket }
     }
-    if (typeof value === "string") {
-        return parseMT5Ticket(value)
+
+    const providerPositionId = readMT5MetadataTicket(metadata?.providerPositionId)
+    return providerPositionId !== undefined ? { providerPositionId } : undefined
+}
+
+function mt5PositionMatchesCloseIdentity(
+    position: MT5Position,
+    instrument: string,
+    closeIdentity: MT5CloseIdentity
+): boolean {
+    if (position.symbol !== instrument) {
+        return false
     }
-    return undefined
+
+    if (closeIdentity.ticket !== undefined) {
+        return position.ticket === closeIdentity.ticket
+    }
+
+    return closeIdentity.providerPositionId !== undefined &&
+        (position.identifier === closeIdentity.providerPositionId || position.ticket === closeIdentity.providerPositionId)
+}
+
+function formatMT5CloseIdentity(identity: MT5CloseIdentity): string {
+    return identity.ticket !== undefined
+        ? `ticket ${identity.ticket}`
+        : `providerPositionId ${identity.providerPositionId}`
 }
 
 function buildMT5OrderStatusAccountingMetadata(
@@ -740,6 +807,7 @@ function buildMT5OrderStatusAccountingMetadata(
         commission?: number
         swap?: number
         fee?: number
+        positionId?: number
     },
     orderStatus: ExecutionResult["status"]
 ): ExecutionResult["intentUpdates"] | undefined {
@@ -750,6 +818,12 @@ function buildMT5OrderStatusAccountingMetadata(
     const metadata: Record<string, unknown> = {
         providerAccountingSource: "mt5_deal_status",
         providerOrderId: String(status.ticket),
+    }
+    if (isPositiveInteger(status.positionId)) {
+        metadata.positionId = status.positionId
+        metadata.identifier = status.positionId
+        metadata.providerPositionId = String(status.positionId)
+        metadata.providerPositionIdSource = "position_id"
     }
     const hasAccounting = [
         appendFiniteMetadataNumber(metadata, "fillPnl", status.profit),
@@ -764,6 +838,10 @@ function buildMT5OrderStatusAccountingMetadata(
     }
 
     return { metadata }
+}
+
+function isPositiveInteger(value: number | undefined): value is number {
+    return typeof value === "number" && Number.isInteger(value) && value > 0
 }
 
 function appendFiniteMetadataNumber(

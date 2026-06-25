@@ -40,6 +40,7 @@ import { findOrderRowByAlias } from "../orderIdentityAliases"
 
 const PROVIDER_CLOSURE_TIME_SKEW_MS = 5 * 60 * 1000
 const HISTORIC_CANONICAL_CLOSE_MATCH_WINDOW_MS = 24 * 60 * 60 * 1000
+const HISTORIC_MT5_ENTRY_ORDER_STATUSES = ["filled", "partially_filled", "cancelled", "rejected", "expired", "timed_out"] as const
 
 const CLOSURE_TRUTH_APPS = new Set<Doc<"strategies">["app"]>(["mt5", "okx-swap"])
 
@@ -790,7 +791,69 @@ async function resolveHistoricMT5ProviderCloseCandidates(
         }
     }
 
+    for (const order of await findMT5EntryOrdersByClosureIdentity(ctx, {
+        app: args.app,
+        accountId: args.accountId,
+        strategyMap: args.strategyMap,
+        closureIdentityCandidates,
+        seenOrderIds,
+    })) {
+        seenOrderIds.add(order.orderId)
+        const candidate = resolveMT5HistoricProviderCloseCandidate(order)
+        if (candidate && !seenPositionKeys.has(candidate.positionKey)) {
+            seenPositionKeys.add(candidate.positionKey)
+            candidates.push(candidate)
+        }
+    }
+
     return candidates
+}
+
+async function findMT5EntryOrdersByClosureIdentity(
+    ctx: PortfolioMutationCtx,
+    args: {
+        app: Doc<"strategies">["app"]
+        accountId: string
+        strategyMap: Map<string, StrategyDoc>
+        closureIdentityCandidates: Set<string>
+        seenOrderIds: Set<string>
+    }
+): Promise<Doc<"orders">[]> {
+    const matches: Doc<"orders">[] = []
+
+    for (const strategy of args.strategyMap.values()) {
+        if (strategy.app !== args.app || strategy.accountId !== args.accountId) {
+            continue
+        }
+
+        for (const status of HISTORIC_MT5_ENTRY_ORDER_STATUSES) {
+            const orders = await ctx.db
+                .query("orders")
+                .withIndex("by_strategy_status", (q) =>
+                    q.eq("strategyId", strategy._id).eq("status", status)
+                )
+                .collect()
+
+            for (const order of orders) {
+                if (
+                    args.seenOrderIds.has(order.orderId) ||
+                    !isEntryLikeOrder(order) ||
+                    !isTerminalHistoricOrderStatus(order.status) ||
+                    !orderBelongsToAccount(order, args.app, args.accountId) ||
+                    !hasSharedProviderPositionIdentity(
+                        buildMT5HistoricOrderIdentityCandidates(order),
+                        args.closureIdentityCandidates
+                    )
+                ) {
+                    continue
+                }
+
+                matches.push(order)
+            }
+        }
+    }
+
+    return matches
 }
 
 async function resolveHistoricOKXProviderCloseCandidates(
@@ -875,6 +938,18 @@ function resolveMT5HistoricProviderCloseCandidate(
 }
 
 function resolveHistoricMT5ProviderPositionId(order: Doc<"orders">): string | undefined {
+    const metadata = readOrderIntentMetadata(order)
+    for (const value of [
+        metadata?.positionId,
+        metadata?.providerPositionId,
+        metadata?.identifier,
+    ]) {
+        const identifier = readIdentifier(value)
+        if (identifier && /^\d+$/.test(identifier)) {
+            return identifier
+        }
+    }
+
     for (const identifier of getOrderProviderIdentifiers(order)) {
         if (/^\d+$/.test(identifier)) {
             return identifier
@@ -882,6 +957,23 @@ function resolveHistoricMT5ProviderPositionId(order: Doc<"orders">): string | un
     }
 
     return undefined
+}
+
+function buildMT5HistoricOrderIdentityCandidates(order: Doc<"orders">): Set<string> {
+    const identifiers = new Set<string>()
+    const metadata = readOrderIntentMetadata(order)
+
+    for (const identifier of getOrderProviderIdentifiers(order)) {
+        addKnownIdentifier(identifiers, identifier)
+    }
+
+    addKnownIdentifier(identifiers, metadata?.positionId)
+    addKnownIdentifier(identifiers, metadata?.providerPositionId)
+    addKnownIdentifier(identifiers, metadata?.identifier)
+    addKnownIdentifier(identifiers, metadata?.ticket)
+    addKnownIdentifier(identifiers, metadata?.orderId)
+
+    return identifiers
 }
 
 function resolveOrderPositionSide(order: Doc<"orders">): "long" | "short" | undefined {

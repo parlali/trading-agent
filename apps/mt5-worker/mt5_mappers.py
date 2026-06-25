@@ -323,6 +323,7 @@ def map_position_status(pos: Any) -> dict[str, Any]:
         take_profit=float(pos.tp),
         state="filled",
         time_done=read_mt5_timestamp_ms(pos, "time_msc", "time"),
+        position_id=int(pos.identifier),
     )
 
 
@@ -344,8 +345,13 @@ def map_deal_status(mt5_module: Any, order_id: int, deals: Any) -> dict[str, Any
     swap = sum(float(getattr(deal, "swap", 0.0)) for deal in order_deals)
     fee = sum(float(getattr(deal, "fee", 0.0)) for deal in order_deals)
     latest_deal = max(order_deals, key=lambda deal: int(getattr(deal, "time", 0)))
+    position_ids = {
+        int(getattr(deal, "position_id", 0) or 0)
+        for deal in order_deals
+        if int(getattr(deal, "position_id", 0) or 0) > 0
+    }
 
-    return {
+    result = {
         "ticket": int(latest_deal.order),
         "symbol": latest_deal.symbol,
         "type": "buy" if latest_deal.type == mt5_module.DEAL_TYPE_BUY else "sell",
@@ -359,6 +365,9 @@ def map_deal_status(mt5_module: Any, order_id: int, deals: Any) -> dict[str, Any
         "state": "filled",
         "timeDone": read_mt5_timestamp_ms(latest_deal, "time_msc", "time"),
     }
+    if len(position_ids) == 1:
+        result["positionId"] = next(iter(position_ids))
+    return result
 
 
 def map_history_order_status(order: Any) -> dict[str, Any]:
@@ -378,6 +387,7 @@ def map_order_status_payload(order: Any, volume: float) -> dict[str, Any]:
         take_profit=float(order.tp),
         state=order_state_str(order.state),
         time_done=read_mt5_timestamp_ms(order, "time_done_msc", "time_done"),
+        position_id=int(getattr(order, "position_id", 0) or 0),
     )
 
 
@@ -393,8 +403,9 @@ def order_status_payload(
     take_profit: float,
     state: str,
     time_done: int,
+    position_id: int = 0,
 ) -> dict[str, Any]:
-    return {
+    result = {
         "ticket": ticket,
         "symbol": symbol,
         "type": order_type,
@@ -406,6 +417,9 @@ def order_status_payload(
         "state": state,
         "timeDone": time_done,
     }
+    if position_id > 0:
+        result["positionId"] = position_id
+    return result
 
 
 def resolve_order_type(mt5_module: Any, side: str, order_type: str) -> int:

@@ -217,6 +217,26 @@ describe("MT5VenueAdapter", () => {
         expect(state.dayPnl).toBeCloseTo(10.45)
     })
 
+    it("uses MT5 position identifier as the canonical provider position id", async () => {
+        const client = createClient()
+        client.getPositions = async () => [
+            createPosition(1607001001, "XAUUSD", 4715.5, {
+                identifier: 1606516021,
+            }),
+        ]
+
+        const adapter = createAdapter(client)
+        const positions = await adapter.getPositions()
+
+        expect(positions).toHaveLength(1)
+        expect(positions[0]?.providerPositionId).toBe("1606516021")
+        expect(positions[0]?.metadata).toMatchObject({
+            ticket: 1607001001,
+            identifier: 1606516021,
+            providerPositionIdSource: "identifier",
+        })
+    })
+
     it("keeps successful limit submissions pending until provider status confirms a fill", async () => {
         const client = createClient()
         let submittedComment = ""
@@ -701,6 +721,7 @@ describe("MT5VenueAdapter", () => {
             commission: -0.12,
             swap: 0.47,
             fee: -0.05,
+            positionId: 1606516021,
             state: "filled",
         })
 
@@ -714,6 +735,10 @@ describe("MT5VenueAdapter", () => {
             commission: -0.12,
             swap: 0.47,
             fee: -0.05,
+            positionId: 1606516021,
+            identifier: 1606516021,
+            providerPositionId: "1606516021",
+            providerPositionIdSource: "position_id",
         })
     })
 
@@ -726,6 +751,7 @@ describe("MT5VenueAdapter", () => {
             volume: 0,
             volumeInitial: 0.02,
             price: 4798.66,
+            positionId: 1606516021,
             state: "filled",
         })
 
@@ -735,6 +761,8 @@ describe("MT5VenueAdapter", () => {
         expect(result.intentUpdates?.metadata).toMatchObject({
             providerAccountingSource: "mt5_deal_status",
             providerOrderId: "1594203775",
+            positionId: 1606516021,
+            providerPositionId: "1606516021",
             providerAccountingMissing: true,
             providerAccountingMissingReason: "mt5_order_status_without_deal_accounting",
         })
@@ -831,7 +859,9 @@ describe("MT5VenueAdapter", () => {
     it("passes canonical close identity when closing a provider position by ticket", async () => {
         const client = createClient()
         let closeComment = ""
-        client.closePosition = async (_credentials, { comment }): Promise<MT5OrderResult> => {
+        let closedTicket = 0
+        client.closePosition = async (_credentials, { ticket, comment }): Promise<MT5OrderResult> => {
+            closedTicket = ticket
             closeComment = comment ?? ""
             return createOrderResult({
                 orderId: "1607003001",
@@ -843,17 +873,20 @@ describe("MT5VenueAdapter", () => {
         const adapter = createAdapter(client)
         const result = await adapter.closeProviderPosition({
             instrument: "XAUUSD",
-            providerPositionId: "1607003000",
+            providerPositionId: "1606516021",
             side: "long",
             quantity: 0.01,
             entryPrice: 4715.5,
             metadata: {
                 ticket: 1607003000,
+                identifier: 1606516021,
+                providerPositionIdSource: "identifier",
             },
         } satisfies Position, undefined, {
             identity: createIdentityContext("vmtc01abcde23457", "close"),
         })
 
+        expect(closedTicket).toBe(1607003000)
         expect(closeComment).toBe("vmtc01abcde23457")
         expect(result.providerClientOrderId).toBe("vmtc01abcde23457")
         expect(result.status).toBe("filled")
@@ -1022,7 +1055,12 @@ describe("MT5VenueAdapter", () => {
     })
 })
 
-function createPosition(ticket: number, symbol: string, openPrice: number): MT5Position {
+function createPosition(
+    ticket: number,
+    symbol: string,
+    openPrice: number,
+    overrides: Partial<MT5Position> = {}
+): MT5Position {
     return {
         ticket,
         symbol,
@@ -1039,6 +1077,7 @@ function createPosition(ticket: number, symbol: string, openPrice: number): MT5P
         comment: "",
         openTime: 0,
         identifier: ticket,
+        ...overrides,
     }
 }
 
