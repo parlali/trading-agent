@@ -51,6 +51,7 @@ import type * as lib_mutations_systemHeartbeats from "../lib/mutations/systemHea
 import type * as lib_mutations_systemManualRuns from "../lib/mutations/systemManualRuns.js";
 import type * as lib_mutations_systemReset from "../lib/mutations/systemReset.js";
 import type * as lib_operationalMemory from "../lib/operationalMemory.js";
+import type * as lib_orderIdentityAliases from "../lib/orderIdentityAliases.js";
 import type * as lib_orderIdentityLookup from "../lib/orderIdentityLookup.js";
 import type * as lib_providerPositions from "../lib/providerPositions.js";
 import type * as lib_queries_agentChat from "../lib/queries/agentChat.js";
@@ -121,6 +122,7 @@ declare const fullApi: ApiFromModules<{
   "lib/mutations/systemManualRuns": typeof lib_mutations_systemManualRuns;
   "lib/mutations/systemReset": typeof lib_mutations_systemReset;
   "lib/operationalMemory": typeof lib_operationalMemory;
+  "lib/orderIdentityAliases": typeof lib_orderIdentityAliases;
   "lib/orderIdentityLookup": typeof lib_orderIdentityLookup;
   "lib/providerPositions": typeof lib_providerPositions;
   "lib/queries/agentChat": typeof lib_queries_agentChat;
