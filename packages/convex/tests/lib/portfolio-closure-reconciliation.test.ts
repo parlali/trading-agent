@@ -415,7 +415,30 @@ describe("Convex provider closure reconciliation safety", () => {
             provider_sync_state: [],
             position_syncs: [],
             positions: [],
-            execution_safety_faults: [],
+            execution_safety_faults: [{
+                _id: "fault-source-entry-missing-accounting",
+                strategyId,
+                app: "mt5",
+                accountId,
+                instrument: "GBPUSD",
+                category: "accounting_mismatch",
+                message: "Provider accepted a filled entry order without provider accounting metadata",
+                providerPayload: JSON.stringify({
+                    orderId: "entry-order",
+                    providerOrderId: providerPositionId,
+                    action: "entry",
+                }),
+                canonicalOrderId: "entry-order",
+                providerOrderId: providerPositionId,
+                providerClientOrderId: "entry-order",
+                providerOrderAliases: [],
+                runId,
+                venue: "mt5",
+                blocked: true,
+                occurredAt: openedAt + 1_000,
+                resolvedAt: undefined,
+                resolutionNote: undefined,
+            }],
             account_snapshots: [],
             control_plane_metrics: [],
             alerts: [],
@@ -468,6 +491,12 @@ describe("Convex provider closure reconciliation safety", () => {
             fillPnl: 1.25,
             swap: 0.05,
         })
+        expect(db.rows.execution_safety_faults).toContainEqual(expect.objectContaining({
+            _id: "fault-source-entry-missing-accounting",
+            blocked: false,
+            resolvedAt: expect.any(Number),
+            resolutionNote: `Provider closure attached to canonical close order ${canonicalOrderId}`,
+        }))
         expect(db.accountOrderScanAttempted).toBe(false)
     })
 

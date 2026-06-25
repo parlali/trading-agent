@@ -67,6 +67,7 @@ export async function attachClosureToCanonicalCloseOrder(
         app: args.order.app ?? args.order.venue as Doc<"strategies">["app"],
         accountId: args.order.accountId,
         order: args.order,
+        position: args.position,
         closure: args.closure,
         updatedAt: args.updatedAt,
     })
@@ -98,6 +99,7 @@ async function resolveProviderClosureFaultsAfterCanonicalAttach(
         app: Doc<"strategies">["app"]
         accountId: string
         order: Doc<"orders">
+        position?: ProviderClosePositionCandidate
         closure: ProviderPositionClosureInput
         updatedAt: number
     }
@@ -118,6 +120,16 @@ async function resolveProviderClosureFaultsAfterCanonicalAttach(
             fault.canonicalOrderId === args.order.orderId &&
             fault.message.startsWith(INFERRED_FILL_ACCOUNTING_FAULT_PREFIX)
         ) {
+            await resolveProviderClosureFault(ctx, {
+                fault,
+                updatedAt: args.updatedAt,
+                resolutionNote,
+                resolvedByStrategy,
+            })
+            continue
+        }
+
+        if (providerClosureResolvesEntryAccountingFault(fault, args)) {
             await resolveProviderClosureFault(ctx, {
                 fault,
                 updatedAt: args.updatedAt,
@@ -150,6 +162,90 @@ async function resolveProviderClosureFaultsAfterCanonicalAttach(
             acknowledged: false,
             timestamp: args.updatedAt,
         })
+    }
+}
+
+function providerClosureResolvesEntryAccountingFault(
+    fault: Doc<"execution_safety_faults">,
+    args: {
+        order: Doc<"orders">
+        position?: ProviderClosePositionCandidate
+        closure: ProviderPositionClosureInput
+    }
+): boolean {
+    if (
+        fault.category !== "accounting_mismatch" ||
+        fault.strategyId !== args.order.strategyId ||
+        fault.instrument !== args.closure.instrument ||
+        !fault.message.includes("filled entry order without provider accounting metadata") ||
+        !closureHasProviderAccountingMetadata(args.closure)
+    ) {
+        return false
+    }
+
+    const faultIdentifiers = buildFaultOrderIdentifiers(fault)
+    if (faultIdentifiers.size === 0) {
+        return false
+    }
+
+    return buildClosureSourceEntryIdentifiers(args).some((identifier) => faultIdentifiers.has(identifier))
+}
+
+function buildFaultOrderIdentifiers(fault: Doc<"execution_safety_faults">): Set<string> {
+    const identifiers = new Set<string>()
+    addIdentifier(identifiers, fault.canonicalOrderId)
+    addIdentifier(identifiers, fault.providerOrderId)
+    addIdentifier(identifiers, fault.providerClientOrderId)
+    addIdentifier(identifiers, fault.signedOrderFingerprint)
+    for (const alias of fault.providerOrderAliases ?? []) {
+        addIdentifier(identifiers, alias)
+    }
+    return identifiers
+}
+
+function buildClosureSourceEntryIdentifiers(args: {
+    order: Doc<"orders">
+    position?: ProviderClosePositionCandidate
+    closure: ProviderPositionClosureInput
+}): string[] {
+    const identifiers = new Set<string>()
+    const closeMetadata = readOrderIntentMetadata(args.order)
+    const positionMetadata = readMetadataRecord(args.position?.metadata)
+    const closureMetadata = parseJson<Record<string, unknown>>(args.closure.metadata)
+    const sourceOrder = args.position?.sourceOrder
+
+    addIdentifier(identifiers, sourceOrder?.orderId)
+    addIdentifier(identifiers, sourceOrder?.providerOrderId)
+    addIdentifier(identifiers, sourceOrder?.providerClientOrderId)
+    addIdentifier(identifiers, sourceOrder?.signedOrderFingerprint)
+    for (const alias of sourceOrder?.providerOrderAliases ?? []) {
+        addIdentifier(identifiers, alias)
+    }
+
+    addIdentifier(identifiers, args.position?.providerPositionId)
+    addIdentifier(identifiers, positionMetadata?.providerOrderId)
+    addIdentifier(identifiers, positionMetadata?.providerClientOrderId)
+    addIdentifier(identifiers, positionMetadata?.sourceOrderId)
+    addIdentifier(identifiers, positionMetadata?.orderId)
+    addIdentifier(identifiers, closeMetadata?.providerOrderId)
+    addIdentifier(identifiers, closeMetadata?.providerClientOrderId)
+    addIdentifier(identifiers, closeMetadata?.sourceOrderId)
+    addIdentifier(identifiers, closeMetadata?.providerPositionId)
+    addIdentifier(identifiers, closureMetadata?.positionId)
+    addIdentifier(identifiers, closureMetadata?.providerPositionId)
+
+    return Array.from(identifiers)
+}
+
+function closureHasProviderAccountingMetadata(closure: ProviderPositionClosureInput): boolean {
+    const metadata = parseJson<Record<string, unknown>>(closure.metadata)
+    return ACCUMULATED_PROVIDER_DEAL_FIELDS.some((field) => readFiniteMetadataNumber(metadata?.[field]) !== undefined)
+}
+
+function addIdentifier(identifiers: Set<string>, value: unknown): void {
+    const identifier = readIdentifier(value)
+    if (identifier) {
+        identifiers.add(identifier)
     }
 }
 
