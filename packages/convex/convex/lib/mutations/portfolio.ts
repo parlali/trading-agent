@@ -123,6 +123,13 @@ const accountPnlEventInputV = v.object({
     metadata: v.optional(v.string()),
 })
 
+const operatorFlatReconciliationEvidenceV = v.object({
+    livePositionCount: v.number(),
+    liveWorkingOrderCount: v.number(),
+    closureLookbackHours: v.optional(v.number()),
+    note: v.string(),
+})
+
 type StrategyDoc = Doc<"strategies">
 type OrderDoc = Doc<"orders">
 
@@ -881,6 +888,93 @@ export const recordProviderSyncFailure = mutation({
             pendingOrderCount: 0,
             updatedAt: now,
         })
+    },
+})
+
+export const operatorReconcileVerifiedFlatProviderState = mutation({
+    args: {
+        serviceToken: v.string(),
+        app: venueAppV,
+        accountId: v.string(),
+        evidence: operatorFlatReconciliationEvidenceV,
+    },
+    handler: async (ctx, args) => {
+        requireServiceToken(args.serviceToken)
+
+        if (args.evidence.livePositionCount !== 0 || args.evidence.liveWorkingOrderCount !== 0) {
+            throw new Error("Operator flat reconciliation requires broker evidence with zero live positions and zero live working orders")
+        }
+        if (args.evidence.note.trim().length === 0) {
+            throw new Error("Operator flat reconciliation requires a non-empty evidence note")
+        }
+
+        const now = Date.now()
+        const [positions, workingOrders, historyRows, previousState] = await Promise.all([
+            ctx.db
+                .query("provider_positions")
+                .withIndex("by_app_account", (q) => q.eq("app", args.app).eq("accountId", args.accountId))
+                .collect(),
+            ctx.db
+                .query("provider_working_orders")
+                .withIndex("by_app_account", (q) => q.eq("app", args.app).eq("accountId", args.accountId))
+                .collect(),
+            ctx.db
+                .query("provider_position_history")
+                .withIndex("by_app_account", (q) => q.eq("app", args.app).eq("accountId", args.accountId))
+                .collect(),
+            ctx.db
+                .query("provider_sync_state")
+                .withIndex("by_app_account", (q) => q.eq("app", args.app).eq("accountId", args.accountId))
+                .first(),
+        ])
+
+        if (positions.length > 0 || workingOrders.length > 0) {
+            throw new Error(`Cannot operator-reconcile ${args.app}:${args.accountId} as flat while Convex still has ${positions.length} provider position(s) and ${workingOrders.length} provider working order(s)`)
+        }
+
+        for (const row of historyRows) {
+            await ctx.db.delete(row._id)
+        }
+
+        const syncStateUpdate = {
+            accountId: args.accountId,
+            accountScope: "account" as const,
+            lastSyncedAt: now,
+            lastVerifiedAt: now,
+            providerStatus: "healthy" as const,
+            stale: false,
+            driftDetected: false,
+            lastError: undefined,
+            lastDriftSummary: undefined,
+            positionCount: 0,
+            pendingOrderCount: 0,
+            updatedAt: now,
+        }
+
+        if (previousState) {
+            await ctx.db.patch(previousState._id, syncStateUpdate)
+        } else {
+            await ctx.db.insert("provider_sync_state", {
+                app: args.app,
+                ...syncStateUpdate,
+            })
+        }
+
+        await ctx.db.insert("alerts", {
+            app: args.app,
+            severity: "info",
+            message: `[portfolio] ${args.app}:${args.accountId} operator reconciled verified-flat provider state; cleared ${historyRows.length} retained provider history row(s). Evidence: ${args.evidence.note}`,
+            acknowledged: false,
+            timestamp: now,
+        })
+
+        return {
+            app: args.app,
+            accountId: args.accountId,
+            deletedProviderPositionHistory: historyRows.length,
+            providerStatus: "healthy" as const,
+            driftDetected: false,
+        }
     },
 })
 

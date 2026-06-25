@@ -65,6 +65,7 @@ export {
 
 export {
     reconcileProviderPortfolio,
+    operatorReconcileVerifiedFlatProviderState,
     recordProviderSyncFailure,
 } from "./lib/mutations/portfolio"
 

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest"
 import { createEmptyCascadeDeleteCounts } from "../../convex/lib/cascadeDelete"
+import { operatorReconcileVerifiedFlatProviderState } from "../../convex/lib/mutations/portfolio"
 import {
     assertStrategyDeletionSafe,
     cascadeDeleteStrategy,
@@ -8,7 +9,7 @@ import {
     deleteStrategyTableBatch,
 } from "../../convex/lib/mutations/strategyCascadeDelete"
 import { buildStrategyPositionSnapshotHashPayload } from "../../convex/lib/mutations/portfolioSnapshots"
-import { FakeMutationDb } from "./fakeMutationDb"
+import { callRegistered, FakeMutationDb } from "./fakeMutationDb"
 
 type RowsByTable = Record<string, unknown[] | undefined>
 
@@ -118,6 +119,94 @@ describe("portfolio safety guards", () => {
         }) as never, createLiveStrategy() as never))
             .resolves
             .toBeUndefined()
+    })
+
+    it("refuses operator flat reconciliation while Convex still tracks provider exposure", async () => {
+        process.env.BACKEND_SERVICE_TOKEN = "test-token"
+        const db = new FakeMutationDb({
+            provider_positions: [{
+                _id: "provider-position-live",
+                app: "mt5",
+                accountId: "account-mt5",
+                instrument: "US30",
+            }],
+            provider_working_orders: [],
+            provider_position_history: [],
+            provider_sync_state: [],
+            alerts: [],
+        })
+
+        await expect(callRegistered(operatorReconcileVerifiedFlatProviderState, { db } as never, {
+            serviceToken: "test-token",
+            app: "mt5",
+            accountId: "account-mt5",
+            evidence: {
+                livePositionCount: 0,
+                liveWorkingOrderCount: 0,
+                closureLookbackHours: 168,
+                note: "worker verified flat",
+            },
+        }))
+            .rejects
+            .toThrow("Cannot operator-reconcile mt5:account-mt5 as flat while Convex still has 1 provider position")
+    })
+
+    it("clears retained disappeared history only after operator flat evidence", async () => {
+        process.env.BACKEND_SERVICE_TOKEN = "test-token"
+        const db = new FakeMutationDb({
+            provider_positions: [],
+            provider_working_orders: [],
+            provider_position_history: [{
+                _id: "provider-history-1",
+                app: "mt5",
+                accountId: "account-mt5",
+                positionKey: "US30:provider-position-1",
+                providerPositionId: "provider-position-1",
+            }],
+            provider_sync_state: [{
+                _id: "sync-1",
+                app: "mt5",
+                accountId: "account-mt5",
+                accountScope: "account",
+                providerStatus: "degraded",
+                stale: false,
+                driftDetected: true,
+                lastDriftSummary: "1 owned position disappeared without matching broker close evidence",
+                positionCount: 0,
+                pendingOrderCount: 0,
+                updatedAt: 1,
+            }],
+            alerts: [],
+        })
+
+        const result = await callRegistered(operatorReconcileVerifiedFlatProviderState, { db } as never, {
+            serviceToken: "test-token",
+            app: "mt5",
+            accountId: "account-mt5",
+            evidence: {
+                livePositionCount: 0,
+                liveWorkingOrderCount: 0,
+                closureLookbackHours: 168,
+                note: "worker verified flat from localhost",
+            },
+        })
+
+        expect(result).toMatchObject({
+            deletedProviderPositionHistory: 1,
+            providerStatus: "healthy",
+            driftDetected: false,
+        })
+        expect(db.rows.provider_position_history).toHaveLength(0)
+        expect(db.rows.provider_sync_state?.[0]).toMatchObject({
+            providerStatus: "healthy",
+            stale: false,
+            driftDetected: false,
+            lastError: undefined,
+            lastDriftSummary: undefined,
+            positionCount: 0,
+            pendingOrderCount: 0,
+        })
+        expect(db.rows.alerts?.[0]?.message).toContain("operator reconciled verified-flat provider state")
     })
 
     it("scopes batched last-strategy cleanup to the strategy account and keeps account snapshots", async () => {
