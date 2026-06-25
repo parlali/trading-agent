@@ -6,6 +6,7 @@ import {
     type CascadeDeleteCounts,
 } from "../cascadeDelete"
 import { incrementControlPlaneMetric } from "../controlPlaneMetrics"
+import { deleteOrderIdentityAliasesForOrder } from "../orderIdentityAliases"
 
 const PORTFOLIO_STALE_AFTER_MS = 10 * 60 * 1000
 
@@ -107,6 +108,7 @@ export async function deleteRunBatch(
             }
         }
 
+        deleted.orderIdentityAliases += await deleteOrderIdentityAliasesForOrder(ctx, order._id)
         await ctx.db.delete(order._id)
         deleted.orders++
         deletedDocuments++
@@ -394,11 +396,13 @@ export async function cascadeDeleteRun(
     agentLogs: number
     tradeEvents: number
     orders: number
+    orderIdentityAliases: number
     orderTransitions: number
 }> {
     let agentLogs = 0
     let tradeEvents = 0
     let orders = 0
+    let orderIdentityAliases = 0
     let orderTransitions = 0
 
     const logs = await ctx.db
@@ -432,6 +436,7 @@ export async function cascadeDeleteRun(
             await ctx.db.delete(t._id)
             orderTransitions++
         }
+        orderIdentityAliases += await deleteOrderIdentityAliasesForOrder(ctx, order._id)
         await ctx.db.delete(order._id)
         orders++
     }
@@ -442,6 +447,7 @@ export async function cascadeDeleteRun(
         agentLogs,
         tradeEvents,
         orders,
+        orderIdentityAliases,
         orderTransitions,
     }
 }
@@ -460,6 +466,7 @@ export async function cascadeDeleteStrategy(
     let agentLogs = 0
     let tradeEvents = 0
     let orders = 0
+    let orderIdentityAliases = 0
     let orderTransitions = 0
     let positions = 0
     let instrumentClaims = 0
@@ -486,6 +493,7 @@ export async function cascadeDeleteStrategy(
         agentLogs += deleted.agentLogs
         tradeEvents += deleted.tradeEvents
         orders += deleted.orders
+        orderIdentityAliases += deleted.orderIdentityAliases
         orderTransitions += deleted.orderTransitions
     }
 
@@ -687,6 +695,7 @@ export async function cascadeDeleteStrategy(
         agentLogs,
         tradeEvents,
         orders,
+        orderIdentityAliases,
         orderTransitions,
         positions,
         instrumentClaims,

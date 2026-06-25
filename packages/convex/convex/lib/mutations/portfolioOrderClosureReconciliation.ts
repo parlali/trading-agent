@@ -36,6 +36,7 @@ import {
     importSyntheticProviderClose,
     repairMT5EntryOrderFromProviderClosure,
 } from "./portfolioOrderClosureWrites"
+import { findOrderRowByAlias } from "../orderIdentityAliases"
 
 const PROVIDER_CLOSURE_TIME_SKEW_MS = 5 * 60 * 1000
 const HISTORIC_CANONICAL_CLOSE_MATCH_WINDOW_MS = 24 * 60 * 60 * 1000
@@ -680,11 +681,11 @@ async function findCloseOrderByIdentifier(
         return ownedByProviderOrderId
     }
 
-    const accountOrders = await ctx.db
-        .query("orders")
-        .withIndex("by_app_account", (q) => q.eq("app", args.app).eq("accountId", args.accountId))
-        .collect()
-    return accountOrders.find((order) => (order.providerOrderAliases ?? []).includes(args.identifier)) ?? null
+    return await findOrderRowByAlias(ctx.db, {
+        app: args.app,
+        accountId: args.accountId,
+        alias: args.identifier,
+    })
 }
 
 async function resolveProviderCloseRunId(

@@ -269,6 +269,19 @@ export default defineSchema({
         .index("by_app_account", ["app", "accountId"])
         .index("by_run", ["runId"]),
 
+    order_identity_aliases: defineTable({
+        app: venueAppV,
+        accountId: v.string(),
+        alias: v.string(),
+        orderId: v.string(),
+        orderDocId: v.id("orders"),
+        strategyId: v.id("strategies"),
+        updatedAt: v.number(),
+    })
+        .index("by_app_account_alias", ["app", "accountId", "alias"])
+        .index("by_order_doc", ["orderDocId"])
+        .index("by_strategy", ["strategyId"]),
+
     order_transitions: defineTable({
         ...orderTransitionRowFieldsV,
     })

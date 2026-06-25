@@ -15,6 +15,7 @@ export {
     logTradeEvent,
     upsertOrder,
     logOrderTransition,
+    backfillOrderIdentityAliasesBatch,
 } from "./lib/mutations/orders"
 
 export {

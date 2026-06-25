@@ -3,6 +3,7 @@ export const CASCADE_DELETE_COUNT_KEYS = [
     "agentLogs",
     "tradeEvents",
     "orders",
+    "orderIdentityAliases",
     "orderTransitions",
     "positions",
     "instrumentClaims",

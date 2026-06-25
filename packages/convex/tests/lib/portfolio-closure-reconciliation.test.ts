@@ -331,6 +331,146 @@ describe("Convex provider closure reconciliation safety", () => {
         )).toHaveLength(0)
     })
 
+    it("resolves MT5 close orders through indexed aliases without scanning account orders", async () => {
+        process.env.BACKEND_SERVICE_TOKEN = "test-token"
+        const accountId = "account-mt5"
+        const strategyId = "strategy-mt5-alias"
+        const runId = "run-mt5-alias"
+        const openedAt = 1_779_900_000_000
+        const closedAt = openedAt + 600_000
+        const providerPositionId = "1726069249"
+        const brokerCloseOrderId = "1727000001"
+        const canonicalOrderId = "canonical-alias-close"
+        const db = new NoAccountOrderScanFakeDb({
+            strategies: [{
+                _id: strategyId,
+                app: "mt5",
+                accountId,
+                name: "MT5 Alias Close",
+                policy: { dryRun: false },
+            }],
+            strategy_runs: [{
+                _id: runId,
+                strategyId,
+                app: "mt5",
+                accountId,
+                status: "completed",
+                startedAt: openedAt,
+                endedAt: openedAt + 30_000,
+            }],
+            instrument_claims: [],
+            orders: [{
+                _id: "order-close-alias",
+                orderId: canonicalOrderId,
+                canonicalOrderId,
+                providerOrderId: "provider-close-current-id",
+                providerClientOrderId: "vmtc01aliasclose",
+                providerOrderAliases: [brokerCloseOrderId],
+                runId,
+                strategyId,
+                app: "mt5",
+                accountId,
+                venue: "mt5",
+                instrument: "GBPUSD",
+                status: "filled",
+                action: "close",
+                quantity: 0.01,
+                filledQuantity: 0.01,
+                remainingQuantity: 0,
+                avgFillPrice: 1.271,
+                submittedAt: closedAt - 1_000,
+                updatedAt: closedAt,
+                intent: {
+                    instrument: "GBPUSD",
+                    metadata: {
+                        providerPositionId,
+                        providerPositionKey: `GBPUSD:${providerPositionId}`,
+                        entryPrice: 1.2705,
+                        positionSide: "long",
+                    },
+                    side: "sell",
+                    quantity: 0.01,
+                    orderType: "market",
+                },
+                lastTransitionSequence: 1,
+                polling: {
+                    pollIntervalMs: 0,
+                    timeoutMs: 0,
+                    startedAt: closedAt - 1_000,
+                    lastCheckedAt: closedAt,
+                },
+            }],
+            order_identity_aliases: [{
+                _id: "alias-close-order",
+                app: "mt5",
+                accountId,
+                alias: brokerCloseOrderId,
+                orderId: canonicalOrderId,
+                orderDocId: "order-close-alias",
+                strategyId,
+                updatedAt: closedAt,
+            }],
+            provider_positions: [],
+            provider_working_orders: [],
+            provider_sync_state: [],
+            position_syncs: [],
+            positions: [],
+            execution_safety_faults: [],
+            account_snapshots: [],
+            control_plane_metrics: [],
+            alerts: [],
+        })
+        const ctx = { db } as never
+
+        await callRegistered(reconcileProviderPortfolio, ctx, {
+            serviceToken: "test-token",
+            app: "mt5",
+            accountId,
+            venue: "mt5",
+            source: "periodic_sync",
+            accountState: {
+                balance: 813.97,
+                equity: 813.97,
+                buyingPower: 813.97,
+                marginUsed: 0,
+                marginAvailable: 813.97,
+                openPnl: 0,
+                dayPnl: 0,
+            },
+            positions: [],
+            workingOrders: [],
+            positionClosures: [{
+                instrument: "GBPUSD",
+                providerPositionId,
+                side: "long",
+                quantity: 0.01,
+                fillPrice: 1.271,
+                closedAt,
+                metadata: JSON.stringify({
+                    ticket: 910001,
+                    orderId: Number(brokerCloseOrderId),
+                    positionId: Number(providerPositionId),
+                    fillPnl: 1.25,
+                    profit: 1.25,
+                    swap: 0.05,
+                }),
+            }],
+        })
+
+        const closeOrder = (db.rows.orders ?? []).find((order) => order.orderId === canonicalOrderId)
+        if (!closeOrder) {
+            throw new Error("Expected canonical alias close order")
+        }
+        const metadata = (closeOrder.intent as Record<string, unknown>).metadata as Record<string, unknown>
+        expect(metadata).toMatchObject({
+            providerReconciledClose: true,
+            attachedProviderDealIds: ["910001"],
+            fillPnl: 1.25,
+            swap: 0.05,
+        })
+        expect(db.accountOrderScanAttempted).toBe(false)
+    })
+
     it("imports both same-millisecond MT5 deals of one close order and accumulates accounting idempotently", async () => {
         process.env.BACKEND_SERVICE_TOKEN = "test-token"
         const accountId = "account-mt5"
@@ -496,3 +636,32 @@ describe("Convex provider closure reconciliation safety", () => {
         expect(resolveCloseOrderRealizedPnl(closeOrderAfterRerun as never)).toBeCloseTo(3.8, 10)
     })
 })
+
+class NoAccountOrderScanFakeDb extends FakeDb {
+    accountOrderScanAttempted = false
+
+    override query(table: string) {
+        const query = super.query(table)
+        if (table !== "orders") {
+            return query
+        }
+
+        return new Proxy(query, {
+            get: (target, property) => {
+                if (property === "withIndex") {
+                    return (name: string, filter?: Parameters<typeof query.withIndex>[1]) => {
+                        if (name === "by_app_account") {
+                            this.accountOrderScanAttempted = true
+                            throw new Error("orders.by_app_account scan is not allowed in close reconciliation")
+                        }
+
+                        return query.withIndex(name, filter)
+                    }
+                }
+
+                const value = Reflect.get(target, property)
+                return typeof value === "function" ? value.bind(target) : value
+            },
+        })
+    }
+}

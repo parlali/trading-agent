@@ -20,6 +20,7 @@ import {
     venueAppV,
 } from "../validators"
 import { findOrderRowByIdentity } from "../orderIdentityLookup"
+import { reconcileOrderIdentityAliases } from "../orderIdentityAliases"
 
 export const createRun = mutation({
     args: {
@@ -405,6 +406,45 @@ export const logOrderTransition = mutation({
     },
 })
 
+export const backfillOrderIdentityAliasesBatch = mutation({
+    args: {
+        serviceToken: v.string(),
+        cursor: v.optional(v.union(v.string(), v.null())),
+        batchSize: v.optional(v.number()),
+    },
+    handler: async (ctx, args) => {
+        requireServiceToken(args.serviceToken)
+        const numItems = Math.min(Math.max(Math.floor(args.batchSize ?? 100), 1), 200)
+        const page = await ctx.db
+            .query("orders")
+            .order("asc")
+            .paginate({
+                cursor: args.cursor ?? null,
+                numItems,
+            })
+        const totals = {
+            processed: 0,
+            inserted: 0,
+            patched: 0,
+            deleted: 0,
+            unchanged: 0,
+            isDone: page.isDone,
+            continueCursor: page.continueCursor,
+        }
+
+        for (const order of page.page) {
+            const result = await reconcileOrderIdentityAliases(ctx, order)
+            totals.processed++
+            totals.inserted += result.inserted
+            totals.patched += result.patched
+            totals.deleted += result.deleted
+            totals.unchanged += result.unchanged
+        }
+
+        return totals
+    },
+})
+
 type UpsertOrderArgs = {
     orderId: string
     canonicalOrderId?: string
@@ -505,6 +545,10 @@ export async function upsertOrderRow(
 
     if (existing) {
         await ctx.db.patch(existing._id, payload)
+        await reconcileOrderIdentityAliases(ctx, {
+            _id: existing._id,
+            ...payload,
+        })
         await reconcileOrderInstrumentClaim(ctx, {
             strategyId: args.strategyId,
             app: strategy.app,
@@ -520,6 +564,10 @@ export async function upsertOrderRow(
     }
 
     const orderDocId = await ctx.db.insert("orders", payload)
+    await reconcileOrderIdentityAliases(ctx, {
+        _id: orderDocId,
+        ...payload,
+    })
     await reconcileOrderInstrumentClaim(ctx, {
         strategyId: args.strategyId,
         app: strategy.app,

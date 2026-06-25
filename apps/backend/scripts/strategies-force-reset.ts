@@ -534,6 +534,7 @@ function sumDeleteCounts(result: DeleteStrategyBatchResult): number {
         result.agentLogs +
         result.tradeEvents +
         result.orders +
+        result.orderIdentityAliases +
         result.orderTransitions +
         result.positions +
         result.instrumentClaims +

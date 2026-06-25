@@ -5,6 +5,7 @@ import { compareCodeUnits, mcpDiscoveryRequestKey, validateAccountConfig, valida
 import { requireUser, requireServiceToken, requireServiceTokenForQueryContext, requireUserOrServiceToken } from "../authGuards"
 import { createEmptyCascadeDeleteCounts, type CascadeDeleteCounts } from "../cascadeDelete"
 import { incrementControlPlaneMetric } from "../controlPlaneMetrics"
+import { deleteOrderIdentityAliasesForOrder } from "../orderIdentityAliases"
 import {
     addCascadeDeleteCounts,
     assertStrategyDeletionSafe,
@@ -408,6 +409,7 @@ export const deleteOrphanedStrategyHistoryBatch = mutation({
                 deleted.orderTransitions++
             }
 
+            deleted.orderIdentityAliases += await deleteOrderIdentityAliasesForOrder(ctx, order._id)
             await ctx.db.delete(order._id)
             deleted.orders++
             orderExistsCache.set(order.orderId, false)
@@ -424,6 +426,7 @@ export const deleteOrphanedStrategyHistoryBatch = mutation({
             deleted.agentLogs += result.agentLogs
             deleted.tradeEvents += result.tradeEvents
             deleted.orders += result.orders
+            deleted.orderIdentityAliases += result.orderIdentityAliases
             deleted.orderTransitions += result.orderTransitions
             runExistsCache.set(String(run._id), false)
         }

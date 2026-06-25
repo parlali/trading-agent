@@ -202,6 +202,7 @@ export function printDeleteCounts(deleted: DeleteAllStrategiesResult): void {
     console.log(`  agent logs: ${deleted.agentLogs}`)
     console.log(`  trade events: ${deleted.tradeEvents}`)
     console.log(`  orders: ${deleted.orders}`)
+    console.log(`  order identity aliases: ${deleted.orderIdentityAliases}`)
     console.log(`  order transitions: ${deleted.orderTransitions}`)
     console.log(`  positions: ${deleted.positions}`)
     console.log(`  instrument claims: ${deleted.instrumentClaims}`)
@@ -222,6 +223,7 @@ export function createDeleteTotals(): DeleteAllStrategiesResult {
         agentLogs: 0,
         tradeEvents: 0,
         orders: 0,
+        orderIdentityAliases: 0,
         orderTransitions: 0,
         positions: 0,
         instrumentClaims: 0,
@@ -412,6 +414,7 @@ function sumDeleteCounts(
         deleted.agentLogs +
         deleted.tradeEvents +
         deleted.orders +
+        deleted.orderIdentityAliases +
         deleted.orderTransitions +
         deleted.positions +
         deleted.instrumentClaims +

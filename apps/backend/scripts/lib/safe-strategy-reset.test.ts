@@ -21,6 +21,7 @@ function createDeleteResult(): DeleteStrategyResult {
         agentLogs: 0,
         tradeEvents: 0,
         orders: 0,
+        orderIdentityAliases: 0,
         orderTransitions: 0,
         positions: 0,
         instrumentClaims: 0,

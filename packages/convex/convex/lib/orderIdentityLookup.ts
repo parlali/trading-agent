@@ -1,6 +1,7 @@
 import { isCanonicalExecutionOrderId } from "@valiq-trading/core"
 import type { DatabaseReader } from "../_generated/server"
 import type { Doc, Id } from "../_generated/dataModel"
+import { findOrderRowByAlias } from "./orderIdentityAliases"
 
 export type OrderIdentityLookupScope = {
     app?: Doc<"orders">["app"]
@@ -69,15 +70,12 @@ export async function findOrderRowByIdentity(
         return byProviderOrderId
     }
 
-    const orders = await db
-        .query("orders")
-        .withIndex("by_app_account", (q) => q.eq("app", scope.app).eq("accountId", scope.accountId))
-        .collect()
-
-    return orders.find((order) =>
-        orderMatchesIdentityScope(order, scope) &&
-        (order.providerOrderAliases ?? []).includes(orderId)
-    ) ?? null
+    return await findOrderRowByAlias(db, {
+        app: scope.app!,
+        accountId: scope.accountId!,
+        strategyId: scope.strategyId,
+        alias: orderId,
+    })
 }
 
 async function findScopedOrderByIndexedIdentity(
