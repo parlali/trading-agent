@@ -74,13 +74,13 @@ async function resolveLatestAccountSnapshot(
     app: Doc<"strategies">["app"],
     accountId: string
 ): Promise<AccountSnapshotDoc | undefined> {
-    const snapshots = await ctx.db
+    const snapshot = await ctx.db
         .query("account_snapshots")
-        .withIndex("by_app_account", (q) => q.eq("app", app).eq("accountId", accountId))
-        .collect()
+        .withIndex("by_app_account_timestamp", (q) => q.eq("app", app).eq("accountId", accountId))
+        .order("desc")
+        .first()
 
-    return snapshots
-        .sort((left, right) => right.timestamp - left.timestamp)[0]
+    return snapshot ?? undefined
 }
 
 async function upsertAccountPnlEvents(

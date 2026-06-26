@@ -19,6 +19,7 @@ export {
 } from "./lib/mutations/orders"
 
 export {
+    backfillStrategyOperationalMemoryProjectionsBatch,
     refreshStrategyOperationalMemoryFromRun,
 } from "./lib/mutations/operationalMemory"
 

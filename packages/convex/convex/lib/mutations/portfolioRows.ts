@@ -70,9 +70,10 @@ export async function upsertProviderPositionRows(
     app: Doc<"strategies">["app"],
     accountId: string,
     rows: ProviderPositionRow[],
-    updatedAt: number
+    updatedAt: number,
+    existingRows?: Array<Doc<"provider_positions">>
 ): Promise<ReconciliationWriteStats> {
-    const existing = await ctx.db
+    const existing = existingRows ?? await ctx.db
         .query("provider_positions")
         .withIndex("by_app_account", (q) => q.eq("app", app).eq("accountId", accountId))
         .collect()

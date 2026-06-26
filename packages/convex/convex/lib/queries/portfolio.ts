@@ -122,7 +122,7 @@ export const getPortfolioPositions = query({
     handler: async (ctx, args) => {
         await requireUserOrServiceToken(ctx, args.serviceToken)
 
-        const [rows, strategies, latestPositionSyncs] = await Promise.all([
+        const [rows, strategies] = await Promise.all([
             args.app
                 ? ctx.db
                     .query("provider_positions")
@@ -140,7 +140,6 @@ export const getPortfolioPositions = query({
                         .collect()
                     : ctx.db.query("provider_positions").collect(),
             ctx.db.query("strategies").collect(),
-            ctx.db.query("position_syncs").collect(),
         ])
 
         const strategyMap = new Map(strategies.map((strategy) => [String(strategy._id), strategy]))
@@ -156,21 +155,16 @@ export const getPortfolioPositions = query({
             }
             return Boolean((strategy.policy as Record<string, unknown>).dryRun)
         })
-        const latestDryRunSyncByStrategy = new Map<string, Doc<"position_syncs">>()
-        for (const sync of latestPositionSyncs) {
-            const strategy = strategyMap.get(String(sync.strategyId))
-            if (!strategy || !dryRunStrategies.some((candidate) => candidate._id === sync.strategyId)) {
-                continue
-            }
-
-            const existing = latestDryRunSyncByStrategy.get(String(sync.strategyId))
-            if (!existing || sync.syncedAt > existing.syncedAt) {
-                latestDryRunSyncByStrategy.set(String(sync.strategyId), sync)
-            }
-        }
+        const latestDryRunSyncs = (
+            await Promise.all(dryRunStrategies.map(async (strategy) => await ctx.db
+                .query("position_syncs")
+                .withIndex("by_strategy_synced_at", (q) => q.eq("strategyId", strategy._id))
+                .order("desc")
+                .first()))
+        ).filter((sync): sync is Doc<"position_syncs"> => sync !== null)
         const dryRunPositionRows = (
             await Promise.all(
-                Array.from(latestDryRunSyncByStrategy.values()).map(async (sync) => {
+                latestDryRunSyncs.map(async (sync) => {
                     if (sync.positionCount === 0) {
                         return []
                     }

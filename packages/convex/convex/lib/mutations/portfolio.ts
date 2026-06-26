@@ -492,7 +492,14 @@ export const reconcileProviderPortfolio = mutation({
             })
         }
 
-        const providerPositionWriteStats = await upsertProviderPositionRows(ctx, args.app, args.accountId, nextProviderPositions, now)
+        const providerPositionWriteStats = await upsertProviderPositionRows(
+            ctx,
+            args.app,
+            args.accountId,
+            nextProviderPositions,
+            now,
+            existingProviderPositions
+        )
         const providerWorkingOrderWriteStats = await upsertProviderWorkingOrderRows(ctx, args.app, args.accountId, nextProviderWorkingOrders)
         await resolveExecutionSafetyFaultsFromProviderTruth(ctx, {
             app: args.app,

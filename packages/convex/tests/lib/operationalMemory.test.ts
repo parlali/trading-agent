@@ -6,6 +6,7 @@ import {
 } from "../../convex/lib/operationalMemory"
 import { getApplicableStrategyOperationalMemory } from "../../convex/lib/queries/operationalMemory"
 import { refreshStrategyOperationalMemoryFromRun } from "../../convex/lib/mutations/operationalMemory"
+import { buildStrategyOperationalMemoryProjection } from "../../convex/lib/operationalMemoryProjection"
 import {
     callRegisteredQuery,
     type FakeRow,
@@ -234,6 +235,60 @@ describe("strategy operational memory", () => {
         expect(result.map((memory) => memory.memoryKey)).toEqual(["memory-critical"])
     })
 
+    it("query returns the same applicable memory through projected indexes", async () => {
+        const rows = {
+            strategy_operational_memories: [
+                projectMemory(createMemory({
+                    memoryKey: "memory-critical",
+                    strategyId: "strategy-1",
+                    accountId: "account-1",
+                    type: "provider_truth_warning",
+                    severity: "critical",
+                    score: 100,
+                })),
+                projectMemory(createMemory({
+                    memoryKey: "memory-schema-current",
+                    strategyId: "strategy-1",
+                    accountId: "account-1",
+                    toolName: "propose_order",
+                    schemaHash: "current",
+                    score: 80,
+                })),
+                projectMemory(createMemory({
+                    memoryKey: "memory-schema-stale",
+                    strategyId: "strategy-1",
+                    accountId: "account-1",
+                    toolName: "propose_order",
+                    schemaHash: "stale",
+                    score: 90,
+                })),
+                projectMemory(createMemory({
+                    memoryKey: "memory-other-strategy",
+                    strategyId: "strategy-2",
+                    accountId: "account-1",
+                    score: 200,
+                })),
+            ] satisfies FakeRow[],
+        }
+
+        const result = await callRegisteredQuery(getApplicableStrategyOperationalMemory, rows, {
+            strategyId: "strategy-1",
+            app: "polymarket",
+            accountId: "account-1",
+            toolManifest: [{
+                name: "propose_order",
+                schemaHash: "current",
+            }],
+            now,
+            limit: 5,
+        }) as StrategyOperationalMemory[]
+
+        expect(result.map((memory) => memory.memoryKey)).toEqual([
+            "memory-critical",
+            "memory-schema-current",
+        ])
+    })
+
     it("mutation upserts completed run memory from canonical persisted rows", async () => {
         const db = new FakeMutationDb({
             strategies: [{
@@ -414,5 +469,14 @@ function createMemory(args: {
         },
         createdAt: now,
         updatedAt: now,
+    }
+}
+
+function projectMemory(
+    memory: StrategyOperationalMemory & FakeRow
+): StrategyOperationalMemory & FakeRow {
+    return {
+        ...memory,
+        ...buildStrategyOperationalMemoryProjection(memory),
     }
 }

@@ -4,8 +4,13 @@ import { v } from "convex/values"
 import type { StrategyOperationalMemory, StrategyOperationalMemorySeverity } from "@valiq-trading/core"
 import { requireServiceToken } from "../authGuards"
 import { buildStrategyOperationalMemoryFromRun } from "../operationalMemory"
+import {
+    buildStrategyOperationalMemoryProjection,
+    strategyOperationalMemoryProjectionChanged,
+} from "../operationalMemoryProjection"
 
 const MAX_MEMORY_SOURCES = 8
+const MAX_BACKFILL_BATCH_SIZE = 200
 
 export const refreshStrategyOperationalMemoryFromRun = mutation({
     args: {
@@ -86,6 +91,50 @@ export const refreshStrategyOperationalMemoryFromRun = mutation({
     },
 })
 
+export const backfillStrategyOperationalMemoryProjectionsBatch = mutation({
+    args: {
+        serviceToken: v.string(),
+        cursor: v.optional(v.union(v.string(), v.null())),
+        batchSize: v.optional(v.number()),
+    },
+    handler: async (ctx, args) => {
+        requireServiceToken(args.serviceToken)
+
+        const numItems = Math.min(
+            Math.max(Math.floor(args.batchSize ?? MAX_BACKFILL_BATCH_SIZE), 1),
+            MAX_BACKFILL_BATCH_SIZE
+        )
+        const page = await ctx.db
+            .query("strategy_operational_memories")
+            .order("asc")
+            .paginate({
+                cursor: args.cursor ?? null,
+                numItems,
+            })
+
+        let patched = 0
+        let unchanged = 0
+        for (const row of page.page) {
+            const projection = buildStrategyOperationalMemoryProjection(row)
+            if (!strategyOperationalMemoryProjectionChanged(row, projection)) {
+                unchanged++
+                continue
+            }
+
+            await ctx.db.patch(row._id, projection)
+            patched++
+        }
+
+        return {
+            processed: page.page.length,
+            patched,
+            unchanged,
+            isDone: page.isDone,
+            continueCursor: page.continueCursor,
+        }
+    },
+})
+
 async function upsertMemory(
     db: DatabaseWriter,
     candidate: StrategyOperationalMemory
@@ -100,11 +149,17 @@ async function upsertMemory(
     }
 
     const replace = candidate.type === "run_handoff_fact"
-    await db.patch(existing._id, {
-        status: "active",
+    const scope = toStoredMemory(candidate).scope
+    const ranking = {
+        score: Math.max(existing.ranking.score, candidate.ranking.score),
+        expiresAt: candidate.ranking.expiresAt,
+        supersededBy: candidate.ranking.supersededBy,
+    }
+    const patch = {
+        status: "active" as const,
         severity: higherSeverity(existing.severity, candidate.severity),
         confidence: Math.max(existing.confidence, candidate.confidence),
-        scope: toStoredMemory(candidate).scope,
+        scope,
         sources: replace
             ? candidate.sources
             : mergeSources(existing.sources, candidate.sources),
@@ -117,14 +172,17 @@ async function upsertMemory(
                 lastErrorSignature: candidate.evidence.lastErrorSignature ?? existing.evidence.lastErrorSignature,
                 sanitizedInputFingerprint: candidate.evidence.sanitizedInputFingerprint ?? existing.evidence.sanitizedInputFingerprint,
                 sanitizedOutputDigest: candidate.evidence.sanitizedOutputDigest ?? existing.evidence.sanitizedOutputDigest,
-            },
-        lesson: candidate.lesson,
-        ranking: {
-            score: Math.max(existing.ranking.score, candidate.ranking.score),
-            expiresAt: candidate.ranking.expiresAt,
-            supersededBy: candidate.ranking.supersededBy,
         },
+        lesson: candidate.lesson,
+        ranking,
         updatedAt: candidate.updatedAt,
+    }
+    await db.patch(existing._id, {
+        ...patch,
+        ...buildStrategyOperationalMemoryProjection({
+            scope,
+            ranking,
+        }),
     })
 }
 
@@ -146,6 +204,10 @@ function toStoredMemory(
         evidence: memory.evidence,
         lesson: memory.lesson,
         ranking: memory.ranking,
+        ...buildStrategyOperationalMemoryProjection({
+            scope: memory.scope,
+            ranking: memory.ranking,
+        }),
         createdAt: memory.createdAt,
         updatedAt: memory.updatedAt,
     }

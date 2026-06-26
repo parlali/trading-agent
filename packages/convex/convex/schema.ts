@@ -105,11 +105,35 @@ export default defineSchema({
         evidence: strategyOperationalMemoryEvidenceV,
         lesson: strategyOperationalMemoryLessonV,
         ranking: strategyOperationalMemoryRankingV,
+        projectionVersion: v.optional(v.number()),
+        scopeApp: v.optional(venueAppV),
+        scopeAccountId: v.optional(v.string()),
+        scopeProviderId: v.optional(v.string()),
+        scopeToolName: v.optional(v.string()),
+        scopeSchemaHash: v.optional(v.string()),
         createdAt: v.number(),
         updatedAt: v.number(),
     })
         .index("by_strategy_status", ["strategyId", "status"])
         .index("by_strategy_type", ["strategyId", "type"])
+        .index("by_strategy_status_projection", ["strategyId", "status", "projectionVersion"])
+        .index("by_strategy_status_scope_tool_schema", [
+            "strategyId",
+            "status",
+            "projectionVersion",
+            "scopeApp",
+            "scopeAccountId",
+            "scopeToolName",
+            "scopeSchemaHash",
+        ])
+        .index("by_strategy_status_scope_provider", [
+            "strategyId",
+            "status",
+            "projectionVersion",
+            "scopeApp",
+            "scopeAccountId",
+            "scopeProviderId",
+        ])
         .index("by_memory_key", ["memoryKey"]),
 
     strategy_runs: defineTable({
@@ -392,6 +416,7 @@ export default defineSchema({
         .index("by_app", ["app"])
         .index("by_account", ["accountId"])
         .index("by_app_account", ["app", "accountId"])
+        .index("by_app_account_timestamp", ["app", "accountId", "timestamp"])
         .index("by_app_timestamp", ["app", "timestamp"]),
 
     account_pnl_events: defineTable({
