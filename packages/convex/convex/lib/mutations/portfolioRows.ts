@@ -132,12 +132,17 @@ async function pruneProviderPositionHistory(
 ): Promise<Map<string, Doc<"provider_position_history">>> {
     const history = await ctx.db
         .query("provider_position_history")
-        .withIndex("by_app_account", (q) => q.eq("app", app).eq("accountId", accountId))
+        .withIndex("by_app_account_retained_until", (q) =>
+            q
+                .eq("app", app)
+                .eq("accountId", accountId)
+                .gte("retainedUntil", updatedAt)
+        )
         .collect()
     const retainedByKey = new Map<string, Doc<"provider_position_history">>()
 
     for (const row of history) {
-        if (row.retainedUntil < updatedAt || livePositionKeys.has(row.positionKey)) {
+        if (livePositionKeys.has(row.positionKey)) {
             await ctx.db.delete(row._id)
             continue
         }

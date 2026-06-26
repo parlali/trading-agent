@@ -6,6 +6,87 @@ import { callRegistered, FakeMutationDb as FakeDb } from "./fakeMutationDb"
 describe("Convex MT5 provider close replay", () => {
     const accountId = "account-mt5"
 
+    it("keeps expired MT5 provider history out of active drift without deleting it", async () => {
+        process.env.BACKEND_SERVICE_TOKEN = "test-token"
+        const strategyId = "strategy-mt5"
+        const now = Date.now()
+        const db = new FakeDb({
+            strategies: [{
+                _id: strategyId,
+                app: "mt5",
+                accountId,
+                name: "MT5 Silver",
+                policy: { dryRun: false },
+            }],
+            strategy_runs: [],
+            instrument_claims: [],
+            orders: [],
+            provider_positions: [],
+            provider_working_orders: [],
+            provider_position_history: [{
+                _id: "provider-history-expired",
+                app: "mt5",
+                accountId,
+                positionKey: "XAGUSD:expired-position",
+                providerPositionId: "expired-position",
+                strategyId,
+                ownershipStatus: "owned",
+                expectedExternal: false,
+                instrument: "XAGUSD",
+                side: "long",
+                quantity: 0.01,
+                entryPrice: 59.017,
+                metadata: "{}",
+                lastSeenAt: now - 120_000,
+                disappearedAt: now - 90_000,
+                retainedUntil: now - 1,
+                operatorReconciledAt: now - 1,
+                operatorReconciliationEvidence: "verified provider state",
+            }],
+            provider_sync_state: [],
+            position_syncs: [],
+            positions: [],
+            execution_safety_faults: [],
+            account_snapshots: [],
+            control_plane_metrics: [],
+            alerts: [],
+        })
+        const ctx = { db } as never
+
+        await callRegistered(reconcileProviderPortfolio, ctx, {
+            serviceToken: "test-token",
+            app: "mt5",
+            accountId,
+            venue: "mt5",
+            source: "periodic_sync",
+            accountState: {
+                balance: 1000,
+                equity: 1000,
+                buyingPower: 1000,
+                marginUsed: 0,
+                marginAvailable: 1000,
+                openPnl: 0,
+                dayPnl: 0,
+            },
+            positions: [],
+            workingOrders: [],
+            positionClosures: [],
+        })
+
+        expect(db.rows.provider_position_history).toEqual([
+            expect.objectContaining({
+                _id: "provider-history-expired",
+                positionKey: "XAGUSD:expired-position",
+                operatorReconciliationEvidence: "verified provider state",
+            }),
+        ])
+        expect(db.rows.provider_sync_state?.[0]).toMatchObject({
+            providerStatus: "healthy",
+            driftDetected: false,
+            lastDriftSummary: undefined,
+        })
+    })
+
     it("repairs a vanished MT5 entry order and imports broker close history after the live provider row is gone", async () => {
         process.env.BACKEND_SERVICE_TOKEN = "test-token"
         const strategyId = "strategy-mt5"
