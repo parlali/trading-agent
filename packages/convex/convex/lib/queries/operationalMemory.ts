@@ -91,24 +91,30 @@ async function collectStrategyOperationalMemoryRows(
         }
     }
 
-    const schemaQueries = args.toolManifest.flatMap((tool) => {
+    const toolScopeQueries = args.toolManifest.flatMap((tool) => {
+        const providerId = readProviderId(tool)
+        const providerIds = providerId ? [providerId, undefined] : [undefined]
         const schemaHashes = tool.schemaHash ? [tool.schemaHash, undefined] : [undefined]
-        return schemaHashes.map((schemaHash) => ({
-            toolName: tool.name,
-            schemaHash,
-        }))
+        return providerIds.flatMap((scopeProviderId) =>
+            schemaHashes.map((schemaHash) => ({
+                scopeProviderId,
+                toolName: tool.name,
+                schemaHash,
+            }))
+        )
     })
 
-    for (const query of schemaQueries) {
+    for (const query of toolScopeQueries) {
         addRows(await ctx.db
             .query("strategy_operational_memories")
-            .withIndex("by_strategy_status_scope_tool_schema", (q) =>
+            .withIndex("by_strategy_status_scope_provider_tool_schema", (q) =>
                 q
                     .eq("strategyId", args.strategyId)
                     .eq("status", "active")
                     .eq("projectionVersion", STRATEGY_OPERATIONAL_MEMORY_PROJECTION_VERSION)
                     .eq("scopeApp", args.app)
                     .eq("scopeAccountId", args.accountId)
+                    .eq("scopeProviderId", query.scopeProviderId)
                     .eq("scopeToolName", query.toolName)
                     .eq("scopeSchemaHash", query.schemaHash)
             )
@@ -117,13 +123,14 @@ async function collectStrategyOperationalMemoryRows(
 
     addRows(await ctx.db
         .query("strategy_operational_memories")
-        .withIndex("by_strategy_status_scope_tool_schema", (q) =>
+        .withIndex("by_strategy_status_scope_provider_tool_schema", (q) =>
             q
                 .eq("strategyId", args.strategyId)
                 .eq("status", "active")
                 .eq("projectionVersion", STRATEGY_OPERATIONAL_MEMORY_PROJECTION_VERSION)
                 .eq("scopeApp", args.app)
                 .eq("scopeAccountId", args.accountId)
+                .eq("scopeProviderId", undefined)
                 .eq("scopeToolName", undefined)
                 .eq("scopeSchemaHash", undefined)
         )
@@ -132,7 +139,7 @@ async function collectStrategyOperationalMemoryRows(
     for (const providerId of collectProviderIds(args.toolManifest)) {
         addRows(await ctx.db
             .query("strategy_operational_memories")
-            .withIndex("by_strategy_status_scope_provider", (q) =>
+            .withIndex("by_strategy_status_scope_provider_tool_schema", (q) =>
                 q
                     .eq("strategyId", args.strategyId)
                     .eq("status", "active")
@@ -140,6 +147,8 @@ async function collectStrategyOperationalMemoryRows(
                     .eq("scopeApp", args.app)
                     .eq("scopeAccountId", args.accountId)
                     .eq("scopeProviderId", providerId)
+                    .eq("scopeToolName", undefined)
+                    .eq("scopeSchemaHash", undefined)
             )
             .collect())
     }
@@ -162,15 +171,20 @@ async function collectStrategyOperationalMemoryRowsByStatus(
 function collectProviderIds(toolManifest: OperationalMemoryToolManifestEntry[]): string[] {
     const providerIds = new Set<string>()
     for (const tool of toolManifest) {
-        const owner = tool.contractOwner
-        if (!owner?.startsWith("mcp:")) {
-            continue
+        const providerId = readProviderId(tool)
+        if (providerId) {
+            providerIds.add(providerId)
         }
-
-        providerIds.add(owner.slice("mcp:".length))
     }
 
     return Array.from(providerIds)
+}
+
+function readProviderId(tool: OperationalMemoryToolManifestEntry): string | undefined {
+    const owner = tool.contractOwner
+    return owner?.startsWith("mcp:")
+        ? owner.slice("mcp:".length)
+        : undefined
 }
 
 function resolveLimit(value: number | undefined): number {

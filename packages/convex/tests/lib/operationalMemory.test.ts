@@ -255,6 +255,24 @@ describe("strategy operational memory", () => {
                     score: 80,
                 })),
                 projectMemory(createMemory({
+                    memoryKey: "memory-provider-current",
+                    strategyId: "strategy-1",
+                    accountId: "account-1",
+                    providerId: "macro",
+                    toolName: "propose_order",
+                    schemaHash: "current",
+                    score: 85,
+                })),
+                projectMemory(createMemory({
+                    memoryKey: "memory-other-provider",
+                    strategyId: "strategy-1",
+                    accountId: "account-1",
+                    providerId: "other",
+                    toolName: "propose_order",
+                    schemaHash: "current",
+                    score: 95,
+                })),
+                projectMemory(createMemory({
                     memoryKey: "memory-schema-stale",
                     strategyId: "strategy-1",
                     accountId: "account-1",
@@ -278,6 +296,7 @@ describe("strategy operational memory", () => {
             toolManifest: [{
                 name: "propose_order",
                 schemaHash: "current",
+                contractOwner: "mcp:macro",
             }],
             now,
             limit: 5,
@@ -285,6 +304,7 @@ describe("strategy operational memory", () => {
 
         expect(result.map((memory) => memory.memoryKey)).toEqual([
             "memory-critical",
+            "memory-provider-current",
             "memory-schema-current",
         ])
     })
@@ -429,6 +449,7 @@ function createMemory(args: {
     type?: StrategyOperationalMemory["type"]
     severity?: StrategyOperationalMemory["severity"]
     score?: number
+    providerId?: string
     toolName?: string
     schemaHash?: string
     expiresAt?: number
@@ -447,6 +468,7 @@ function createMemory(args: {
         scope: {
             app: "polymarket",
             accountId: args.accountId,
+            providerId: args.providerId,
             toolName: args.toolName,
             schemaHash: args.schemaHash,
         },

@@ -117,22 +117,15 @@ export default defineSchema({
         .index("by_strategy_status", ["strategyId", "status"])
         .index("by_strategy_type", ["strategyId", "type"])
         .index("by_strategy_status_projection", ["strategyId", "status", "projectionVersion"])
-        .index("by_strategy_status_scope_tool_schema", [
-            "strategyId",
-            "status",
-            "projectionVersion",
-            "scopeApp",
-            "scopeAccountId",
-            "scopeToolName",
-            "scopeSchemaHash",
-        ])
-        .index("by_strategy_status_scope_provider", [
+        .index("by_strategy_status_scope_provider_tool_schema", [
             "strategyId",
             "status",
             "projectionVersion",
             "scopeApp",
             "scopeAccountId",
             "scopeProviderId",
+            "scopeToolName",
+            "scopeSchemaHash",
         ])
         .index("by_memory_key", ["memoryKey"]),
 
