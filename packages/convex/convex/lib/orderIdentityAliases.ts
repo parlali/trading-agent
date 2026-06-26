@@ -19,6 +19,8 @@ export type OrderIdentityAliasProjectionInput = {
     providerClientOrderId?: string
     signedOrderFingerprint?: string
     providerOrderAliases?: string[]
+    intent?: unknown
+    metadata?: unknown
     updatedAt: number
 }
 
@@ -32,7 +34,8 @@ type OrderIdentityAliasReconcileStats = {
 export function projectOrderIdentityAliases(
     order: Pick<
         OrderIdentityAliasProjectionInput,
-        "orderId" | "providerOrderId" | "providerClientOrderId" | "signedOrderFingerprint" | "providerOrderAliases"
+        "orderId" | "providerOrderId" | "providerClientOrderId" | "signedOrderFingerprint" | "providerOrderAliases" |
+        "intent" | "metadata"
     >
 ): string[] {
     const primaryIdentities = new Set([
@@ -44,6 +47,13 @@ export function projectOrderIdentityAliases(
     const aliases = new Set<string>()
 
     for (const value of order.providerOrderAliases ?? []) {
+        const alias = normalizeOrderIdentityAlias(value)
+        if (!alias || primaryIdentities.has(alias)) {
+            continue
+        }
+        aliases.add(alias)
+    }
+    for (const value of projectProviderPositionAliases(order)) {
         const alias = normalizeOrderIdentityAlias(value)
         if (!alias || primaryIdentities.has(alias)) {
             continue
@@ -178,12 +188,38 @@ export async function deleteOrderIdentityAliasesForOrder(
 }
 
 function normalizeOrderIdentityAlias(value: unknown): string | undefined {
+    if (typeof value === "number" && Number.isFinite(value)) {
+        return String(value)
+    }
     if (typeof value !== "string") {
         return undefined
     }
 
     const alias = value.trim()
     return alias.length > 0 ? alias : undefined
+}
+
+function projectProviderPositionAliases(order: Pick<OrderIdentityAliasProjectionInput, "intent" | "metadata">): unknown[] {
+    const values: unknown[] = []
+    const intent = readRecord(order.intent)
+    const intentMetadata = readRecord(intent?.metadata)
+    const metadata = readRecord(order.metadata)
+
+    for (const source of [intentMetadata, metadata]) {
+        if (!source) {
+            continue
+        }
+        values.push(source.positionId)
+        values.push(source.providerPositionId)
+    }
+
+    return values
+}
+
+function readRecord(value: unknown): Record<string, unknown> | undefined {
+    return value && typeof value === "object" && !Array.isArray(value)
+        ? value as Record<string, unknown>
+        : undefined
 }
 
 function orderMatchesAliasRow(

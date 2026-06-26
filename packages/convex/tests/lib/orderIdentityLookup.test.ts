@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest"
+import { projectOrderIdentityAliases } from "../../convex/lib/orderIdentityAliases"
 import { findOrderRowByIdentity } from "../../convex/lib/orderIdentityLookup"
 
 describe("order identity lookup", () => {
@@ -104,6 +105,25 @@ describe("order identity lookup", () => {
 
         expect(found).toBeNull()
         expect(db.scannedAccountOrders).toBe(false)
+    })
+
+    it("projects provider position identifiers from order metadata as aliases", () => {
+        expect(projectOrderIdentityAliases({
+            orderId: "order-1",
+            providerOrderId: "provider-order-1",
+            providerClientOrderId: undefined,
+            signedOrderFingerprint: undefined,
+            providerOrderAliases: [],
+            intent: {
+                metadata: {
+                    positionId: 12345,
+                    providerPositionId: "67890",
+                },
+            },
+            metadata: {
+                providerPositionId: "position-from-order-metadata",
+            },
+        })).toEqual(["12345", "67890", "position-from-order-metadata"])
     })
 })
 
