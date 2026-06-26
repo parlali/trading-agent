@@ -3,7 +3,7 @@ import { getRecentAlerts } from "../../convex/lib/queries/system"
 import { callRegistered, FakeMutationDb as FakeDb } from "./fakeMutationDb"
 
 describe("system queries", () => {
-    it("continues paginating recent alerts until enough filtered matches are found", async () => {
+    it("returns recent alerts through the exact filtered index", async () => {
         process.env.BACKEND_SERVICE_TOKEN = "test-token"
         const db = new FakeDb({
             alerts: [

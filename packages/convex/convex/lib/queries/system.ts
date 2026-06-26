@@ -1,5 +1,6 @@
 import { query } from "../../_generated/server"
 import type { Doc } from "../../_generated/dataModel"
+import type { QueryCtx } from "../../_generated/server"
 import { v } from "convex/values"
 import { requireUser, requireServiceToken, requireUserOrServiceToken } from "../authGuards"
 import { createDefaultKillSwitchState } from "../killSwitchState"
@@ -82,38 +83,11 @@ export const getRecentAlerts = query({
         requireServiceToken(args.serviceToken)
 
         const limit = Math.max(1, Math.min(args.limit ?? 20, 100))
-        const alerts: Doc<"alerts">[] = []
-        const pageSize = Math.max(50, limit * 4)
-        let cursor: string | null = null
-
-        while (alerts.length < limit) {
-            const page = await ctx.db
-                .query("alerts")
-                .order("desc")
-                .paginate({
-                    cursor,
-                    numItems: pageSize,
-                })
-
-            for (const alert of page.page) {
-                if (args.severity !== undefined && alert.severity !== args.severity) {
-                    continue
-                }
-                if (args.acknowledged !== undefined && alert.acknowledged !== args.acknowledged) {
-                    continue
-                }
-
-                alerts.push(alert)
-                if (alerts.length >= limit) {
-                    break
-                }
-            }
-
-            if (page.isDone) {
-                break
-            }
-            cursor = page.continueCursor
-        }
+        const alerts = await getRecentAlertRows(ctx, {
+            severity: args.severity,
+            acknowledged: args.acknowledged,
+            limit,
+        })
 
         return alerts.map((alert) => ({
             id: String(alert._id),
@@ -126,6 +100,46 @@ export const getRecentAlerts = query({
         }))
     },
 })
+
+async function getRecentAlertRows(
+    ctx: Pick<QueryCtx, "db">,
+    args: {
+        severity?: Doc<"alerts">["severity"]
+        acknowledged?: boolean
+        limit: number
+    }
+): Promise<Array<Doc<"alerts">>> {
+    if (args.severity !== undefined && args.acknowledged !== undefined) {
+        return await ctx.db
+            .query("alerts")
+            .withIndex("by_severity_acknowledged_timestamp", (q) =>
+                q.eq("severity", args.severity!).eq("acknowledged", args.acknowledged!)
+            )
+            .order("desc")
+            .take(args.limit)
+    }
+
+    if (args.severity !== undefined) {
+        return await ctx.db
+            .query("alerts")
+            .withIndex("by_severity_timestamp", (q) => q.eq("severity", args.severity!))
+            .order("desc")
+            .take(args.limit)
+    }
+
+    if (args.acknowledged !== undefined) {
+        return await ctx.db
+            .query("alerts")
+            .withIndex("by_acknowledged_timestamp", (q) => q.eq("acknowledged", args.acknowledged!))
+            .order("desc")
+            .take(args.limit)
+    }
+
+    return await ctx.db
+        .query("alerts")
+        .order("desc")
+        .take(args.limit)
+}
 
 export const getFullResetAudit = query({
     args: {

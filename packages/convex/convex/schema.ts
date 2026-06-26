@@ -359,8 +359,9 @@ export default defineSchema({
         acknowledged: v.boolean(),
         timestamp: v.number(),
     })
-        .index("by_severity", ["severity"])
-        .index("by_acknowledged", ["acknowledged"]),
+        .index("by_severity_timestamp", ["severity", "timestamp"])
+        .index("by_acknowledged_timestamp", ["acknowledged", "timestamp"])
+        .index("by_severity_acknowledged_timestamp", ["severity", "acknowledged", "timestamp"]),
 
     system_state: defineTable({
         key: v.literal("kill_switches"),
