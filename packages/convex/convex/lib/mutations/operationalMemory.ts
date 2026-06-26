@@ -182,6 +182,7 @@ async function upsertMemory(
         ...buildStrategyOperationalMemoryProjection({
             scope,
             ranking,
+            severity: patch.severity,
         }),
     })
 }
@@ -207,6 +208,7 @@ function toStoredMemory(
         ...buildStrategyOperationalMemoryProjection({
             scope: memory.scope,
             ranking: memory.ranking,
+            severity: memory.severity,
         }),
         createdAt: memory.createdAt,
         updatedAt: memory.updatedAt,

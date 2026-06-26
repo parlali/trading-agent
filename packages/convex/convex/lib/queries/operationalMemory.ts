@@ -16,6 +16,7 @@ import {
 
 const DEFAULT_MEMORY_LIMIT = 12
 const MAX_MEMORY_LIMIT = 20
+const STALE_OPERATIONAL_MEMORY_PROJECTION_VERSIONS: Array<number | undefined> = [undefined, 1]
 
 const toolManifestEntryV = v.object({
     name: v.string(),
@@ -45,6 +46,7 @@ export const getApplicableStrategyOperationalMemory = query({
             app: args.app,
             accountId: args.accountId,
             toolManifest,
+            limit,
         })
 
         return rankStrategyOperationalMemories(
@@ -68,20 +70,23 @@ async function collectStrategyOperationalMemoryRows(
         app: Doc<"strategy_operational_memories">["app"]
         accountId: string
         toolManifest: OperationalMemoryToolManifestEntry[]
+        limit: number
     }
 ): Promise<Array<Doc<"strategy_operational_memories">>> {
-    const missingProjection = await ctx.db
-        .query("strategy_operational_memories")
-        .withIndex("by_strategy_status_projection", (q) =>
-            q
-                .eq("strategyId", args.strategyId)
-                .eq("status", "active")
-                .eq("projectionVersion", undefined)
-        )
-        .first()
+    for (const projectionVersion of STALE_OPERATIONAL_MEMORY_PROJECTION_VERSIONS) {
+        const staleProjection = await ctx.db
+            .query("strategy_operational_memories")
+            .withIndex("by_strategy_status_projection", (q) =>
+                q
+                    .eq("strategyId", args.strategyId)
+                    .eq("status", "active")
+                    .eq("projectionVersion", projectionVersion)
+            )
+            .first()
 
-    if (missingProjection) {
-        return await collectStrategyOperationalMemoryRowsByStatus(ctx, args.strategyId)
+        if (staleProjection) {
+            return await collectStrategyOperationalMemoryRowsByStatus(ctx, args.strategyId)
+        }
     }
 
     const rowsById = new Map<string, Doc<"strategy_operational_memories">>()
@@ -91,69 +96,93 @@ async function collectStrategyOperationalMemoryRows(
         }
     }
 
-    const toolScopeQueries = args.toolManifest.flatMap((tool) => {
+    const toolScopeQueriesByKey = new Map<string, {
+        scopeProviderId: string | undefined
+        toolName: string
+        schemaHash: string | undefined
+    }>()
+    for (const tool of args.toolManifest) {
         const providerId = readProviderId(tool)
         const providerIds = providerId ? [providerId, undefined] : [undefined]
         const schemaHashes = tool.schemaHash ? [tool.schemaHash, undefined] : [undefined]
-        return providerIds.flatMap((scopeProviderId) =>
-            schemaHashes.map((schemaHash) => ({
-                scopeProviderId,
-                toolName: tool.name,
-                schemaHash,
-            }))
-        )
-    })
-
-    for (const query of toolScopeQueries) {
-        addRows(await ctx.db
-            .query("strategy_operational_memories")
-            .withIndex("by_strategy_status_scope_provider_tool_schema", (q) =>
-                q
-                    .eq("strategyId", args.strategyId)
-                    .eq("status", "active")
-                    .eq("projectionVersion", STRATEGY_OPERATIONAL_MEMORY_PROJECTION_VERSION)
-                    .eq("scopeApp", args.app)
-                    .eq("scopeAccountId", args.accountId)
-                    .eq("scopeProviderId", query.scopeProviderId)
-                    .eq("scopeToolName", query.toolName)
-                    .eq("scopeSchemaHash", query.schemaHash)
-            )
-            .collect())
+        for (const scopeProviderId of providerIds) {
+            for (const schemaHash of schemaHashes) {
+                toolScopeQueriesByKey.set(
+                    `${scopeProviderId ?? ""}\0${tool.name}\0${schemaHash ?? ""}`,
+                    {
+                        scopeProviderId,
+                        toolName: tool.name,
+                        schemaHash,
+                    }
+                )
+            }
+        }
     }
 
-    addRows(await ctx.db
+    for (const query of toolScopeQueriesByKey.values()) {
+        addRows(await collectStrategyOperationalMemoryRowsByScope(ctx, {
+            strategyId: args.strategyId,
+            app: args.app,
+            accountId: args.accountId,
+            providerId: query.scopeProviderId,
+            toolName: query.toolName,
+            schemaHash: query.schemaHash,
+            limit: args.limit,
+        }))
+    }
+
+    addRows(await collectStrategyOperationalMemoryRowsByScope(ctx, {
+        strategyId: args.strategyId,
+        app: args.app,
+        accountId: args.accountId,
+        providerId: undefined,
+        toolName: undefined,
+        schemaHash: undefined,
+        limit: args.limit,
+    }))
+
+    for (const providerId of collectProviderIds(args.toolManifest)) {
+        addRows(await collectStrategyOperationalMemoryRowsByScope(ctx, {
+            strategyId: args.strategyId,
+            app: args.app,
+            accountId: args.accountId,
+            providerId,
+            toolName: undefined,
+            schemaHash: undefined,
+            limit: args.limit,
+        }))
+    }
+
+    return Array.from(rowsById.values())
+}
+
+async function collectStrategyOperationalMemoryRowsByScope(
+    ctx: Pick<QueryCtx, "db">,
+    args: {
+        strategyId: Doc<"strategy_operational_memories">["strategyId"]
+        app: Doc<"strategy_operational_memories">["app"]
+        accountId: string
+        providerId: string | undefined
+        toolName: string | undefined
+        schemaHash: string | undefined
+        limit: number
+    }
+): Promise<Array<Doc<"strategy_operational_memories">>> {
+    return await ctx.db
         .query("strategy_operational_memories")
-        .withIndex("by_strategy_status_scope_provider_tool_schema", (q) =>
+        .withIndex("by_strategy_status_scope_provider_tool_schema_rank", (q) =>
             q
                 .eq("strategyId", args.strategyId)
                 .eq("status", "active")
                 .eq("projectionVersion", STRATEGY_OPERATIONAL_MEMORY_PROJECTION_VERSION)
                 .eq("scopeApp", args.app)
                 .eq("scopeAccountId", args.accountId)
-                .eq("scopeProviderId", undefined)
-                .eq("scopeToolName", undefined)
-                .eq("scopeSchemaHash", undefined)
+                .eq("scopeProviderId", args.providerId)
+                .eq("scopeToolName", args.toolName)
+                .eq("scopeSchemaHash", args.schemaHash)
         )
-        .collect())
-
-    for (const providerId of collectProviderIds(args.toolManifest)) {
-        addRows(await ctx.db
-            .query("strategy_operational_memories")
-            .withIndex("by_strategy_status_scope_provider_tool_schema", (q) =>
-                q
-                    .eq("strategyId", args.strategyId)
-                    .eq("status", "active")
-                    .eq("projectionVersion", STRATEGY_OPERATIONAL_MEMORY_PROJECTION_VERSION)
-                    .eq("scopeApp", args.app)
-                    .eq("scopeAccountId", args.accountId)
-                    .eq("scopeProviderId", providerId)
-                    .eq("scopeToolName", undefined)
-                    .eq("scopeSchemaHash", undefined)
-            )
-            .collect())
-    }
-
-    return Array.from(rowsById.values())
+        .order("desc")
+        .take(args.limit)
 }
 
 async function collectStrategyOperationalMemoryRowsByStatus(

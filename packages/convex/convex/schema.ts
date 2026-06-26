@@ -111,13 +111,15 @@ export default defineSchema({
         scopeProviderId: v.optional(v.string()),
         scopeToolName: v.optional(v.string()),
         scopeSchemaHash: v.optional(v.string()),
+        rankSeverity: v.optional(v.number()),
+        rankScore: v.optional(v.number()),
         createdAt: v.number(),
         updatedAt: v.number(),
     })
         .index("by_strategy_status", ["strategyId", "status"])
         .index("by_strategy_type", ["strategyId", "type"])
         .index("by_strategy_status_projection", ["strategyId", "status", "projectionVersion"])
-        .index("by_strategy_status_scope_provider_tool_schema", [
+        .index("by_strategy_status_scope_provider_tool_schema_rank", [
             "strategyId",
             "status",
             "projectionVersion",
@@ -126,6 +128,9 @@ export default defineSchema({
             "scopeProviderId",
             "scopeToolName",
             "scopeSchemaHash",
+            "rankSeverity",
+            "rankScore",
+            "updatedAt",
         ])
         .index("by_memory_key", ["memoryKey"]),
 
