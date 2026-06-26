@@ -715,7 +715,12 @@ async function resolveHistoricMT5ProviderCloseCandidates(
     const seenPositionKeys = new Set<string>()
     const history = await ctx.db
         .query("provider_position_history")
-        .withIndex("by_app_account", (q) => q.eq("app", args.app).eq("accountId", args.accountId))
+        .withIndex("by_app_account_retained_until", (q) =>
+            q
+                .eq("app", args.app)
+                .eq("accountId", args.accountId)
+                .gte("retainedUntil", args.updatedAt)
+        )
         .collect()
 
     for (const position of history) {
@@ -865,7 +870,12 @@ async function resolveHistoricOKXProviderCloseCandidates(
     const existingPositionKeys = new Set(args.existingProviderPositions.map((position) => position.positionKey))
     const history = await ctx.db
         .query("provider_position_history")
-        .withIndex("by_app_account", (q) => q.eq("app", args.app).eq("accountId", args.accountId))
+        .withIndex("by_app_account_retained_until", (q) =>
+            q
+                .eq("app", args.app)
+                .eq("accountId", args.accountId)
+                .gte("retainedUntil", args.updatedAt)
+        )
         .collect()
 
     return history

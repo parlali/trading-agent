@@ -493,8 +493,8 @@ export default defineSchema({
         lastSeenAt: v.number(),
         disappearedAt: v.number(),
         retainedUntil: v.number(),
-        flatReconciledAt: v.optional(v.number()),
-        flatReconciliationEvidence: v.optional(v.string()),
+        operatorReconciledAt: v.optional(v.number()),
+        operatorReconciliationEvidence: v.optional(v.string()),
     })
         .index("by_app", ["app"])
         .index("by_account", ["accountId"])

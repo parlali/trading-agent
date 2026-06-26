@@ -908,9 +908,6 @@ export const operatorReconcileVerifiedFlatProviderState = mutation({
     handler: async (ctx, args) => {
         requireServiceToken(args.serviceToken)
 
-        if (args.evidence.livePositionCount !== 0) {
-            throw new Error("Operator flat reconciliation requires broker evidence with zero live positions")
-        }
         if (args.evidence.note.trim().length === 0) {
             throw new Error("Operator flat reconciliation requires a non-empty evidence note")
         }
@@ -927,7 +924,12 @@ export const operatorReconcileVerifiedFlatProviderState = mutation({
                 .collect(),
             ctx.db
                 .query("provider_position_history")
-                .withIndex("by_app_account", (q) => q.eq("app", args.app).eq("accountId", args.accountId))
+                .withIndex("by_app_account_retained_until", (q) =>
+                    q
+                        .eq("app", args.app)
+                        .eq("accountId", args.accountId)
+                        .gte("retainedUntil", now)
+                )
                 .collect(),
             ctx.db
                 .query("provider_sync_state")
@@ -935,19 +937,25 @@ export const operatorReconcileVerifiedFlatProviderState = mutation({
                 .first(),
         ])
 
-        if (positions.length > 0) {
-            throw new Error(`Cannot operator-reconcile ${args.app}:${args.accountId} as flat while Convex still has ${positions.length} provider position(s)`)
+        if (positions.length !== args.evidence.livePositionCount) {
+            throw new Error(`Cannot operator-reconcile ${args.app}:${args.accountId} provider positions while Convex has ${positions.length} provider position(s) and broker evidence has ${args.evidence.livePositionCount}`)
         }
 
         if (workingOrders.length !== args.evidence.liveWorkingOrderCount) {
             throw new Error(`Cannot operator-reconcile ${args.app}:${args.accountId} provider positions while Convex has ${workingOrders.length} provider working order(s) and broker evidence has ${args.evidence.liveWorkingOrderCount}`)
         }
 
+        const livePositionKeys = new Set(positions.map((position) => position.positionKey))
+        const stillLiveHistoryRows = historyRows.filter((row) => livePositionKeys.has(row.positionKey))
+        if (stillLiveHistoryRows.length > 0) {
+            throw new Error(`Cannot operator-reconcile ${args.app}:${args.accountId} retained provider history while ${stillLiveHistoryRows.length} retained position(s) are still live`)
+        }
+
         for (const row of historyRows) {
             await ctx.db.patch(row._id, {
                 retainedUntil: Math.min(row.retainedUntil, now),
-                flatReconciledAt: now,
-                flatReconciliationEvidence: args.evidence.note,
+                operatorReconciledAt: now,
+                operatorReconciliationEvidence: args.evidence.note,
             })
         }
 
@@ -961,7 +969,7 @@ export const operatorReconcileVerifiedFlatProviderState = mutation({
             driftDetected: false,
             lastError: undefined,
             lastDriftSummary: undefined,
-            positionCount: 0,
+            positionCount: positions.length,
             pendingOrderCount: workingOrders.length,
             updatedAt: now,
         }
@@ -978,7 +986,7 @@ export const operatorReconcileVerifiedFlatProviderState = mutation({
         await ctx.db.insert("alerts", {
             app: args.app,
             severity: "info",
-            message: `[portfolio] ${args.app}:${args.accountId} operator reconciled verified-flat provider position state; preserved ${historyRows.length} retained provider history row(s). Evidence: ${args.evidence.note}`,
+            message: `[portfolio] ${args.app}:${args.accountId} operator reconciled verified provider state; preserved ${historyRows.length} retained provider history row(s). Evidence: ${args.evidence.note}`,
             acknowledged: false,
             timestamp: now,
         })
@@ -988,6 +996,7 @@ export const operatorReconcileVerifiedFlatProviderState = mutation({
             accountId: args.accountId,
             deletedProviderPositionHistory: 0,
             preservedProviderPositionHistory: historyRows.length,
+            positionCount: positions.length,
             pendingOrderCount: workingOrders.length,
             providerStatus: "healthy" as const,
             driftDetected: false,
