@@ -69,17 +69,33 @@ export class FakeMutationDb {
 }
 
 class FakeMutationQuery {
-    private filters: Array<{ field: string; value: unknown }> = []
+    private filters: Array<{ field: string; operator: "eq" | "gt" | "gte" | "lt" | "lte"; value: unknown }> = []
     private orderDirection: "asc" | "desc" = "asc"
 
     constructor(
         private readonly rows: FakeMutationRow[]
     ) {}
 
-    withIndex(_name: string, filter?: (q: { eq: (field: string, value: unknown) => unknown }) => unknown) {
-        const queryFilter: { eq: (field: string, value: unknown) => unknown } = {
+    withIndex(_name: string, filter?: (q: FakeIndexFilterBuilder) => unknown) {
+        const queryFilter: FakeIndexFilterBuilder = {
             eq: (field, value) => {
-                this.filters.push({ field, value })
+                this.filters.push({ field, operator: "eq", value })
+                return queryFilter
+            },
+            gt: (field, value) => {
+                this.filters.push({ field, operator: "gt", value })
+                return queryFilter
+            },
+            gte: (field, value) => {
+                this.filters.push({ field, operator: "gte", value })
+                return queryFilter
+            },
+            lt: (field, value) => {
+                this.filters.push({ field, operator: "lt", value })
+                return queryFilter
+            },
+            lte: (field, value) => {
+                this.filters.push({ field, operator: "lte", value })
                 return queryFilter
             },
         }
@@ -128,7 +144,23 @@ class FakeMutationQuery {
 
     private applyFilters() {
         const filtered = this.rows.filter((row) =>
-            this.filters.every((filter) => row[filter.field] === filter.value)
+            this.filters.every((filter) => {
+                const rowValue = row[filter.field]
+                const comparableRowValue = rowValue as string | number
+                const comparableFilterValue = filter.value as string | number
+                switch (filter.operator) {
+                    case "eq":
+                        return rowValue === filter.value
+                    case "gt":
+                        return comparableRowValue > comparableFilterValue
+                    case "gte":
+                        return comparableRowValue >= comparableFilterValue
+                    case "lt":
+                        return comparableRowValue < comparableFilterValue
+                    case "lte":
+                        return comparableRowValue <= comparableFilterValue
+                }
+            })
         )
 
         if (this.orderDirection === "desc") {
@@ -137,6 +169,14 @@ class FakeMutationQuery {
 
         return filtered
     }
+}
+
+type FakeIndexFilterBuilder = {
+    eq: (field: string, value: unknown) => unknown
+    gt: (field: string, value: unknown) => unknown
+    gte: (field: string, value: unknown) => unknown
+    lt: (field: string, value: unknown) => unknown
+    lte: (field: string, value: unknown) => unknown
 }
 
 export async function callRegistered(

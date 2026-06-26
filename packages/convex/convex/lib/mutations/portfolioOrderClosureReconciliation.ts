@@ -541,34 +541,25 @@ async function hasRecentFilledCanonicalClose(
     app: Doc<"strategies">["app"],
     position: ProviderClosePositionCandidate
 ): Promise<boolean> {
-    const statuses = ["filled", "partially_filled"] as const
-    for (const status of statuses) {
-        const orders = await ctx.db
-            .query("orders")
-            .withIndex("by_strategy_status", (q) =>
-                q.eq("strategyId", position.strategyId).eq("status", status)
-            )
-            .collect()
-        const match = orders.some((order) =>
-            order.action === "close" &&
-            order.instrument === position.instrument &&
-            orderBelongsToAccount(order, app, position.accountId) &&
-            order.updatedAt >= position.syncedAt - PROVIDER_CLOSURE_TIME_SKEW_MS &&
-            order.updatedAt <= position.syncedAt + HISTORIC_CANONICAL_CLOSE_MATCH_WINDOW_MS &&
-            (
-                hasSharedProviderPositionIdentity(
-                    buildOrderCloseIdentityCandidates(order),
-                    buildProviderPositionIdentityCandidates(position)
-                ) ||
-                isAuditedOKXCloseOrderMatch(app, order, position)
-            )
-        )
-        if (match) {
-            return true
-        }
-    }
+    const orders = await collectRecentStrategyOrdersByStatuses(ctx, {
+        strategyId: position.strategyId,
+        statuses: ["filled", "partially_filled"],
+        updatedAtFrom: position.syncedAt - PROVIDER_CLOSURE_TIME_SKEW_MS,
+        updatedAtTo: position.syncedAt + HISTORIC_CANONICAL_CLOSE_MATCH_WINDOW_MS,
+    })
 
-    return false
+    return orders.some((order) =>
+        order.action === "close" &&
+        order.instrument === position.instrument &&
+        orderBelongsToAccount(order, app, position.accountId) &&
+        (
+            hasSharedProviderPositionIdentity(
+                buildOrderCloseIdentityCandidates(order),
+                buildProviderPositionIdentityCandidates(position)
+            ) ||
+            isAuditedOKXCloseOrderMatch(app, order, position)
+        )
+    )
 }
 
 function isAuditedOKXCloseOrderMatch(
@@ -1024,13 +1015,12 @@ async function resolveExistingCanonicalCloseOrderForClosure(
         closure: ProviderPositionClosureInput
     }
 ): Promise<Doc<"orders"> | undefined> {
-    const statuses = ["filled", "partially_filled"] as const
-    const orders = (
-        await Promise.all(statuses.map(async (status) => await ctx.db
-            .query("orders")
-            .withIndex("by_strategy_status", (q) => q.eq("strategyId", args.strategyId).eq("status", status))
-            .collect()))
-    ).flat()
+    const orders = await collectRecentStrategyOrdersByStatuses(ctx, {
+        strategyId: args.strategyId,
+        statuses: ["filled", "partially_filled"],
+        updatedAtFrom: args.closure.closedAt - HISTORIC_CANONICAL_CLOSE_MATCH_WINDOW_MS,
+        updatedAtTo: args.closure.closedAt + PROVIDER_CLOSURE_TIME_SKEW_MS,
+    })
     const closureIds = buildPositionClosureIdentityCandidates(args.closure)
 
     return orders.find((order) =>
@@ -1039,6 +1029,29 @@ async function resolveExistingCanonicalCloseOrderForClosure(
         !isSyntheticProviderCloseOrder(order) &&
         hasSharedProviderPositionIdentity(buildOrderCloseIdentityCandidates(order), closureIds)
     )
+}
+
+async function collectRecentStrategyOrdersByStatuses(
+    ctx: PortfolioMutationCtx,
+    args: {
+        strategyId: Id<"strategies">
+        statuses: Array<Doc<"orders">["status"]>
+        updatedAtFrom: number
+        updatedAtTo: number
+    }
+): Promise<Array<Doc<"orders">>> {
+    return (
+        await Promise.all(args.statuses.map(async (status) => await ctx.db
+            .query("orders")
+            .withIndex("by_strategy_status_updated_at", (q) =>
+                q
+                    .eq("strategyId", args.strategyId)
+                    .eq("status", status)
+                    .gte("updatedAt", args.updatedAtFrom)
+                    .lte("updatedAt", args.updatedAtTo)
+            )
+            .collect()))
+    ).flat()
 }
 
 function buildOrderCloseIdentityCandidates(order: Doc<"orders">): Set<string> {

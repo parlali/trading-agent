@@ -287,6 +287,7 @@ export default defineSchema({
         .index("by_provider_client_order_id", ["providerClientOrderId"])
         .index("by_signed_order_fingerprint", ["signedOrderFingerprint"])
         .index("by_strategy_status", ["strategyId", "status"])
+        .index("by_strategy_status_updated_at", ["strategyId", "status", "updatedAt"])
         .index("by_app_status", ["app", "status"])
         .index("by_app_account", ["app", "accountId"])
         .index("by_run", ["runId"]),
@@ -492,6 +493,8 @@ export default defineSchema({
         lastSeenAt: v.number(),
         disappearedAt: v.number(),
         retainedUntil: v.number(),
+        flatReconciledAt: v.optional(v.number()),
+        flatReconciliationEvidence: v.optional(v.string()),
     })
         .index("by_app", ["app"])
         .index("by_account", ["accountId"])

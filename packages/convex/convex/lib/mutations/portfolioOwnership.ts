@@ -48,18 +48,30 @@ export async function repairMissingLivePositionClaimsFromFilledOrders(
         return
     }
 
-    const [existingClaims, filledOrders] = await Promise.all([
-        ctx.db
-            .query("instrument_claims")
-            .withIndex("by_app_account", (q) => q.eq("app", args.app).eq("accountId", args.accountId))
-            .collect(),
-        ctx.db
-            .query("orders")
-            .withIndex("by_app_status", (q) => q.eq("app", args.app).eq("status", "filled"))
-            .collect(),
-    ])
-
+    const existingClaims = await ctx.db
+        .query("instrument_claims")
+        .withIndex("by_app_account", (q) => q.eq("app", args.app).eq("accountId", args.accountId))
+        .collect()
     const claimedInstruments = new Set(existingClaims.map((claim) => claim.instrument))
+    const unclaimedLiveInstrumentAliases = new Map(
+        Array.from(args.liveInstrumentAliases.entries()).filter(([liveInstrument]) =>
+            !claimedInstruments.has(liveInstrument)
+        )
+    )
+    if (unclaimedLiveInstrumentAliases.size === 0) {
+        return
+    }
+
+    const filledOrders = (
+        await Promise.all(
+            Array.from(args.strategyMap.values()).map(async (strategy) => await ctx.db
+                .query("orders")
+                .withIndex("by_strategy_status", (q) =>
+                    q.eq("strategyId", strategy._id).eq("status", "filled")
+                )
+                .collect())
+        )
+    ).flat()
     const candidateStrategiesByInstrument = new Map<string, Set<Id<"strategies">>>()
 
     for (const order of filledOrders) {
@@ -68,8 +80,8 @@ export async function repairMissingLivePositionClaimsFromFilledOrders(
         }
 
         const orderAliases = new Set(getClaimInstrumentsForOrder(order.instrument, order.intent))
-        for (const [liveInstrument, liveAliases] of args.liveInstrumentAliases) {
-            if (claimedInstruments.has(liveInstrument) || !setsIntersect(orderAliases, liveAliases)) {
+        for (const [liveInstrument, liveAliases] of unclaimedLiveInstrumentAliases) {
+            if (!setsIntersect(orderAliases, liveAliases)) {
                 continue
             }
 

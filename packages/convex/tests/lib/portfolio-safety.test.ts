@@ -151,17 +151,22 @@ describe("portfolio safety guards", () => {
             .toThrow("Cannot operator-reconcile mt5:account-mt5 as flat while Convex still has 1 provider position")
     })
 
-    it("clears retained disappeared history only after operator flat evidence", async () => {
+    it("preserves retained disappeared history after operator flat evidence", async () => {
         process.env.BACKEND_SERVICE_TOKEN = "test-token"
         const db = new FakeMutationDb({
             provider_positions: [],
-            provider_working_orders: [],
+            provider_working_orders: [{
+                _id: "provider-working-order-1",
+                app: "mt5",
+                accountId: "account-mt5",
+            }],
             provider_position_history: [{
                 _id: "provider-history-1",
                 app: "mt5",
                 accountId: "account-mt5",
                 positionKey: "US30:provider-position-1",
                 providerPositionId: "provider-position-1",
+                retainedUntil: Date.now() + 86_400_000,
             }],
             provider_sync_state: [{
                 _id: "sync-1",
@@ -185,18 +190,24 @@ describe("portfolio safety guards", () => {
             accountId: "account-mt5",
             evidence: {
                 livePositionCount: 0,
-                liveWorkingOrderCount: 0,
+                liveWorkingOrderCount: 1,
                 closureLookbackHours: 168,
                 note: "worker verified flat from localhost",
             },
         })
 
         expect(result).toMatchObject({
-            deletedProviderPositionHistory: 1,
+            deletedProviderPositionHistory: 0,
+            preservedProviderPositionHistory: 1,
+            pendingOrderCount: 1,
             providerStatus: "healthy",
             driftDetected: false,
         })
-        expect(db.rows.provider_position_history).toHaveLength(0)
+        expect(db.rows.provider_position_history).toHaveLength(1)
+        expect(db.rows.provider_position_history?.[0]).toMatchObject({
+            flatReconciliationEvidence: "worker verified flat from localhost",
+        })
+        expect(db.rows.provider_position_history?.[0]?.retainedUntil).toBeLessThanOrEqual(Date.now())
         expect(db.rows.provider_sync_state?.[0]).toMatchObject({
             providerStatus: "healthy",
             stale: false,
@@ -204,9 +215,9 @@ describe("portfolio safety guards", () => {
             lastError: undefined,
             lastDriftSummary: undefined,
             positionCount: 0,
-            pendingOrderCount: 0,
+            pendingOrderCount: 1,
         })
-        expect(db.rows.alerts?.[0]?.message).toContain("operator reconciled verified-flat provider state")
+        expect(db.rows.alerts?.[0]?.message).toContain("operator reconciled verified-flat provider position state")
     })
 
     it("scopes batched last-strategy cleanup to the strategy account and keeps account snapshots", async () => {

@@ -908,8 +908,8 @@ export const operatorReconcileVerifiedFlatProviderState = mutation({
     handler: async (ctx, args) => {
         requireServiceToken(args.serviceToken)
 
-        if (args.evidence.livePositionCount !== 0 || args.evidence.liveWorkingOrderCount !== 0) {
-            throw new Error("Operator flat reconciliation requires broker evidence with zero live positions and zero live working orders")
+        if (args.evidence.livePositionCount !== 0) {
+            throw new Error("Operator flat reconciliation requires broker evidence with zero live positions")
         }
         if (args.evidence.note.trim().length === 0) {
             throw new Error("Operator flat reconciliation requires a non-empty evidence note")
@@ -935,12 +935,20 @@ export const operatorReconcileVerifiedFlatProviderState = mutation({
                 .first(),
         ])
 
-        if (positions.length > 0 || workingOrders.length > 0) {
-            throw new Error(`Cannot operator-reconcile ${args.app}:${args.accountId} as flat while Convex still has ${positions.length} provider position(s) and ${workingOrders.length} provider working order(s)`)
+        if (positions.length > 0) {
+            throw new Error(`Cannot operator-reconcile ${args.app}:${args.accountId} as flat while Convex still has ${positions.length} provider position(s)`)
+        }
+
+        if (workingOrders.length !== args.evidence.liveWorkingOrderCount) {
+            throw new Error(`Cannot operator-reconcile ${args.app}:${args.accountId} provider positions while Convex has ${workingOrders.length} provider working order(s) and broker evidence has ${args.evidence.liveWorkingOrderCount}`)
         }
 
         for (const row of historyRows) {
-            await ctx.db.delete(row._id)
+            await ctx.db.patch(row._id, {
+                retainedUntil: Math.min(row.retainedUntil, now),
+                flatReconciledAt: now,
+                flatReconciliationEvidence: args.evidence.note,
+            })
         }
 
         const syncStateUpdate = {
@@ -954,7 +962,7 @@ export const operatorReconcileVerifiedFlatProviderState = mutation({
             lastError: undefined,
             lastDriftSummary: undefined,
             positionCount: 0,
-            pendingOrderCount: 0,
+            pendingOrderCount: workingOrders.length,
             updatedAt: now,
         }
 
@@ -970,7 +978,7 @@ export const operatorReconcileVerifiedFlatProviderState = mutation({
         await ctx.db.insert("alerts", {
             app: args.app,
             severity: "info",
-            message: `[portfolio] ${args.app}:${args.accountId} operator reconciled verified-flat provider state; cleared ${historyRows.length} retained provider history row(s). Evidence: ${args.evidence.note}`,
+            message: `[portfolio] ${args.app}:${args.accountId} operator reconciled verified-flat provider position state; preserved ${historyRows.length} retained provider history row(s). Evidence: ${args.evidence.note}`,
             acknowledged: false,
             timestamp: now,
         })
@@ -978,7 +986,9 @@ export const operatorReconcileVerifiedFlatProviderState = mutation({
         return {
             app: args.app,
             accountId: args.accountId,
-            deletedProviderPositionHistory: historyRows.length,
+            deletedProviderPositionHistory: 0,
+            preservedProviderPositionHistory: historyRows.length,
+            pendingOrderCount: workingOrders.length,
             providerStatus: "healthy" as const,
             driftDetected: false,
         }

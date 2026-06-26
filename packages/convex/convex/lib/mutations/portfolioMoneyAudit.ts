@@ -624,11 +624,23 @@ async function resolveAttributedOrderPnlSince(
             await Promise.all([
                 ctx.db
                     .query("orders")
-                    .withIndex("by_strategy_status", (q) => q.eq("strategyId", strategy._id).eq("status", "filled"))
+                    .withIndex("by_strategy_status_updated_at", (q) =>
+                        q
+                            .eq("strategyId", strategy._id)
+                            .eq("status", "filled")
+                            .gt("updatedAt", args.since)
+                            .lte("updatedAt", args.until)
+                    )
                     .collect(),
                 ctx.db
                     .query("orders")
-                    .withIndex("by_strategy_status", (q) => q.eq("strategyId", strategy._id).eq("status", "partially_filled"))
+                    .withIndex("by_strategy_status_updated_at", (q) =>
+                        q
+                            .eq("strategyId", strategy._id)
+                            .eq("status", "partially_filled")
+                            .gt("updatedAt", args.since)
+                            .lte("updatedAt", args.until)
+                    )
                     .collect(),
             ])
         ).flat()
