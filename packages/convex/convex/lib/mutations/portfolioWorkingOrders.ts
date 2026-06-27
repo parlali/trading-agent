@@ -17,9 +17,7 @@ import {
     readOrderIntentRecord,
 } from "./portfolioUtils"
 import { resolveLatestRunIdForStrategy } from "./portfolioOrderRuns"
-
-const INFERRED_FILL_ACCOUNTING_FAULT_PREFIX = "Provider reconciliation inferred a filled"
-const REFRESHED_FILL_ACCOUNTING_FAULT_MESSAGE = "Provider reconciliation refreshed a filled working order without provider accounting metadata"
+import { isInferredFillAccountingFaultMessage } from "./portfolioInferredFillFaults"
 
 export function buildActiveOrderLookup(activeOrders: OrderDoc[]): Map<string, OrderDoc> {
     const lookup = new Map<string, OrderDoc>()
@@ -611,11 +609,6 @@ async function resolveCancelledInferredFillAccountingFaults(
         acknowledged: false,
         timestamp: args.updatedAt,
     })
-}
-
-function isInferredFillAccountingFaultMessage(message: string): boolean {
-    return message.startsWith(INFERRED_FILL_ACCOUNTING_FAULT_PREFIX) ||
-        message === REFRESHED_FILL_ACCOUNTING_FAULT_MESSAGE
 }
 
 export function mergeProviderOrderAliases(

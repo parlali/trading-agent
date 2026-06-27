@@ -753,6 +753,67 @@ describe("Convex OKX net-mode closure replay", () => {
         }))
     })
 
+    it("clears stale inferred-fill faults for OKX closes already proven cancelled unfilled", async () => {
+        process.env.BACKEND_SERVICE_TOKEN = "test-token"
+        const closeOrderId = "vokt01cancelledold"
+        const db = new FakeDb({
+            strategies: [buildOkxStrategy("strategy-okx-a", "OKX A")],
+            strategy_runs: [buildOkxRun("run-okx-a", "strategy-okx-a")],
+            instrument_claims: [],
+            orders: [{
+                ...buildCanonicalCloseOrder({
+                    id: "order-cancelled-protection",
+                    orderId: closeOrderId,
+                    ordId: "algo-parent-cancelled",
+                    runId: "run-okx-a",
+                    strategyId: "strategy-okx-a",
+                    quantity: 5,
+                    fillPrice: 1877.49,
+                }),
+                providerOrderId: "algo:ETH-USDT-SWAP:algo-parent-cancelled",
+                providerOrderAliases: ["algo-parent-cancelled"],
+                status: "cancelled",
+                filledQuantity: 0,
+                remainingQuantity: 5,
+                avgFillPrice: undefined,
+            }],
+            provider_positions: [],
+            provider_working_orders: [],
+            provider_sync_state: [],
+            position_syncs: [],
+            positions: [],
+            execution_safety_faults: [{
+                _id: "fault-cancelled-inferred-close",
+                strategyId: "strategy-okx-a",
+                app: "okx-swap",
+                accountId,
+                instrument: "ETH-USDT-SWAP",
+                category: "accounting_mismatch",
+                message: "Provider reconciliation inferred a filled close order without provider accounting metadata",
+                canonicalOrderId: closeOrderId,
+                providerOrderId: "algo:ETH-USDT-SWAP:algo-parent-cancelled",
+                providerClientOrderId: closeOrderId,
+                providerOrderAliases: ["algo-parent-cancelled"],
+                blocked: true,
+                occurredAt: CLOSED_AT - 30_000,
+            }],
+            account_snapshots: [],
+            account_pnl_events: [],
+            control_plane_metrics: [],
+            alerts: [],
+        })
+        const ctx = { db } as never
+
+        await callRegistered(reconcileProviderPortfolio, ctx, buildReconcileArgs([]))
+
+        expect(db.rows.execution_safety_faults).toContainEqual(expect.objectContaining({
+            _id: "fault-cancelled-inferred-close",
+            blocked: false,
+            resolvedAt: expect.any(Number),
+            resolutionNote: `Provider reconciliation proved canonical order ${closeOrderId} cancelled unfilled`,
+        }))
+    })
+
     it("promotes a wrongly inferred cancelled canonical close to filled when broker closure truth arrives", async () => {
         process.env.BACKEND_SERVICE_TOKEN = "test-token"
         const db = new FakeDb({

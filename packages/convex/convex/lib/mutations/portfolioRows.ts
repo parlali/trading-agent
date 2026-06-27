@@ -4,6 +4,7 @@ import type {
     PortfolioMutationCtx,
     ReconciliationWriteStats,
 } from "./portfolioTypes"
+import { isInferredFillAccountingFaultMessage } from "./portfolioInferredFillFaults"
 
 type ProviderPositionRow = Omit<Doc<"provider_positions">, "_id" | "_creationTime">
 type ProviderPositionHistoryRow = Omit<Doc<"provider_position_history">, "_id" | "_creationTime">
@@ -296,6 +297,17 @@ export async function resolveExecutionSafetyFaultsFromProviderTruth(
             continue
         }
 
+        const cancelledOrder = await resolveCancelledUnfilledOrderForInferredFillFault(ctx, fault)
+        if (cancelledOrder) {
+            await resolveFault(ctx, {
+                fault,
+                updatedAt: args.updatedAt,
+                resolutionNote: `Provider reconciliation proved canonical order ${cancelledOrder.orderId} cancelled unfilled`,
+                resolvedByStrategy,
+            })
+            continue
+        }
+
         if (!isProviderTruthResolvableFault(fault.category)) {
             continue
         }
@@ -446,6 +458,29 @@ async function resolveExecutionFaultOrderDoc(
     }
 
     return order.commitOutcome !== "commit_unknown" ? order : undefined
+}
+
+async function resolveCancelledUnfilledOrderForInferredFillFault(
+    ctx: PortfolioMutationCtx,
+    fault: Doc<"execution_safety_faults">
+): Promise<Doc<"orders"> | undefined> {
+    if (
+        fault.category !== "accounting_mismatch" ||
+        !fault.canonicalOrderId ||
+        !isInferredFillAccountingFaultMessage(fault.message)
+    ) {
+        return undefined
+    }
+
+    const order = await ctx.db
+        .query("orders")
+        .withIndex("by_order_id", (q) => q.eq("orderId", fault.canonicalOrderId!))
+        .first()
+    if (!order || order.status !== "cancelled" || order.filledQuantity !== 0) {
+        return undefined
+    }
+
+    return order
 }
 
 function isProviderTruthResolvableFault(

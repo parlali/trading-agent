@@ -19,8 +19,8 @@ import {
     resolveProviderCloseOrderProviderId,
     type ProviderClosePositionCandidate,
 } from "./portfolioCloseIdentity"
+import { INFERRED_FILL_ACCOUNTING_FAULT_PREFIX } from "./portfolioInferredFillFaults"
 
-const INFERRED_FILL_ACCOUNTING_FAULT_PREFIX = "Provider reconciliation inferred a filled"
 const UNATTRIBUTED_CLOSURE_FAULT_PREFIX = "Provider reconciliation found an unattributed money-bearing close:"
 
 export async function attachClosureToCanonicalCloseOrder(
