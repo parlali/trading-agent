@@ -297,14 +297,30 @@ export function hasMatchingLivePositionForClose(
     const metadata = rawMetadata && typeof rawMetadata === "object"
         ? rawMetadata as Record<string, unknown>
         : undefined
-    const expectedPositionSide = metadata?.positionSide === "short"
-        ? "short"
-        : "long"
+    const expectedPositionSide = resolveCloseOrderPositionSide(order, metadata)
 
     return livePositions.some((position) =>
         position.instrument === order.instrument &&
-        position.side === expectedPositionSide
+        (expectedPositionSide === undefined || position.side === expectedPositionSide)
     )
+}
+
+function resolveCloseOrderPositionSide(
+    order: OrderDoc,
+    metadata: Record<string, unknown> | undefined
+): "long" | "short" | undefined {
+    if (metadata?.positionSide === "long" || metadata?.positionSide === "short") {
+        return metadata.positionSide
+    }
+
+    if (order.intent.side === "buy") {
+        return "short"
+    }
+    if (order.intent.side === "sell") {
+        return "long"
+    }
+
+    return undefined
 }
 
 export function extractMt5Ticket(metadata?: string): string | undefined {

@@ -646,6 +646,113 @@ describe("Convex OKX net-mode closure replay", () => {
         }
     }
 
+    it("cancels a missing OKX protection close while the same-side position is still live", async () => {
+        process.env.BACKEND_SERVICE_TOKEN = "test-token"
+        const closeOrderId = "vokt01staleprotect"
+        const db = new FakeDb({
+            strategies: [buildOkxStrategy("strategy-okx-a", "OKX A")],
+            strategy_runs: [buildOkxRun("run-okx-a", "strategy-okx-a")],
+            instrument_claims: [],
+            orders: [{
+                ...buildCanonicalCloseOrder({
+                    id: "order-stale-protection",
+                    orderId: closeOrderId,
+                    ordId: "algo-parent-stale",
+                    runId: "run-okx-a",
+                    strategyId: "strategy-okx-a",
+                    quantity: 5,
+                    fillPrice: 1877.49,
+                }),
+                providerOrderId: "algo:ETH-USDT-SWAP:algo-parent-stale",
+                providerOrderAliases: ["algo-parent-stale"],
+                status: "pending",
+                filledQuantity: 0,
+                remainingQuantity: 5,
+                avgFillPrice: undefined,
+                intent: {
+                    instrument: "ETH-USDT-SWAP",
+                    side: "buy",
+                    quantity: 5,
+                    orderType: "stop_limit",
+                    metadata: {
+                        providerProtectionOrder: true,
+                        protectionOrderType: "oco",
+                        providerMetadata: {
+                            algoId: "algo-parent-stale",
+                            providerClientOrderId: closeOrderId,
+                            kind: "protection",
+                        },
+                    },
+                },
+            }],
+            provider_positions: [
+                buildOwnedProviderPosition({
+                    id: "provider-position-okx",
+                    strategyId: "strategy-okx-a",
+                    posId: SHARED_POS_ID,
+                    quantity: 5,
+                }),
+            ],
+            provider_working_orders: [],
+            provider_sync_state: [],
+            position_syncs: [],
+            positions: [],
+            execution_safety_faults: [{
+                _id: "fault-stale-inferred-close",
+                strategyId: "strategy-okx-a",
+                app: "okx-swap",
+                accountId,
+                instrument: "ETH-USDT-SWAP",
+                category: "accounting_mismatch",
+                message: "Provider reconciliation inferred a filled close order without provider accounting metadata",
+                canonicalOrderId: closeOrderId,
+                providerOrderId: "algo:ETH-USDT-SWAP:algo-parent-stale",
+                providerClientOrderId: closeOrderId,
+                providerOrderAliases: ["algo-parent-stale"],
+                blocked: true,
+                occurredAt: CLOSED_AT - 30_000,
+            }],
+            account_snapshots: [],
+            account_pnl_events: [],
+            control_plane_metrics: [],
+            alerts: [],
+        })
+        const ctx = { db } as never
+
+        await callRegistered(reconcileProviderPortfolio, ctx, {
+            ...buildReconcileArgs([]),
+            positions: [{
+                instrument: "ETH-USDT-SWAP",
+                providerPositionId: SHARED_POS_ID,
+                side: "short",
+                quantity: 5,
+                entryPrice: 1893.06,
+                currentPrice: 1877.49,
+                unrealizedPnl: 50,
+                metadata: JSON.stringify({
+                    posId: SHARED_POS_ID,
+                    positionMode: "net_mode",
+                }),
+            }],
+        })
+
+        const closeOrder = db.rows.orders.find((order) => order.orderId === closeOrderId)
+        expect(closeOrder).toMatchObject({
+            status: "cancelled",
+            filledQuantity: 0,
+            remainingQuantity: 5,
+        })
+        expect((closeOrder?.intent as Record<string, unknown>).metadata).not.toMatchObject({
+            providerReconciliationInferredFill: true,
+        })
+        expect(db.rows.execution_safety_faults).toContainEqual(expect.objectContaining({
+            _id: "fault-stale-inferred-close",
+            blocked: false,
+            resolvedAt: expect.any(Number),
+            resolutionNote: `Provider reconciliation proved order ${closeOrderId} cancelled unfilled`,
+        }))
+    })
+
     it("promotes a wrongly inferred cancelled canonical close to filled when broker closure truth arrives", async () => {
         process.env.BACKEND_SERVICE_TOKEN = "test-token"
         const db = new FakeDb({

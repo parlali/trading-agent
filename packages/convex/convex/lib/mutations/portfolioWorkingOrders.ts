@@ -18,6 +18,9 @@ import {
 } from "./portfolioUtils"
 import { resolveLatestRunIdForStrategy } from "./portfolioOrderRuns"
 
+const INFERRED_FILL_ACCOUNTING_FAULT_PREFIX = "Provider reconciliation inferred a filled"
+const REFRESHED_FILL_ACCOUNTING_FAULT_MESSAGE = "Provider reconciliation refreshed a filled working order without provider accounting metadata"
+
 export function buildActiveOrderLookup(activeOrders: OrderDoc[]): Map<string, OrderDoc> {
     const lookup = new Map<string, OrderDoc>()
 
@@ -336,6 +339,13 @@ export async function applyProviderWorkingOrderUpdate(
         })
     }
 
+    if (nextStatus === "cancelled" && nextFilledQuantity === 0) {
+        await resolveCancelledInferredFillAccountingFaults(ctx, {
+            order,
+            updatedAt: args.updatedAt,
+        })
+    }
+
     if (!statusChanged && !quantityChanged && !providerOrderIdChanged && !intentChanged) {
         return
     }
@@ -406,6 +416,13 @@ export async function applyClosedOrderInference(
 
     if (nextStatus === "filled" && !hasProviderAccountingMetadata(order)) {
         await recordInferredFillAccountingFault(ctx, {
+            order,
+            updatedAt: args.updatedAt,
+        })
+    }
+
+    if (nextStatus === "cancelled" && nextFilledQuantity === 0) {
+        await resolveCancelledInferredFillAccountingFaults(ctx, {
             order,
             updatedAt: args.updatedAt,
         })
@@ -555,6 +572,50 @@ async function recordInferredFillAccountingFault(
         resolvedAt: undefined,
         resolutionNote: undefined,
     })
+}
+
+async function resolveCancelledInferredFillAccountingFaults(
+    ctx: PortfolioMutationCtx,
+    args: {
+        order: OrderDoc
+        updatedAt: number
+    }
+): Promise<void> {
+    const faults = await ctx.db
+        .query("execution_safety_faults")
+        .withIndex("by_strategy_blocked", (q) => q.eq("strategyId", args.order.strategyId).eq("blocked", true))
+        .collect()
+    const matchingFaults = faults.filter((fault) =>
+        fault.category === "accounting_mismatch" &&
+        fault.canonicalOrderId === args.order.orderId &&
+        isInferredFillAccountingFaultMessage(fault.message)
+    )
+
+    if (matchingFaults.length === 0) {
+        return
+    }
+
+    for (const fault of matchingFaults) {
+        await ctx.db.patch(fault._id, {
+            blocked: false,
+            resolvedAt: args.updatedAt,
+            resolutionNote: `Provider reconciliation proved order ${args.order.orderId} cancelled unfilled`,
+        })
+    }
+
+    await ctx.db.insert("alerts", {
+        strategyId: args.order.strategyId,
+        app: args.order.app ?? args.order.venue as Doc<"strategies">["app"],
+        severity: "info",
+        message: `[execution-safety] Provider reconciliation cleared ${matchingFaults.length} inferred-fill accounting fault(s) after proving ${args.order.orderId} cancelled unfilled`,
+        acknowledged: false,
+        timestamp: args.updatedAt,
+    })
+}
+
+function isInferredFillAccountingFaultMessage(message: string): boolean {
+    return message.startsWith(INFERRED_FILL_ACCOUNTING_FAULT_PREFIX) ||
+        message === REFRESHED_FILL_ACCOUNTING_FAULT_MESSAGE
 }
 
 export function mergeProviderOrderAliases(
