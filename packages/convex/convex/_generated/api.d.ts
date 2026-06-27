@@ -29,6 +29,7 @@ import type * as lib_mutations_portfolio from "../lib/mutations/portfolio.js";
 import type * as lib_mutations_portfolioAdoption from "../lib/mutations/portfolioAdoption.js";
 import type * as lib_mutations_portfolioCloseIdentity from "../lib/mutations/portfolioCloseIdentity.js";
 import type * as lib_mutations_portfolioGovernance from "../lib/mutations/portfolioGovernance.js";
+import type * as lib_mutations_portfolioInferredFillFaults from "../lib/mutations/portfolioInferredFillFaults.js";
 import type * as lib_mutations_portfolioMoneyAudit from "../lib/mutations/portfolioMoneyAudit.js";
 import type * as lib_mutations_portfolioOrderClosureReconciliation from "../lib/mutations/portfolioOrderClosureReconciliation.js";
 import type * as lib_mutations_portfolioOrderClosureWrites from "../lib/mutations/portfolioOrderClosureWrites.js";
@@ -101,6 +102,7 @@ declare const fullApi: ApiFromModules<{
   "lib/mutations/portfolioAdoption": typeof lib_mutations_portfolioAdoption;
   "lib/mutations/portfolioCloseIdentity": typeof lib_mutations_portfolioCloseIdentity;
   "lib/mutations/portfolioGovernance": typeof lib_mutations_portfolioGovernance;
+  "lib/mutations/portfolioInferredFillFaults": typeof lib_mutations_portfolioInferredFillFaults;
   "lib/mutations/portfolioMoneyAudit": typeof lib_mutations_portfolioMoneyAudit;
   "lib/mutations/portfolioOrderClosureReconciliation": typeof lib_mutations_portfolioOrderClosureReconciliation;
   "lib/mutations/portfolioOrderClosureWrites": typeof lib_mutations_portfolioOrderClosureWrites;
