@@ -645,6 +645,9 @@ async function resolveCloseOrderByProviderIdentity(
 ): Promise<{ kind: "canonical" | "synthetic"; order: Doc<"orders"> } | undefined> {
     const metadata = parseJson<Record<string, unknown>>(args.closure.metadata)
     const identifiers = new Set<string>()
+    addKnownIdentifier(identifiers, metadata?.providerOrderId)
+    addKnownIdentifier(identifiers, metadata?.providerActivityId)
+    addKnownIdentifier(identifiers, metadata?.activityId)
     addKnownIdentifier(identifiers, metadata?.clientOrderId)
     addKnownIdentifier(identifiers, metadata?.triggeredOrderId)
     addKnownIdentifier(identifiers, metadata?.algoId)
@@ -862,12 +865,10 @@ async function resolveFaultBackedProviderCloseCandidates(
         strategyMap: Map<string, StrategyDoc>
     }
 ): Promise<ProviderClosePositionCandidate[]> {
-    const faults = await ctx.db
-        .query("execution_safety_faults")
-        .withIndex("by_app_account_blocked", (q) =>
-            q.eq("app", args.app).eq("accountId", args.accountId).eq("blocked", true)
-        )
-        .collect()
+    const faults = [
+        ...await collectExecutionSafetyFaultsByBlockedState(ctx, args, true),
+        ...await collectExecutionSafetyFaultsByBlockedState(ctx, args, false),
+    ]
     const candidates: ProviderClosePositionCandidate[] = []
     const seenPositionKeys = new Set<string>()
 
@@ -919,6 +920,22 @@ async function resolveFaultBackedProviderCloseCandidates(
     }
 
     return candidates
+}
+
+async function collectExecutionSafetyFaultsByBlockedState(
+    ctx: PortfolioMutationCtx,
+    args: {
+        app: Doc<"strategies">["app"]
+        accountId: string
+    },
+    blocked: boolean
+): Promise<Array<Doc<"execution_safety_faults">>> {
+    return await ctx.db
+        .query("execution_safety_faults")
+        .withIndex("by_app_account_blocked", (q) =>
+            q.eq("app", args.app).eq("accountId", args.accountId).eq("blocked", blocked)
+        )
+        .collect()
 }
 
 function resolveProviderPositionIdFromFaultPayload(

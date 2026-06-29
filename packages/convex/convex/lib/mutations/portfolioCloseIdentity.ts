@@ -58,8 +58,11 @@ export function buildPositionClosureIdentityCandidates(
     }
 
     const metadata = parseJson<Record<string, unknown>>(closure.metadata)
+    addKnownIdentifier(identifiers, metadata?.providerOrderId)
     addKnownIdentifier(identifiers, metadata?.ticket)
     addKnownIdentifier(identifiers, metadata?.orderId)
+    addKnownIdentifier(identifiers, metadata?.providerActivityId)
+    addKnownIdentifier(identifiers, metadata?.activityId)
     addKnownIdentifier(identifiers, metadata?.triggeredOrderId)
     addKnownIdentifier(identifiers, metadata?.clientOrderId)
     addKnownIdentifier(identifiers, metadata?.algoId)
@@ -125,7 +128,11 @@ export function buildProviderCloseOrderId(
 export function resolveProviderCloseOrderProviderId(
     closure: { metadata?: string }
 ): string | undefined {
-    return readIdentifier(parseJson<Record<string, unknown>>(closure.metadata)?.orderId)
+    const metadata = parseJson<Record<string, unknown>>(closure.metadata)
+    return readIdentifier(metadata?.orderId) ??
+        readIdentifier(metadata?.providerOrderId) ??
+        readIdentifier(metadata?.providerActivityId) ??
+        readIdentifier(metadata?.activityId)
 }
 
 export function resolveProviderClosureDealIdFromMetadata(
@@ -133,7 +140,9 @@ export function resolveProviderClosureDealIdFromMetadata(
 ): string | undefined {
     return readIdentifier(metadata?.dealId) ??
         readIdentifier(metadata?.providerDealId) ??
-        readIdentifier(metadata?.ticket)
+        readIdentifier(metadata?.ticket) ??
+        readIdentifier(metadata?.providerActivityId) ??
+        readIdentifier(metadata?.activityId)
 }
 
 export function resolveProviderClosureDealId(
