@@ -357,6 +357,30 @@ class MT5Client:
 
         return result
 
+    def _optional_direct_history_result(self, operation: str, result: Any) -> Any:
+        if result is not None:
+            return result
+
+        detail = self._last_error_details()
+        if detail["code"] == -2:
+            log.warning(
+                "mt5_direct_history_lookup_invalid",
+                login=self.login,
+                operation=operation,
+                code=detail["code"],
+                message=detail["message"],
+                rawError=detail["raw"],
+            )
+            return ()
+
+        self._raise_mt5_error(operation)
+
+    def _history_window(self, lookback_hours: int) -> tuple[datetime, datetime]:
+        now = datetime.now(timezone.utc)
+        start = now - timedelta(hours=max(1, lookback_hours))
+        end = now + timedelta(hours=max(0, settings.mt5_history_future_buffer_hours))
+        return start, end
+
     def assert_session_login(self, expected_login: int) -> None:
         self.ensure_connected()
         info = self._require_mt5_result("account_info", mt5.account_info())
@@ -413,11 +437,10 @@ class MT5Client:
     def get_position_closures(self, lookback_hours: int = 24) -> list[dict[str, Any]]:
         self.ensure_connected()
 
-        now = datetime.now(timezone.utc)
-        start = now - timedelta(hours=max(1, lookback_hours))
+        start, end = self._history_window(lookback_hours)
         deals = self._require_mt5_result(
             "history_deals_get",
-            mt5.history_deals_get(start, now),
+            mt5.history_deals_get(start, end),
         )
 
         if len(deals) == 0:
@@ -435,11 +458,10 @@ class MT5Client:
             self._raise_mt5_error("account_info")
 
         currency = str(getattr(info, "currency", "") or "")
-        now = datetime.now(timezone.utc)
-        start = now - timedelta(hours=max(1, lookback_hours))
+        start, end = self._history_window(lookback_hours)
         deals = self._require_mt5_result(
             "history_deals_get.account_pnl_events",
-            mt5.history_deals_get(start, now),
+            mt5.history_deals_get(start, end),
         )
 
         if len(deals) == 0:
@@ -705,16 +727,15 @@ class MT5Client:
         if positions and len(positions) > 0:
             return map_position_status(positions[0])
 
-        deals = self._require_mt5_result(
+        deals = self._optional_direct_history_result(
             "history_deals_get.ticket",
             mt5.history_deals_get(ticket=order_id),
         )
         if len(deals) == 0:
-            start = datetime.now(timezone.utc) - timedelta(days=30)
-            now = datetime.now(timezone.utc)
+            start, end = self._history_window(24 * 30)
             deals = self._require_mt5_result(
                 "history_deals_get.range_ticket",
-                mt5.history_deals_get(start, now, ticket=order_id),
+                mt5.history_deals_get(start, end, ticket=order_id),
             )
 
         if deals and len(deals) > 0:
@@ -722,16 +743,15 @@ class MT5Client:
             if mapped_deal is not None:
                 return mapped_deal
 
-        history_orders = self._require_mt5_result(
+        history_orders = self._optional_direct_history_result(
             "history_orders_get.ticket",
             mt5.history_orders_get(ticket=order_id),
         )
         if len(history_orders) == 0:
-            start = datetime.now(timezone.utc) - timedelta(days=30)
-            now = datetime.now(timezone.utc)
+            start, end = self._history_window(24 * 30)
             history_orders = self._require_mt5_result(
                 "history_orders_get.range_ticket",
-                mt5.history_orders_get(start, now, ticket=order_id),
+                mt5.history_orders_get(start, end, ticket=order_id),
             )
 
         if history_orders and len(history_orders) > 0:

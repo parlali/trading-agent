@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timedelta, timezone
 from typing import Callable
 
 from worker_test_stubs import install_dependency_stubs
@@ -111,16 +112,55 @@ class FakeInvalidTicketHistoryMT5(FakeMT5):
         return ()
 
     def history_deals_get(self, *args: object, **kwargs: object) -> tuple[object, ...] | None:
-        if "ticket" in kwargs:
-            return ()
+        if "ticket" in kwargs and len(args) == 0:
+            return None
 
         return ()
 
     def history_orders_get(self, *args: object, **kwargs: object) -> tuple[FakeHistoryStatusOrder, ...] | None:
         if "ticket" in kwargs and len(args) == 0:
-            return ()
+            return None
 
         return (FakeHistoryStatusOrder(),)
+
+
+class FakeFutureCloseDeal:
+    ticket = 606
+    order = 707
+    position_id = 808
+    symbol = "XAUUSD"
+    type = 1
+    entry = 1
+    volume = 0.01
+    price = 4024.37
+    profit = -1.35
+    swap = 0.0
+    commission = 0.0
+    fee = 0.0
+    comment = "[sl 4024.55]"
+    time_msc = 1_782_765_531_000
+    time = 1_782_765_531
+    reason = 4
+
+
+class FakeFutureHistoryMT5(FakeMT5):
+    DEAL_TYPE_BUY = 0
+    DEAL_TYPE_SELL = 1
+    DEAL_ENTRY_IN = 0
+    DEAL_ENTRY_OUT = 1
+    DEAL_ENTRY_INOUT = 3
+    DEAL_ENTRY_OUT_BY = 4
+
+    def last_error(self) -> tuple[int, str]:
+        return (1, "Success")
+
+    def history_deals_get(self, *args: object, **kwargs: object) -> tuple[FakeFutureCloseDeal, ...]:
+        if len(args) >= 2 and isinstance(args[1], datetime):
+            end = args[1]
+            if end > datetime.now(timezone.utc) + timedelta(hours=1):
+                return (FakeFutureCloseDeal(),)
+
+        return ()
 
 
 class FakeCancelRequestMT5(FakeMT5):
@@ -319,6 +359,17 @@ def run_harness() -> None:
         assert status["ticket"] == FakeHistoryStatusOrder.ticket
         assert status["symbol"] == "XAGUSD"
         assert status["state"] == "filled"
+
+        mt5_client.mt5 = FakeFutureHistoryMT5()
+        original_future_buffer = mt5_client.settings.mt5_history_future_buffer_hours
+        mt5_client.settings.mt5_history_future_buffer_hours = 12
+        try:
+            closures = client.get_position_closures(24)
+        finally:
+            mt5_client.settings.mt5_history_future_buffer_hours = original_future_buffer
+        assert len(closures) == 1
+        assert closures[0]["positionId"] == FakeFutureCloseDeal.position_id
+        assert closures[0]["profit"] == FakeFutureCloseDeal.profit
 
         cancel_mt5 = FakeCancelRequestMT5()
         mt5_client.mt5 = cancel_mt5

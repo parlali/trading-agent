@@ -473,6 +473,7 @@ type UpsertOrderArgs = {
     metadata?: unknown
     lastTransitionSequence: number
     polling: Doc<"orders">["polling"]
+    allowTerminalStatusRepair?: boolean
 }
 
 type OrderTransitionInsertArgs = {
@@ -504,7 +505,7 @@ export async function upsertOrderRow(
         accountId: strategy.accountId,
         strategyId: args.strategyId,
     })
-    if (existing && isStaleTerminalOrderRegression(existing, args.status)) {
+    if (existing && isStaleTerminalOrderRegression(existing, args.status) && !args.allowTerminalStatusRepair) {
         await incrementControlPlaneMetric(ctx, {
             metric: "upsert_order.terminal_regression_blocked",
             app: strategy.app,

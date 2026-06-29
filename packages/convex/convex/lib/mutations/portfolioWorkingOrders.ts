@@ -393,6 +393,7 @@ export async function applyProviderWorkingOrderUpdate(
     const currentProviderOrderId = order.providerOrderId ?? order.orderId
     const providerOrderIdChanged = currentProviderOrderId !== liveOrder.orderId
     const intentChanged = nextIntent !== order.intent
+    const allowTerminalStatusRepair = isRepairableTerminalWorkingOrder(order) && !isTerminalOrderStatus(nextStatus)
 
     await patchOrderRowFromDoc(ctx, order, {
         providerOrderId: liveOrder.orderId,
@@ -414,6 +415,7 @@ export async function applyProviderWorkingOrderUpdate(
                 : args.updatedAt + order.polling.pollIntervalMs,
             lastError: undefined,
         },
+        allowTerminalStatusRepair,
     })
 
     if (isProviderFillStatus(nextStatus) && !hasProviderAccountingMetadata({

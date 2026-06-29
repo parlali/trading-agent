@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     mt5_connect_timeout_seconds: float = 75.0
     mt5_operation_timeout_seconds: float = 30.0
     mt5_operation_queue_timeout_seconds: float = 20.0
+    mt5_history_future_buffer_hours: int = 12
 
     # Auth -- shared secret between TS orchestrator and this worker
     worker_access_key: str = ""

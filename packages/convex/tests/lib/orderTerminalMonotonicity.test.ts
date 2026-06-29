@@ -165,6 +165,25 @@ describe("order persistence terminal-state monotonicity", () => {
         expect(getOrderRow(db).status).toBe("pending")
     })
 
+    it("allows an explicit provider-truth repair to revive a zero-fill terminal working order", async () => {
+        const db = createDb({
+            status: "cancelled",
+            filledQuantity: 0,
+            remainingQuantity: 0.1,
+            avgFillPrice: undefined,
+        })
+        const ctx = { db } as never
+
+        await upsertOrderRow(ctx, buildUpsertArgs({
+            status: "pending",
+            filledQuantity: 0,
+            remainingQuantity: 0.1,
+            allowTerminalStatusRepair: true,
+        }))
+
+        expect(getOrderRow(db).status).toBe("pending")
+    })
+
     it("allows normal forward progress from pending to filled", async () => {
         const db = createDb({ status: "pending", filledQuantity: 0, avgFillPrice: undefined })
         const ctx = { db } as never
