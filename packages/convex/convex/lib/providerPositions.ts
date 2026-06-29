@@ -1,4 +1,5 @@
 import {
+    buildProviderPositionKeyAliases as buildCoreProviderPositionKeyAliases,
     buildProviderPositionKey as buildCoreProviderPositionKey,
     resolveProviderPositionId as resolveCoreProviderPositionId,
 } from "@valiq-trading/core"
@@ -17,6 +18,15 @@ export function buildProviderPositionKey(position: {
     side: string
 }): string {
     return buildCoreProviderPositionKey(position)
+}
+
+export function buildProviderPositionKeyAliases(position: {
+    instrument: string
+    providerPositionId?: string
+    metadata?: string
+    side: string
+}): string[] {
+    return buildCoreProviderPositionKeyAliases(position)
 }
 
 export function buildPositionClaim(position: {

@@ -11,6 +11,7 @@ import {
     resolveAlpacaClaimedStructureForProviderLeg,
 } from "../instrumentClaims"
 import {
+    buildProviderPositionKeyAliases,
     buildProviderPositionKey,
 } from "../providerPositions"
 import {
@@ -173,9 +174,7 @@ export const reconcileProviderPortfolio = mutation({
             .query("provider_positions")
             .withIndex("by_app_account", (q) => q.eq("app", args.app).eq("accountId", args.accountId))
             .collect()
-        const existingProviderPositionsByKey = new Map(
-            existingProviderPositions.map((position) => [position.positionKey, position])
-        )
+        const existingProviderPositionsByKey = buildProviderPositionIndex(existingProviderPositions)
         const providerPositionClosures = args.positionClosures ?? []
         const accountPnlEvents = args.accountPnlEvents ?? []
 
@@ -365,6 +364,11 @@ export const reconcileProviderPortfolio = mutation({
                 continue
             }
 
+            if (args.app === "mt5") {
+                closedPersistedOrders.push(existingOrder.orderId)
+                continue
+            }
+
             const inferredResolution = inferClosedOrderStatus({
                 app: args.app,
                 order: existingOrder,
@@ -419,7 +423,7 @@ export const reconcileProviderPortfolio = mutation({
             accountId: args.accountId,
             strategyMap,
             existingProviderPositions,
-            livePositionKeys: new Set(nextProviderPositions.map((position) => position.positionKey)),
+            livePositionKeys: buildLiveProviderPositionKeys(nextProviderPositions),
             positionClosures: providerPositionClosures,
             expectedExternalInstruments,
             updatedAt: now,
@@ -694,6 +698,42 @@ function resolveCanonicalOrderIdFromProviderIdentity(order: {
     ]
 
     return candidates.find(isCanonicalExecutionOrderId)
+}
+
+function buildProviderPositionIndex(
+    positions: Doc<"provider_positions">[]
+): Map<string, Doc<"provider_positions">> {
+    const index = new Map<string, Doc<"provider_positions">>()
+
+    for (const position of positions) {
+        index.set(position.positionKey, position)
+        for (const alias of buildProviderPositionKeyAliases(position)) {
+            index.set(alias, position)
+        }
+    }
+
+    return index
+}
+
+function buildLiveProviderPositionKeys(
+    positions: Array<{
+        instrument: string
+        side: string
+        providerPositionId?: string
+        metadata?: string
+        positionKey: string
+    }>
+): Set<string> {
+    const keys = new Set<string>()
+
+    for (const position of positions) {
+        keys.add(position.positionKey)
+        for (const alias of buildProviderPositionKeyAliases(position)) {
+            keys.add(alias)
+        }
+    }
+
+    return keys
 }
 
 function resolveAlpacaPositionClaimMetadata(args: {

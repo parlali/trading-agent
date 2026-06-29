@@ -22,7 +22,6 @@ import {
     type WorkingOrder,
 } from "@valiq-trading/core"
 import {
-    isRecoverableMT5ConnectionError,
     MT5Client,
     type MT5AccountInfo,
     type MT5AccountPnlEvent,
@@ -36,7 +35,6 @@ import {
     resolveMT5AllowedSymbol,
 } from "./symbols"
 import {
-    aggregateMT5CloseResults,
     aggregateMT5FilledStats,
     buildMT5ExecutionCostSnapshot,
     mapMT5OrderState,
@@ -316,9 +314,51 @@ export class MT5VenueAdapter implements VenueAdapter, PriceVerifier {
                 }
             }
 
+            const closures = await this.client.getPositionClosures(this.credentials, 24)
+            const closureMatches = closures.filter((closure) => closure.comment === providerClientOrderId)
+
+            if (closureMatches.length === 1) {
+                const match = closureMatches[0]!
+                return {
+                    outcome: "accepted",
+                    result: {
+                        orderId: String(match.orderId || match.ticket),
+                        providerOrderId: String(match.orderId || match.ticket),
+                        providerClientOrderId,
+                        status: "filled",
+                        filledQuantity: match.volume,
+                        fillPrice: match.price > 0 ? match.price : undefined,
+                        timestamp: Date.now(),
+                        commitOutcome: "recovered",
+                    },
+                }
+            }
+
+            if (closureMatches.length > 1) {
+                return {
+                    outcome: "ambiguous",
+                    message: "MT5 commit-unknown recovery found multiple close deals with the canonical client id",
+                    matches: closureMatches.map((closure) => ({
+                        orderId: String(closure.orderId || closure.ticket),
+                        providerOrderId: String(closure.orderId || closure.ticket),
+                        providerClientOrderId,
+                        status: "filled",
+                        filledQuantity: closure.volume,
+                        fillPrice: closure.price > 0 ? closure.price : undefined,
+                        timestamp: Date.now(),
+                    })),
+                    details: {
+                        providerClientOrderId,
+                        tickets: closureMatches.map((closure) => closure.ticket),
+                        orderIds: closureMatches.map((closure) => closure.orderId),
+                        positionIds: closureMatches.map((closure) => closure.positionId),
+                    },
+                }
+            }
+
             return {
                 outcome: "not_found",
-                message: "MT5 commit-unknown recovery found no live order or position with the canonical client id",
+                message: "MT5 commit-unknown recovery found no live order, live position, or close deal with the canonical client id",
                 details: {
                     providerClientOrderId,
                 },
@@ -427,23 +467,31 @@ export class MT5VenueAdapter implements VenueAdapter, PriceVerifier {
             })
         }
 
-        const results: ExecutionResult[] = []
-        for (const position of matchingPositions) {
-            const result = await this.client.closePosition(this.credentials, {
-                ticket: position.ticket,
-                comment: providerClientOrderId,
+        if (matchingPositions.length > 1) {
+            return rejectMT5PreValidation({
+                message: `MT5 close for ${instrument} provider position identity ${formatMT5CloseIdentity(closeIdentity)} matched ${matchingPositions.length} live positions`,
+                code: "AMBIGUOUS_PROVIDER_POSITION_ID",
+                details: {
+                    instrument,
+                    ...closeIdentity,
+                    tickets: matchingPositions.map((position) => position.ticket),
+                    identifiers: matchingPositions.map((position) => position.identifier),
+                },
             })
-            results.push(
-                {
-                    ...this.client.mapOrderResultToExecution(result, {
-                        fallbackOrderId: String(position.ticket),
-                    }),
-                    providerClientOrderId,
-                }
-            )
         }
 
-        return aggregateMT5CloseResults(instrument, results)
+        const position = matchingPositions[0]!
+        const result = await this.client.closePosition(this.credentials, {
+            ticket: position.ticket,
+            comment: providerClientOrderId,
+        })
+
+        return {
+            ...this.client.mapOrderResultToExecution(result, {
+                fallbackOrderId: String(position.ticket),
+            }),
+            providerClientOrderId,
+        }
     }
 
     async closeProviderPosition(
@@ -623,15 +671,7 @@ export class MT5VenueAdapter implements VenueAdapter, PriceVerifier {
     }
 
     private async withRecoverableRead<T>(read: () => Promise<T>): Promise<T> {
-        try {
-            return await read()
-        } catch (error) {
-            if (!isRecoverableMT5ConnectionError(error)) {
-                throw error
-            }
-
-            return await read()
-        }
+        return await read()
     }
 
     private async readVerifiedAccountInfo(): Promise<MT5AccountInfo> {

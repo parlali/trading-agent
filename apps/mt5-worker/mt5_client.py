@@ -23,7 +23,6 @@ from mt5_errors import (
     read_mt5_error_details,
 )
 from mt5_mappers import (
-    failed_order_result,
     map_deal_status,
     map_history_order_status,
     map_account_pnl_event,
@@ -358,20 +357,6 @@ class MT5Client:
 
         return result
 
-    def _optional_mt5_result(self, operation: str, result: Any) -> Any:
-        try:
-            return self._require_mt5_result(operation, result)
-        except MT5ConnectionError as exc:
-            log.warning(
-                "mt5_optional_sdk_call_failed",
-                login=self.login,
-                operation=operation,
-                error=str(exc),
-                errorType=exc.error_type,
-                retryable=exc.retryable,
-            )
-            return ()
-
     def assert_session_login(self, expected_login: int) -> None:
         self.ensure_connected()
         info = self._require_mt5_result("account_info", mt5.account_info())
@@ -615,27 +600,6 @@ class MT5Client:
 
         return map_order_result(mt5, result, fallback_order_id=ticket)
 
-    def cancel_all_orders(self) -> list[dict[str, Any]]:
-        self.ensure_connected()
-
-        orders = self._require_mt5_result("orders_get", mt5.orders_get())
-        if len(orders) == 0:
-            return []
-
-        results: list[dict[str, Any]] = []
-        for order in orders:
-            ticket = int(order.ticket)
-            try:
-                result = self.cancel_order(ticket)
-                results.append(result)
-            except MT5ConnectionError:
-                raise
-            except Exception as exc:
-                log.error("cancel_pending_order_failed", ticket=ticket, error=str(exc))
-                results.append(failed_order_result(str(exc), order_id=str(ticket)))
-
-        return results
-
     def close_position(
         self,
         ticket: int,
@@ -676,26 +640,6 @@ class MT5Client:
             self._raise_mt5_error("order_send.close_position", error_type="order_failed")
 
         return map_order_result(mt5, result)
-
-    def close_all_positions(self, deviation: int = 20) -> list[dict[str, Any]]:
-        """Close every open position."""
-        self.ensure_connected()
-        positions = self._require_mt5_result("positions_get", mt5.positions_get())
-        if len(positions) == 0:
-            return []
-
-        results: list[dict[str, Any]] = []
-        for pos in positions:
-            try:
-                result = self.close_position(int(pos.ticket), deviation=deviation)
-                results.append(result)
-            except MT5ConnectionError:
-                raise
-            except Exception as exc:
-                log.error("close_all_positions_failed", ticket=pos.ticket, error=str(exc))
-                results.append(failed_order_result(str(exc), ticket=int(pos.ticket)))
-
-        return results
 
     # -- Symbol info -----------------------------------------------------------
 
@@ -761,44 +705,34 @@ class MT5Client:
         if positions and len(positions) > 0:
             return map_position_status(positions[0])
 
-        deals = self._optional_mt5_result(
+        deals = self._require_mt5_result(
             "history_deals_get.ticket",
             mt5.history_deals_get(ticket=order_id),
         )
         if len(deals) == 0:
-            epoch = datetime(2020, 1, 1, tzinfo=timezone.utc)
+            start = datetime.now(timezone.utc) - timedelta(days=30)
             now = datetime.now(timezone.utc)
-            deals = self._optional_mt5_result(
+            deals = self._require_mt5_result(
                 "history_deals_get.range_ticket",
-                mt5.history_deals_get(epoch, now, ticket=order_id),
+                mt5.history_deals_get(start, now, ticket=order_id),
             )
-            if len(deals) == 0:
-                deals = self._require_mt5_result(
-                    "history_deals_get.range",
-                    mt5.history_deals_get(epoch, now),
-                )
 
         if deals and len(deals) > 0:
             mapped_deal = map_deal_status(mt5, order_id, deals)
             if mapped_deal is not None:
                 return mapped_deal
 
-        history_orders = self._optional_mt5_result(
+        history_orders = self._require_mt5_result(
             "history_orders_get.ticket",
             mt5.history_orders_get(ticket=order_id),
         )
         if len(history_orders) == 0:
-            epoch = datetime(2020, 1, 1, tzinfo=timezone.utc)
+            start = datetime.now(timezone.utc) - timedelta(days=30)
             now = datetime.now(timezone.utc)
-            history_orders = self._optional_mt5_result(
+            history_orders = self._require_mt5_result(
                 "history_orders_get.range_ticket",
-                mt5.history_orders_get(epoch, now, ticket=order_id),
+                mt5.history_orders_get(start, now, ticket=order_id),
             )
-            if len(history_orders) == 0:
-                history_orders = self._require_mt5_result(
-                    "history_orders_get.range",
-                    mt5.history_orders_get(epoch, now),
-                )
 
         if history_orders and len(history_orders) > 0:
             history_order = next(

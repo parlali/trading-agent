@@ -28,11 +28,21 @@ export function resolveProviderPositionId(position: {
 
 export function buildProviderPositionKey(position: Pick<Position, "instrument" | "side" | "providerPositionId" | "metadata"> | ProviderPositionIdentityInput): string {
     const providerPositionId = resolveProviderPositionId(position)
-    if (providerPositionId) {
+    if (providerPositionId && !isRedundantInstrumentPositionId(position.instrument, providerPositionId)) {
         return `${position.instrument}:${providerPositionId}`
     }
 
     return `${position.instrument}:${position.side}`
+}
+
+export function buildProviderPositionKeyAliases(position: Pick<Position, "instrument" | "side" | "providerPositionId" | "metadata"> | ProviderPositionIdentityInput): string[] {
+    const aliases = new Set<string>([buildProviderPositionKey(position)])
+    const providerPositionId = resolveProviderPositionId(position)
+    if (providerPositionId) {
+        aliases.add(`${position.instrument}:${providerPositionId}`)
+    }
+
+    return Array.from(aliases)
 }
 
 export function buildProviderWorkingOrderKey(order: Pick<WorkingOrder, "orderId">): string {
@@ -72,4 +82,8 @@ function firstStringish(...values: unknown[]): string | undefined {
     }
 
     return undefined
+}
+
+function isRedundantInstrumentPositionId(instrument: string, providerPositionId: string): boolean {
+    return providerPositionId.trim().toUpperCase() === instrument.trim().toUpperCase()
 }

@@ -148,6 +148,7 @@ def map_position_closure(mt5_module: Any, deal: Any, closed_volume: float | None
         "swap": float(getattr(deal, "swap", 0.0)),
         "commission": float(getattr(deal, "commission", 0.0)),
         "fee": float(getattr(deal, "fee", 0.0)),
+        "comment": str(getattr(deal, "comment", "") or ""),
         "timeDone": read_mt5_timestamp_ms(deal, "time_msc", "time"),
         "entry": entry,
         "reason": int(getattr(deal, "reason", -1)),

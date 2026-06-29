@@ -83,6 +83,7 @@ export interface MT5PositionClosure {
     swap?: number
     commission?: number
     fee?: number
+    comment?: string
     timeDone: number
     entry: number
     reason: number
@@ -271,10 +272,6 @@ export class MT5Client {
         return await this.postMutation<MT5OrderResult>("/order/cancel", this.accountScopedBody(credentials, params))
     }
 
-    async cancelAllOrders(credentials: MT5WorkerCredentials): Promise<{ cancelled: number; results: MT5OrderResult[] }> {
-        return await this.postMutation("/order/cancel-all", this.accountScopedBody(credentials))
-    }
-
     async closePosition(credentials: MT5WorkerCredentials, params: {
         ticket: number
         volume?: number
@@ -282,10 +279,6 @@ export class MT5Client {
         comment?: string
     }): Promise<MT5OrderResult> {
         return await this.postMutation<MT5OrderResult>("/position/close", this.accountScopedBody(credentials, params))
-    }
-
-    async closeAllPositions(credentials: MT5WorkerCredentials): Promise<{ closed: number; results: MT5OrderResult[] }> {
-        return await this.postMutation("/position/close-all", this.accountScopedBody(credentials))
     }
 
     async getSymbolInfo(credentials: MT5WorkerCredentials, symbols: string[]): Promise<MT5SymbolInfo[]> {
@@ -379,11 +372,7 @@ export class MT5Client {
     }
 
     private async postRead<T = unknown>(path: string, body: unknown): Promise<T> {
-        return await retryWithBackoff(async () => {
-            return await this.request<T>("POST", path, body, this.timeout)
-        }, 3, 1000, {
-            shouldRetry: (error) => getExecutionErrorDetail(error)?.retryable ?? true,
-        })
+        return await this.request<T>("POST", path, body, this.timeout)
     }
 
     private async postMutation<T = unknown>(

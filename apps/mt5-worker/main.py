@@ -135,19 +135,6 @@ async def cancel_order(
         return rejected_order_result(exc, str(req.ticket))
 
 
-@app.post("/order/cancel-all", dependencies=[Depends(verify_access_key)])
-async def cancel_all_orders(req: AccountScopedRequest) -> dict[str, Any]:
-    results = await runtime.run_account_operation(
-        "order_cancel_all",
-        req,
-        lambda client: client.cancel_all_orders(),
-    )
-    return {
-        "cancelled": sum(1 for result in results if result.get("success")),
-        "results": results,
-    }
-
-
 @app.post("/position/close", dependencies=[Depends(verify_access_key)])
 async def close_position(
     req: ClosePositionRequest,
@@ -165,19 +152,6 @@ async def close_position(
         )
     except ValueError as exc:
         return rejected_order_result(exc)
-
-
-@app.post("/position/close-all", dependencies=[Depends(verify_access_key)])
-async def close_all_positions(req: AccountScopedRequest) -> dict[str, Any]:
-    results = await runtime.run_account_operation(
-        "position_close_all",
-        req,
-        lambda client: client.close_all_positions(),
-    )
-    return {
-        "closed": sum(1 for result in results if result.get("success")),
-        "results": results,
-    }
 
 
 @app.post("/position/closures", dependencies=[Depends(verify_access_key)])

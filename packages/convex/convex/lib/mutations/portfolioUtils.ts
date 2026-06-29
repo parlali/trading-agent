@@ -129,6 +129,28 @@ export function hasNonZeroProviderAccountingMetadata(metadata: Record<string, un
         isNonZeroFiniteNumber(metadata?.swap)
 }
 
+export function hasProviderAccountingMetadata(metadata: Record<string, unknown> | undefined): boolean {
+    if (!metadata || metadata.providerAccountingMissing === true) {
+        return false
+    }
+
+    if (hasNonZeroProviderAccountingMetadata(metadata)) {
+        return true
+    }
+
+    return typeof metadata.providerAccountingSource === "string" &&
+        metadata.providerAccountingSource.trim().length > 0 &&
+        (
+            typeof metadata.providerActivityId === "string" ||
+            typeof metadata.providerEventId === "string" ||
+            typeof metadata.activityType === "string" ||
+            typeof metadata.ticket === "number" ||
+            typeof metadata.ticket === "string" ||
+            typeof metadata.positionId === "number" ||
+            typeof metadata.positionId === "string"
+        )
+}
+
 export function readOrderIntentRecord(intent: unknown): Record<string, unknown> | undefined {
     return intent && typeof intent === "object"
         ? intent as Record<string, unknown>

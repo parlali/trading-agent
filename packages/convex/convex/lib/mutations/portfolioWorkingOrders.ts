@@ -226,15 +226,14 @@ export function resolveLiveWorkingOrderMatch(args: {
         return directMatch
     }
 
-    const metadataMatchId = readProviderClientOrderId(args.liveOrder) ?? readSignedOrderFingerprint(args.liveOrder)
-    if (!metadataMatchId) {
-        return undefined
+    for (const identifier of getProviderWorkingOrderIdentityCandidates(args.liveOrder)) {
+        const metadataMatch = args.activeOrdersById.get(identifier)
+        if (metadataMatch && !args.matchedActiveOrderIds.has(metadataMatch.orderId)) {
+            return metadataMatch
+        }
     }
 
-    const metadataMatch = args.activeOrdersById.get(metadataMatchId)
-    return metadataMatch && !args.matchedActiveOrderIds.has(metadataMatch.orderId)
-        ? metadataMatch
-        : undefined
+    return undefined
 }
 
 export function hasUnresolvedLiveWorkingOrderGap(
@@ -252,13 +251,41 @@ export function hasUnresolvedLiveWorkingOrderGap(
 ): boolean {
     const identifiers = new Set(getOrderIdentityCandidates(order))
     return unresolvedWorkingOrders.some((liveOrder) => {
-        const liveIdentifiers = [
-            liveOrder.orderId,
-            readProviderClientOrderId(liveOrder),
-            readSignedOrderFingerprint(liveOrder),
-        ].filter((value): value is string => Boolean(value))
-        return liveIdentifiers.some((identifier) => identifiers.has(identifier))
+        return getProviderWorkingOrderIdentityCandidates(liveOrder).some((identifier) => identifiers.has(identifier))
     })
+}
+
+function getProviderWorkingOrderIdentityCandidates(
+    order: Pick<ProviderWorkingOrderInput, "orderId" | "metadata"> &
+        Partial<Pick<
+            ProviderWorkingOrderInput,
+            "canonicalOrderId" |
+            "providerOrderId" |
+            "providerClientOrderId" |
+            "providerOrderAliases" |
+            "signedOrderFingerprint"
+        >>
+): string[] {
+    const identifiers = new Set<string>()
+
+    addIdentityCandidate(identifiers, order.orderId)
+    addIdentityCandidate(identifiers, order.canonicalOrderId)
+    addIdentityCandidate(identifiers, order.providerOrderId)
+    addIdentityCandidate(identifiers, readProviderClientOrderId(order))
+    addIdentityCandidate(identifiers, readSignedOrderFingerprint(order))
+
+    for (const alias of order.providerOrderAliases ?? []) {
+        addIdentityCandidate(identifiers, alias)
+    }
+
+    return Array.from(identifiers)
+}
+
+function addIdentityCandidate(identifiers: Set<string>, value: string | undefined): void {
+    const identifier = value?.trim()
+    if (identifier) {
+        identifiers.add(identifier)
+    }
 }
 
 export async function applyProviderWorkingOrderUpdate(

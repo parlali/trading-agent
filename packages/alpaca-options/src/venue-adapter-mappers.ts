@@ -102,6 +102,10 @@ export function mapAlpacaOptionActivityClosure(
         metadata: {
             providerAccountingSource: "alpaca_account_activity",
             providerActivityId: activity.id,
+            ...(activity.order_id ? {
+                providerOrderId: activity.order_id,
+                orderId: activity.order_id,
+            } : {}),
             activityType,
             description: activity.description,
             status: activity.status,
@@ -164,6 +168,10 @@ function isAlpacaAccountPnlActivityType(
 
 function readAlpacaActivityTime(activity: AlpacaAccountActivity): number {
     const raw = activity.transaction_time ?? activity.date
+    if (!activity.transaction_time && typeof activity.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(activity.date)) {
+        return Date.parse(`${activity.date}T23:59:59.999Z`)
+    }
+
     const timestamp = raw ? Date.parse(raw) : NaN
     if (!Number.isFinite(timestamp)) {
         throw new Error(`Alpaca account activity ${activity.id} has no valid activity timestamp`)

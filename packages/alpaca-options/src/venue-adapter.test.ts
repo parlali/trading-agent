@@ -413,7 +413,7 @@ describe("AlpacaOptionsVenueAdapter", () => {
                 side: "short",
                 quantity: 2,
                 fillPrice: 0,
-                closedAt: Date.parse("2026-05-01"),
+                closedAt: Date.parse("2026-05-01T23:59:59.999Z"),
                 metadata: expect.objectContaining({
                     providerAccountingSource: "alpaca_account_activity",
                     providerActivityId: "activity-expiry-1",

@@ -11,7 +11,7 @@ type ProviderPositionHistoryRow = Omit<Doc<"provider_position_history">, "_id" |
 type ProviderWorkingOrderRow = Omit<Doc<"provider_working_orders">, "_id" | "_creationTime">
 
 const PROVIDER_POSITION_HISTORY_RETENTION_MS = 24 * 60 * 60 * 1000
-const PROVIDER_POSITION_HISTORY_APPS = new Set<Doc<"strategies">["app"]>(["mt5", "okx-swap"])
+const PROVIDER_POSITION_HISTORY_APPS = new Set<Doc<"strategies">["app"]>(["mt5", "okx-swap", "alpaca-options"])
 
 const PROVIDER_POSITION_COMPARE_FIELDS = [
     "providerPositionId",

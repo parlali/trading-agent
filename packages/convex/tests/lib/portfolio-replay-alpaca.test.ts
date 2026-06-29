@@ -339,8 +339,9 @@ describe("Convex Alpaca SPY replay", () => {
         const runId = "run-expiry"
         const accountId = "alpaca-acct-a"
         const instrument = "SPY260501C00720000"
-        const closedAt = Date.parse("2026-05-01T00:00:00.000Z")
-        const openedAt = closedAt - 60_000
+        const closedAt = Date.parse("2026-05-01T23:59:59.999Z")
+        const lastLiveSyncAt = Date.parse("2026-05-01T20:00:00.000Z")
+        const openedAt = Date.parse("2026-05-01T14:30:00.000Z")
         const db = new FakeDb({
             strategies: [{
                 _id: strategyId,
@@ -372,7 +373,7 @@ describe("Convex Alpaca SPY replay", () => {
                 side: "short",
                 quantity: 2,
                 entryPrice: 1.25,
-                syncedAt: openedAt,
+                syncedAt: lastLiveSyncAt,
             }],
             provider_working_orders: [],
             provider_sync_state: [],

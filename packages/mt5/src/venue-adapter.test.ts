@@ -157,7 +157,7 @@ describe("MT5VenueAdapter", () => {
         await expect(adapter.getPositions()).rejects.toThrow("session login 222222")
     })
 
-    it("retries recoverable read failures once without trusting any cached session", async () => {
+    it("surfaces recoverable read failures without adapter-level retry", async () => {
         const client = createClient()
         let accountCalls = 0
         client.getAccount = async () => {
@@ -172,10 +172,9 @@ describe("MT5VenueAdapter", () => {
         }
 
         const adapter = createAdapter(client)
-        const state = await adapter.getAccountState()
 
-        expect(state.equity).toBe(1000)
-        expect(accountCalls).toBe(2)
+        await expect(adapter.getAccountState()).rejects.toThrow("MT5 not connected")
+        expect(accountCalls).toBe(1)
     })
 
     it("derives MT5 day PnL from open PnL, provider closures, and account PnL events", async () => {

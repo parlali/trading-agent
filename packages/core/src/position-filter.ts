@@ -1,5 +1,8 @@
 import type { Position, WorkingOrder } from "./types"
-import { buildProviderPositionKey, buildProviderWorkingOrderKey } from "./provider-position-key"
+import {
+    buildProviderPositionKeyAliases,
+    buildProviderWorkingOrderKey,
+} from "./provider-position-key"
 
 export interface ProviderOwnershipScope {
     instruments: Set<string>
@@ -27,7 +30,7 @@ export function filterPositionsByOwnershipScope(
 ): Position[] {
     if (scope.positionKeys.size > 0) {
         return positions.filter((position) =>
-            scope.positionKeys.has(buildProviderPositionKey(position)) ||
+            buildProviderPositionKeyAliases(position).some((key) => scope.positionKeys.has(key)) ||
             (
                 scope.instruments.has(position.instrument) &&
                 !hasScopedPositionKeyForInstrument(scope, position.instrument)

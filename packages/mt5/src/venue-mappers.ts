@@ -51,22 +51,7 @@ export function mapMT5Position(raw: MT5Position, observedAt: number = Date.now()
 }
 
 export function readMT5Ticket(position: Position): number | undefined {
-    const fromMetadata = readMT5MetadataTicket(position.metadata?.ticket)
-    if (fromMetadata !== undefined) {
-        return fromMetadata
-    }
-
-    const providerPositionId = readMT5MetadataTicket(position.providerPositionId)
-    const metadataIdentifier = readMT5MetadataTicket(position.metadata?.identifier)
-    if (
-        providerPositionId !== undefined &&
-        metadataIdentifier !== undefined &&
-        providerPositionId === metadataIdentifier
-    ) {
-        return undefined
-    }
-
-    return providerPositionId
+    return readMT5MetadataTicket(position.metadata?.ticket)
 }
 
 export function parseMT5Ticket(orderId: string): number | undefined {
@@ -261,53 +246,6 @@ export function aggregateMT5FilledStats(results: ExecutionResult[]): {
     }
 }
 
-export function aggregateMT5CloseResults(
-    instrument: string,
-    results: ExecutionResult[]
-): ExecutionResult {
-    if (results.length === 1) {
-        return results[0]!
-    }
-
-    const { filledQuantity, avgFillPrice } = aggregateMT5FilledStats(results)
-    const filledResults = results.filter((result) => result.status === "filled")
-    const failedResults = results.filter((result) => result.status !== "filled")
-    const status: ExecutionResult["status"] = failedResults.length === 0
-        ? "filled"
-        : filledResults.length > 0
-            ? "partially_filled"
-            : "rejected"
-    const providerOrderIds = results
-        .map((result) => result.providerOrderId ?? result.orderId)
-        .filter(Boolean)
-    const providerClientOrderIds = Array.from(new Set(
-        results
-            .map((result) => result.providerClientOrderId)
-            .filter((value): value is string => Boolean(value))
-    ))
-    const errorDetail = failedResults.length > 0
-        ? createExecutionErrorDetail("venue", `Failed to close every MT5 ${instrument} position`, {
-            code: "MT5_BULK_CLOSE_INCOMPLETE",
-            retryable: false,
-            details: {
-                results,
-            },
-        })
-        : undefined
-
-    return {
-        orderId: results.map((result) => result.orderId).filter(Boolean).join(","),
-        providerOrderId: providerOrderIds.join(",") || undefined,
-        providerClientOrderId: providerClientOrderIds.length === 1 ? providerClientOrderIds[0] : undefined,
-        status,
-        filledQuantity,
-        fillPrice: avgFillPrice,
-        timestamp: Date.now(),
-        error: errorDetail ? formatExecutionError(errorDetail) : undefined,
-        errorDetail,
-    }
-}
-
 function resolveMT5ProviderPositionIdentity(raw: MT5Position): {
     providerPositionId: string
     source: "identifier" | "ticket"
@@ -360,6 +298,7 @@ export function mapMT5PositionClosure(raw: MT5PositionClosure, observedAt: numbe
             ...(swap !== undefined ? { swap } : {}),
             ...(commission !== undefined ? { commission } : {}),
             ...(fee !== undefined ? { fee } : {}),
+            ...(raw.comment ? { comment: raw.comment, providerClientOrderId: raw.comment } : {}),
             entry: raw.entry,
             reason: raw.reason,
             providerAccountingSource: "mt5_deal",

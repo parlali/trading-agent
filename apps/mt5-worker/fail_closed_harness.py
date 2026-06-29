@@ -100,14 +100,6 @@ class FakeHistoryStatusOrder:
     time_done = 1_782_203_000
 
 
-class FakeBulkCancelMT5(FakeMT5):
-    def orders_get(self, *args: object, **kwargs: object) -> tuple[FakeOrder, ...] | None:
-        if "ticket" in kwargs:
-            return None
-
-        return (FakeOrder(),)
-
-
 class FakeInvalidTicketHistoryMT5(FakeMT5):
     def last_error(self) -> tuple[int, str]:
         return (-2, "Terminal: Invalid params")
@@ -120,13 +112,13 @@ class FakeInvalidTicketHistoryMT5(FakeMT5):
 
     def history_deals_get(self, *args: object, **kwargs: object) -> tuple[object, ...] | None:
         if "ticket" in kwargs:
-            return None
+            return ()
 
         return ()
 
     def history_orders_get(self, *args: object, **kwargs: object) -> tuple[FakeHistoryStatusOrder, ...] | None:
-        if "ticket" in kwargs:
-            return None
+        if "ticket" in kwargs and len(args) == 0:
+            return ()
 
         return (FakeHistoryStatusOrder(),)
 
@@ -173,14 +165,6 @@ class FakeModifyPendingOrderMT5(FakeMT5):
     def order_send(self, request: dict[str, object]) -> FakeOrderSendResult:
         self.requests.append(request)
         return FakeOrderSendResult()
-
-
-class FakeBulkCloseMT5(FakeMT5):
-    def positions_get(self, *args: object, **kwargs: object) -> tuple[FakePosition, ...] | None:
-        if "ticket" in kwargs:
-            return None
-
-        return (FakePosition(),)
 
 
 ROUTE_CREDENTIALS = {
@@ -330,9 +314,6 @@ def run_harness() -> None:
             volume=0.01,
         ))
 
-        mt5_client.mt5 = FakeBulkCancelMT5()
-        assert_query_failure(client.cancel_all_orders)
-
         mt5_client.mt5 = FakeInvalidTicketHistoryMT5()
         status = client.get_order(FakeHistoryStatusOrder.ticket)
         assert status["ticket"] == FakeHistoryStatusOrder.ticket
@@ -367,16 +348,6 @@ def run_harness() -> None:
             "type_time": modify_mt5.ORDER_TIME_GTC,
         }]
 
-        mt5_client.mt5 = FakeBulkCloseMT5()
-        assert_query_failure(client.close_all_positions)
-
-        def failing_close(ticket: int, deviation: int = 20) -> object:
-            raise ValueError(f"Position {ticket} not found")
-
-        client.close_position = failing_close
-        results = client.close_all_positions()
-        assert results[0]["success"] is False
-        assert "Position 202 not found" in results[0]["retcodeDescription"]
     finally:
         mt5_client.mt5 = original_mt5
 
