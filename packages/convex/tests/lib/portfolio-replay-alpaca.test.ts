@@ -532,6 +532,120 @@ describe("Convex Alpaca SPY replay", () => {
         ])
     })
 
+    it("replays Alpaca expiry activity from a vanished-position safety fault after position history expires", async () => {
+        process.env.BACKEND_SERVICE_TOKEN = "test-token"
+        const strategyId = "strategy-expiry-fault"
+        const runId = "run-expiry-fault"
+        const accountId = "alpaca-acct-a"
+        const instrument = "SPY260501C00720000"
+        const positionKey = `${instrument}:${instrument}`
+        const closedAt = Date.parse("2026-05-01T23:59:59.999Z")
+        const db = new FakeDb({
+            strategies: [{
+                _id: strategyId,
+                app: "alpaca-options",
+                accountId,
+                name: "SPY short call",
+                policy: { dryRun: false },
+            }],
+            strategy_runs: [{
+                _id: runId,
+                strategyId,
+                app: "alpaca-options",
+                accountId,
+                status: "completed",
+                startedAt: closedAt - 60_000,
+                endedAt: closedAt - 30_000,
+            }],
+            instrument_claims: [],
+            orders: [],
+            provider_positions: [],
+            provider_position_history: [],
+            provider_working_orders: [],
+            provider_sync_state: [],
+            position_syncs: [],
+            positions: [],
+            execution_safety_faults: [{
+                _id: "fault-expired-history",
+                strategyId,
+                app: "alpaca-options",
+                accountId,
+                instrument,
+                category: "accounting_mismatch",
+                message: `Owned position ${positionKey} disappeared from alpaca-options without close evidence or a canonical close order; realized PnL for this exit is unaccounted (expiry, assignment, or settlement must be reconciled manually)`,
+                providerPayload: JSON.stringify({
+                    positionKey,
+                    instrument,
+                    side: "short",
+                    quantity: 2,
+                    entryPrice: 1.25,
+                }),
+                runId,
+                blocked: true,
+                occurredAt: closedAt + 24 * 60 * 60 * 1000,
+                resolvedAt: undefined,
+                resolutionNote: undefined,
+            }],
+            account_snapshots: [],
+            control_plane_metrics: [],
+            alerts: [],
+        })
+        const ctx = { db } as never
+
+        await callRegistered(reconcileProviderPortfolio, ctx, {
+            serviceToken: "test-token",
+            app: "alpaca-options",
+            accountId,
+            venue: "alpaca",
+            source: "periodic_sync",
+            accountState: {
+                balance: 100000,
+                equity: 100000,
+                buyingPower: 100000,
+                marginUsed: 0,
+                marginAvailable: 100000,
+                openPnl: 0,
+                dayPnl: 0,
+            },
+            positions: [],
+            workingOrders: [],
+            positionClosures: [{
+                instrument,
+                side: "short",
+                quantity: 2,
+                fillPrice: 0,
+                closedAt,
+                metadata: JSON.stringify({
+                    providerAccountingSource: "alpaca_account_activity",
+                    providerActivityId: "activity-expiry-from-fault",
+                    activityType: "OPEXP",
+                    fillPnl: 0,
+                    netAmount: 0,
+                }),
+            }],
+        })
+
+        const closeOrder = (db.rows.orders ?? []).find((order) => order.action === "close")
+        expect(closeOrder).toMatchObject({
+            orderId: `provider-close:alpaca-options:${positionKey}:${closedAt}`,
+            runId,
+            strategyId,
+            instrument,
+            status: "filled",
+            action: "close",
+            quantity: 2,
+            filledQuantity: 2,
+        })
+        expect(db.rows.execution_safety_faults).toEqual([
+            expect.objectContaining({
+                _id: "fault-expired-history",
+                blocked: false,
+                resolvedAt: expect.any(Number),
+                resolutionNote: `Provider closure attached to canonical close order provider-close:alpaca-options:${positionKey}:${closedAt}`,
+            }),
+        ])
+    })
+
     it("records a blocking fault when provider closure evidence marks accounting missing", async () => {
         process.env.BACKEND_SERVICE_TOKEN = "test-token"
         const strategyId = "strategy-closure-missing"

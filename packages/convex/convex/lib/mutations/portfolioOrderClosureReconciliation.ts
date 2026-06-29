@@ -90,7 +90,14 @@ export async function reconcileProviderPositionClosures(
         .map((position) => trackCandidate(position, true))
     const okxHistoricCandidates = (await resolveHistoricOKXProviderCloseCandidates(ctx, args))
         .map((position) => trackCandidate(position, true))
-    const candidates = [...disappearedCandidates, ...mt5HistoricCandidates, ...okxHistoricCandidates]
+    const faultBackedCandidates = (await resolveFaultBackedProviderCloseCandidates(ctx, args))
+        .map((position) => trackCandidate(position, true))
+    const candidates = [
+        ...disappearedCandidates,
+        ...faultBackedCandidates,
+        ...mt5HistoricCandidates,
+        ...okxHistoricCandidates,
+    ]
 
     if (args.positionClosures.length === 0 && candidates.length === 0) {
         return { unattributedClosures: [], unmatchedClosedPositions: [] }
@@ -845,6 +852,109 @@ async function resolveHistoricMT5ProviderCloseCandidates(
     }
 
     return candidates
+}
+
+async function resolveFaultBackedProviderCloseCandidates(
+    ctx: PortfolioMutationCtx,
+    args: {
+        app: Doc<"strategies">["app"]
+        accountId: string
+        strategyMap: Map<string, StrategyDoc>
+    }
+): Promise<ProviderClosePositionCandidate[]> {
+    const faults = await ctx.db
+        .query("execution_safety_faults")
+        .withIndex("by_app_account_blocked", (q) =>
+            q.eq("app", args.app).eq("accountId", args.accountId).eq("blocked", true)
+        )
+        .collect()
+    const candidates: ProviderClosePositionCandidate[] = []
+    const seenPositionKeys = new Set<string>()
+
+    for (const fault of faults) {
+        if (
+            fault.category !== "accounting_mismatch" ||
+            !fault.strategyId ||
+            !args.strategyMap.has(String(fault.strategyId)) ||
+            !fault.message.includes("disappeared from") ||
+            !fault.message.includes("without close evidence")
+        ) {
+            continue
+        }
+
+        const payload = parseJson<Record<string, unknown>>(fault.providerPayload)
+        const instrument = readIdentifier(payload?.instrument) ?? fault.instrument
+        const side = readProviderPositionSide(payload?.side)
+        const quantity = readFinitePayloadNumber(payload?.quantity)
+        const entryPrice = readFinitePayloadNumber(payload?.entryPrice)
+        if (!instrument || !side || quantity === undefined || entryPrice === undefined) {
+            continue
+        }
+
+        const positionKey = readIdentifier(payload?.positionKey) ?? `${instrument}:${side}`
+        if (seenPositionKeys.has(positionKey)) {
+            continue
+        }
+
+        const providerPositionId = resolveProviderPositionIdFromFaultPayload(instrument, positionKey, payload)
+        seenPositionKeys.add(positionKey)
+        candidates.push({
+            strategyId: fault.strategyId,
+            runId: fault.runId,
+            accountId: args.accountId,
+            instrument,
+            side,
+            quantity,
+            entryPrice,
+            providerPositionId,
+            positionKey,
+            syncedAt: 0,
+            metadata: JSON.stringify({
+                source: "execution_safety_fault",
+                positionKey,
+                providerPositionId,
+                safetyFaultId: String(fault._id),
+            }),
+        })
+    }
+
+    return candidates
+}
+
+function resolveProviderPositionIdFromFaultPayload(
+    instrument: string,
+    positionKey: string,
+    payload: Record<string, unknown> | undefined
+): string | undefined {
+    const explicit = readIdentifier(payload?.providerPositionId)
+    if (explicit) {
+        return explicit
+    }
+
+    const prefix = `${instrument}:`
+    if (!positionKey.startsWith(prefix)) {
+        return undefined
+    }
+
+    const suffix = positionKey.slice(prefix.length)
+    return suffix && suffix !== "long" && suffix !== "short" ? suffix : undefined
+}
+
+function readProviderPositionSide(value: unknown): "long" | "short" | undefined {
+    return value === "long" || value === "short" ? value : undefined
+}
+
+function readFinitePayloadNumber(value: unknown): number | undefined {
+    if (typeof value === "number" && Number.isFinite(value)) {
+        return value
+    }
+
+    if (typeof value === "string" && value.trim().length > 0) {
+        const parsed = Number(value)
+        return Number.isFinite(parsed) ? parsed : undefined
+    }
+
+    return undefined
 }
 
 async function findMT5EntryOrdersByClosureIdentity(

@@ -139,6 +139,16 @@ async function resolveProviderClosureFaultsAfterCanonicalAttach(
             continue
         }
 
+        if (providerClosureResolvesVanishedPositionFault(fault, args)) {
+            await resolveProviderClosureFault(ctx, {
+                fault,
+                updatedAt: args.updatedAt,
+                resolutionNote,
+                resolvedByStrategy,
+            })
+            continue
+        }
+
         if (
             fault.category === "unattributed_closure" &&
             fault.instrument === args.closure.instrument &&
@@ -189,6 +199,43 @@ function providerClosureResolvesEntryAccountingFault(
     }
 
     return buildClosureSourceEntryIdentifiers(args).some((identifier) => faultIdentifiers.has(identifier))
+}
+
+function providerClosureResolvesVanishedPositionFault(
+    fault: Doc<"execution_safety_faults">,
+    args: {
+        order: Doc<"orders">
+        position?: ProviderClosePositionCandidate
+        closure: ProviderPositionClosureInput
+    }
+): boolean {
+    if (
+        fault.category !== "accounting_mismatch" ||
+        fault.strategyId !== args.order.strategyId ||
+        fault.instrument !== args.closure.instrument ||
+        !fault.message.includes("disappeared from") ||
+        !fault.message.includes("without close evidence") ||
+        !closureHasProviderAccountingMetadata(args.closure)
+    ) {
+        return false
+    }
+
+    const payload = parseJson<Record<string, unknown>>(fault.providerPayload)
+    if (!args.position) {
+        return true
+    }
+
+    const positionKey = readIdentifier(payload?.positionKey)
+    if (positionKey && positionKey !== args.position.positionKey) {
+        return false
+    }
+
+    const side = readIdentifier(payload?.side)
+    if (side && side !== args.position.side) {
+        return false
+    }
+
+    return true
 }
 
 function buildFaultOrderIdentifiers(fault: Doc<"execution_safety_faults">): Set<string> {
@@ -375,6 +422,21 @@ export async function importSyntheticProviderClose(
             lastCheckedAt: args.updatedAt,
         },
     })
+
+    const order = await ctx.db
+        .query("orders")
+        .withIndex("by_order_id", (q) => q.eq("orderId", orderId))
+        .first()
+    if (order) {
+        await resolveProviderClosureFaultsAfterCanonicalAttach(ctx, {
+            app,
+            accountId: position.accountId,
+            order,
+            position,
+            closure,
+            updatedAt: args.updatedAt,
+        })
+    }
 
     if ((existingOrder?.lastTransitionSequence ?? 0) > 0) {
         return
