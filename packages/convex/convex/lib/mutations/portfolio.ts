@@ -35,6 +35,7 @@ import {
     inferClosedOrderStatus,
     listActiveOrdersForApp,
     reconcileProviderPositionClosures,
+    resolveTerminalLiveWorkingOrderRepairMatch,
     resolveLiveWorkingOrderMatch,
 } from "./portfolioOrders"
 import {
@@ -190,6 +191,11 @@ export const reconcileProviderPortfolio = mutation({
                 activeOrders,
                 activeOrdersById,
                 matchedActiveOrderIds,
+            }) ?? await resolveTerminalLiveWorkingOrderRepairMatch(ctx, {
+                app: args.app,
+                accountId: args.accountId,
+                liveOrder,
+                matchedOrderIds: matchedActiveOrderIds,
             })
             if (!existingOrder) {
                 continue

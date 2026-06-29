@@ -236,6 +236,77 @@ export function resolveLiveWorkingOrderMatch(args: {
     return undefined
 }
 
+export async function resolveTerminalLiveWorkingOrderRepairMatch(
+    ctx: PortfolioMutationCtx,
+    args: {
+        app: Doc<"strategies">["app"]
+        accountId: string
+        liveOrder: ProviderWorkingOrderInput
+        matchedOrderIds: Set<string>
+    }
+): Promise<OrderDoc | undefined> {
+    if (isTerminalOrderStatus(args.liveOrder.status)) {
+        return undefined
+    }
+
+    for (const identifier of getProviderWorkingOrderIdentityCandidates(args.liveOrder)) {
+        const order = await findRepairableTerminalOrderByIdentifier(ctx, identifier)
+        if (
+            order &&
+            !args.matchedOrderIds.has(order.orderId) &&
+            orderBelongsToAccount(order, args.app, args.accountId) &&
+            isRepairableTerminalWorkingOrder(order)
+        ) {
+            return order
+        }
+    }
+
+    return undefined
+}
+
+async function findRepairableTerminalOrderByIdentifier(
+    ctx: PortfolioMutationCtx,
+    identifier: string
+): Promise<OrderDoc | undefined> {
+    const byOrderId = await ctx.db
+        .query("orders")
+        .withIndex("by_order_id", (q) => q.eq("orderId", identifier))
+        .first()
+    if (byOrderId) {
+        return byOrderId
+    }
+
+    const byProviderClientOrderId = await ctx.db
+        .query("orders")
+        .withIndex("by_provider_client_order_id", (q) => q.eq("providerClientOrderId", identifier))
+        .first()
+    if (byProviderClientOrderId) {
+        return byProviderClientOrderId
+    }
+
+    return await ctx.db
+        .query("orders")
+        .withIndex("by_provider_order_id", (q) => q.eq("providerOrderId", identifier))
+        .first() ?? undefined
+}
+
+function orderBelongsToAccount(
+    order: Pick<OrderDoc, "app" | "venue" | "accountId">,
+    app: Doc<"strategies">["app"],
+    accountId: string
+): boolean {
+    return (order.app ?? order.venue) === app && order.accountId === accountId
+}
+
+export function isRepairableTerminalWorkingOrder(order: Pick<OrderDoc, "status" | "filledQuantity">): boolean {
+    return (
+        order.status === "cancelled" ||
+        order.status === "rejected" ||
+        order.status === "expired" ||
+        order.status === "timed_out"
+    ) && order.filledQuantity === 0
+}
+
 export function hasUnresolvedLiveWorkingOrderGap(
     order: OrderDoc,
     unresolvedWorkingOrders: Array<{

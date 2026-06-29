@@ -252,6 +252,29 @@ describe("portfolio governance helpers", () => {
         expect(matched).toBe(trackedOrder)
     })
 
+    it("only repairs zero-fill terminal working orders when provider truth shows them live", () => {
+        expect(portfolioGovernanceTestables.isRepairableTerminalWorkingOrder({
+            status: "cancelled",
+            filledQuantity: 0,
+        } as never)).toBe(true)
+        expect(portfolioGovernanceTestables.isRepairableTerminalWorkingOrder({
+            status: "timed_out",
+            filledQuantity: 0,
+        } as never)).toBe(true)
+        expect(portfolioGovernanceTestables.isRepairableTerminalWorkingOrder({
+            status: "cancelled",
+            filledQuantity: 0.01,
+        } as never)).toBe(false)
+        expect(portfolioGovernanceTestables.isRepairableTerminalWorkingOrder({
+            status: "filled",
+            filledQuantity: 0.01,
+        } as never)).toBe(false)
+        expect(portfolioGovernanceTestables.isRepairableTerminalWorkingOrder({
+            status: "pending",
+            filledQuantity: 0,
+        } as never)).toBe(false)
+    })
+
     it("detects overlap violations from provider-truth positions and working orders", () => {
         const violations = portfolioGovernanceTestables.detectExposureGovernanceViolations({
             strategies: [{
