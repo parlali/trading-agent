@@ -38,6 +38,7 @@ import {
     repairMT5EntryOrderFromProviderClosure,
 } from "./portfolioOrderClosureWrites"
 import { findOrderRowByAlias } from "../orderIdentityAliases"
+import { getProviderInstrumentClaimAliases } from "../instrumentClaims"
 
 const PROVIDER_CLOSURE_TIME_SKEW_MS = 5 * 60 * 1000
 const HISTORIC_CANONICAL_CLOSE_MATCH_WINDOW_MS = 24 * 60 * 60 * 1000
@@ -473,7 +474,11 @@ async function recordUnattributedClosureFaults(
         updatedAt: number
     }
 ): Promise<void> {
-    const strategies = Array.from(args.strategyMap.values())
+    const strategies = await resolveStrategiesForUnattributedClosureFault(ctx, args)
+    if (strategies.length === 0) {
+        return
+    }
+
     const existingFaults = await ctx.db
         .query("execution_safety_faults")
         .withIndex("by_app_account_blocked", (q) =>
@@ -511,6 +516,42 @@ async function recordUnattributedClosureFaults(
             resolutionNote: undefined,
         })
     }
+}
+
+async function resolveStrategiesForUnattributedClosureFault(
+    ctx: PortfolioMutationCtx,
+    args: {
+        app: Doc<"strategies">["app"]
+        accountId: string
+        strategyMap: Map<string, StrategyDoc>
+        closure: ProviderPositionClosureInput
+    }
+): Promise<StrategyDoc[]> {
+    const strategies = Array.from(args.strategyMap.values())
+    if (strategies.length <= 1) {
+        return strategies
+    }
+
+    const closureAliases = new Set(getProviderInstrumentClaimAliases(args.app, args.closure.instrument, args.closure.metadata))
+    const claims = await ctx.db
+        .query("instrument_claims")
+        .withIndex("by_app_account", (q) => q.eq("app", args.app).eq("accountId", args.accountId))
+        .collect()
+    const strategyIds = new Set<string>()
+
+    for (const claim of claims) {
+        if (!closureAliases.has(claim.instrument) || !args.strategyMap.has(String(claim.strategyId))) {
+            continue
+        }
+
+        strategyIds.add(String(claim.strategyId))
+    }
+
+    if (strategyIds.size === 0) {
+        return []
+    }
+
+    return strategies.filter((strategy) => strategyIds.has(String(strategy._id)))
 }
 
 async function resolveUnmatchedClosedPositions(

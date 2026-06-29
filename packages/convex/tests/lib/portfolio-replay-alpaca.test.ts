@@ -405,7 +405,6 @@ describe("Convex Alpaca SPY replay", () => {
             workingOrders: [],
             positionClosures: [{
                 instrument,
-                providerPositionId: instrument,
                 side: "short",
                 quantity: 2,
                 fillPrice: 0,
@@ -416,7 +415,6 @@ describe("Convex Alpaca SPY replay", () => {
                     activityType: "OPEXP",
                     fillPnl: 0,
                     netAmount: 0,
-                    providerPositionId: instrument,
                 }),
             }],
         })
@@ -446,6 +444,92 @@ describe("Convex Alpaca SPY replay", () => {
             positionSide: "short",
             entryPrice: 1.25,
         })
+    })
+
+    it("does not fan out account-level Alpaca closure faults to unrelated strategies", async () => {
+        process.env.BACKEND_SERVICE_TOKEN = "test-token"
+        const qqqStrategy = "strategy-qqq"
+        const spyStrategy = "strategy-spy"
+        const accountId = "alpaca-acct-a"
+        const qqqInstrument = "QQQ260626C00766000"
+        const spyInstrument = "SPY260626P00729000"
+        const closedAt = Date.parse("2026-06-26T23:59:59.999Z")
+        const db = new FakeDb({
+            strategies: [
+                {
+                    _id: qqqStrategy,
+                    app: "alpaca-options",
+                    accountId,
+                    name: "QQQ spread",
+                    policy: { dryRun: false },
+                },
+                {
+                    _id: spyStrategy,
+                    app: "alpaca-options",
+                    accountId,
+                    name: "SPY spread",
+                    policy: { dryRun: false },
+                },
+            ],
+            instrument_claims: [
+                createClaim(qqqStrategy, accountId, qqqInstrument),
+                createClaim(spyStrategy, accountId, spyInstrument),
+            ],
+            orders: [],
+            provider_positions: [],
+            provider_working_orders: [],
+            provider_sync_state: [],
+            position_syncs: [],
+            positions: [],
+            execution_safety_faults: [],
+            account_snapshots: [],
+            control_plane_metrics: [],
+            alerts: [],
+        })
+        const ctx = { db } as never
+
+        await callRegistered(reconcileProviderPortfolio, ctx, {
+            serviceToken: "test-token",
+            app: "alpaca-options",
+            accountId,
+            venue: "alpaca",
+            source: "periodic_sync",
+            accountState: {
+                balance: 100000,
+                equity: 100000,
+                buyingPower: 100000,
+                marginUsed: 0,
+                marginAvailable: 100000,
+                openPnl: 0,
+                dayPnl: 0,
+            },
+            positions: [],
+            workingOrders: [],
+            positionClosures: [{
+                instrument: qqqInstrument,
+                side: "long",
+                quantity: 1,
+                fillPrice: 0,
+                closedAt,
+                metadata: JSON.stringify({
+                    providerAccountingSource: "alpaca_account_activity",
+                    providerActivityId: "activity-expiry-qqq",
+                    activityType: "OPEXP",
+                    fillPnl: 0,
+                    netAmount: 0,
+                }),
+            }],
+        })
+
+        expect(db.rows.execution_safety_faults).toEqual([
+            expect.objectContaining({
+                strategyId: qqqStrategy,
+                app: "alpaca-options",
+                instrument: qqqInstrument,
+                category: "unattributed_closure",
+                blocked: true,
+            }),
+        ])
     })
 
     it("records a blocking fault when provider closure evidence marks accounting missing", async () => {
@@ -750,6 +834,23 @@ function buildClaims(
         sourceId: claimInstrument,
         updatedAt: Date.now(),
     }))
+}
+
+function createClaim(
+    strategyId: string,
+    accountId: string,
+    instrument: string
+): Row {
+    return {
+        _id: `${strategyId}:${instrument}`,
+        strategyId,
+        app: "alpaca-options",
+        accountId,
+        instrument,
+        source: "position",
+        sourceId: instrument,
+        updatedAt: Date.now(),
+    }
 }
 
 function createProviderLeg(

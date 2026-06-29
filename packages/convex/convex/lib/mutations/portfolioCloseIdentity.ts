@@ -5,6 +5,7 @@ import {
     readMetadataRecord,
     readOrderIntentRecord,
 } from "./portfolioUtils"
+import { buildProviderPositionKeyAliases } from "../providerPositions"
 
 export type ProviderClosePositionCandidate = Pick<
     Doc<"provider_positions">,
@@ -24,12 +25,15 @@ export type ProviderClosePositionCandidate = Pick<
 }
 
 export function buildProviderPositionIdentityCandidates(
-    position: Pick<ProviderClosePositionCandidate, "providerPositionId" | "positionKey" | "metadata">
+    position: Pick<ProviderClosePositionCandidate, "instrument" | "side" | "providerPositionId" | "positionKey" | "metadata">
 ): Set<string> {
     const identifiers = new Set<string>()
     addKnownIdentifier(identifiers, position.positionKey)
     if (position.providerPositionId) {
         identifiers.add(position.providerPositionId)
+    }
+    for (const alias of buildProviderPositionKeyAliases(position)) {
+        addKnownIdentifier(identifiers, alias)
     }
 
     const metadata = readMetadataRecord(position.metadata)
@@ -44,10 +48,14 @@ export function buildProviderPositionIdentityCandidates(
 }
 
 export function buildPositionClosureIdentityCandidates(
-    closure: Pick<ProviderPositionClosureInput, "providerPositionId" | "metadata">
+    closure: Pick<ProviderPositionClosureInput, "instrument" | "side" | "providerPositionId" | "metadata">
 ): Set<string> {
     const identifiers = new Set<string>()
     addKnownIdentifier(identifiers, closure.providerPositionId)
+    addKnownIdentifier(identifiers, `${closure.instrument}:${closure.side}`)
+    if (closure.providerPositionId) {
+        addKnownIdentifier(identifiers, `${closure.instrument}:${closure.providerPositionId}`)
+    }
 
     const metadata = parseJson<Record<string, unknown>>(closure.metadata)
     addKnownIdentifier(identifiers, metadata?.ticket)
