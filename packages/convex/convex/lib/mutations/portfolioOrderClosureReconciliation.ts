@@ -35,14 +35,14 @@ import {
 import {
     attachClosureToCanonicalCloseOrder,
     importSyntheticProviderClose,
-    repairMT5EntryOrderFromProviderClosure,
+    repairEntryOrderFromProviderClosure,
 } from "./portfolioOrderClosureWrites"
 import { findOrderRowByAlias } from "../orderIdentityAliases"
 import { getProviderInstrumentClaimAliases } from "../instrumentClaims"
 
 const PROVIDER_CLOSURE_TIME_SKEW_MS = 5 * 60 * 1000
 const HISTORIC_CANONICAL_CLOSE_MATCH_WINDOW_MS = 24 * 60 * 60 * 1000
-const HISTORIC_MT5_ENTRY_ORDER_STATUSES = ["filled", "partially_filled", "cancelled", "rejected", "expired", "timed_out"] as const
+const MT5_PROVIDER_POSITION_ORDER_STATUSES = ["pending", "filled", "partially_filled", "cancelled", "rejected", "expired", "timed_out"] as const
 
 const CLOSURE_TRUTH_APPS = new Set<Doc<"strategies">["app"]>(["mt5", "okx-swap"])
 
@@ -56,6 +56,7 @@ interface TrackedClosureCandidate {
 export interface ProviderClosureReconciliationResult {
     unattributedClosures: string[]
     unmatchedClosedPositions: string[]
+    repairedEntryOrderIds: string[]
 }
 
 type CandidateMatch =
@@ -100,11 +101,12 @@ export async function reconcileProviderPositionClosures(
     ])
 
     if (args.positionClosures.length === 0 && candidates.length === 0) {
-        return { unattributedClosures: [], unmatchedClosedPositions: [] }
+        return { unattributedClosures: [], unmatchedClosedPositions: [], repairedEntryOrderIds: [] }
     }
     const latestRunIdsByStrategy = new Map<string, Id<"strategy_runs"> | undefined>()
     const importedClosureKeys = new Set<string>()
     const unattributedClosures: string[] = []
+    const repairedEntryOrderIds = new Set<string>()
     const sortedClosures = [...args.positionClosures].sort((left, right) => left.closedAt - right.closedAt)
 
     for (const closure of sortedClosures) {
@@ -122,6 +124,12 @@ export async function reconcileProviderPositionClosures(
 
         if (orderMatch?.kind === "synthetic") {
             const candidate = consumeCandidateForOrder(candidates, closure, orderMatch.order)
+            await repairEntryOrderFromClosureCandidate(ctx, {
+                candidate,
+                closure,
+                updatedAt: args.updatedAt,
+                repairedEntryOrderIds,
+            })
             if (!isRetiredProviderCloseOrder(orderMatch.order)) {
                 const canonicalCloseOrder = await resolveExistingCanonicalCloseOrderForClosure(ctx, {
                     strategyId: orderMatch.order.strategyId,
@@ -141,6 +149,12 @@ export async function reconcileProviderPositionClosures(
 
         if (orderMatch?.kind === "canonical") {
             const candidate = consumeCandidateForOrder(candidates, closure, orderMatch.order)
+            await repairEntryOrderFromClosureCandidate(ctx, {
+                candidate,
+                closure,
+                updatedAt: args.updatedAt,
+                repairedEntryOrderIds,
+            })
             await attachClosureToCanonicalCloseOrder(ctx, {
                 order: orderMatch.order,
                 position: candidate?.position,
@@ -216,14 +230,12 @@ export async function reconcileProviderPositionClosures(
             continue
         }
 
-        if (position.sourceOrder && position.sourceOrder.status !== "filled" && position.sourceOrder.status !== "partially_filled") {
-            await repairMT5EntryOrderFromProviderClosure(ctx, {
-                order: position.sourceOrder,
-                position,
-                closure,
-                updatedAt: args.updatedAt,
-            })
-        }
+        await repairEntryOrderFromClosureCandidate(ctx, {
+            candidate,
+            closure,
+            updatedAt: args.updatedAt,
+            repairedEntryOrderIds,
+        })
 
         const canonicalCloseOrder = await resolveExistingCanonicalCloseOrderForClosure(ctx, {
             strategyId: position.strategyId,
@@ -269,7 +281,35 @@ export async function reconcileProviderPositionClosures(
     return {
         unattributedClosures,
         unmatchedClosedPositions,
+        repairedEntryOrderIds: Array.from(repairedEntryOrderIds),
     }
+}
+
+async function repairEntryOrderFromClosureCandidate(
+    ctx: PortfolioMutationCtx,
+    args: {
+        candidate: TrackedClosureCandidate | undefined
+        closure: ProviderPositionClosureInput
+        updatedAt: number
+        repairedEntryOrderIds: Set<string>
+    }
+): Promise<void> {
+    const position = args.candidate?.position
+    if (
+        !position?.sourceOrder ||
+        position.sourceOrder.status === "filled" ||
+        position.sourceOrder.status === "partially_filled"
+    ) {
+        return
+    }
+
+    await repairEntryOrderFromProviderClosure(ctx, {
+        order: position.sourceOrder,
+        position,
+        closure: args.closure,
+        updatedAt: args.updatedAt,
+    })
+    args.repairedEntryOrderIds.add(position.sourceOrder.orderId)
 }
 
 async function recordVanishedPositionFaults(
@@ -923,7 +963,6 @@ async function resolveHistoricMT5ProviderCloseCandidates(
             order.app !== args.app ||
             seenOrderIds.has(order.orderId) ||
             !isEntryLikeOrder(order) ||
-            !isTerminalHistoricOrderStatus(order.status) ||
             !args.strategyMap.has(String(order.strategyId))
         ) {
             continue
@@ -1074,7 +1113,7 @@ async function findMT5EntryOrdersByClosureIdentity(
             continue
         }
 
-        for (const status of HISTORIC_MT5_ENTRY_ORDER_STATUSES) {
+        for (const status of MT5_PROVIDER_POSITION_ORDER_STATUSES) {
             const orders = await ctx.db
                 .query("orders")
                 .withIndex("by_strategy_status", (q) =>
@@ -1086,7 +1125,6 @@ async function findMT5EntryOrdersByClosureIdentity(
                 if (
                     args.seenOrderIds.has(order.orderId) ||
                     !isEntryLikeOrder(order) ||
-                    !isTerminalHistoricOrderStatus(order.status) ||
                     !orderBelongsToAccount(order, args.app, args.accountId) ||
                     !hasSharedProviderPositionIdentity(
                         buildMT5HistoricOrderIdentityCandidates(order),
@@ -1151,10 +1189,6 @@ async function resolveHistoricOKXProviderCloseCandidates(
             positionKey: position.positionKey,
             syncedAt: position.lastSeenAt,
         }))
-}
-
-function isTerminalHistoricOrderStatus(status: Doc<"orders">["status"]): boolean {
-    return status !== "pending"
 }
 
 function resolveMT5HistoricProviderCloseCandidate(

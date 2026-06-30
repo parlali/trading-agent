@@ -440,6 +440,10 @@ export const reconcileProviderPortfolio = mutation({
             expectedExternalInstruments,
             updatedAt: now,
         })
+        const repairedEntryOrderIds = new Set(closureReconciliation.repairedEntryOrderIds)
+        const unresolvedClosedPersistedOrders = closedPersistedOrders.filter((orderId) =>
+            !repairedEntryOrderIds.has(orderId)
+        )
 
         const nextProviderWorkingOrders = resolvedWorkingOrders.map((order) => ({
             app: args.app,
@@ -626,7 +630,7 @@ export const reconcileProviderPortfolio = mutation({
             unownedPositionCount: unownedPositions.length,
             unownedOrderCount: unownedOrders.length,
             untrackedOwnedOrderCount: unresolvedOwnedWorkingOrders.length,
-            closedPersistedOrders,
+            closedPersistedOrders: unresolvedClosedPersistedOrders,
             statusMismatches,
             ownershipMismatches: Array.from(ownershipMismatches),
             exposureViolations,

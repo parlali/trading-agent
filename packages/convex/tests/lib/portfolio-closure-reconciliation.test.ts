@@ -346,6 +346,222 @@ describe("Convex provider closure reconciliation safety", () => {
         })
     })
 
+    it("repairs a pending MT5 entry when an existing synthetic provider close proves the lifecycle closed", async () => {
+        process.env.BACKEND_SERVICE_TOKEN = "test-token"
+        const accountId = "account-mt5"
+        const strategyId = "strategy-mt5-gold"
+        const runId = "run-mt5-gold"
+        const openedAt = 1_782_803_011_197
+        const closedAt = 1_782_803_240_504
+        const providerPositionId = "1781850341"
+        const closeProviderOrderId = "1781852052"
+        const closure = {
+            instrument: "XAUUSD",
+            providerPositionId,
+            side: "long" as const,
+            quantity: 0.01,
+            fillPrice: 4026.55,
+            closedAt,
+            metadata: JSON.stringify({
+                ticket: 1436200000,
+                orderId: Number(closeProviderOrderId),
+                positionId: Number(providerPositionId),
+                fillPnl: 0.25,
+                profit: 0.25,
+                swap: 0,
+                commission: 0,
+                fee: 0,
+                providerAccountingSource: "mt5_deal",
+            }),
+        }
+        const faultMessage = `Provider reconciliation found an unattributed money-bearing close: XAUUSD:long:0.01:${new Date(closedAt).toISOString()} (broker close has provider accounting but attribution is ambiguous: multiple owned positions share the provider close identity)`
+        const db = new FakeDb({
+            strategies: [{
+                _id: strategyId,
+                app: "mt5",
+                accountId,
+                name: "MT5 Gold",
+                policy: { dryRun: false },
+            }],
+            strategy_runs: [{
+                _id: runId,
+                strategyId,
+                app: "mt5",
+                accountId,
+                status: "completed",
+                startedAt: openedAt,
+                endedAt: openedAt + 30_000,
+            }],
+            instrument_claims: [{
+                _id: "claim-mt5-gold",
+                strategyId,
+                app: "mt5",
+                accountId,
+                instrument: "XAUUSD",
+                source: "order",
+                sourceId: "vmte01ziwap65xna",
+                updatedAt: openedAt,
+            }],
+            orders: [
+                {
+                    _id: "order-mt5-entry-pending",
+                    orderId: "vmte01ziwap65xna",
+                    canonicalOrderId: "vmte01ziwap65xna",
+                    providerOrderId: providerPositionId,
+                    providerClientOrderId: "vmte01ziwap65xna",
+                    providerOrderAliases: [],
+                    runId,
+                    strategyId,
+                    app: "mt5",
+                    accountId,
+                    venue: "mt5",
+                    instrument: "XAUUSD",
+                    status: "pending",
+                    action: "entry",
+                    quantity: 0.01,
+                    filledQuantity: 0,
+                    remainingQuantity: 0.01,
+                    submittedAt: openedAt,
+                    updatedAt: openedAt + 60_000,
+                    intent: {
+                        instrument: "XAUUSD",
+                        side: "buy",
+                        quantity: 0.01,
+                        orderType: "market",
+                        timeInForce: "day",
+                        estimatedPrice: 4025.95,
+                        metadata: {
+                            action: "entry",
+                            positionId: Number(providerPositionId),
+                            providerPositionId,
+                            identifier: Number(providerPositionId),
+                            estimatedPrice: 4025.95,
+                        },
+                    },
+                    lastTransitionSequence: 1,
+                    polling: {
+                        pollIntervalMs: 5_000,
+                        timeoutMs: 120_000,
+                        startedAt: openedAt,
+                        lastCheckedAt: openedAt + 60_000,
+                    },
+                },
+                {
+                    _id: "order-mt5-synthetic-close",
+                    orderId: `provider-close:mt5:XAUUSD:${providerPositionId}:${closedAt}`,
+                    canonicalOrderId: `provider-close:mt5:XAUUSD:${providerPositionId}:${closedAt}`,
+                    providerOrderId: closeProviderOrderId,
+                    providerOrderAliases: [],
+                    runId,
+                    strategyId,
+                    app: "mt5",
+                    accountId,
+                    venue: "mt5",
+                    instrument: "XAUUSD",
+                    status: "filled",
+                    action: "close",
+                    quantity: 0.01,
+                    filledQuantity: 0.01,
+                    remainingQuantity: 0,
+                    avgFillPrice: 4026.55,
+                    submittedAt: closedAt,
+                    updatedAt: closedAt,
+                    intent: {
+                        instrument: "XAUUSD",
+                        side: "sell",
+                        quantity: 0.01,
+                        orderType: "market",
+                        timeInForce: "ioc",
+                        metadata: {
+                            action: "close",
+                            providerReconciledClose: true,
+                            providerPositionId,
+                            fillPnl: 0.25,
+                            profit: 0.25,
+                            providerAccountingSource: "mt5_deal",
+                        },
+                    },
+                    metadata: {
+                        providerReconciledClose: true,
+                    },
+                    lastTransitionSequence: 1,
+                    polling: {
+                        pollIntervalMs: 0,
+                        timeoutMs: 0,
+                        startedAt: closedAt,
+                        lastCheckedAt: closedAt,
+                    },
+                },
+            ],
+            provider_positions: [],
+            provider_position_history: [],
+            provider_working_orders: [],
+            provider_sync_state: [],
+            position_syncs: [],
+            positions: [],
+            execution_safety_faults: [{
+                _id: "fault-mt5-synthetic-close",
+                strategyId,
+                app: "mt5",
+                accountId,
+                instrument: "XAUUSD",
+                category: "unattributed_closure",
+                message: faultMessage,
+                providerPayload: JSON.stringify({
+                    closure,
+                    metadata: JSON.parse(closure.metadata),
+                }),
+                blocked: true,
+                occurredAt: closedAt + 1_000,
+            }],
+            account_snapshots: [],
+            account_pnl_events: [],
+            control_plane_metrics: [],
+            alerts: [],
+            order_transitions: [],
+            trade_events: [],
+            order_identity_aliases: [],
+        })
+        const ctx = { db } as never
+
+        await callRegistered(reconcileProviderPortfolio, ctx, {
+            serviceToken: "test-token",
+            app: "mt5",
+            accountId,
+            venue: "mt5",
+            source: "periodic_sync",
+            accountState: {
+                balance: 147.35,
+                equity: 147.35,
+                buyingPower: 147.35,
+                marginUsed: 0,
+                marginAvailable: 147.35,
+                openPnl: 0,
+                dayPnl: 0.25,
+            },
+            positions: [],
+            workingOrders: [],
+            positionClosures: [closure],
+        })
+
+        const entry = (db.rows.orders ?? []).find((order) => order.orderId === "vmte01ziwap65xna")
+        expect(entry).toMatchObject({
+            status: "filled",
+            filledQuantity: 0.01,
+            remainingQuantity: 0,
+            avgFillPrice: 4025.95,
+        })
+        expect(db.rows.execution_safety_faults?.[0]).toMatchObject({
+            blocked: false,
+            resolutionNote: `Provider closure attached to canonical close order provider-close:mt5:XAUUSD:${providerPositionId}:${closedAt}`,
+        })
+        expect(db.rows.provider_sync_state?.[0]?.lastDriftSummary).toBeUndefined()
+        expect(db.rows.provider_sync_state?.[0]).toMatchObject({
+            providerStatus: "healthy",
+            driftDetected: false,
+        })
+    })
+
     it("repairs duplicate stored provider rows for one provider position identity", async () => {
         process.env.BACKEND_SERVICE_TOKEN = "test-token"
         const accountId = "account-mt5"

@@ -627,7 +627,7 @@ function readFiniteMetadataNumber(value: unknown): number | undefined {
     return undefined
 }
 
-export async function repairMT5EntryOrderFromProviderClosure(
+export async function repairEntryOrderFromProviderClosure(
     ctx: PortfolioMutationCtx,
     args: {
         order: Doc<"orders">
@@ -660,7 +660,7 @@ export async function repairMT5EntryOrderFromProviderClosure(
         type: "terminal",
         status: "filled",
         previousStatus,
-        reason: "Provider closure history proved this MT5 entry order filled before the broker-reported position close",
+        reason: "Provider closure history proved this entry order filled before the broker-reported position close",
         details: {
             providerOrderId: args.order.providerOrderId ?? args.order.orderId,
             providerPositionId: args.closure.providerPositionId,
