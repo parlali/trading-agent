@@ -1002,8 +1002,7 @@ async function resolveHistoricMT5ProviderCloseCandidates(
         return []
     }
 
-    const candidates: ProviderClosePositionCandidate[] = []
-    const seenPositionKeys = new Set<string>()
+    const candidatesByKey = new Map<string, ProviderClosePositionCandidate>()
     const history = await ctx.db
         .query("provider_position_history")
         .withIndex("by_app_account_retained_until", (q) =>
@@ -1025,8 +1024,7 @@ async function resolveHistoricMT5ProviderCloseCandidates(
             continue
         }
 
-        seenPositionKeys.add(position.positionKey)
-        candidates.push({
+        addHistoricProviderCloseCandidate(candidatesByKey, {
             strategyId: position.strategyId,
             accountId: position.accountId,
             instrument: position.instrument,
@@ -1041,7 +1039,7 @@ async function resolveHistoricMT5ProviderCloseCandidates(
     }
 
     if (args.positionClosures.length === 0) {
-        return candidates
+        return Array.from(candidatesByKey.values())
     }
 
     const closureIdentityCandidates = new Set<string>()
@@ -1062,9 +1060,8 @@ async function resolveHistoricMT5ProviderCloseCandidates(
     })) {
         seenOrderIds.add(order.orderId)
         const candidate = resolveMT5HistoricProviderCloseCandidate(order)
-        if (candidate && !seenPositionKeys.has(candidate.positionKey)) {
-            seenPositionKeys.add(candidate.positionKey)
-            candidates.push(candidate)
+        if (candidate) {
+            addHistoricProviderCloseCandidate(candidatesByKey, candidate)
         }
     }
 
@@ -1086,13 +1083,36 @@ async function resolveHistoricMT5ProviderCloseCandidates(
 
         seenOrderIds.add(order.orderId)
         const candidate = resolveMT5HistoricProviderCloseCandidate(order)
-        if (candidate && !seenPositionKeys.has(candidate.positionKey)) {
-            seenPositionKeys.add(candidate.positionKey)
-            candidates.push(candidate)
+        if (candidate) {
+            addHistoricProviderCloseCandidate(candidatesByKey, candidate)
         }
     }
 
-    return candidates
+    return Array.from(candidatesByKey.values())
+}
+
+function addHistoricProviderCloseCandidate(
+    candidatesByKey: Map<string, ProviderClosePositionCandidate>,
+    candidate: ProviderClosePositionCandidate
+): void {
+    const current = candidatesByKey.get(candidate.positionKey)
+    if (!current) {
+        candidatesByKey.set(candidate.positionKey, candidate)
+        return
+    }
+
+    if (candidate.sourceOrder && !current.sourceOrder) {
+        candidatesByKey.set(candidate.positionKey, candidate)
+        return
+    }
+
+    if (candidate.sourceOrder === undefined && current.sourceOrder !== undefined) {
+        return
+    }
+
+    if (candidate.syncedAt > current.syncedAt) {
+        candidatesByKey.set(candidate.positionKey, candidate)
+    }
 }
 
 async function resolveFaultBackedProviderCloseCandidates(
