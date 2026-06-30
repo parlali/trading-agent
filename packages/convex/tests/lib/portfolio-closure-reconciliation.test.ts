@@ -355,6 +355,7 @@ describe("Convex provider closure reconciliation safety", () => {
         const closedAt = 1_782_803_240_504
         const providerPositionId = "1781850341"
         const closeProviderOrderId = "1781852052"
+        const faultClosedAt = closedAt - 60_000
         const closure = {
             instrument: "XAUUSD",
             providerPositionId,
@@ -374,7 +375,11 @@ describe("Convex provider closure reconciliation safety", () => {
                 providerAccountingSource: "mt5_deal",
             }),
         }
-        const faultMessage = `Provider reconciliation found an unattributed money-bearing close: XAUUSD:long:0.01:${new Date(closedAt).toISOString()} (broker close has provider accounting but attribution is ambiguous: multiple owned positions share the provider close identity)`
+        const faultClosure = {
+            ...closure,
+            closedAt: faultClosedAt,
+        }
+        const faultMessage = `Provider reconciliation found an unattributed money-bearing close: XAUUSD:long:0.01:${new Date(faultClosedAt).toISOString()} (broker close has provider accounting but attribution is ambiguous: multiple owned positions share the provider close identity)`
         const db = new FakeDb({
             strategies: [{
                 _id: strategyId,
@@ -508,7 +513,7 @@ describe("Convex provider closure reconciliation safety", () => {
                 category: "unattributed_closure",
                 message: faultMessage,
                 providerPayload: JSON.stringify({
-                    closure,
+                    closure: faultClosure,
                     metadata: JSON.parse(closure.metadata),
                 }),
                 blocked: true,
@@ -541,7 +546,7 @@ describe("Convex provider closure reconciliation safety", () => {
             },
             positions: [],
             workingOrders: [],
-            positionClosures: [closure],
+            positionClosures: [],
         })
 
         const entry = (db.rows.orders ?? []).find((order) => order.orderId === "vmte01ziwap65xna")

@@ -7,8 +7,10 @@ import type {
 import { appendOrderTransition, patchOrderRowFromDoc, upsertOrderRow } from "./orders"
 import { parseJson, readMetadataRecord, readOrderIntentRecord } from "./portfolioUtils"
 import {
+    buildPositionClosureIdentityCandidates,
     buildProviderCloseOrderId,
     buildPositionClosureKey,
+    hasSharedProviderPositionIdentity,
     isRetiredProviderCloseOrder,
     isSyntheticProviderCloseOrder,
     orderBelongsToAccount,
@@ -340,7 +342,17 @@ function providerClosureFaultMatchesClosure(
         return false
     }
 
-    return buildPositionClosureKey(payload.closure) === buildPositionClosureKey(closure)
+    if (buildPositionClosureKey(payload.closure) === buildPositionClosureKey(closure)) {
+        return true
+    }
+
+    return payload.closure.instrument === closure.instrument &&
+        payload.closure.side === closure.side &&
+        Math.abs(payload.closure.quantity - closure.quantity) <= 1e-9 &&
+        hasSharedProviderPositionIdentity(
+            buildPositionClosureIdentityCandidates(payload.closure),
+            buildPositionClosureIdentityCandidates(closure)
+        )
 }
 
 export async function importSyntheticProviderClose(

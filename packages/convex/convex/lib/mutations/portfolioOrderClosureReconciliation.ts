@@ -77,6 +77,10 @@ export async function reconcileProviderPositionClosures(
         updatedAt: number
     }
 ): Promise<ProviderClosureReconciliationResult> {
+    const positionClosures = mergeProviderPositionClosures([
+        ...args.positionClosures,
+        ...await resolveKnownSyntheticProviderCloseInputs(ctx, args),
+    ])
     const disappearedCandidates: TrackedClosureCandidate[] = args.existingProviderPositions
         .filter((position) =>
             position.ownershipStatus === "owned" &&
@@ -87,7 +91,10 @@ export async function reconcileProviderPositionClosures(
         )
         .map((position) => trackCandidate({ ...position, strategyId: position.strategyId! }, false))
 
-    const mt5HistoricCandidates = (await resolveHistoricMT5ProviderCloseCandidates(ctx, args))
+    const mt5HistoricCandidates = (await resolveHistoricMT5ProviderCloseCandidates(ctx, {
+        ...args,
+        positionClosures,
+    }))
         .map((position) => trackCandidate(position, true))
     const okxHistoricCandidates = (await resolveHistoricOKXProviderCloseCandidates(ctx, args))
         .map((position) => trackCandidate(position, true))
@@ -100,14 +107,14 @@ export async function reconcileProviderPositionClosures(
         ...okxHistoricCandidates,
     ])
 
-    if (args.positionClosures.length === 0 && candidates.length === 0) {
+    if (positionClosures.length === 0 && candidates.length === 0) {
         return { unattributedClosures: [], unmatchedClosedPositions: [], repairedEntryOrderIds: [] }
     }
     const latestRunIdsByStrategy = new Map<string, Id<"strategy_runs"> | undefined>()
     const importedClosureKeys = new Set<string>()
     const unattributedClosures: string[] = []
     const repairedEntryOrderIds = new Set<string>()
-    const sortedClosures = [...args.positionClosures].sort((left, right) => left.closedAt - right.closedAt)
+    const sortedClosures = [...positionClosures].sort((left, right) => left.closedAt - right.closedAt)
 
     for (const closure of sortedClosures) {
         const closureKey = buildPositionClosureKey(closure)
@@ -310,6 +317,115 @@ async function repairEntryOrderFromClosureCandidate(
         updatedAt: args.updatedAt,
     })
     args.repairedEntryOrderIds.add(position.sourceOrder.orderId)
+}
+
+function mergeProviderPositionClosures(
+    closures: ProviderPositionClosureInput[]
+): ProviderPositionClosureInput[] {
+    const byKey = new Map<string, ProviderPositionClosureInput>()
+
+    for (const closure of closures) {
+        byKey.set(buildPositionClosureKey(closure), closure)
+    }
+
+    return Array.from(byKey.values())
+}
+
+async function resolveKnownSyntheticProviderCloseInputs(
+    ctx: PortfolioMutationCtx,
+    args: {
+        app: Doc<"strategies">["app"]
+        accountId: string
+        strategyMap: Map<string, StrategyDoc>
+    }
+): Promise<ProviderPositionClosureInput[]> {
+    const closures: ProviderPositionClosureInput[] = []
+
+    for (const strategy of args.strategyMap.values()) {
+        if (strategy.app !== args.app || strategy.accountId !== args.accountId) {
+            continue
+        }
+
+        const filledOrders = await ctx.db
+            .query("orders")
+            .withIndex("by_strategy_status", (q) =>
+                q.eq("strategyId", strategy._id).eq("status", "filled")
+            )
+            .order("desc")
+            .take(250)
+
+        for (const order of filledOrders) {
+            const closure = resolveKnownSyntheticProviderCloseInput(order, args.app, args.accountId)
+            if (closure) {
+                closures.push(closure)
+            }
+        }
+    }
+
+    return closures
+}
+
+function resolveKnownSyntheticProviderCloseInput(
+    order: Doc<"orders">,
+    app: Doc<"strategies">["app"],
+    accountId: string
+): ProviderPositionClosureInput | undefined {
+    if (
+        !orderBelongsToAccount(order, app, accountId) ||
+        order.action !== "close" ||
+        order.status !== "filled" ||
+        !isSyntheticProviderCloseOrder(order)
+    ) {
+        return undefined
+    }
+
+    const metadata = readOrderIntentMetadata(order)
+    if (metadata?.providerReconciledClose !== true) {
+        return undefined
+    }
+
+    const providerPositionId = readIdentifier(metadata.providerPositionId)
+    const side = resolveProviderClosePositionSideFromOrder(order, metadata)
+    const quantity = order.filledQuantity > 0 ? order.filledQuantity : order.quantity
+    const fillPrice = order.avgFillPrice ?? readPositiveNumber(metadata.estimatedPrice, metadata.fillPrice)
+    if (!providerPositionId || !side || quantity <= 0 || fillPrice === undefined) {
+        return undefined
+    }
+
+    const providerOrderId = readIdentifier(order.providerOrderId)
+    return {
+        instrument: order.instrument,
+        providerPositionId,
+        side,
+        quantity,
+        fillPrice,
+        closedAt: order.submittedAt,
+        metadata: JSON.stringify({
+            ...metadata,
+            providerPositionId,
+            orderId: providerOrderId,
+            providerOrderId,
+        }),
+    }
+}
+
+function resolveProviderClosePositionSideFromOrder(
+    order: Doc<"orders">,
+    metadata: Record<string, unknown> | undefined
+): "long" | "short" | undefined {
+    if (metadata?.positionSide === "long" || metadata?.positionSide === "short") {
+        return metadata.positionSide
+    }
+
+    const intent = readOrderIntentRecord(order.intent)
+    if (intent?.side === "sell") {
+        return "long"
+    }
+    if (intent?.side === "buy") {
+        return "short"
+    }
+
+    return undefined
 }
 
 async function recordVanishedPositionFaults(
