@@ -5,30 +5,72 @@ import { buildPositionClosureKey } from "../../convex/lib/mutations/portfolioClo
 import { callRegistered, FakeMutationDb as FakeDb } from "./fakeMutationDb"
 
 describe("Convex provider closure reconciliation safety", () => {
-    it("records a blocking unattributed-closure fault when a money-bearing close matches owned positions ambiguously", async () => {
+    it("records a blocking unattributed-closure fault when a money-bearing close matches conflicting strategy owners", async () => {
         process.env.BACKEND_SERVICE_TOKEN = "test-token"
         const accountId = "account-okx"
         const strategyId = "strategy-okx"
+        const otherStrategyId = "strategy-okx-other"
         const openedAt = 1_779_900_000_000
         const closedAt = openedAt + 600_000
         const db = new FakeDb({
-            strategies: [{
-                _id: strategyId,
-                app: "okx-swap",
-                accountId,
-                name: "OKX ETH",
-                policy: { dryRun: false },
-            }],
-            strategy_runs: [{
-                _id: "run-okx",
-                strategyId,
-                app: "okx-swap",
-                accountId,
-                status: "completed",
-                startedAt: openedAt,
-                endedAt: openedAt + 30_000,
-            }],
-            instrument_claims: [],
+            strategies: [
+                {
+                    _id: strategyId,
+                    app: "okx-swap",
+                    accountId,
+                    name: "OKX ETH",
+                    policy: { dryRun: false },
+                },
+                {
+                    _id: otherStrategyId,
+                    app: "okx-swap",
+                    accountId,
+                    name: "OKX ETH Other",
+                    policy: { dryRun: false },
+                },
+            ],
+            strategy_runs: [
+                {
+                    _id: "run-okx",
+                    strategyId,
+                    app: "okx-swap",
+                    accountId,
+                    status: "completed",
+                    startedAt: openedAt,
+                    endedAt: openedAt + 30_000,
+                },
+                {
+                    _id: "run-okx-other",
+                    strategyId: otherStrategyId,
+                    app: "okx-swap",
+                    accountId,
+                    status: "completed",
+                    startedAt: openedAt,
+                    endedAt: openedAt + 30_000,
+                },
+            ],
+            instrument_claims: [
+                {
+                    _id: "claim-okx",
+                    strategyId,
+                    app: "okx-swap",
+                    accountId,
+                    instrument: "ETH-USDT-SWAP",
+                    source: "order",
+                    sourceId: "entry-a",
+                    updatedAt: openedAt,
+                },
+                {
+                    _id: "claim-okx-other",
+                    strategyId: otherStrategyId,
+                    app: "okx-swap",
+                    accountId,
+                    instrument: "ETH-USDT-SWAP",
+                    source: "order",
+                    sourceId: "entry-b",
+                    updatedAt: openedAt,
+                },
+            ],
             orders: [],
             provider_positions: [
                 {
@@ -55,7 +97,7 @@ describe("Convex provider closure reconciliation safety", () => {
                     accountId,
                     positionKey: "ETH-USDT-SWAP:POS1:duplicate",
                     providerPositionId: "POS1",
-                    strategyId,
+                    strategyId: otherStrategyId,
                     ownershipStatus: "owned",
                     expectedExternal: false,
                     instrument: "ETH-USDT-SWAP",
@@ -128,6 +170,312 @@ describe("Convex provider closure reconciliation safety", () => {
             row.metric === "reconcile_provider_portfolio.unattributed_closures"
         )
         expect(metric).toMatchObject({ value: 1 })
+    })
+
+    it("coalesces tracked and historic evidence for the same provider position before close attribution", async () => {
+        process.env.BACKEND_SERVICE_TOKEN = "test-token"
+        const accountId = "account-mt5"
+        const strategyId = "strategy-mt5-usdcad"
+        const runId = "run-mt5-usdcad"
+        const openedAt = 1_782_759_232_960
+        const closedAt = 1_782_759_465_457
+        const providerPositionId = "1780837838"
+        const db = new FakeDb({
+            strategies: [{
+                _id: strategyId,
+                app: "mt5",
+                accountId,
+                name: "MT5 USDCAD",
+                policy: { dryRun: false },
+            }],
+            strategy_runs: [{
+                _id: runId,
+                strategyId,
+                app: "mt5",
+                accountId,
+                status: "completed",
+                startedAt: openedAt,
+                endedAt: openedAt + 30_000,
+            }],
+            instrument_claims: [{
+                _id: "claim-mt5-usdcad",
+                strategyId,
+                app: "mt5",
+                accountId,
+                instrument: "USDCAD",
+                source: "order",
+                sourceId: "vmte01rhuhhokmnn",
+                updatedAt: openedAt,
+            }],
+            orders: [{
+                _id: "order-mt5-entry",
+                orderId: "vmte01rhuhhokmnn",
+                canonicalOrderId: "vmte01rhuhhokmnn",
+                providerOrderId: providerPositionId,
+                providerClientOrderId: "vmte01rhuhhokmnn",
+                providerOrderAliases: [providerPositionId],
+                runId,
+                strategyId,
+                app: "mt5",
+                accountId,
+                venue: "mt5",
+                instrument: "USDCAD",
+                status: "filled",
+                action: "entry",
+                quantity: 0.01,
+                filledQuantity: 0.01,
+                remainingQuantity: 0,
+                avgFillPrice: 1.42056,
+                submittedAt: openedAt,
+                updatedAt: openedAt + 1_000,
+                intent: {
+                    instrument: "USDCAD",
+                    side: "sell",
+                    quantity: 0.01,
+                    orderType: "market",
+                    timeInForce: "day",
+                    metadata: {
+                        action: "entry",
+                        positionId: Number(providerPositionId),
+                        providerPositionId,
+                        identifier: Number(providerPositionId),
+                        estimatedPrice: 1.42056,
+                    },
+                },
+                lastTransitionSequence: 1,
+                polling: {
+                    pollIntervalMs: 5_000,
+                    timeoutMs: 120_000,
+                    startedAt: openedAt,
+                    lastCheckedAt: openedAt + 1_000,
+                },
+            }],
+            provider_positions: [{
+                _id: "provider-position-mt5-usdcad",
+                app: "mt5",
+                accountId,
+                positionKey: `USDCAD:${providerPositionId}`,
+                providerPositionId,
+                strategyId,
+                ownershipStatus: "owned",
+                expectedExternal: false,
+                instrument: "USDCAD",
+                side: "short",
+                quantity: 0.01,
+                entryPrice: 1.42056,
+                currentPrice: 1.42038,
+                unrealizedPnl: 0.13,
+                metadata: JSON.stringify({
+                    identifier: Number(providerPositionId),
+                    providerPositionId,
+                    providerPositionKey: `USDCAD:${providerPositionId}`,
+                }),
+                syncedAt: openedAt + 120_000,
+            }],
+            provider_position_history: [],
+            provider_working_orders: [],
+            provider_sync_state: [],
+            position_syncs: [],
+            positions: [],
+            execution_safety_faults: [],
+            account_snapshots: [],
+            account_pnl_events: [],
+            control_plane_metrics: [],
+            alerts: [],
+            order_transitions: [],
+            trade_events: [],
+            order_identity_aliases: [],
+        })
+        const ctx = { db } as never
+
+        await callRegistered(reconcileProviderPortfolio, ctx, {
+            serviceToken: "test-token",
+            app: "mt5",
+            accountId,
+            venue: "mt5",
+            source: "post_run_sync",
+            accountState: {
+                balance: 147.1,
+                equity: 147.1,
+                buyingPower: 147.1,
+                marginUsed: 0,
+                marginAvailable: 147.1,
+                openPnl: 0,
+                dayPnl: 0.13,
+            },
+            positions: [],
+            workingOrders: [],
+            positionClosures: [{
+                instrument: "USDCAD",
+                providerPositionId,
+                side: "short",
+                quantity: 0.01,
+                fillPrice: 1.42038,
+                closedAt,
+                metadata: JSON.stringify({
+                    ticket: 1435964150,
+                    orderId: 1780918633,
+                    positionId: Number(providerPositionId),
+                    fillPnl: 0.13,
+                    profit: 0.13,
+                    swap: 0,
+                    commission: 0,
+                    fee: 0,
+                    comment: "vmtc014jvr76relg",
+                    providerClientOrderId: "vmtc014jvr76relg",
+                    providerAccountingSource: "mt5_deal",
+                }),
+            }],
+        })
+
+        const faults = db.rows.execution_safety_faults ?? []
+        expect(faults.filter((fault) => fault.category === "unattributed_closure")).toHaveLength(0)
+        const close = (db.rows.orders ?? []).find((order) =>
+            String(order.orderId).startsWith(`provider-close:mt5:USDCAD:${providerPositionId}:`)
+        )
+        if (!close) {
+            throw new Error("Expected synthetic MT5 provider close")
+        }
+
+        expect(resolveCloseOrderRealizedPnl(close as never)).toBeCloseTo(0.13)
+        expect(db.rows.provider_positions ?? []).toHaveLength(0)
+        expect(db.rows.provider_position_history ?? []).toHaveLength(1)
+        expect(db.rows.provider_sync_state?.[0]).toMatchObject({
+            providerStatus: "healthy",
+            driftDetected: false,
+        })
+    })
+
+    it("repairs duplicate stored provider rows for one provider position identity", async () => {
+        process.env.BACKEND_SERVICE_TOKEN = "test-token"
+        const accountId = "account-mt5"
+        const strategyId = "strategy-mt5-gold"
+        const providerPositionId = "1780837838"
+        const syncedAt = 1_782_759_232_960
+        const db = new FakeDb({
+            strategies: [{
+                _id: strategyId,
+                app: "mt5",
+                accountId,
+                name: "MT5 Gold",
+                policy: { dryRun: false },
+            }],
+            strategy_runs: [{
+                _id: "run-mt5-gold",
+                strategyId,
+                app: "mt5",
+                accountId,
+                status: "completed",
+                startedAt: syncedAt,
+                endedAt: syncedAt + 30_000,
+            }],
+            instrument_claims: [{
+                _id: "claim-mt5-gold",
+                strategyId,
+                app: "mt5",
+                accountId,
+                instrument: "XAUUSD",
+                source: "order",
+                sourceId: "vmte01entry",
+                updatedAt: syncedAt,
+            }],
+            orders: [],
+            provider_positions: [
+                {
+                    _id: "provider-position-canonical",
+                    app: "mt5",
+                    accountId,
+                    positionKey: `XAUUSD:${providerPositionId}`,
+                    providerPositionId,
+                    strategyId,
+                    ownershipStatus: "owned",
+                    expectedExternal: false,
+                    instrument: "XAUUSD",
+                    side: "long",
+                    quantity: 0.01,
+                    entryPrice: 3330,
+                    currentPrice: 3331,
+                    unrealizedPnl: 1,
+                    metadata: JSON.stringify({ providerPositionId }),
+                    syncedAt,
+                },
+                {
+                    _id: "provider-position-duplicate",
+                    app: "mt5",
+                    accountId,
+                    positionKey: `XAUUSD:${providerPositionId}:duplicate`,
+                    providerPositionId,
+                    strategyId,
+                    ownershipStatus: "owned",
+                    expectedExternal: false,
+                    instrument: "XAUUSD",
+                    side: "long",
+                    quantity: 0.01,
+                    entryPrice: 3330,
+                    currentPrice: 3331,
+                    unrealizedPnl: 1,
+                    metadata: JSON.stringify({ providerPositionId }),
+                    syncedAt: syncedAt + 1,
+                },
+            ],
+            provider_position_history: [],
+            provider_working_orders: [],
+            provider_sync_state: [],
+            position_syncs: [],
+            positions: [],
+            execution_safety_faults: [],
+            account_snapshots: [],
+            account_pnl_events: [],
+            control_plane_metrics: [],
+            alerts: [],
+            order_transitions: [],
+            trade_events: [],
+            order_identity_aliases: [],
+        })
+        const ctx = { db } as never
+
+        await callRegistered(reconcileProviderPortfolio, ctx, {
+            serviceToken: "test-token",
+            app: "mt5",
+            accountId,
+            venue: "mt5",
+            source: "periodic_sync",
+            accountState: {
+                balance: 1000,
+                equity: 1001,
+                buyingPower: 1000,
+                marginUsed: 1,
+                marginAvailable: 999,
+                openPnl: 1,
+                dayPnl: 0,
+            },
+            positions: [{
+                instrument: "XAUUSD",
+                providerPositionId,
+                side: "long",
+                quantity: 0.01,
+                entryPrice: 3330,
+                currentPrice: 3331,
+                unrealizedPnl: 1,
+                metadata: JSON.stringify({ providerPositionId }),
+            }],
+            workingOrders: [],
+            positionClosures: [],
+        })
+
+        expect(db.rows.provider_positions).toHaveLength(1)
+        expect(db.rows.provider_positions?.[0]).toMatchObject({
+            positionKey: `XAUUSD:${providerPositionId}`,
+            providerPositionId,
+            strategyId,
+            ownershipStatus: "owned",
+        })
+        expect(db.rows.provider_position_history ?? []).toHaveLength(0)
+        expect(db.rows.provider_sync_state?.[0]?.lastDriftSummary).toBeUndefined()
+        expect(db.rows.provider_sync_state?.[0]).toMatchObject({
+            providerStatus: "healthy",
+            driftDetected: false,
+        })
     })
 
     it("never matches or retires a foreign-account order with a colliding providerOrderId", async () => {

@@ -14,6 +14,7 @@ const PROVIDER_POSITION_HISTORY_RETENTION_MS = 24 * 60 * 60 * 1000
 const PROVIDER_POSITION_HISTORY_APPS = new Set<Doc<"strategies">["app"]>(["mt5", "okx-swap", "alpaca-options"])
 
 const PROVIDER_POSITION_COMPARE_FIELDS = [
+    "positionKey",
     "providerPositionId",
     "strategyId",
     "ownershipStatus",
@@ -79,15 +80,16 @@ export async function upsertProviderPositionRows(
         .withIndex("by_app_account", (q) => q.eq("app", app).eq("accountId", accountId))
         .collect()
 
-    const existingByKey = new Map(existing.map((row) => [row.positionKey, row]))
-    const nextKeySet = new Set(rows.map((row) => row.positionKey))
+    const normalizedRows = coalesceProviderPositionRows(rows)
+    const { existingByKey, duplicateExistingIds } = indexExistingProviderPositions(existing)
+    const nextIdentitySet = new Set(normalizedRows.map(buildProviderPositionStorageIdentity))
     const stats = createWriteStats()
     const retainedHistoryByKey = PROVIDER_POSITION_HISTORY_APPS.has(app)
-        ? await pruneProviderPositionHistory(ctx, app, accountId, nextKeySet, updatedAt)
+        ? await pruneProviderPositionHistory(ctx, app, accountId, nextIdentitySet, updatedAt)
         : new Map<string, Doc<"provider_position_history">>()
 
-    for (const row of rows) {
-        const current = existingByKey.get(row.positionKey)
+    for (const row of normalizedRows) {
+        const current = existingByKey.get(buildProviderPositionStorageIdentity(row))
         if (!current) {
             await ctx.db.insert("provider_positions", row)
             stats.inserted++
@@ -104,15 +106,25 @@ export async function upsertProviderPositionRows(
         stats.patched++
     }
 
+    for (const duplicateId of duplicateExistingIds) {
+        await ctx.db.delete(duplicateId)
+        stats.deleted++
+    }
+
     for (const row of existing) {
-        if (nextKeySet.has(row.positionKey)) {
+        if (duplicateExistingIds.has(row._id)) {
+            continue
+        }
+
+        const storageIdentity = buildProviderPositionStorageIdentity(row)
+        if (nextIdentitySet.has(storageIdentity)) {
             continue
         }
 
         if (PROVIDER_POSITION_HISTORY_APPS.has(app)) {
             await upsertDisappearedProviderPositionHistory(ctx, {
                 row,
-                current: retainedHistoryByKey.get(row.positionKey),
+                current: retainedHistoryByKey.get(storageIdentity),
                 disappearedAt: updatedAt,
             })
         }
@@ -122,6 +134,123 @@ export async function upsertProviderPositionRows(
     }
 
     return stats
+}
+
+function coalesceProviderPositionRows(rows: ProviderPositionRow[]): ProviderPositionRow[] {
+    const byKey = new Map<string, ProviderPositionRow>()
+
+    for (const row of rows) {
+        const storageIdentity = buildProviderPositionStorageIdentity(row)
+        const current = byKey.get(storageIdentity)
+        if (!current) {
+            byKey.set(storageIdentity, row)
+            continue
+        }
+
+        if (hasMaterialProviderPositionConflict(current, row)) {
+            throw new Error(`Provider returned conflicting duplicate position identity ${row.app}:${row.accountId}:${row.positionKey}`)
+        }
+
+        byKey.set(storageIdentity, preferProviderPositionRow(current, row))
+    }
+
+    return Array.from(byKey.values())
+}
+
+function indexExistingProviderPositions(
+    rows: Array<Doc<"provider_positions">>
+): {
+    existingByKey: Map<string, Doc<"provider_positions">>
+    duplicateExistingIds: Set<Id<"provider_positions">>
+} {
+    const existingByKey = new Map<string, Doc<"provider_positions">>()
+    const duplicateExistingIds = new Set<Id<"provider_positions">>()
+
+    for (const row of rows) {
+        const storageIdentity = buildProviderPositionStorageIdentity(row)
+        const current = existingByKey.get(storageIdentity)
+        if (!current) {
+            existingByKey.set(storageIdentity, row)
+            continue
+        }
+
+        const preferred = preferExistingProviderPositionRow(current, row)
+        const duplicate = preferred._id === current._id ? row : current
+        duplicateExistingIds.add(duplicate._id)
+        existingByKey.set(storageIdentity, preferred)
+    }
+
+    return { existingByKey, duplicateExistingIds }
+}
+
+function hasMaterialProviderPositionConflict(left: ProviderPositionRow, right: ProviderPositionRow): boolean {
+    return left.app !== right.app ||
+        left.accountId !== right.accountId ||
+        left.instrument !== right.instrument ||
+        left.side !== right.side ||
+        left.strategyId !== right.strategyId ||
+        left.ownershipStatus !== right.ownershipStatus ||
+        left.expectedExternal !== right.expectedExternal ||
+        hasProviderPositionIdConflict(left.providerPositionId, right.providerPositionId) ||
+        !sameNumber(left.quantity, right.quantity) ||
+        !sameNumber(left.entryPrice, right.entryPrice)
+}
+
+function buildProviderPositionStorageIdentity(row: {
+    app: Doc<"strategies">["app"]
+    accountId: string
+    instrument: string
+    positionKey: string
+    providerPositionId?: string
+}): string {
+    const providerPositionKey = row.providerPositionId && row.providerPositionId.trim().length > 0
+        ? `${row.instrument}:${row.providerPositionId.trim()}`
+        : row.positionKey
+
+    return [row.app, row.accountId, providerPositionKey].join("\u0000")
+}
+
+function preferProviderPositionRow(left: ProviderPositionRow, right: ProviderPositionRow): ProviderPositionRow {
+    if (right.providerPositionId && !left.providerPositionId) {
+        return right
+    }
+
+    if (right.syncedAt > left.syncedAt) {
+        return right
+    }
+
+    return left
+}
+
+function preferExistingProviderPositionRow(
+    left: Doc<"provider_positions">,
+    right: Doc<"provider_positions">
+): Doc<"provider_positions"> {
+    if (right.providerPositionId && !left.providerPositionId) {
+        return right
+    }
+
+    if (right.syncedAt > left.syncedAt) {
+        return right
+    }
+
+    return left
+}
+
+function hasProviderPositionIdConflict(left: string | undefined, right: string | undefined): boolean {
+    if (!left || !right) {
+        return false
+    }
+
+    return left !== right
+}
+
+function sameNumber(left: number | undefined, right: number | undefined): boolean {
+    return left === right || (
+        left !== undefined &&
+        right !== undefined &&
+        Math.abs(left - right) <= 1e-9
+    )
 }
 
 async function pruneProviderPositionHistory(
@@ -143,15 +272,40 @@ async function pruneProviderPositionHistory(
     const retainedByKey = new Map<string, Doc<"provider_position_history">>()
 
     for (const row of history) {
-        if (livePositionKeys.has(row.positionKey)) {
+        const storageIdentity = buildProviderPositionStorageIdentity(row)
+        if (livePositionKeys.has(storageIdentity)) {
             await ctx.db.delete(row._id)
             continue
         }
 
-        retainedByKey.set(row.positionKey, row)
+        const current = retainedByKey.get(storageIdentity)
+        if (!current) {
+            retainedByKey.set(storageIdentity, row)
+            continue
+        }
+
+        const preferred = preferProviderPositionHistoryRow(current, row)
+        const duplicate = preferred._id === current._id ? row : current
+        await ctx.db.delete(duplicate._id)
+        retainedByKey.set(storageIdentity, preferred)
     }
 
     return retainedByKey
+}
+
+function preferProviderPositionHistoryRow(
+    left: Doc<"provider_position_history">,
+    right: Doc<"provider_position_history">
+): Doc<"provider_position_history"> {
+    if (right.providerPositionId && !left.providerPositionId) {
+        return right
+    }
+
+    if (right.lastSeenAt > left.lastSeenAt) {
+        return right
+    }
+
+    return left
 }
 
 async function upsertDisappearedProviderPositionHistory(

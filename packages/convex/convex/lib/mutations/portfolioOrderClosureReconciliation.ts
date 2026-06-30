@@ -82,7 +82,7 @@ export async function reconcileProviderPositionClosures(
             position.strategyId !== undefined &&
             position.expectedExternal !== true &&
             args.strategyMap.has(String(position.strategyId)) &&
-            !args.livePositionKeys.has(position.positionKey)
+            !isProviderPositionLive(position, args.livePositionKeys)
         )
         .map((position) => trackCandidate({ ...position, strategyId: position.strategyId! }, false))
 
@@ -92,12 +92,12 @@ export async function reconcileProviderPositionClosures(
         .map((position) => trackCandidate(position, true))
     const faultBackedCandidates = (await resolveFaultBackedProviderCloseCandidates(ctx, args))
         .map((position) => trackCandidate(position, true))
-    const candidates = [
+    const candidates = canonicalizeTrackedClosureCandidates([
         ...disappearedCandidates,
         ...faultBackedCandidates,
         ...mt5HistoricCandidates,
         ...okxHistoricCandidates,
-    ]
+    ])
 
     if (args.positionClosures.length === 0 && candidates.length === 0) {
         return { unattributedClosures: [], unmatchedClosedPositions: [] }
@@ -341,6 +341,89 @@ function trackCandidate(
         attributedQuantity: 0,
         historic,
     }
+}
+
+function isProviderPositionLive(
+    position: Pick<ProviderClosePositionCandidate, "instrument" | "side" | "providerPositionId" | "positionKey" | "metadata">,
+    livePositionKeys: Set<string>
+): boolean {
+    if (livePositionKeys.has(position.positionKey)) {
+        return true
+    }
+
+    for (const identifier of buildProviderPositionIdentityCandidates(position)) {
+        if (livePositionKeys.has(identifier)) {
+            return true
+        }
+    }
+
+    return false
+}
+
+function canonicalizeTrackedClosureCandidates(
+    candidates: TrackedClosureCandidate[]
+): TrackedClosureCandidate[] {
+    const canonical: TrackedClosureCandidate[] = []
+
+    for (const candidate of candidates) {
+        const existingIndex = canonical.findIndex((existing) =>
+            buildTrackedCandidateLifecycleKey(existing) === buildTrackedCandidateLifecycleKey(candidate)
+        )
+        if (existingIndex < 0) {
+            canonical.push(candidate)
+            continue
+        }
+
+        const existing = canonical[existingIndex]!
+        if (!canCoalesceTrackedCandidate(existing, candidate)) {
+            canonical.push(candidate)
+            continue
+        }
+
+        canonical[existingIndex] = preferTrackedClosureCandidate(existing, candidate)
+    }
+
+    return canonical
+}
+
+function buildTrackedCandidateLifecycleKey(candidate: TrackedClosureCandidate): string {
+    const position = candidate.position
+    const providerPositionIdentity = readIdentifier(position.providerPositionId) ?? readIdentifier(position.positionKey)
+
+    return [
+        position.accountId,
+        position.instrument,
+        providerPositionIdentity ?? position.positionKey,
+    ].join("\u0000")
+}
+
+function canCoalesceTrackedCandidate(
+    left: TrackedClosureCandidate,
+    right: TrackedClosureCandidate
+): boolean {
+    return left.position.accountId === right.position.accountId &&
+        left.position.instrument === right.position.instrument &&
+        left.position.side === right.position.side &&
+        left.position.strategyId === right.position.strategyId
+}
+
+function preferTrackedClosureCandidate(
+    left: TrackedClosureCandidate,
+    right: TrackedClosureCandidate
+): TrackedClosureCandidate {
+    if (!right.historic && left.historic) {
+        return right
+    }
+
+    if (right.position.sourceOrder && !left.position.sourceOrder) {
+        return right
+    }
+
+    if (right.position.syncedAt > left.position.syncedAt) {
+        return right
+    }
+
+    return left
 }
 
 function consumeCandidate(

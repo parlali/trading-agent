@@ -13,6 +13,7 @@ import {
 import {
     buildProviderPositionKeyAliases,
     buildProviderPositionKey,
+    resolveProviderPositionId,
 } from "../providerPositions"
 import {
     orderStatusV,
@@ -256,7 +257,11 @@ export const reconcileProviderPortfolio = mutation({
         const ownershipMismatches = new Set<string>()
 
         const resolvedPositions = args.positions.map((position) => {
-            const positionKey = buildProviderPositionKey(position)
+            const providerPositionId = resolveProviderPositionId(position.providerPositionId, position.metadata)
+            const positionKey = buildProviderPositionKey({
+                ...position,
+                providerPositionId,
+            })
             const previousPosition = existingProviderPositionsByKey.get(positionKey)
             const ownership = resolveOwnership({
                 app: args.app,
@@ -293,6 +298,7 @@ export const reconcileProviderPortfolio = mutation({
 
             return {
                 ...position,
+                providerPositionId,
                 stopLoss: position.stopLoss ?? protectionLevelsByInstrument.get(position.instrument)?.stopLoss,
                 takeProfit: position.takeProfit ?? protectionLevelsByInstrument.get(position.instrument)?.takeProfit,
                 positionKey,
