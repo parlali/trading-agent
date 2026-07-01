@@ -1,7 +1,7 @@
 import { mutation } from "../../_generated/server"
 import type { Doc, Id } from "../../_generated/dataModel"
 import { v } from "convex/values"
-import { computeRiskGovernanceState } from "@valiq-trading/core"
+import { computeRiskGovernanceState, resolveRiskWindowStarts } from "@valiq-trading/core"
 import { requireServiceToken } from "../authGuards"
 import { venueAppV, executionSafetyFaultCategoryV } from "../validators"
 
@@ -34,14 +34,23 @@ export const refreshStrategyRiskState = mutation({
 
         const now = Date.now()
 
+        const windows = resolveRiskWindowStarts(now, args.policy.strategyTimezone)
         const [filledOrders, partiallyFilledOrders, existingRiskState, strategyFaults] = await Promise.all([
             ctx.db
                 .query("orders")
-                .withIndex("by_strategy_status", (q) => q.eq("strategyId", args.strategyId).eq("status", "filled"))
+                .withIndex("by_strategy_status_updated_at", (q) =>
+                    q.eq("strategyId", args.strategyId)
+                        .eq("status", "filled")
+                        .gte("updatedAt", windows.weekStartAt)
+                )
                 .collect(),
             ctx.db
                 .query("orders")
-                .withIndex("by_strategy_status", (q) => q.eq("strategyId", args.strategyId).eq("status", "partially_filled"))
+                .withIndex("by_strategy_status_updated_at", (q) =>
+                    q.eq("strategyId", args.strategyId)
+                        .eq("status", "partially_filled")
+                        .gte("updatedAt", windows.weekStartAt)
+                )
                 .collect(),
             ctx.db
                 .query("strategy_risk_states")
@@ -49,7 +58,7 @@ export const refreshStrategyRiskState = mutation({
                 .first(),
             ctx.db
                 .query("execution_safety_faults")
-                .withIndex("by_strategy", (q) => q.eq("strategyId", args.strategyId))
+                .withIndex("by_strategy_blocked", (q) => q.eq("strategyId", args.strategyId).eq("blocked", true))
                 .collect(),
         ])
         const governance = computeRiskGovernanceState({

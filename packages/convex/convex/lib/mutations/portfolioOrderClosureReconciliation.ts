@@ -79,7 +79,7 @@ export async function reconcileProviderPositionClosures(
 ): Promise<ProviderClosureReconciliationResult> {
     const positionClosures = mergeProviderPositionClosures([
         ...args.positionClosures,
-        ...await resolveKnownSyntheticProviderCloseInputs(ctx, args),
+        ...await resolveKnownProviderCloseInputs(ctx, args),
     ])
     const disappearedCandidates: TrackedClosureCandidate[] = args.existingProviderPositions
         .filter((position) =>
@@ -331,7 +331,7 @@ function mergeProviderPositionClosures(
     return Array.from(byKey.values())
 }
 
-async function resolveKnownSyntheticProviderCloseInputs(
+async function resolveKnownProviderCloseInputs(
     ctx: PortfolioMutationCtx,
     args: {
         app: Doc<"strategies">["app"]
@@ -355,7 +355,7 @@ async function resolveKnownSyntheticProviderCloseInputs(
             .take(250)
 
         for (const order of filledOrders) {
-            const closure = resolveKnownSyntheticProviderCloseInput(order, args.app, args.accountId)
+            const closure = resolveKnownProviderCloseInput(order, args.app, args.accountId)
             if (closure) {
                 closures.push(closure)
             }
@@ -365,7 +365,7 @@ async function resolveKnownSyntheticProviderCloseInputs(
     return closures
 }
 
-function resolveKnownSyntheticProviderCloseInput(
+function resolveKnownProviderCloseInput(
     order: Doc<"orders">,
     app: Doc<"strategies">["app"],
     accountId: string
@@ -373,8 +373,7 @@ function resolveKnownSyntheticProviderCloseInput(
     if (
         !orderBelongsToAccount(order, app, accountId) ||
         order.action !== "close" ||
-        order.status !== "filled" ||
-        !isSyntheticProviderCloseOrder(order)
+        order.status !== "filled"
     ) {
         return undefined
     }

@@ -345,6 +345,158 @@ describe("Convex OKX net-mode closure replay", () => {
         ])
     })
 
+    it("clears stale OKX position-not-found protection faults from replayed canonical provider close evidence", async () => {
+        process.env.BACKEND_SERVICE_TOKEN = "test-token"
+        const strategyId = "strategy-okx-btc"
+        const runId = "run-okx-btc"
+        const openedAt = 1_782_811_155_420
+        const closedAt = 1_782_821_024_169
+        const providerPositionId = "3699684250355539968"
+        const closeOrderId = "vokc01bi6mniiq3r"
+        const providerOrderId = "3701678773038260224"
+        const db = new FakeDb({
+            strategies: [{
+                _id: strategyId,
+                app: "okx-swap",
+                accountId,
+                name: "OKX BTC",
+                policy: { dryRun: false },
+            }],
+            strategy_runs: [{
+                _id: runId,
+                strategyId,
+                app: "okx-swap",
+                accountId,
+                status: "completed",
+                startedAt: openedAt,
+                endedAt: openedAt + 30_000,
+            }],
+            instrument_claims: [],
+            orders: [{
+                _id: "order-okx-btc-close",
+                orderId: closeOrderId,
+                canonicalOrderId: closeOrderId,
+                providerOrderId,
+                providerClientOrderId: closeOrderId,
+                providerOrderAliases: [
+                    "3701678761474293760",
+                    providerOrderId,
+                    "O3701678772882370560",
+                    "vokt03hpcqlhpxw4",
+                ],
+                runId,
+                strategyId,
+                app: "okx-swap",
+                accountId,
+                venue: "okx",
+                instrument: "BTC-USDT-SWAP",
+                status: "filled",
+                action: "close",
+                quantity: 0.0484,
+                filledQuantity: 0.0484,
+                remainingQuantity: 0,
+                avgFillPrice: 59148,
+                submittedAt: closedAt,
+                updatedAt: closedAt,
+                intent: {
+                    instrument: "BTC-USDT-SWAP",
+                    side: "buy",
+                    quantity: 0.0484,
+                    orderType: "market",
+                    metadata: {
+                        action: "close",
+                        actualOrdId: providerOrderId,
+                        algoClOrdId: "vokt03hpcqlhpxw4",
+                        algoId: "3701678761474293760",
+                        clientOrderId: "O3701678772882370560",
+                        entryPrice: 60354.4,
+                        estimatedPrice: 59148,
+                        fee: -5.308533,
+                        feeCcy: "USDT",
+                        fillPnl: 8.53579,
+                        orderId: providerOrderId,
+                        posId: providerPositionId,
+                        positionSide: "short",
+                        providerPositionId,
+                        providerPositionKey: `BTC-USDT-SWAP:${providerPositionId}`,
+                        providerReconciledClose: true,
+                        side: "buy",
+                        source: "okx_fills_history",
+                        triggeredOrderId: providerOrderId,
+                    },
+                },
+                lastTransitionSequence: 1,
+                polling: {
+                    pollIntervalMs: 5_000,
+                    timeoutMs: 120_000,
+                    startedAt: closedAt - 2_000,
+                    lastCheckedAt: closedAt,
+                },
+            }],
+            provider_positions: [],
+            provider_working_orders: [],
+            provider_sync_state: [],
+            position_syncs: [],
+            positions: [],
+            execution_safety_faults: [{
+                _id: "fault-okx-position-not-found",
+                strategyId,
+                app: "okx-swap",
+                accountId,
+                instrument: "BTC-USDT-SWAP",
+                category: "position_not_found_yet",
+                message: "Protection verification failed: No open OKX swap position found for BTC-USDT-SWAP; flatten_failed=All operations failed (code: 1)",
+                providerPayload: JSON.stringify({
+                    phase: "verifyProtection",
+                    providerPositionKey: `BTC-USDT-SWAP:${providerPositionId}`,
+                    providerPositionId,
+                    positionSide: "short",
+                    intendedStopLoss: 59275,
+                    intendedTakeProfit: 59140,
+                    verificationError: "No open OKX swap position found for BTC-USDT-SWAP",
+                    protectionError: "Protection verification failed: No open OKX swap position found for BTC-USDT-SWAP",
+                    flattenError: "All operations failed (code: 1)",
+                }),
+                canonicalOrderId: "vokm03dp7t5xcszr",
+                blocked: true,
+                occurredAt: closedAt + 2_000,
+            }],
+            account_snapshots: [],
+            account_pnl_events: [],
+            control_plane_metrics: [],
+            alerts: [],
+        })
+        const ctx = { db } as never
+
+        await callRegistered(reconcileProviderPortfolio, ctx, {
+            serviceToken: "test-token",
+            app: "okx-swap",
+            accountId,
+            venue: "okx",
+            source: "periodic_sync",
+            accountState: {
+                balance: 40_000,
+                equity: 40_000,
+                buyingPower: 20_000,
+                marginUsed: 0,
+                marginAvailable: 20_000,
+                openPnl: 0,
+                dayPnl: 0,
+            },
+            positions: [],
+            workingOrders: [],
+            positionClosures: [],
+        })
+
+        expect(db.rows.execution_safety_faults).toContainEqual(expect.objectContaining({
+            _id: "fault-okx-position-not-found",
+            blocked: false,
+            resolvedAt: expect.any(Number),
+            resolutionNote: `Provider closure attached to canonical close order ${closeOrderId}`,
+        }))
+        expect(db.rows.orders.filter((order) => order.action === "close")).toHaveLength(1)
+    })
+
     it("records a blocking accounting fault when OKX working-order polling fills without provider accounting", async () => {
         process.env.BACKEND_SERVICE_TOKEN = "test-token"
         const strategyId = "strategy-okx-missing-accounting"

@@ -7,6 +7,7 @@ import type {
 import { appendOrderTransition, patchOrderRowFromDoc, upsertOrderRow } from "./orders"
 import { parseJson, readMetadataRecord, readOrderIntentRecord } from "./portfolioUtils"
 import {
+    buildProviderPositionIdentityCandidates,
     buildPositionClosureIdentityCandidates,
     buildProviderCloseOrderId,
     buildPositionClosureKey,
@@ -151,6 +152,16 @@ async function resolveProviderClosureFaultsAfterCanonicalAttach(
             continue
         }
 
+        if (providerClosureResolvesPositionNotFoundFault(fault, args)) {
+            await resolveProviderClosureFault(ctx, {
+                fault,
+                updatedAt: args.updatedAt,
+                resolutionNote,
+                resolvedByStrategy,
+            })
+            continue
+        }
+
         if (
             fault.category === "unattributed_closure" &&
             fault.instrument === args.closure.instrument &&
@@ -238,6 +249,72 @@ function providerClosureResolvesVanishedPositionFault(
     }
 
     return true
+}
+
+function providerClosureResolvesPositionNotFoundFault(
+    fault: Doc<"execution_safety_faults">,
+    args: {
+        order: Doc<"orders">
+        position?: ProviderClosePositionCandidate
+        closure: ProviderPositionClosureInput
+    }
+): boolean {
+    if (
+        fault.category !== "position_not_found_yet" ||
+        fault.strategyId !== args.order.strategyId ||
+        fault.instrument !== args.closure.instrument ||
+        !closureHasProviderAccountingMetadata(args.closure)
+    ) {
+        return false
+    }
+
+    const payload = parseJson<Record<string, unknown>>(fault.providerPayload)
+    const side = readProviderPositionSide(payload?.positionSide ?? payload?.side)
+    if (side && side !== args.closure.side) {
+        return false
+    }
+
+    const faultIdentifiers = buildFaultProviderPositionIdentifiers(fault, payload)
+    if (faultIdentifiers.size === 0) {
+        return false
+    }
+
+    if (
+        hasSharedProviderPositionIdentity(
+            faultIdentifiers,
+            buildPositionClosureIdentityCandidates(args.closure)
+        )
+    ) {
+        return true
+    }
+
+    return args.position !== undefined &&
+        hasSharedProviderPositionIdentity(
+            faultIdentifiers,
+            buildProviderPositionIdentityCandidates(args.position)
+        )
+}
+
+function buildFaultProviderPositionIdentifiers(
+    fault: Doc<"execution_safety_faults">,
+    payload: Record<string, unknown> | undefined
+): Set<string> {
+    const identifiers = new Set<string>()
+    addIdentifier(identifiers, payload?.providerPositionId)
+    addIdentifier(identifiers, payload?.providerPositionKey)
+    addIdentifier(identifiers, payload?.positionId)
+    addIdentifier(identifiers, payload?.positionKey)
+    addIdentifier(identifiers, payload?.posId)
+    addIdentifier(identifiers, payload?.identifier)
+    addIdentifier(identifiers, fault.providerOrderId)
+    for (const alias of fault.providerOrderAliases ?? []) {
+        addIdentifier(identifiers, alias)
+    }
+    return identifiers
+}
+
+function readProviderPositionSide(value: unknown): "long" | "short" | undefined {
+    return value === "long" || value === "short" ? value : undefined
 }
 
 function buildFaultOrderIdentifiers(fault: Doc<"execution_safety_faults">): Set<string> {
