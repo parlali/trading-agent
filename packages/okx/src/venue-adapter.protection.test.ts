@@ -145,6 +145,55 @@ describe("OKXVenueAdapter protection orders", () => {
         })
     })
 
+    it("normalizes protection size to OKX lot precision when provider quantity has floating point residue", async () => {
+        const client = {
+            getPositions: vi.fn().mockResolvedValue([
+                {
+                    instId: "BTC-USDT-SWAP",
+                    instType: "SWAP",
+                    posId: "pos-1",
+                    pos: "-3.67",
+                    posSide: "net",
+                    avgPx: "60144",
+                    markPx: "60165",
+                    upl: "0",
+                    lever: "3",
+                    mgnMode: "isolated",
+                },
+            ]),
+            getAlgoOrdersPending: vi.fn()
+                .mockResolvedValueOnce([])
+                .mockResolvedValueOnce([])
+                .mockResolvedValueOnce([
+                    {
+                        algoId: "algo-1",
+                        instId: "BTC-USDT-SWAP",
+                        ordType: "oco",
+                        side: "buy",
+                        posSide: "net",
+                    },
+                ]),
+            getInstruments: vi.fn().mockResolvedValue([btcInstrument]),
+            placeAlgoOrder: vi.fn().mockResolvedValue({ algoId: "algo-1", sCode: "0", sMsg: "" }),
+        }
+
+        const adapter = new OKXVenueAdapter(client as never, {
+            marginMode: "isolated",
+            positionMode: "net_mode",
+        })
+
+        await adapter.updateProtectionOrders({
+            instrument: "BTC-USDT-SWAP",
+            stopLoss: 60385,
+            takeProfit: 59920,
+            identity: createProtectionIdentity(),
+        })
+
+        expect(client.placeAlgoOrder).toHaveBeenCalledWith(expect.objectContaining({
+            sz: "3.67",
+        }))
+    })
+
     it("derives stable child identities for standalone stop-only, take-profit-only, and combined protection", async () => {
         const identity = createProtectionIdentity()
         const cases = [

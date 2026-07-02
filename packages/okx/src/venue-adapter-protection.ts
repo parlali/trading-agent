@@ -18,6 +18,7 @@ import {
     formatNumber,
     isCloseAction,
     readFiniteMetadataNumber,
+    roundToStep,
     toCompositeOrderId,
     type OKXInstrumentRules,
 } from "./venue-adapter-utils"
@@ -195,7 +196,7 @@ async function createRequestedProtectionOrders(
     const posSide = args.resolvePositionPosSide(position.side)
     const rules = await args.getInstrumentRules(args.instrument)
     const contracts = args.baseQuantityToContracts(rules, position.quantity)
-    const size = formatContracts(contracts)
+    const size = formatContracts(normalizeProtectionContracts(args.instrument, rules, contracts))
     const request = await buildProtectionAlgoOrderRequest({
         args,
         closeSide,
@@ -209,6 +210,51 @@ async function createRequestedProtectionOrders(
 
     const ack = await args.client.placeAlgoOrder(request)
     return [toCompositeOrderId("algo", args.instrument, ack.algoId)]
+}
+
+function normalizeProtectionContracts(
+    instrument: string,
+    rules: OKXInstrumentRules,
+    contracts: number
+): number {
+    const normalizedContracts = roundToStep(contracts, rules.lotSize)
+
+    if (!Number.isFinite(normalizedContracts) || normalizedContracts < rules.minContracts) {
+        throw createExecutionError(
+            "pre_validation",
+            `OKX protection size for ${instrument} is below minimum contract size`,
+            {
+                code: "QUANTITY_BELOW_MINIMUM",
+                retryable: false,
+                details: {
+                    instrument,
+                    contracts,
+                    lotSize: rules.lotSize,
+                    minContracts: rules.minContracts,
+                },
+            }
+        )
+    }
+
+    const tolerance = Math.max(Number.EPSILON * Math.max(1, Math.abs(contracts)) * 100, rules.lotSize / 1_000_000)
+    if (Math.abs(contracts - normalizedContracts) > tolerance) {
+        throw createExecutionError(
+            "pre_validation",
+            `OKX protection size for ${instrument} is not aligned to lot size`,
+            {
+                code: "QUANTITY_NOT_LOT_ALIGNED",
+                retryable: false,
+                details: {
+                    instrument,
+                    contracts,
+                    normalizedContracts,
+                    lotSize: rules.lotSize,
+                },
+            }
+        )
+    }
+
+    return normalizedContracts
 }
 
 async function buildProtectionAlgoOrderRequest(config: {

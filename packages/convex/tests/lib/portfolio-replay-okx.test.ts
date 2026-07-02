@@ -345,7 +345,7 @@ describe("Convex OKX net-mode closure replay", () => {
         ])
     })
 
-    it("clears stale OKX position-not-found protection faults from replayed canonical provider close evidence", async () => {
+    it("clears stale OKX provider-position protection faults from replayed canonical provider close evidence", async () => {
         process.env.BACKEND_SERVICE_TOKEN = "test-token"
         const strategyId = "strategy-okx-btc"
         const runId = "run-okx-btc"
@@ -438,29 +438,67 @@ describe("Convex OKX net-mode closure replay", () => {
             provider_sync_state: [],
             position_syncs: [],
             positions: [],
-            execution_safety_faults: [{
-                _id: "fault-okx-position-not-found",
-                strategyId,
-                app: "okx-swap",
-                accountId,
-                instrument: "BTC-USDT-SWAP",
-                category: "position_not_found_yet",
-                message: "Protection verification failed: No open OKX swap position found for BTC-USDT-SWAP; flatten_failed=All operations failed (code: 1)",
-                providerPayload: JSON.stringify({
-                    phase: "verifyProtection",
-                    providerPositionKey: `BTC-USDT-SWAP:${providerPositionId}`,
-                    providerPositionId,
-                    positionSide: "short",
-                    intendedStopLoss: 59275,
-                    intendedTakeProfit: 59140,
-                    verificationError: "No open OKX swap position found for BTC-USDT-SWAP",
-                    protectionError: "Protection verification failed: No open OKX swap position found for BTC-USDT-SWAP",
-                    flattenError: "All operations failed (code: 1)",
-                }),
-                canonicalOrderId: "vokm03dp7t5xcszr",
-                blocked: true,
-                occurredAt: closedAt + 2_000,
-            }],
+            execution_safety_faults: [
+                {
+                    _id: "fault-okx-position-not-found",
+                    strategyId,
+                    app: "okx-swap",
+                    accountId,
+                    instrument: "BTC-USDT-SWAP",
+                    category: "position_not_found_yet",
+                    message: "Protection verification failed: No open OKX swap position found for BTC-USDT-SWAP; flatten_failed=All operations failed (code: 1)",
+                    providerPayload: JSON.stringify({
+                        phase: "verifyProtection",
+                        providerPositionKey: `BTC-USDT-SWAP:${providerPositionId}`,
+                        providerPositionId,
+                        positionSide: "short",
+                        intendedStopLoss: 59275,
+                        intendedTakeProfit: 59140,
+                        verificationError: "No open OKX swap position found for BTC-USDT-SWAP",
+                        protectionError: "Protection verification failed: No open OKX swap position found for BTC-USDT-SWAP",
+                        flattenError: "All operations failed (code: 1)",
+                    }),
+                    canonicalOrderId: "vokm03dp7t5xcszr",
+                    blocked: true,
+                    occurredAt: closedAt + 2_000,
+                },
+                {
+                    _id: "fault-okx-order-algo-lot-size",
+                    strategyId,
+                    app: "okx-swap",
+                    accountId,
+                    instrument: "BTC-USDT-SWAP",
+                    category: "unknown",
+                    message: "OKX request failed for /api/v5/trade/order-algo",
+                    providerPayload: JSON.stringify({
+                        phase: "updateProtectionOrders",
+                        providerPositionKey: `BTC-USDT-SWAP:${providerPositionId}`,
+                        providerPositionId,
+                        positionSide: "short",
+                        intendedStopLoss: 60385,
+                        intendedTakeProfit: 59920,
+                        updateError: {
+                            source: "venue",
+                            message: "OKX request failed for /api/v5/trade/order-algo",
+                            details: {
+                                request: {
+                                    instId: "BTC-USDT-SWAP",
+                                    sz: "3.6700000000000004",
+                                },
+                                responseData: [{
+                                    sCode: "51121",
+                                    sMsg: "Order quantity must be a multiple of the lot size.",
+                                }],
+                            },
+                        },
+                        protectionError: "OKX request failed for /api/v5/trade/order-algo",
+                    }),
+                    canonicalOrderId: "vokm01p55vnabetj",
+                    providerClientOrderId: "vokm01p55vnabetj",
+                    blocked: true,
+                    occurredAt: closedAt + 2_000,
+                },
+            ],
             account_snapshots: [],
             account_pnl_events: [],
             control_plane_metrics: [],
@@ -490,6 +528,12 @@ describe("Convex OKX net-mode closure replay", () => {
 
         expect(db.rows.execution_safety_faults).toContainEqual(expect.objectContaining({
             _id: "fault-okx-position-not-found",
+            blocked: false,
+            resolvedAt: expect.any(Number),
+            resolutionNote: `Provider closure attached to canonical close order ${closeOrderId}`,
+        }))
+        expect(db.rows.execution_safety_faults).toContainEqual(expect.objectContaining({
+            _id: "fault-okx-order-algo-lot-size",
             blocked: false,
             resolvedAt: expect.any(Number),
             resolutionNote: `Provider closure attached to canonical close order ${closeOrderId}`,

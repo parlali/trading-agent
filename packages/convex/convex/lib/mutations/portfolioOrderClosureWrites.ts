@@ -152,7 +152,7 @@ async function resolveProviderClosureFaultsAfterCanonicalAttach(
             continue
         }
 
-        if (providerClosureResolvesPositionNotFoundFault(fault, args)) {
+        if (providerClosureResolvesProviderPositionProtectionFault(fault, args)) {
             await resolveProviderClosureFault(ctx, {
                 fault,
                 updatedAt: args.updatedAt,
@@ -251,7 +251,7 @@ function providerClosureResolvesVanishedPositionFault(
     return true
 }
 
-function providerClosureResolvesPositionNotFoundFault(
+function providerClosureResolvesProviderPositionProtectionFault(
     fault: Doc<"execution_safety_faults">,
     args: {
         order: Doc<"orders">
@@ -259,8 +259,10 @@ function providerClosureResolvesPositionNotFoundFault(
         closure: ProviderPositionClosureInput
     }
 ): boolean {
+    const payload = parseJson<Record<string, unknown>>(fault.providerPayload)
+
     if (
-        fault.category !== "position_not_found_yet" ||
+        !isProviderPositionProtectionFault(fault, payload) ||
         fault.strategyId !== args.order.strategyId ||
         fault.instrument !== args.closure.instrument ||
         !closureHasProviderAccountingMetadata(args.closure)
@@ -268,7 +270,6 @@ function providerClosureResolvesPositionNotFoundFault(
         return false
     }
 
-    const payload = parseJson<Record<string, unknown>>(fault.providerPayload)
     const side = readProviderPositionSide(payload?.positionSide ?? payload?.side)
     if (side && side !== args.closure.side) {
         return false
@@ -293,6 +294,19 @@ function providerClosureResolvesPositionNotFoundFault(
             faultIdentifiers,
             buildProviderPositionIdentityCandidates(args.position)
         )
+}
+
+function isProviderPositionProtectionFault(
+    fault: Doc<"execution_safety_faults">,
+    payload: Record<string, unknown> | undefined
+): boolean {
+    if (fault.category === "position_not_found_yet") {
+        return true
+    }
+
+    return fault.category === "unknown" &&
+        readIdentifier(payload?.phase) === "updateProtectionOrders" &&
+        fault.message.includes("/api/v5/trade/order-algo")
 }
 
 function buildFaultProviderPositionIdentifiers(
