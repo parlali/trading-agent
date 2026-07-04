@@ -568,14 +568,35 @@ async function recordMoneyAuditMismatchFaults(
         )
         .collect()
     const faultMessage = `Money-level reconciliation mismatch: ${args.message}`
+    const providerPayload = JSON.stringify({
+        app: args.app,
+        accountId: args.accountId,
+        venue: args.venue,
+        equityDelta: args.equityDelta,
+        attributedOrderPnl: args.attributedOrderPnl,
+        accountEventPnl: args.accountEventPnl,
+        openPnlDelta: args.openPnlDelta,
+        residual: args.residual,
+        tolerance: args.tolerance,
+    })
 
     for (const strategy of strategies) {
-        const duplicate = existingFaults.some((fault) =>
+        const openFault = existingFaults.find((fault) =>
             fault.strategyId === strategy._id &&
-            fault.category === "accounting_mismatch" &&
-            fault.message === faultMessage
+            isOpenMoneyAuditMismatchFault(fault)
         )
-        if (duplicate) {
+        if (openFault) {
+            if (
+                openFault.message !== faultMessage ||
+                openFault.providerPayload !== providerPayload ||
+                openFault.occurredAt !== args.updatedAt
+            ) {
+                await ctx.db.patch(openFault._id, {
+                    message: faultMessage,
+                    providerPayload,
+                    occurredAt: args.updatedAt,
+                })
+            }
             continue
         }
 
@@ -586,17 +607,7 @@ async function recordMoneyAuditMismatchFaults(
             instrument: "account",
             category: "accounting_mismatch",
             message: faultMessage,
-            providerPayload: JSON.stringify({
-                app: args.app,
-                accountId: args.accountId,
-                venue: args.venue,
-                equityDelta: args.equityDelta,
-                attributedOrderPnl: args.attributedOrderPnl,
-                accountEventPnl: args.accountEventPnl,
-                openPnlDelta: args.openPnlDelta,
-                residual: args.residual,
-                tolerance: args.tolerance,
-            }),
+            providerPayload,
             blocked: true,
             occurredAt: args.updatedAt,
             resolvedAt: undefined,

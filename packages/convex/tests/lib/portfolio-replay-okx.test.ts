@@ -1592,6 +1592,82 @@ describe("Convex OKX net-mode closure replay", () => {
         vi.useRealTimers()
     })
 
+    it("patches the open money-audit fault on repeated mismatches instead of inserting duplicates", async () => {
+        process.env.BACKEND_SERVICE_TOKEN = "test-token"
+        const db = new FakeDb({
+            strategies: [
+                buildOkxStrategy("strategy-okx-a", "OKX A"),
+                buildOkxStrategy("strategy-okx-b", "OKX B"),
+            ],
+            strategy_runs: [buildOkxRun("run-okx-a", "strategy-okx-a")],
+            instrument_claims: [],
+            orders: [],
+            provider_positions: [],
+            provider_working_orders: [],
+            provider_sync_state: [],
+            position_syncs: [],
+            positions: [],
+            execution_safety_faults: [],
+            account_snapshots: [{
+                _id: "snapshot-before",
+                app: "okx-swap",
+                accountId,
+                venue: "okx",
+                balance: 10_000,
+                equity: 10_000,
+                buyingPower: 10_000,
+                marginUsed: 0,
+                marginAvailable: 10_000,
+                openPnl: 0,
+                dayPnl: 0,
+                timestamp: CLOSED_AT - 60_000,
+            }],
+            account_pnl_events: [],
+            control_plane_metrics: [],
+            alerts: [],
+        })
+        const ctx = { db } as never
+
+        vi.useFakeTimers()
+        const mismatchedState = (equity: number) => ({
+            balance: equity,
+            equity,
+            buyingPower: equity,
+            marginUsed: 0,
+            marginAvailable: equity,
+            openPnl: 0,
+            dayPnl: equity - 10_000,
+        })
+
+        vi.setSystemTime(CLOSED_AT)
+        await callRegistered(reconcileProviderPortfolio, ctx, {
+            ...buildReconcileArgs([]),
+            accountState: mismatchedState(9_990),
+            accountPnlEvents: [],
+        })
+
+        vi.setSystemTime(CLOSED_AT + 60_000)
+        await callRegistered(reconcileProviderPortfolio, ctx, {
+            ...buildReconcileArgs([]),
+            accountState: mismatchedState(9_984),
+            accountPnlEvents: [],
+        })
+
+        const moneyFaults = (db.rows.execution_safety_faults ?? []).filter((fault) =>
+            String(fault.message).startsWith("Money-level reconciliation mismatch")
+        )
+        expect(moneyFaults).toHaveLength(2)
+        expect(new Set(moneyFaults.map((fault) => fault.strategyId))).toEqual(
+            new Set(["strategy-okx-a", "strategy-okx-b"])
+        )
+        for (const fault of moneyFaults) {
+            expect(fault.blocked).toBe(true)
+            expect(fault.occurredAt).toBe(CLOSED_AT + 60_000)
+            expect(String(fault.message)).toContain("-6.000000")
+        }
+        vi.useRealTimers()
+    })
+
     it("excludes account PnL events outside the snapshot window from money-level reconciliation", async () => {
         process.env.BACKEND_SERVICE_TOKEN = "test-token"
         const db = new FakeDb({
