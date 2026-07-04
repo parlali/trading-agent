@@ -725,6 +725,38 @@ describe("OKXVenueAdapter account snapshot semantics", () => {
         ])
     })
 
+    it("reads funding amounts from pnl and posBalChg when amt is absent", async () => {
+        const client = withOKXAccountingDefaults({
+            getAccountBills: vi.fn().mockResolvedValue([
+                {
+                    billId: "3710851764103970928",
+                    instId: "BNB-USDT-SWAP",
+                    ccy: "USDT",
+                    balChg: "0.000000000000000",
+                    posBalChg: "0.1577745",
+                    pnl: "0.1577745",
+                    type: "8",
+                    subType: "174",
+                    ts: "1783094400606",
+                },
+            ]),
+        })
+        const adapter = new OKXVenueAdapter(client as never, {
+            marginMode: "cross",
+            positionMode: "net_mode",
+        })
+
+        await expect(adapter.getAccountPnlEvents()).resolves.toEqual([
+            expect.objectContaining({
+                providerEventId: "3710851764103970928",
+                eventType: "funding_fee",
+                instrument: "BNB-USDT-SWAP",
+                amount: 0.1577745,
+                occurredAt: 1783094400606,
+            }),
+        ])
+    })
+
     it("fails loud when an OKX funding bill is denominated outside settlement currency", async () => {
         const client = withOKXAccountingDefaults({
             getAccountBills: vi.fn().mockResolvedValue([

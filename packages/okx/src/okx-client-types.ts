@@ -141,7 +141,10 @@ export interface OKXAccountBill {
     billId: string
     instId?: string
     ccy: string
-    amt: string
+    amt?: string
+    balChg?: string
+    posBalChg?: string
+    pnl?: string
     type: string
     subType?: string
     ts: string

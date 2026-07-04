@@ -557,7 +557,7 @@ export class OKXVenueAdapter implements VenueAdapter, PriceVerifier {
                 providerEventId: bill.billId,
                 eventType: "funding_fee" as const,
                 instrument: bill.instId,
-                amount: Number(bill.amt),
+                amount: resolveOKXFundingBillAmount(bill),
                 currency: bill.ccy,
                 occurredAt: Number(bill.ts),
                 metadata: {
@@ -1015,6 +1015,21 @@ function addStringAlias(aliases: Set<string>, value: unknown): void {
 function isOKXFundingBill(bill: OKXAccountBill): boolean {
     const type = `${bill.type}:${bill.subType ?? ""}`.toLowerCase()
     return type.includes("funding") || bill.type === "8" || bill.subType === "173"
+}
+
+function resolveOKXFundingBillAmount(bill: OKXAccountBill): number {
+    for (const raw of [bill.amt, bill.pnl, bill.posBalChg, bill.balChg]) {
+        if (raw === undefined || raw.trim() === "") {
+            continue
+        }
+
+        const amount = Number(raw)
+        if (Number.isFinite(amount) && amount !== 0) {
+            return amount
+        }
+    }
+
+    return 0
 }
 
 function assertOKXFundingBillSettlementCurrency(bill: OKXAccountBill): void {
