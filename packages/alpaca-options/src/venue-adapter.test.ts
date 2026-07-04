@@ -418,10 +418,10 @@ describe("AlpacaOptionsVenueAdapter", () => {
                     providerAccountingSource: "alpaca_account_activity",
                     providerActivityId: "activity-expiry-1",
                     activityType: "OPEXP",
-                    fillPnl: 0,
                 }),
             }),
         ])
+        expect(closures[0]?.metadata).not.toHaveProperty("fillPnl")
     })
 
     it("maps Alpaca fee activities into account PnL events", async () => {
@@ -439,7 +439,9 @@ describe("AlpacaOptionsVenueAdapter", () => {
         const adapter = new AlpacaOptionsVenueAdapter(client as never)
         const events = await adapter.getAccountPnlEvents()
 
-        expect(client.getAccountActivities).toHaveBeenCalledWith(["FEE"])
+        expect(client.getAccountActivities).toHaveBeenCalledWith([
+            "FEE", "CFEE", "PTC", "OPCSH", "JNLC", "JNLS", "INT", "DIV", "MISC",
+        ])
         expect(events).toEqual([
             expect.objectContaining({
                 providerEventId: "alpaca-activity:activity-fee-1",

@@ -184,11 +184,17 @@ export class AlpacaOptionsVenueAdapter implements VenueAdapter, PriceVerifier {
     }
 
     async getAccountState(): Promise<AccountState> {
-        const account = await this.client.getAccount()
+        const [account, rawPositions] = await Promise.all([
+            this.client.getAccount(),
+            this.client.getPositions(),
+        ])
         const equity = toNumber(account.equity) || toNumber(account.portfolio_value)
         const balance = toNumber(account.cash)
         const previousBalance = toNumber(account.last_equity)
-        const openPnl = toNumber(account.unrealized_pl)
+        const openPnl = rawPositions.reduce(
+            (sum, position) => sum + toNumber(position.unrealized_pl),
+            0
+        )
 
         return {
             balance,

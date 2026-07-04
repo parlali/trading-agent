@@ -20,7 +20,12 @@ import {
 import { roundPrice, toNumber } from "./alpaca-position-structures"
 
 export const ALPACA_OPTION_CLOSURE_ACTIVITY_TYPES = ["OPEXP", "OPEXC", "OPASN"] as const
-export const ALPACA_ACCOUNT_PNL_ACTIVITY_TYPES = ["FEE"] as const
+export const ALPACA_ACCOUNT_FEE_ACTIVITY_TYPES = ["FEE", "CFEE", "PTC"] as const
+export const ALPACA_ACCOUNT_ADJUSTMENT_ACTIVITY_TYPES = ["OPCSH", "JNLC", "JNLS", "INT", "DIV", "MISC"] as const
+export const ALPACA_ACCOUNT_PNL_ACTIVITY_TYPES = [
+    ...ALPACA_ACCOUNT_FEE_ACTIVITY_TYPES,
+    ...ALPACA_ACCOUNT_ADJUSTMENT_ACTIVITY_TYPES,
+] as const
 
 export {
     buildGroupCloseIntent,
@@ -91,6 +96,7 @@ export function mapAlpacaOptionActivityClosure(
 
     const netAmount = toNumber(activity.net_amount)
     const price = toNumber(activity.price)
+    const carriesRealizedCash = activityType !== "OPEXP" || netAmount !== 0
 
     return {
         instrument: symbol,
@@ -110,7 +116,7 @@ export function mapAlpacaOptionActivityClosure(
             description: activity.description,
             status: activity.status,
             netAmount,
-            fillPnl: netAmount,
+            ...(carriesRealizedCash ? { fillPnl: netAmount } : {}),
             symbol,
             qty: activity.qty,
             price: activity.price,
@@ -137,7 +143,7 @@ export function mapAlpacaAccountPnlEvent(
 
     return {
         providerEventId: `alpaca-activity:${activity.id}`,
-        eventType: "fee",
+        eventType: isAlpacaAccountFeeActivityType(activityType) ? "fee" : "adjustment",
         instrument: activity.symbol?.trim().toUpperCase() || undefined,
         amount,
         currency: "USD",
@@ -158,6 +164,12 @@ function isAlpacaOptionClosureActivityType(
     activityType: string
 ): activityType is typeof ALPACA_OPTION_CLOSURE_ACTIVITY_TYPES[number] {
     return ALPACA_OPTION_CLOSURE_ACTIVITY_TYPES.includes(activityType as typeof ALPACA_OPTION_CLOSURE_ACTIVITY_TYPES[number])
+}
+
+function isAlpacaAccountFeeActivityType(
+    activityType: string
+): activityType is typeof ALPACA_ACCOUNT_FEE_ACTIVITY_TYPES[number] {
+    return ALPACA_ACCOUNT_FEE_ACTIVITY_TYPES.includes(activityType as typeof ALPACA_ACCOUNT_FEE_ACTIVITY_TYPES[number])
 }
 
 function isAlpacaAccountPnlActivityType(

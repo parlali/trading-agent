@@ -7,7 +7,6 @@ export interface AlpacaAccountResponse {
     regt_buying_power?: string
     initial_margin?: string
     maintenance_margin?: string
-    unrealized_pl?: string
     last_equity?: string
     portfolio_value?: string
 }
