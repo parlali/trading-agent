@@ -16,6 +16,15 @@ const accountState: AccountState = {
 
 const positions: Position[] = []
 
+const maxLossPolicy = {
+    llm: {
+        provider: "codex",
+        model: "gpt-5.5",
+        authMode: "chatgpt",
+    },
+    maxLossPerPlay: 150,
+}
+
 function validate(intent: OrderIntent) {
     return structureValidator(intent, {}, accountState, positions)
 }
@@ -133,6 +142,91 @@ describe("alpaca structure validator", () => {
             structureType: "credit_vertical",
             verticalSpreadType: "bear_call_credit",
         })
+    })
+
+    it("nets the credit received when enforcing max loss per play", () => {
+        const maxLossValidator = alpacaRiskValidators[1]!
+        const nvdaWideStrikesIntent: OrderIntent = {
+            instrument: "NVDA",
+            side: "sell",
+            quantity: 1,
+            orderType: "limit",
+            limitPrice: 1.1,
+            timeInForce: "day",
+            legs: [
+                {
+                    instrument: "NVDA260717C00212500",
+                    side: "sell_to_open",
+                    quantity: 1,
+                },
+                {
+                    instrument: "NVDA260717C00215000",
+                    side: "buy_to_open",
+                    quantity: 1,
+                },
+                {
+                    instrument: "NVDA260717P00205000",
+                    side: "sell_to_open",
+                    quantity: 1,
+                },
+                {
+                    instrument: "NVDA260717P00202500",
+                    side: "buy_to_open",
+                    quantity: 1,
+                },
+            ],
+        }
+
+        const allowed = maxLossValidator(
+            nvdaWideStrikesIntent,
+            maxLossPolicy,
+            accountState,
+            positions
+        )
+        expect(allowed.allowed).toBe(true)
+
+        const thinCredit = maxLossValidator(
+            { ...nvdaWideStrikesIntent, limitPrice: 0.5 },
+            maxLossPolicy,
+            accountState,
+            positions
+        )
+        expect(thinCredit.allowed).toBe(false)
+        expect(thinCredit.reason).toContain("max loss 200")
+    })
+
+    it("never blocks closes on max loss per play", () => {
+        const maxLossValidator = alpacaRiskValidators[1]!
+        const result = maxLossValidator(
+            {
+                instrument: "NVDA",
+                side: "buy",
+                quantity: 1,
+                orderType: "limit",
+                limitPrice: 0.4,
+                timeInForce: "day",
+                metadata: {
+                    action: "close",
+                },
+                legs: [
+                    {
+                        instrument: "NVDA260717C00212500",
+                        side: "buy_to_close",
+                        quantity: 1,
+                    },
+                    {
+                        instrument: "NVDA260717C00215000",
+                        side: "sell_to_close",
+                        quantity: 1,
+                    },
+                ],
+            },
+            maxLossPolicy,
+            accountState,
+            positions
+        )
+
+        expect(result.allowed).toBe(true)
     })
 
     it("rejects non-2/4-leg structures", () => {

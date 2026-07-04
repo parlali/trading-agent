@@ -1,6 +1,7 @@
 import {
     alpacaOptionsPolicySchema,
     getIntentAction,
+    openIntentRiskValidator,
     type AccountState,
     type OrderIntent,
     type OrderLeg,
@@ -42,9 +43,8 @@ const SUPPORTED_LEG_COUNTS = new Set([2, 4])
 
 export const alpacaRiskValidators: readonly RiskValidator[] = [
     alpacaStructureValidator,
-    maxLossPerPlayValidator,
+    openIntentRiskValidator(maxLossPerPlayValidator),
     expiryValidationValidator,
-    spreadWidthValidationValidator,
 ]
 
 export function buildIronCondorInstrument(
@@ -363,32 +363,6 @@ function expiryValidationValidator(intent: OrderIntent) {
     return { allowed: true }
 }
 
-function spreadWidthValidationValidator(
-    intent: OrderIntent,
-    rawPolicy: Record<string, unknown>
-) {
-    const policy = alpacaOptionsPolicySchema.parse(rawPolicy)
-    const width = calculateStructureWidth(intent)
-
-    if (width === null) {
-        return {
-            allowed: false,
-            reason: "Unable to determine spread width for Alpaca options structure",
-        }
-    }
-
-    const maxLossFromWidth = width * 100 * intent.quantity
-
-    if (maxLossFromWidth > policy.maxLossPerPlay) {
-        return {
-            allowed: false,
-            reason: `Spread width implies max loss ${maxLossFromWidth}, exceeding ${policy.maxLossPerPlay}`,
-        }
-    }
-
-    return { allowed: true }
-}
-
 function getIntentExpirations(intent: OrderIntent): string[] {
     if (!intent.legs || intent.legs.length === 0) {
         return []
@@ -411,14 +385,10 @@ function calculateStructureWidth(intent: OrderIntent): number | null {
 }
 
 function estimateStructureMaxLoss(intent: OrderIntent): number | null {
-    const explicitMaxLoss = intent.metadata?.maxLoss
-    if (typeof explicitMaxLoss === "number") {
-        return explicitMaxLoss
-    }
-
     const width = calculateStructureWidth(intent)
     if (width === null) {
-        return null
+        const explicitMaxLoss = intent.metadata?.maxLoss
+        return typeof explicitMaxLoss === "number" ? explicitMaxLoss : null
     }
 
     const credit = intent.limitPrice ?? 0
