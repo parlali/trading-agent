@@ -177,6 +177,7 @@ function createBindingForCandidate(args: {
     const discoveryBudgetKey = isNestedDiscoveryTool(args.provider, args.remoteTool.name)
         ? (params: unknown) => `${args.candidate.inventory.registeredName}:${stableJsonKey(params ?? {})}`
         : undefined
+    const servedDiscoveryKeys = new Set<string>()
 
     return {
         name: args.candidate.inventory.registeredName,
@@ -191,9 +192,19 @@ function createBindingForCandidate(args: {
         outputDescription: "Returns the upstream MCP tool result.",
         errorSemantics: "Remote MCP validation, transport, and provider errors throw and are handled by the registered tool category.",
         handler: async (params, context) => {
+            const discoveryKey = discoveryBudgetKey?.(params)
+            if (discoveryKey && servedDiscoveryKeys.has(discoveryKey)) {
+                return {
+                    notice: `This identical ${args.remoteTool.name} call already returned its full inventory earlier in this run. Reuse that result and call the discovered tools directly instead of re-listing them.`,
+                }
+            }
+
             const result = await args.client.callTool(args.remoteTool.name, params, context?.signal)
             if (args.dynamicRefresh) {
                 await args.dynamicRefresh(result)
+            }
+            if (discoveryKey) {
+                servedDiscoveryKeys.add(discoveryKey)
             }
             return result
         },
