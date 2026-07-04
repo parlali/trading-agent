@@ -143,6 +143,20 @@ function groupEmergencyAlpacaClosePositions<TPosition extends PositionLike>(
         return []
     }
 
+    const derived = deriveProviderStructureGroups(positions)
+    return [
+        ...derived.groups.map((group) =>
+            buildEmergencySyntheticClosePosition(group.entries, group.structure) as TPosition
+        ),
+        ...derived.ungrouped,
+    ]
+}
+
+type ProviderStructure = NonNullable<ReturnType<typeof resolveStructureFromProviderPositions>>
+
+function deriveProviderStructureGroups<TPosition extends PositionLike>(
+    positions: TPosition[]
+): { groups: Array<{ structure: ProviderStructure; entries: TPosition[] }>; ungrouped: TPosition[] } {
     const buckets = new Map<string, TPosition[]>()
     for (const position of positions) {
         const parsed = parseOptionContractSymbol(position.instrument)
@@ -157,14 +171,15 @@ function groupEmergencyAlpacaClosePositions<TPosition extends PositionLike>(
         buckets.set(bucketKey, bucket)
     }
 
-    const grouped: TPosition[] = []
+    const groups: Array<{ structure: ProviderStructure; entries: TPosition[] }> = []
+    const ungrouped: TPosition[] = []
     for (const bucket of buckets.values()) {
         let unused = [...bucket]
 
         if (unused.length === 4) {
             const structure = resolveStructureFromProviderPositions(unused)
             if (structure?.structureType === "iron_condor") {
-                grouped.push(buildEmergencySyntheticClosePosition(unused, structure) as TPosition)
+                groups.push({ structure, entries: unused })
                 unused = []
             }
         }
@@ -180,14 +195,14 @@ function groupEmergencyAlpacaClosePositions<TPosition extends PositionLike>(
                 break
             }
 
-            grouped.push(buildEmergencySyntheticClosePosition(vertical, structure) as TPosition)
+            groups.push({ structure, entries: vertical })
             unused = removeProviderPositions(unused, vertical)
         }
 
-        grouped.push(...unused)
+        ungrouped.push(...unused)
     }
 
-    return grouped
+    return { groups, ungrouped }
 }
 
 function findProviderStructureSubset<TPosition extends PositionLike>(
@@ -700,6 +715,14 @@ export function resolveGroupForClose(
     positions: AlpacaPositionResponse[],
     instrument: string
 ): PositionGroup | null {
+    return resolveGroupFromCanonicalClaim(positions, instrument) ??
+        resolveGroupFromRelaxedReference(positions, instrument)
+}
+
+function resolveGroupFromCanonicalClaim(
+    positions: AlpacaPositionResponse[],
+    instrument: string
+): PositionGroup | null {
     const claim = parseClaimedStructureInstrument(instrument)
     if (!claim) {
         return null
@@ -728,18 +751,148 @@ export function resolveGroupForClose(
         return null
     }
 
-    const scaledPositions = claimedPositions.map((position) => ({
-        ...position,
-        qty: String(quantity),
-    }))
-    const unrealizedPnl = scaledPositions.reduce((sum, position) => sum + toNumber(position.unrealized_pl), 0)
-
-    return buildPositionGroup({
+    return buildScaledPositionGroup({
         structureType: claim.structureType,
         verticalSpreadType: claim.verticalSpreadType,
         underlying: claim.underlying,
         expiration: claim.expiration,
         quantity,
+        positions: claimedPositions,
+    })
+}
+
+type RelaxedCloseReference =
+    | { kind: "leg"; symbol: string }
+    | {
+        kind: "structure"
+        structureType: AlpacaStructureType
+        verticalSpreadType?: AlpacaVerticalSpreadType
+        underlying: string
+        expiration: string
+    }
+
+function resolveGroupFromRelaxedReference(
+    positions: AlpacaPositionResponse[],
+    instrument: string
+): PositionGroup | null {
+    const reference = parseRelaxedCloseReference(instrument)
+    if (!reference) {
+        return null
+    }
+
+    const optionPositions = positions.filter(isAlpacaOptionPosition)
+    const rawByEntry = new Map<PositionLike, AlpacaPositionResponse>()
+    const entries = optionPositions.map((position) => {
+        const entry = toClaimPositionLike(position)
+        rawByEntry.set(entry, position)
+        return entry
+    })
+
+    const matches = deriveProviderStructureGroups(entries).groups.filter((group) =>
+        matchesRelaxedCloseReference(group.structure, reference)
+    )
+    if (matches.length !== 1) {
+        return null
+    }
+
+    const match = matches[0]!
+    const quantity = Math.min(...match.entries.map((entry) => entry.quantity))
+    if (!Number.isFinite(quantity) || quantity <= 0) {
+        return null
+    }
+
+    return buildScaledPositionGroup({
+        structureType: match.structure.structureType,
+        verticalSpreadType: match.structure.verticalSpreadType,
+        underlying: match.structure.underlying,
+        expiration: match.structure.expiration,
+        quantity,
+        positions: match.entries.map((entry) => rawByEntry.get(entry)!),
+    })
+}
+
+function parseRelaxedCloseReference(instrument: string): RelaxedCloseReference | null {
+    const normalized = instrument.trim().toUpperCase()
+
+    if (parseOptionContractSymbol(normalized)) {
+        return { kind: "leg", symbol: normalized }
+    }
+
+    const tokens = normalized.split(":")
+    if (tokens[0] === "IC" && tokens[1] && tokens[2]) {
+        return {
+            kind: "structure",
+            structureType: "iron_condor",
+            underlying: tokens[1],
+            expiration: tokens[2],
+        }
+    }
+
+    if (tokens[0] !== "VS" || !tokens[1] || !tokens[2] || !tokens[3]) {
+        return null
+    }
+
+    const verticalSpreadType = tokens[1].includes("PUT") || tokens[1] === "BPS"
+        ? "bull_put_credit" as const
+        : tokens[1].includes("CALL") || tokens[1] === "BCS"
+            ? "bear_call_credit" as const
+            : undefined
+    if (!verticalSpreadType) {
+        return null
+    }
+
+    return {
+        kind: "structure",
+        structureType: "credit_vertical",
+        verticalSpreadType,
+        underlying: tokens[2],
+        expiration: tokens[3],
+    }
+}
+
+function matchesRelaxedCloseReference(
+    structure: ProviderStructure,
+    reference: RelaxedCloseReference
+): boolean {
+    if (reference.kind === "leg") {
+        return structure.legs.some((leg) => leg.instrument === reference.symbol)
+    }
+
+    if (structure.structureType !== reference.structureType) {
+        return false
+    }
+
+    if (
+        reference.verticalSpreadType &&
+        structure.verticalSpreadType !== reference.verticalSpreadType
+    ) {
+        return false
+    }
+
+    return structure.underlying === reference.underlying &&
+        structure.expiration === reference.expiration
+}
+
+function buildScaledPositionGroup(args: {
+    structureType: AlpacaStructureType
+    verticalSpreadType?: AlpacaVerticalSpreadType
+    underlying: string
+    expiration: string
+    quantity: number
+    positions: AlpacaPositionResponse[]
+}): PositionGroup {
+    const scaledPositions = args.positions.map((position) => ({
+        ...position,
+        qty: String(args.quantity),
+    }))
+    const unrealizedPnl = scaledPositions.reduce((sum, position) => sum + toNumber(position.unrealized_pl), 0)
+
+    return buildPositionGroup({
+        structureType: args.structureType,
+        verticalSpreadType: args.verticalSpreadType,
+        underlying: args.underlying,
+        expiration: args.expiration,
+        quantity: args.quantity,
         positions: scaledPositions,
         unrealizedPnl,
     })
