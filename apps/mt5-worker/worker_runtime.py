@@ -583,14 +583,27 @@ class MT5WorkerRuntime:
             fromLogin=client.login if client else None,
             toLogin=login,
         )
-        result = await self.connect(login, password, server)
-        if not result.get("success"):
-            raise_worker_http_error(
-                f"MT5 session switch to login {login} failed: {result.get('error')}",
-                str(result.get("errorType") or "session_switch_failed"),
-                bool(result.get("retryable", False)),
-                details={"login": login},
+        max_attempts = max(1, int(self.settings.reconnect_max_retries))
+        result: dict[str, Any] = {}
+        for attempt in range(1, max_attempts + 1):
+            result = await self.connect(login, password, server)
+            if result.get("success"):
+                break
+            if not result.get("retryable") or attempt == max_attempts:
+                raise_worker_http_error(
+                    f"MT5 session switch to login {login} failed: {result.get('error')}",
+                    str(result.get("errorType") or "session_switch_failed"),
+                    bool(result.get("retryable", False)),
+                    details={"login": login, "attempts": attempt},
+                )
+            log.warning(
+                "mt5_session_switch_retry",
+                operation=operation,
+                toLogin=login,
+                attempt=attempt,
+                error=result.get("error"),
             )
+            await asyncio.sleep(self.settings.reconnect_delay_seconds)
 
         account_info = result.get("accountInfo") or {}
         active_login = account_info.get("login")
