@@ -129,7 +129,7 @@ export class CodexAppServerProvider implements AgentModelProvider {
             diagnostics.billingMode = resolveBillingMode(this.config.authMode)
             assertCodexAuthMode(this.config.authMode, authStatus)
 
-            rateLimitSnapshotBefore = await this.readRateLimits()
+            rateLimitSnapshotBefore = await this.readRateLimitsTelemetry(args, "before")
             diagnostics.rateLimitSnapshotBefore = rateLimitSnapshotBefore
 
             const { baseInstructions, userMessage } = readCodexPromptParts(args.conversation)
@@ -161,7 +161,7 @@ export class CodexAppServerProvider implements AgentModelProvider {
             diagnostics.codexTurnIds = [turnId]
             const completion = await this.waitForTurnCompletionWithRunControl(args, this.currentThreadId, turnId)
 
-            rateLimitSnapshotAfter = await this.readRateLimits()
+            rateLimitSnapshotAfter = await this.readRateLimitsTelemetry(args, "after")
             diagnostics.rateLimitSnapshotAfter = rateLimitSnapshotAfter
 
             const fatalFault = args.toolEngine.getOutcome().fatalFault
@@ -427,6 +427,22 @@ export class CodexAppServerProvider implements AgentModelProvider {
         const result = await this.requireClient().request("account/rateLimits/read", undefined)
         const record = readRecord(result)
         return record?.rateLimits ?? result
+    }
+
+    private async readRateLimitsTelemetry(
+        args: AgentProviderRunArgs,
+        phase: "before" | "after"
+    ): Promise<unknown> {
+        try {
+            return await this.readRateLimits()
+        } catch (error) {
+            args.logger.warn("Codex rate-limit telemetry read failed", {
+                runId: args.context.runId,
+                phase,
+                error: error instanceof Error ? error.message : String(error),
+            })
+            return undefined
+        }
     }
 
     private async startTurn(
