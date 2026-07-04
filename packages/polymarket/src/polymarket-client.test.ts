@@ -83,8 +83,41 @@ describe("PolymarketClient public read paths", () => {
         expect(url.searchParams.get("page")).toBe("1")
         expect(url.searchParams.get("search_tags")).toBe("false")
         expect(url.searchParams.get("search_profiles")).toBe("false")
-        expect(url.searchParams.get("optimized")).toBe("true")
+        expect(url.searchParams.get("optimized")).toBe("false")
         expect(url.searchParams.get("limit")).toBeNull()
+    })
+
+    it("requests full market objects because optimized search responses omit conditionId", async () => {
+        fetchMock.mockResolvedValueOnce(
+            createJsonResponse({
+                events: [
+                    {
+                        title: "Core CPI YoY - June 2026",
+                        category: "Economics",
+                        markets: [
+                            {
+                                question: "Will core CPI YoY exceed 3% in June 2026?",
+                                outcomes: "[\"Yes\",\"No\"]",
+                                outcomePrices: "[\"0.16\",\"0.84\"]",
+                                active: true,
+                                closed: false,
+                                slug: "core-cpi-june-2026",
+                                bestBid: 0.15,
+                                bestAsk: 0.17,
+                                spread: 0.02,
+                            },
+                        ],
+                    },
+                ],
+            })
+        )
+
+        fetchMock.mockResolvedValueOnce(createJsonResponse([]))
+        fetchMock.mockResolvedValueOnce(createJsonResponse([]))
+
+        const results = await createClient().searchMarkets("CPI", 3)
+
+        expect(results).toEqual([])
     })
 
     it("treats public-search and slug lookup 404s as empty reads", async () => {

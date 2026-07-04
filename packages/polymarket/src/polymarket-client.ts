@@ -261,7 +261,7 @@ export class PolymarketClient {
         params.set("page", "1")
         params.set("search_tags", "false")
         params.set("search_profiles", "false")
-        params.set("optimized", "true")
+        params.set("optimized", "false")
 
         const response = await this.requestGammaOrNotFound<GammaSearchResponse>(
             `/public-search?${params.toString()}`
