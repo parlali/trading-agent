@@ -93,6 +93,16 @@ const EXECUTION_COST_ABSOLUTE_THRESHOLDS: Partial<Record<
         blockSpreadPercent: 15,
     },
 }
+const EXECUTION_COST_NEGLIGIBLE_SPREAD_BPS: Partial<Record<
+    ExecutionCostInstrumentClass,
+    number
+>> = {
+    fx: 3,
+    metal: 5,
+    index: 5,
+    equity: 5,
+    perpetual_swap: 5,
+}
 
 export class ExecutionCostTracker {
     private readonly baselines = new Map<string, ExecutionCostBaseline>()
@@ -222,6 +232,10 @@ export function assessExecutionCost(
         return buildAssessment(metrics, baseline, undefined, status, false)
     }
 
+    if (isNegligibleAbsoluteSpread(metrics)) {
+        return buildAssessment(metrics, baseline, ratioToBaseline, absoluteStatus ?? "normal", false)
+    }
+
     if (ratioToBaseline > EXECUTION_COST_BLOCK_RATIO) {
         return buildAssessment(metrics, baseline, ratioToBaseline, "blocked", true)
     }
@@ -322,6 +336,13 @@ function buildBurstBaseline(snapshots: ExecutionCostSnapshot[]): ExecutionCostBa
         spreadPercent: median(metrics.map((entry) => entry.spreadPercent)),
         spreadBps: median(metrics.map((entry) => entry.spreadBps)),
     }
+}
+
+function isNegligibleAbsoluteSpread(metrics: ExecutionCostMetrics): boolean {
+    const floorBps = EXECUTION_COST_NEGLIGIBLE_SPREAD_BPS[metrics.instrumentClass]
+    return floorBps !== undefined &&
+        metrics.spreadBps !== undefined &&
+        metrics.spreadBps <= floorBps
 }
 
 function resolveBaselineRatio(

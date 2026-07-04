@@ -79,6 +79,62 @@ describe("Execution cost assessment", () => {
         expect(assessment.blockNewEntries).toBe(true)
     })
 
+    it("does not block negligible absolute spreads on baseline ratio alone", () => {
+        const capturedAt = Date.UTC(2026, 3, 23, 14, 0, 0)
+        const metrics = resolveExecutionCostMetrics({
+            app: "mt5",
+            instrument: "XAUUSD",
+            instrumentClass: "metal",
+            capturedAt,
+            bestBid: 4100,
+            bestAsk: 4101.4,
+            nativeSpreadUnit: "price",
+        })
+        const assessment = assessExecutionCost(metrics, {
+            app: "mt5",
+            instrument: "XAUUSD",
+            instrumentClass: "metal",
+            regimeKey: metrics.regimeKey,
+            nativeSpreadUnit: "price",
+            sampleCount: 50,
+            source: "rolling_observed",
+            lastObservedAt: capturedAt,
+            spreadBps: 1.5,
+        })
+
+        expect(assessment.ratioToBaseline).toBeGreaterThan(2)
+        expect(assessment.status).toBe("normal")
+        expect(assessment.blockNewEntries).toBe(false)
+    })
+
+    it("still blocks materially wide spreads relative to baseline", () => {
+        const capturedAt = Date.UTC(2026, 3, 23, 14, 0, 0)
+        const metrics = resolveExecutionCostMetrics({
+            app: "mt5",
+            instrument: "XAUUSD",
+            instrumentClass: "metal",
+            capturedAt,
+            bestBid: 4100,
+            bestAsk: 4103.4,
+            nativeSpreadUnit: "price",
+        })
+        const assessment = assessExecutionCost(metrics, {
+            app: "mt5",
+            instrument: "XAUUSD",
+            instrumentClass: "metal",
+            regimeKey: metrics.regimeKey,
+            nativeSpreadUnit: "price",
+            sampleCount: 50,
+            source: "rolling_observed",
+            lastObservedAt: capturedAt,
+            spreadBps: 3,
+        })
+
+        expect(assessment.ratioToBaseline).toBeGreaterThan(2)
+        expect(assessment.status).toBe("blocked")
+        expect(assessment.blockNewEntries).toBe(true)
+    })
+
     it("blocks prediction-market spreads on absolute terms even when the baseline is also wide", () => {
         const metrics = resolveExecutionCostMetrics({
             app: "polymarket",
