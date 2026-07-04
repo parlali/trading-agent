@@ -207,7 +207,7 @@ describe("CodexAppServerProvider", () => {
         })
     })
 
-    it("persists assistant transcript when post-turn provider reads fail", async () => {
+    it("completes the run and persists the transcript when post-turn rate-limit telemetry fails", async () => {
         const provider = createProvider({
             createClient: (args) => new FakeCodexClient(args, async (fake) => {
                 fake.emitNotification({
@@ -233,7 +233,7 @@ describe("CodexAppServerProvider", () => {
         const result = await provider.run(runArgs)
 
         expect(result.summary).toBe("Need manual review")
-        expect(result.error).toBe("rate limits unavailable")
+        expect(result.error).toBeUndefined()
         const agentLogger = runArgs.agentLogger as { log: ReturnType<typeof vi.fn> }
         const assistantLog = agentLogger.log.mock.calls.find((call) => call[3] === "assistant")
         expect(assistantLog?.[2]).toBe(3)
