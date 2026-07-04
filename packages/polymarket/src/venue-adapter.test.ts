@@ -221,6 +221,34 @@ describe("PolymarketVenueAdapter.simulateDryRunOrder", () => {
         expect(client.getPrice).not.toHaveBeenCalled()
         expect(client.getOrderBook).not.toHaveBeenCalled()
     })
+
+    it("fills by walking executable book depth instead of the quoted limit price", async () => {
+        const client = createClient()
+        client.getOrderBook.mockResolvedValue(createOrderBook({
+            asks: [
+                { price: "0.53", size: "6" },
+                { price: "0.55", size: "10" },
+            ],
+        }))
+        client.getFeeRateBps.mockResolvedValue(undefined)
+        const venue = new PolymarketVenueAdapter(client.client)
+        const context = createIdentityContext("vpmc01bookwalk")
+
+        const filled = await venue.simulateDryRunOrder(createPolymarketIntent({
+            limitPrice: 0.56,
+            metadata: createCanonicalOrderMetadata(),
+        }), context)
+        expect(filled.status).toBe("filled")
+        expect(filled.fillPrice).toBeCloseTo((6 * 0.53 + 4 * 0.55) / 10, 10)
+
+        const rejected = await venue.simulateDryRunOrder(createPolymarketIntent({
+            quantity: 40,
+            limitPrice: 0.54,
+            metadata: createCanonicalOrderMetadata(),
+        }), context)
+        expect(rejected.status).toBe("rejected")
+        expect(rejected.errorDetail?.code).toBe("POLYMARKET_DRY_RUN_INSUFFICIENT_DEPTH")
+    })
 })
 
 describe("PolymarketVenueAdapter.getMarketPrice", () => {
@@ -1235,6 +1263,7 @@ describe("PolymarketVenueAdapter fee accounting stamps", () => {
     it("stamps dry-run fills with the provider fee rate fetched from the venue", async () => {
         const client = createClient()
         client.getFeeRateBps.mockResolvedValue(0)
+        client.getOrderBook.mockResolvedValue(createOrderBook({ asks: [{ price: "0.42", size: "10" }] }))
 
         const venue = new PolymarketVenueAdapter(client.client)
         const result = await venue.simulateDryRunOrder(
@@ -1255,6 +1284,7 @@ describe("PolymarketVenueAdapter fee accounting stamps", () => {
     it("ignores agent-supplied fee metadata and uses the provider fee rate for dry-run fills", async () => {
         const client = createClient()
         client.getFeeRateBps.mockResolvedValue(20)
+        client.getOrderBook.mockResolvedValue(createOrderBook({ asks: [{ price: "0.42", size: "10" }] }))
 
         const venue = new PolymarketVenueAdapter(client.client)
         const result = await venue.simulateDryRunOrder(
@@ -1281,6 +1311,7 @@ describe("PolymarketVenueAdapter fee accounting stamps", () => {
     it("stamps dry-run fills with an explicit missing-accounting marker when the fee rate is unavailable", async () => {
         const client = createClient()
         client.getFeeRateBps.mockRejectedValue(new Error("fee-rate endpoint unavailable"))
+        client.getOrderBook.mockResolvedValue(createOrderBook({ asks: [{ price: "0.42", size: "10" }] }))
 
         const venue = new PolymarketVenueAdapter(client.client)
         const result = await venue.simulateDryRunOrder(

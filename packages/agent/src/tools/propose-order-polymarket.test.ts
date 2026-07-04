@@ -4,9 +4,9 @@ import { createPolymarketProposeOrderTool } from "./propose-order-polymarket"
 import type { PolymarketPriceProvider } from "./polymarket-order-helpers"
 
 describe("createPolymarketProposeOrderTool", () => {
-    it("rejects an already-held token before live price lookup", async () => {
+    it("routes same-side additions to an already-held token as adjustments", async () => {
         const tokenId = "123456789012345678901234567890"
-        const conditionId = "condition-duplicate-token"
+        const conditionId = "condition-add-token"
         const pipeline = createPipeline([
             createPosition({
                 instrument: tokenId,
@@ -22,16 +22,9 @@ describe("createPolymarketProposeOrderTool", () => {
             conditionId,
         }))
 
-        expect(result).toMatchObject({
-            status: "rejected",
-            errorDetail: {
-                code: "POLYMARKET_DUPLICATE_TOKEN",
-            },
-            riskValidation: {
-                allowed: false,
-            },
-        })
-        expect(venue.getMarketPrice).not.toHaveBeenCalled()
+        expect(result).toMatchObject({ status: "filled" })
+        const executeIntent = pipeline.executeIntent as ReturnType<typeof vi.fn>
+        expect(executeIntent.mock.calls[0]?.[3]).toMatchObject({ action: "adjustment" })
     })
 
     it("rejects another outcome from an already-held condition before live price lookup", async () => {
@@ -69,6 +62,25 @@ describe("createPolymarketProposeOrderTool", () => {
 function createPipeline(positions: Position[]): ExecutionPipeline {
     return {
         getPositions: vi.fn(async () => positions),
+        getAccountState: vi.fn(async () => ({
+            balance: 1000,
+            equity: 1000,
+            buyingPower: 1000,
+            marginUsed: 0,
+            marginAvailable: 1000,
+            openPnl: 0,
+            dayPnl: 0,
+        })),
+        executeIntent: vi.fn(async () => ({
+            result: {
+                orderId: "order-add-1",
+                status: "filled",
+                filledQuantity: 10,
+                fillPrice: 0.5,
+                timestamp: Date.now(),
+            },
+            validation: { allowed: true },
+        })),
     } as unknown as ExecutionPipeline
 }
 
@@ -76,7 +88,10 @@ function createVenue(): PolymarketPriceProvider & {
     getMarketPrice: ReturnType<typeof vi.fn>
 } {
     return {
-        getMarketPrice: vi.fn(),
+        getMarketPrice: vi.fn(async () => ({
+            midpoint: 0.5,
+            executablePrice: 0.5,
+        })),
     } as unknown as PolymarketPriceProvider & {
         getMarketPrice: ReturnType<typeof vi.fn>
     }

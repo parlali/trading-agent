@@ -48,6 +48,7 @@ export interface RawGammaMarket {
     endDateIso?: string
     endDate?: string
     slug?: string
+    outcomePrices?: string
 }
 
 export interface GammaSearchResponse {
@@ -107,6 +108,7 @@ export function mapGammaMarket(
     const category = resolveGammaCategory(event, fallbackCategory)
     const outcomes = parseJsonStringArray(market.outcomes)
     const tokenIds = parseJsonStringArray(market.clobTokenIds)
+    const outcomePrices = parseJsonStringArray(market.outcomePrices).map(Number)
 
     return {
         conditionId,
@@ -117,6 +119,7 @@ export function mapGammaMarket(
         tokens: outcomes.map((outcome, index) => ({
             tokenId: tokenIds[index] ?? "",
             outcome,
+            resolvedPrice: Number.isFinite(outcomePrices[index]) ? outcomePrices[index] : undefined,
         })).filter((token) => token.tokenId.length > 0),
         active: market.active === true,
         closed: market.closed === true,

@@ -58,9 +58,11 @@ export function buildPolymarketConditionInstrumentAlias(conditionId: unknown): s
 export const duplicateOrderValidator: RiskValidator = (intent, _policy, _state, positions) => {
     const intentSide = intent.side === "buy" ? "long" : "short"
 
-    const duplicate = positions.find(
-        (pos) => pos.instrument === intent.instrument && pos.side === intentSide
-    )
+    const duplicate = getIntentAction(intent) === "adjustment"
+        ? undefined
+        : positions.find(
+            (pos) => pos.instrument === intent.instrument && pos.side === intentSide
+        )
 
     if (duplicate) {
         return {

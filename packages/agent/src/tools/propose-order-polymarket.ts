@@ -54,8 +54,19 @@ export function createPolymarketProposeOrderTool(
 
             assertToolNotAborted(context?.signal)
             const positions = await pipeline.getPositions()
+            const intentSide = intent.side === "buy" ? "long" : "short"
+            const existingSameSide = positions.find((position) =>
+                position.instrument === intent.instrument && position.side === intentSide
+            )
+            const action = existingSameSide ? "adjustment" as const : "entry" as const
             const duplicateValidation = duplicateOrderValidator(
-                intent,
+                {
+                    ...intent,
+                    metadata: {
+                        ...intent.metadata,
+                        action,
+                    },
+                },
                 {},
                 {} as AccountState,
                 positions
@@ -84,7 +95,7 @@ export function createPolymarketProposeOrderTool(
                     estimatedPrice,
                     currentPrice: estimatedPrice,
                 },
-            }, { action: "entry" }, {
+            }, { action }, {
                 includeTrackedOrder: true,
                 positions,
                 signal: context?.signal,

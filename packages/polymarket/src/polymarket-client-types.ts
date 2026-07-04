@@ -33,6 +33,7 @@ export interface PolymarketMarket {
 export interface PolymarketToken {
     tokenId: string
     outcome: string
+    resolvedPrice?: number
 }
 
 export interface PolymarketOrderBook {

@@ -7,6 +7,7 @@ import {
     readTrimmedString,
     type AccountState,
     type DryRunOrderSimulator,
+    type ExecutionErrorDetail,
     type ExecutionResult,
     type OrderIntent,
     type PriceVerification,
@@ -494,30 +495,19 @@ export class PolymarketVenueAdapter implements VenueAdapter, PriceVerifier, DryR
             })
         }
 
-        const marketPrice = await this.getMarketPrice(canonical.tokenId, intent.side)
-        const fillPrice = intent.limitPrice ?? marketPrice.executablePrice ?? marketPrice.midpoint
-
-        if (!Number.isFinite(fillPrice) || fillPrice <= 0) {
-            const errorDetail = createExecutionErrorDetail("pre_validation", "Polymarket dry-run simulation requires a finite token price", {
-                code: "POLYMARKET_DRY_RUN_PRICE_UNAVAILABLE",
-                retryable: true,
-                details: {
-                    tokenId: canonical.tokenId,
-                    conditionId: canonical.conditionId,
-                    marketSlug: canonical.marketSlug,
-                },
-            })
-
+        const simulatedFill = await this.resolveDryRunBookFill(intent, canonical)
+        if ("rejection" in simulatedFill) {
             return {
                 orderId: "",
                 status: "rejected",
                 filledQuantity: 0,
                 timestamp: Date.now(),
-                error: formatExecutionError(errorDetail),
-                errorDetail,
+                error: formatExecutionError(simulatedFill.rejection),
+                errorDetail: simulatedFill.rejection,
             }
         }
 
+        const fillPrice = simulatedFill.fillPrice
         const feeRateBps = await this.resolveDryRunFeeRateBps(canonical.tokenId)
 
         return {
@@ -538,6 +528,87 @@ export class PolymarketVenueAdapter implements VenueAdapter, PriceVerifier, DryR
                     price: fillPrice,
                 }),
             },
+        }
+    }
+
+    private async resolveDryRunBookFill(
+        intent: OrderIntent,
+        canonical: { tokenId: string; conditionId?: string; marketSlug?: string }
+    ): Promise<{ fillPrice: number } | { rejection: ExecutionErrorDetail }> {
+        const book = await this.client.getOrderBook(canonical.tokenId)
+        const levels = (intent.side === "buy" ? book.asks : book.bids)
+            .map((level) => ({ price: Number(level.price), size: Number(level.size) }))
+            .filter((level) =>
+                Number.isFinite(level.price) &&
+                level.price > 0 &&
+                Number.isFinite(level.size) &&
+                level.size > 0
+            )
+            .filter((level) =>
+                intent.limitPrice === undefined ||
+                (intent.side === "buy" ? level.price <= intent.limitPrice : level.price >= intent.limitPrice)
+            )
+            .sort((left, right) =>
+                intent.side === "buy" ? left.price - right.price : right.price - left.price
+            )
+
+        let remaining = intent.quantity
+        let notional = 0
+        for (const level of levels) {
+            const take = Math.min(remaining, level.size)
+            notional += take * level.price
+            remaining -= take
+            if (remaining <= 0) {
+                break
+            }
+        }
+
+        if (remaining <= 0) {
+            return { fillPrice: notional / intent.quantity }
+        }
+
+        const settlement = await this.resolveDryRunSettlementPrice(intent, canonical)
+        if (settlement !== undefined) {
+            return { fillPrice: settlement }
+        }
+
+        return {
+            rejection: createExecutionErrorDetail(
+                "venue",
+                `Polymarket dry-run book cannot fill ${intent.quantity} at ${intent.limitPrice !== undefined ? `limit ${intent.limitPrice}` : "market"}: executable depth ${intent.quantity - remaining}`,
+                {
+                    code: "POLYMARKET_DRY_RUN_INSUFFICIENT_DEPTH",
+                    retryable: true,
+                    details: {
+                        tokenId: canonical.tokenId,
+                        conditionId: canonical.conditionId,
+                        marketSlug: canonical.marketSlug,
+                        requestedQuantity: intent.quantity,
+                        executableDepth: intent.quantity - remaining,
+                    },
+                }
+            ),
+        }
+    }
+
+    private async resolveDryRunSettlementPrice(
+        intent: OrderIntent,
+        canonical: { tokenId: string; marketSlug?: string }
+    ): Promise<number | undefined> {
+        if (intent.metadata?.action !== "close" || !canonical.marketSlug) {
+            return undefined
+        }
+
+        try {
+            const market = await this.client.getMarketBySlug(canonical.marketSlug)
+            if (!market?.closed) {
+                return undefined
+            }
+
+            const token = market.tokens.find((entry) => entry.tokenId === canonical.tokenId)
+            return token?.resolvedPrice
+        } catch {
+            return undefined
         }
     }
 

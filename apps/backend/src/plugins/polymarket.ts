@@ -81,11 +81,25 @@ export class PolymarketPlugin implements VenuePlugin {
                 positionCount: positions.length,
             })
 
+            const runtimeContextLines = [
+                `Current Polymarket execution context: ${lines.join(" | ")}`,
+            ]
+            const pastEndDate = positions.filter((position) => {
+                const endDateIso = position.metadata?.endDateIso
+                return typeof endDateIso === "string" && Date.parse(endDateIso) < Date.now()
+            })
+            if (pastEndDate.length > 0) {
+                const labels = pastEndDate.map((position) =>
+                    typeof position.metadata?.question === "string" ? position.metadata.question : position.instrument
+                )
+                runtimeContextLines.push(
+                    `SETTLEMENT REQUIRED: ${pastEndDate.length} held market(s) are past their end date and have likely resolved: ${labels.join("; ")}. Verify resolution and close each position this run; resolved closes settle at the final outcome price.`
+                )
+            }
+
             return {
                 skip: false,
-                runtimeContextLines: [
-                    `Current Polymarket execution context: ${lines.join(" | ")}`,
-                ],
+                runtimeContextLines,
             }
         } catch (error) {
             config.logger.warn("Failed to collect Polymarket execution-cost context", {
