@@ -55,6 +55,7 @@ function createTestLogger(): Logger {
 function createSessionFlatPolicy() {
     return {
         tradingHours: {
+            start: "00:00",
             end: "23:59",
             timezone: "UTC",
         },

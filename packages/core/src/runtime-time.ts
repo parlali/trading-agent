@@ -29,6 +29,7 @@ export function padTime(n: number): string {
 }
 
 export function isWithinSessionFlatWindow(args: {
+    start: string
     end: string
     timezone: string
     closeBufferMinutes: number
@@ -37,15 +38,21 @@ export function isWithinSessionFlatWindow(args: {
     currentTime: string
 } {
     const now = getCurrentTimeInTimezone(args.timezone)
+    const [startHour, startMinute] = args.start.split(":").map(Number) as [number, number]
     const [endHour, endMinute] = args.end.split(":").map(Number) as [number, number]
 
+    const minutesPerDay = 24 * 60
     const currentMinutes = now.hours * 60 + now.minutes
+    const startMinutes = startHour * 60 + startMinute
     const endMinutes = endHour * 60 + endMinute
-    const flattenMinutes = endMinutes - args.closeBufferMinutes
-    const shouldFlatten = currentMinutes >= flattenMinutes && currentMinutes < endMinutes
+    const flattenMinutes = ((endMinutes - args.closeBufferMinutes) % minutesPerDay + minutesPerDay) % minutesPerDay
+
+    const withinTradableWindow = startMinutes <= flattenMinutes
+        ? currentMinutes >= startMinutes && currentMinutes < flattenMinutes
+        : currentMinutes >= startMinutes || currentMinutes < flattenMinutes
 
     return {
-        shouldFlatten,
+        shouldFlatten: !withinTradableWindow,
         currentTime: `${padTime(now.hours)}:${padTime(now.minutes)}`,
     }
 }

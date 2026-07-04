@@ -50,6 +50,7 @@ export async function createMcpTools(config: ExtraToolsConfig) {
 
 interface SessionFlatPolicy {
     tradingHours: {
+        start: string
         end: string
         timezone: string
     }
@@ -82,6 +83,7 @@ export async function executeSessionFlatIfNeeded(
 
     const timezone = sessionFlatPolicy.timezone || args.policy.tradingHours.timezone
     const flattenWindow = isWithinSessionFlatWindow({
+        start: args.policy.tradingHours.start,
         end: args.policy.tradingHours.end,
         timezone,
         closeBufferMinutes: sessionFlatPolicy.closeBufferMinutes,
