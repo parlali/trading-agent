@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest"
 import { refreshStrategyRiskState } from "../../convex/lib/mutations/risk"
+import { computeSuiteLossState } from "../../convex/lib/queries/risk"
 import { callRegistered, FakeMutationDb as FakeDb } from "./fakeMutationDb"
 
 describe("Convex risk state refresh", () => {
@@ -110,5 +111,26 @@ describe("Convex risk state refresh", () => {
         } finally {
             vi.useRealTimers()
         }
+    })
+})
+
+describe("suite loss state", () => {
+    it("blocks new entries when combined real-account equity breaches the daily loss stop", () => {
+        const state = computeSuiteLossState([{
+            app: "mt5",
+            latest: {
+                balance: 9_690,
+            },
+            dayBaseline: {
+                balance: 10_000,
+            },
+            weekBaseline: {
+                balance: 10_000,
+            },
+        }], Date.parse("2026-07-01T12:00:00.000Z"))
+
+        expect(state.blocked).toBe(true)
+        expect(state.dayChangePercent).toBeCloseTo(-3.1)
+        expect(state.reason).toContain("Suite loss stop active")
     })
 })

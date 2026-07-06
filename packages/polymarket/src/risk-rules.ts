@@ -1,5 +1,7 @@
 import {
     getRiskBudgetBase,
+    isDryRunAccountLedgerPosition,
+    openIntentRiskValidator,
     polymarketPolicySchema,
     readFiniteNumber,
     readTrimmedString,
@@ -9,17 +11,6 @@ import {
     type RiskValidator,
 } from "@valiq-trading/core"
 import { getPolymarketOrderSemanticsError } from "./order-semantics"
-
-export const polymarketRiskValidators: readonly RiskValidator[] = [
-    canonicalIdentityValidator,
-    supportedOrderSemanticsValidator,
-    maxBetValidator,
-    priceBoundsValidator,
-    liquidityValidator,
-    resolutionBufferValidator,
-    categoryAllowlistValidator,
-    totalExposureValidator,
-]
 
 function canonicalIdentityValidator(
     intent: OrderIntent
@@ -251,6 +242,85 @@ function totalExposureValidator(
 
     return { allowed: true }
 }
+
+const maxEntryPriceValidator: RiskValidator = openIntentRiskValidator((
+    intent: OrderIntent,
+    rawPolicy: Record<string, unknown>
+): { allowed: boolean; reason?: string } => {
+    const policy = polymarketPolicySchema.parse(rawPolicy)
+    if (policy.maxEntryPrice === undefined || intent.side !== "buy") {
+        return { allowed: true }
+    }
+
+    const price = intent.limitPrice ?? readFiniteNumber(intent.metadata?.estimatedPrice)
+    if (price === undefined) {
+        return {
+            allowed: false,
+            reason: `Entry price is required because the strategy maximum entry price is ${policy.maxEntryPrice.toFixed(2)}`,
+        }
+    }
+
+    if (price > policy.maxEntryPrice) {
+        return {
+            allowed: false,
+            reason: `Entry price ${price.toFixed(2)} exceeds the maximum entry price ${policy.maxEntryPrice.toFixed(2)} for this strategy. The last cents of a longshot fade are not the edge.`,
+        }
+    }
+
+    return { allowed: true }
+})
+
+const maxConcurrentPositionsValidator: RiskValidator = openIntentRiskValidator((
+    intent: OrderIntent,
+    rawPolicy: Record<string, unknown>,
+    _state: AccountState,
+    positions: Position[]
+): { allowed: boolean; reason?: string } => {
+    const policy = polymarketPolicySchema.parse(rawPolicy)
+    if (policy.maxConcurrentPositions === undefined || intent.side !== "buy") {
+        return { allowed: true }
+    }
+
+    const activePositions = positions.filter((position) =>
+        !isDryRunAccountLedgerPosition(position) &&
+        !isExpectedExternalPosition(position)
+    )
+    const alreadyHeld = activePositions.some((position) => position.instrument === intent.instrument)
+    if (alreadyHeld) {
+        return { allowed: true }
+    }
+
+    if (activePositions.length >= policy.maxConcurrentPositions) {
+        return {
+            allowed: false,
+            reason: `Position cap reached: ${activePositions.length} of ${policy.maxConcurrentPositions} concurrent positions. Close something before opening a new market.`,
+        }
+    }
+
+    return { allowed: true }
+})
+
+function isExpectedExternalPosition(position: Position): boolean {
+    const portfolioPosition = position as Position & { expectedExternal?: boolean }
+    if (portfolioPosition.expectedExternal === true) {
+        return true
+    }
+
+    return position.metadata?.expectedExternal === true
+}
+
+export const polymarketRiskValidators: readonly RiskValidator[] = [
+    canonicalIdentityValidator,
+    supportedOrderSemanticsValidator,
+    maxBetValidator,
+    priceBoundsValidator,
+    liquidityValidator,
+    resolutionBufferValidator,
+    categoryAllowlistValidator,
+    totalExposureValidator,
+    maxEntryPriceValidator,
+    maxConcurrentPositionsValidator,
+]
 
 function resolveIntentPrice(intent: OrderIntent): number {
     return intent.limitPrice ??

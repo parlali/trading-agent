@@ -1,6 +1,32 @@
 import { query } from "../../_generated/server"
+import type { Doc } from "../../_generated/dataModel"
 import { v } from "convex/values"
+import { resolveRiskWindowStarts } from "@valiq-trading/core"
 import { requireUserOrServiceToken } from "../authGuards"
+
+export const SUITE_REAL_APPS = ["okx-swap", "mt5", "alpaca-options"] as const
+export const SUITE_DAY_STOP_PERCENT = 3
+export const SUITE_WEEK_STOP_PERCENT = 6
+
+export interface SuiteLossSnapshotValue {
+    balance: number
+    equity?: number
+}
+
+export interface SuiteLossComputationRow {
+    app: typeof SUITE_REAL_APPS[number]
+    latest: SuiteLossSnapshotValue
+    dayBaseline?: SuiteLossSnapshotValue
+    weekBaseline?: SuiteLossSnapshotValue
+}
+
+export interface SuiteLossState {
+    blocked: boolean
+    reason?: string
+    dayChangePercent: number
+    weekChangePercent: number
+    evaluatedAt: number
+}
 
 export const getStrategyRiskState = query({
     args: {
@@ -47,6 +73,52 @@ export const getStrategyRiskState = query({
     },
 })
 
+export const getSuiteLossState = query({
+    args: {
+        serviceToken: v.optional(v.string()),
+    },
+    handler: async (ctx, args) => {
+        await requireUserOrServiceToken(ctx, args.serviceToken)
+
+        const evaluatedAt = Date.now()
+        const { dayStartAt, weekStartAt } = resolveRiskWindowStarts(evaluatedAt, "UTC")
+        const rows: SuiteLossComputationRow[] = []
+
+        for (const app of SUITE_REAL_APPS) {
+            const [latest, dayBaseline, weekBaseline] = await Promise.all([
+                ctx.db
+                    .query("account_snapshots")
+                    .withIndex("by_app_timestamp", (q) => q.eq("app", app))
+                    .order("desc")
+                    .first(),
+                ctx.db
+                    .query("account_snapshots")
+                    .withIndex("by_app_timestamp", (q) => q.eq("app", app).lte("timestamp", dayStartAt))
+                    .order("desc")
+                    .first(),
+                ctx.db
+                    .query("account_snapshots")
+                    .withIndex("by_app_timestamp", (q) => q.eq("app", app).lte("timestamp", weekStartAt))
+                    .order("desc")
+                    .first(),
+            ])
+
+            if (!latest) {
+                continue
+            }
+
+            rows.push({
+                app,
+                latest,
+                dayBaseline: dayBaseline ?? undefined,
+                weekBaseline: weekBaseline ?? undefined,
+            })
+        }
+
+        return computeSuiteLossState(rows, evaluatedAt)
+    },
+})
+
 export const getStrategyExecutionSafetyFaults = query({
     args: {
         serviceToken: v.optional(v.string()),
@@ -66,3 +138,48 @@ export const getStrategyExecutionSafetyFaults = query({
             .sort((left, right) => right.occurredAt - left.occurredAt)
     },
 })
+
+export function computeSuiteLossState(
+    rows: SuiteLossComputationRow[],
+    evaluatedAt = Date.now()
+): SuiteLossState {
+    let latestEquity = 0
+    let dayBaselineEquity = 0
+    let weekBaselineEquity = 0
+
+    for (const row of rows) {
+        const latest = resolveSuiteSnapshotEquity(row.latest)
+        latestEquity += latest
+        dayBaselineEquity += resolveSuiteSnapshotEquity(row.dayBaseline ?? row.latest)
+        weekBaselineEquity += resolveSuiteSnapshotEquity(row.weekBaseline ?? row.latest)
+    }
+
+    const dayChangePercent = computeSuiteChangePercent(latestEquity, dayBaselineEquity)
+    const weekChangePercent = computeSuiteChangePercent(latestEquity, weekBaselineEquity)
+    const blocked = dayChangePercent <= -SUITE_DAY_STOP_PERCENT ||
+        weekChangePercent <= -SUITE_WEEK_STOP_PERCENT
+
+    return {
+        blocked,
+        reason: blocked ? formatSuiteLossStopReason(dayChangePercent, weekChangePercent) : undefined,
+        dayChangePercent,
+        weekChangePercent,
+        evaluatedAt,
+    }
+}
+
+function resolveSuiteSnapshotEquity(snapshot: SuiteLossSnapshotValue | Doc<"account_snapshots">): number {
+    return snapshot.equity ?? snapshot.balance
+}
+
+function computeSuiteChangePercent(latestEquity: number, baselineEquity: number): number {
+    if (baselineEquity === 0) {
+        return 0
+    }
+
+    return 100 * (latestEquity - baselineEquity) / baselineEquity
+}
+
+function formatSuiteLossStopReason(dayChangePercent: number, weekChangePercent: number): string {
+    return `Suite loss stop active: combined real-account equity ${dayChangePercent.toFixed(2)}% today (stop -${SUITE_DAY_STOP_PERCENT}%) / ${weekChangePercent.toFixed(2)}% this week (stop -${SUITE_WEEK_STOP_PERCENT}%). New entries are blocked suite-wide until the window resets.`
+}

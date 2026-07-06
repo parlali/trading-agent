@@ -10,12 +10,15 @@ import {
     ExecutionPipeline,
     buildRunSystemContextDigest,
     computeRecentTradeDigest,
+    computeWeekEntryCounts,
+    createEntryBudgetValidator,
     createInstrumentConflictValidator,
     createStrategySafetyValidator,
     filterPositionsByOwnershipScope,
     filterWorkingOrdersByOwnershipScope,
     formatRunSystemContextDigestLines,
     isDryRunAccountLedgerPosition,
+    openIntentRiskValidator,
     resolveDryRunAccountState,
     resolveStrategyAccountState,
     type AccountState,
@@ -23,6 +26,7 @@ import {
     type OrderPersistenceAdapter,
     type Position,
     type ProviderOwnershipScope,
+    type RiskValidator,
     type RuntimeStrategySafetyPolicy,
     type RunSystemContextDigest,
     type StrategyRiskState,
@@ -82,6 +86,7 @@ export interface ScheduledRunRuntime {
     initialOwnedPositions: Position[]
     initialOwnedWorkingOrders: WorkingOrder[]
     initialStrategyAccountState: AccountState
+    addRuntimeRiskValidator(validator: RiskValidator): void
     applyRiskState(riskState: StrategyRiskState): void
     cleanup(): void
 }
@@ -267,6 +272,7 @@ export async function createScheduledRunRuntime(
     })
 
     let cleanedUp = false
+    const runtimeRiskValidators: RiskValidator[] = []
     const applyRiskState = (riskState: StrategyRiskState) => {
         const safetyValidator = createStrategySafetyValidator({
             safetyState: riskState.safetyState,
@@ -278,11 +284,15 @@ export async function createScheduledRunRuntime(
                 ? `Instrument is blocked because strategy cooldown is active (${riskState.cooldown.reason ?? "risk"}). Only risk-reducing actions are allowed until the cooldown expires.`
                 : undefined,
         })
-        pipeline.setRiskValidators(
-            conflictMap.size > 0
-                ? [safetyValidator, ...pluginValidators, createInstrumentConflictValidator(conflictMap)]
-                : [safetyValidator, ...pluginValidators]
-        )
+        const conflictValidators = conflictMap.size > 0
+            ? [createInstrumentConflictValidator(conflictMap)]
+            : []
+        pipeline.setRiskValidators([
+            safetyValidator,
+            ...pluginValidators,
+            ...conflictValidators,
+            ...runtimeRiskValidators,
+        ])
         pipeline.setStrategyRealizedPnl(riskState.day.realizedPnl)
     }
 
@@ -307,6 +317,9 @@ export async function createScheduledRunRuntime(
         initialOwnedPositions,
         initialOwnedWorkingOrders,
         initialStrategyAccountState,
+        addRuntimeRiskValidator: (validator) => {
+            runtimeRiskValidators.push(validator)
+        },
         applyRiskState,
         cleanup: () => {
             if (cleanedUp) {
@@ -427,7 +440,13 @@ export async function prepareScheduledRunAgentTurn(
 
     const timestamp = Date.now()
     const toolManifest = tools.getManifest()
-    const [allPositions, operationalMemory, recentOrderHistory] = await Promise.all([
+    const suiteLossStatePromise = backend.getSuiteLossState().catch((error: unknown) => {
+        runLogger.warn("Failed to load suite loss state; proceeding without suite loss validator", {
+            error: error instanceof Error ? error.message : String(error),
+        })
+        return undefined
+    })
+    const [allPositions, operationalMemory, recentOrderHistory, suiteLossState] = await Promise.all([
         isDryRun ? Promise.resolve(storedPositions ?? []) : venue.getPositions(),
         backend.getApplicableStrategyOperationalMemory(
             strategy._id,
@@ -436,12 +455,54 @@ export async function prepareScheduledRunAgentTurn(
             toolManifest
         ),
         backend.getStrategyOrderHistory(strategy._id, 250),
+        suiteLossStatePromise,
     ])
+    let runtimeRiskValidatorAdded = false
+    if (suiteLossState?.blocked) {
+        const reason = suiteLossState.reason ??
+            "Suite loss stop active. New entries are blocked suite-wide until the window resets."
+        runtime.addRuntimeRiskValidator(openIntentRiskValidator(() => ({
+            allowed: false,
+            reason,
+        })))
+        runtimeRiskValidatorAdded = true
+        runtimeContextLines = mergeRuntimeContextLines(runtimeContextLines, [reason])
+    }
     const recentTrades = computeRecentTradeDigest({
         orders: recentOrderHistory,
         timezone: args.safetyPolicy.strategyTimezone,
         timestamp,
     })
+    const maxEntriesPerWeek = typeof policy.maxEntriesPerWeek === "number"
+        ? policy.maxEntriesPerWeek
+        : undefined
+    const maxEntriesPerInstrumentPerWeek = typeof policy.maxEntriesPerInstrumentPerWeek === "number"
+        ? policy.maxEntriesPerInstrumentPerWeek
+        : undefined
+    if (maxEntriesPerWeek !== undefined || maxEntriesPerInstrumentPerWeek !== undefined) {
+        const counts = computeWeekEntryCounts({
+            orders: recentOrderHistory.map((row) => ({
+                action: row.action,
+                status: row.status,
+                instrument: row.instrument,
+                submittedAt: row._creationTime,
+            })),
+            timezone: args.safetyPolicy.strategyTimezone,
+            timestamp,
+        })
+        const validator = createEntryBudgetValidator({
+            maxEntriesPerWeek,
+            maxEntriesPerInstrumentPerWeek,
+            counts,
+        })
+        if (validator !== undefined) {
+            runtime.addRuntimeRiskValidator(validator)
+            runtimeRiskValidatorAdded = true
+        }
+    }
+    if (runtimeRiskValidatorAdded) {
+        runtime.applyRiskState(runRiskState)
+    }
     const runSystemContextDigest = buildRunSystemContextDigest({
         generatedAt: timestamp,
         riskState: runRiskState,

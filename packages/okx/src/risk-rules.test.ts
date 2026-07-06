@@ -138,4 +138,49 @@ describe("okxRiskValidators", () => {
         expect(positiveFundingLong.allowed).toBe(false)
         expect(positiveFundingLong.reason).toContain("hostile to buy exposure")
     })
+
+    it("rejects OKX entries with stops inside cost noise and allows sufficient structure", () => {
+        const gatedPolicy = {
+            ...policy,
+            minRiskReward: 2,
+            minStopDistancePercent: 0.4,
+        }
+        const noisyStopIntent = entryIntent({
+            metadata: {
+                action: "entry",
+                estimatedPrice: 60_000,
+                stopLoss: 59_820,
+                takeProfit: 60_180,
+                riskPercent: 0.5,
+            },
+        })
+        const structuralIntent = entryIntent({
+            metadata: {
+                action: "entry",
+                estimatedPrice: 60_000,
+                stopLoss: 59_700,
+                takeProfit: 60_700,
+                riskPercent: 0.5,
+            },
+        })
+
+        const rejected = validateIntent(
+            noisyStopIntent,
+            gatedPolicy,
+            account,
+            positions,
+            okxRiskValidators
+        )
+        const allowed = validateIntent(
+            structuralIntent,
+            gatedPolicy,
+            account,
+            positions,
+            okxRiskValidators
+        )
+
+        expect(rejected.allowed).toBe(false)
+        expect(rejected.reason).toContain("Stop distance 0.30% of entry is below the minimum 0.4%")
+        expect(allowed.allowed).toBe(true)
+    })
 })

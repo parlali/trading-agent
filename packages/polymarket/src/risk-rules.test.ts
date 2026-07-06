@@ -28,25 +28,41 @@ const basePolicy = {
     maxTotalExposure: 20,
 }
 
+const baseIntentMetadata = {
+    tokenId: "token-yes",
+    conditionId: "condition-1",
+    marketSlug: "market-1",
+    question: "Will it happen?",
+    outcome: "Yes",
+    category: "politics",
+    endDateIso: "2099-01-01T00:00:00.000Z",
+    liquidity: 1000,
+    estimatedPrice: 0.7,
+}
+
 function createIntent(overrides: Partial<OrderIntent> = {}): OrderIntent {
+    const metadata = {
+        ...baseIntentMetadata,
+        ...overrides.metadata,
+    }
+
     return {
         instrument: "token-yes",
         side: "buy",
         quantity: 10,
         orderType: "market",
         timeInForce: "gtc",
-        metadata: {
-            tokenId: "token-yes",
-            conditionId: "condition-1",
-            marketSlug: "market-1",
-            question: "Will it happen?",
-            outcome: "Yes",
-            category: "politics",
-            endDateIso: "2099-01-01T00:00:00.000Z",
-            liquidity: 1000,
-            estimatedPrice: 0.7,
-        },
         ...overrides,
+        metadata,
+    }
+}
+
+function createPosition(instrument: string): Position {
+    return {
+        instrument,
+        side: "long",
+        quantity: 1,
+        entryPrice: 0.5,
     }
 }
 
@@ -134,5 +150,51 @@ describe("polymarketRiskValidators", () => {
         )
 
         expect(validation.allowed).toBe(true)
+    })
+
+    it("enforces policy entry price and concurrent position caps", () => {
+        const [maxEntryPriceValidator, maxConcurrentPositionsValidator] = polymarketRiskValidators.slice(-2)
+        const policy = {
+            ...basePolicy,
+            maxBet: {
+                mode: "fixed",
+                value: 100,
+            },
+            maxEntryPrice: 0.8,
+            maxConcurrentPositions: 6,
+        }
+
+        const entryPriceValidation = maxEntryPriceValidator!(
+            createIntent({
+                quantity: 1,
+                orderType: "limit",
+                limitPrice: 0.86,
+            }),
+            policy,
+            account,
+            []
+        )
+
+        expect(entryPriceValidation.allowed).toBe(false)
+        expect(entryPriceValidation.reason).toBe("Entry price 0.86 exceeds the maximum entry price 0.80 for this strategy. The last cents of a longshot fade are not the edge.")
+
+        const heldPositions = Array.from({ length: 6 }, (_, index) => createPosition(`token-${index + 1}`))
+        const positionCapValidation = maxConcurrentPositionsValidator!(
+            createIntent({
+                instrument: "token-7",
+                quantity: 1,
+                metadata: {
+                    tokenId: "token-7",
+                    conditionId: "condition-7",
+                    marketSlug: "market-7",
+                },
+            }),
+            policy,
+            account,
+            heldPositions
+        )
+
+        expect(positionCapValidation.allowed).toBe(false)
+        expect(positionCapValidation.reason).toBe("Position cap reached: 6 of 6 concurrent positions. Close something before opening a new market.")
     })
 })

@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest"
 import {
     computeRecentTradeDigest,
     computeRiskGovernanceState,
+    computeWeekEntryCounts,
+    createEntryBudgetValidator,
     createStrategySafetyValidator,
     resolveCloseOrderRealizedPnl,
     resolveRiskWindowStarts,
@@ -402,6 +404,66 @@ describe("risk governance replay", () => {
 
         const closeIntent: OrderIntent = {
             ...entryIntent(),
+            side: "sell",
+            metadata: {
+                action: "close",
+            },
+        }
+
+        expect(validator(closeIntent, {}, account, noPositions).allowed).toBe(true)
+    })
+
+    it("rejects round-1 BTC overtrading at the weekly entry budget while allowing closes", () => {
+        const timestamp = Date.parse("2026-06-10T12:00:00.000Z")
+        const counts = computeWeekEntryCounts({
+            orders: [
+                {
+                    action: "entry",
+                    status: "filled",
+                    instrument: "BTC-USDT-SWAP",
+                    submittedAt: Date.parse("2026-06-08T09:00:00.000Z"),
+                },
+                {
+                    action: "entry",
+                    status: "filled",
+                    instrument: "BTC-USDT-SWAP",
+                    submittedAt: Date.parse("2026-06-08T13:00:00.000Z"),
+                },
+                {
+                    action: "entry",
+                    status: "filled",
+                    instrument: "ETH-USDT-SWAP",
+                    submittedAt: Date.parse("2026-06-09T09:00:00.000Z"),
+                },
+                {
+                    action: "entry",
+                    status: "filled",
+                    instrument: "SOL-USDT-SWAP",
+                    submittedAt: Date.parse("2026-06-09T15:00:00.000Z"),
+                },
+            ],
+            timezone: "UTC",
+            timestamp,
+        })
+        const validator = createEntryBudgetValidator({
+            maxEntriesPerWeek: 4,
+            counts,
+        })
+
+        if (validator === undefined) {
+            throw new Error("Expected entry budget validator")
+        }
+
+        const blocked = validator(entryIntent("BTC-USDT-SWAP"), {}, account, noPositions)
+
+        if (blocked.allowed) {
+            throw new Error("Expected fifth entry to be blocked")
+        }
+
+        expect(blocked.reason).toContain("Weekly entry budget exhausted")
+
+        const closeIntent: OrderIntent = {
+            ...entryIntent("BTC-USDT-SWAP"),
             side: "sell",
             metadata: {
                 action: "close",

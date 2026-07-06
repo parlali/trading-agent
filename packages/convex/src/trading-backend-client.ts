@@ -61,6 +61,7 @@ import type {
     StoredStrategyOperationalMemory,
     StoredRun,
     StoredStrategy,
+    SuiteLossState,
     StrategyMcpToolWhitelist,
     StrategyOrderHistoryRow,
     StrategyOwnershipScopeRow,
@@ -766,6 +767,14 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
                     strategyId,
                     limit,
                 } as never) as StrategyOrderHistoryRow[]
+            )
+        },
+        async getSuiteLossState(): Promise<SuiteLossState> {
+            return await runWithTimeout(
+                "Convex query getSuiteLossState",
+                async () => await client.query(api.queries.getSuiteLossState, {
+                    ...requireMachineAuth(),
+                } as never) as SuiteLossState
             )
         },
         async getPortfolioPositions(

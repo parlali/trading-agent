@@ -100,6 +100,8 @@ export type StrategyLlmConfig = z.infer<typeof llmProviderSchema>
 export const baseStrategyPolicySchema = z.object({
     dryRun: z.boolean().default(false),
     llm: llmProviderSchema,
+    maxEntriesPerWeek: z.number().int().positive().optional(),
+    maxEntriesPerInstrumentPerWeek: z.number().int().positive().optional(),
     safety: z.object({
         maxDrawdownDay: z.number().positive().max(100).optional(),
         maxDrawdownWeek: z.number().positive().max(100).optional(),
@@ -296,6 +298,9 @@ export const polymarketPolicySchema = baseStrategyPolicySchema.extend({
     minResolutionBufferHours: z.number().nonnegative().default(0),
     allowedCategories: z.array(z.string().trim().min(1)).default([]),
     maxTotalExposure: z.number().positive().optional(),
+    maxEntryPrice: z.number().positive().max(1).optional(),
+    maxConcurrentPositions: z.number().int().positive().optional(),
+    lossExitPrice: z.number().positive().max(1).optional(),
 })
 
 export type PolymarketPolicy = z.infer<typeof polymarketPolicySchema>
@@ -330,6 +335,8 @@ export const okxPolicySchema = baseStrategyPolicySchema.extend({
     allowedInstruments: z.array(z.string().trim().min(1)).min(1),
     maxLeverage: z.number().int().positive().max(5),
     maxRiskPercent: z.number().positive().max(100),
+    minRiskReward: z.number().positive().optional(),
+    minStopDistancePercent: z.number().positive().optional(),
     tradingHours: mt5TradingHoursSchema,
     fundingRateThreshold: z.number().nonnegative(),
     requireTakeProfit: z.boolean().default(false),

@@ -444,6 +444,14 @@ export interface StrategyOrderHistoryRow {
     intent: OrderIntent
 }
 
+export interface SuiteLossState {
+    blocked: boolean
+    reason?: string
+    dayChangePercent: number
+    weekChangePercent: number
+    evaluatedAt: number
+}
+
 export interface RawStrategyRiskStateRow {
     strategyId: string | Id<"strategies">
     app: Exclude<App, "backend">
@@ -663,6 +671,7 @@ export interface TradingBackendClient extends TradeEventLogger, AgentMessageLogg
         unresolvedOnly?: boolean
     ): Promise<ExecutionSafetyFaultRow[]>
     getStrategyOrderHistory(strategyId: Id<"strategies">, limit?: number): Promise<StrategyOrderHistoryRow[]>
+    getSuiteLossState(): Promise<SuiteLossState>
     getPortfolioPositions(app?: Exclude<App, "backend">, strategyId?: Id<"strategies">, accountId?: string): Promise<ProviderPositionRow[]>
     getPortfolioPendingOrders(app?: Exclude<App, "backend">, strategyId?: Id<"strategies">, accountId?: string): Promise<ProviderPendingOrderRow[]>
     adoptProviderPositions(

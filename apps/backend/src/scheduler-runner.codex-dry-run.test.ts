@@ -155,6 +155,12 @@ function createBackendMock(storedPositions: Position[], events: string[]) {
         getApplicableStrategyOperationalMemory: vi.fn(async () => []),
         getLatestPositions: vi.fn(async () => storedPositions),
         getStrategyOrderHistory: vi.fn(async () => []),
+        getSuiteLossState: vi.fn(async () => ({
+            blocked: false,
+            dayChangePercent: 0,
+            weekChangePercent: 0,
+            evaluatedAt: Date.now(),
+        })),
         getStrategyOwnershipScope: vi.fn(async () => ({
             instruments: [storedPositions[0]?.instrument].filter((instrument): instrument is string => typeof instrument === "string"),
             positionKeys: [],
