@@ -35,11 +35,12 @@ async function callEquitySeries(
 
 describe("getPortfolioEquitySeries", () => {
     it("sums the latest equity per account instead of overwriting accounts within an app", async () => {
+        const end = Date.now()
         const result = await callEquitySeries({
             account_snapshots: [
-                createSnapshot({ id: "snap-1", app: "okx-swap", accountId: "acct-a", timestamp: 1000, equity: 100 }),
-                createSnapshot({ id: "snap-2", app: "okx-swap", accountId: "acct-b", timestamp: 2000, equity: 50 }),
-                createSnapshot({ id: "snap-3", app: "okx-swap", accountId: "acct-a", timestamp: 3000, equity: 110 }),
+                createSnapshot({ id: "snap-1", app: "okx-swap", accountId: "acct-a", timestamp: end - 3_000, equity: 100 }),
+                createSnapshot({ id: "snap-2", app: "okx-swap", accountId: "acct-b", timestamp: end - 2_000, equity: 50 }),
+                createSnapshot({ id: "snap-3", app: "okx-swap", accountId: "acct-a", timestamp: end - 1_000, equity: 110 }),
             ],
         }, {
             app: "okx-swap",
@@ -52,11 +53,12 @@ describe("getPortfolioEquitySeries", () => {
     })
 
     it("counts legacy snapshots without accountId once as a single bucket per app", async () => {
+        const end = Date.now()
         const result = await callEquitySeries({
             account_snapshots: [
-                createSnapshot({ id: "snap-1", app: "mt5", timestamp: 1000, equity: 70 }),
-                createSnapshot({ id: "snap-2", app: "mt5", timestamp: 2000, equity: 80 }),
-                createSnapshot({ id: "snap-3", app: "mt5", accountId: "acct-a", timestamp: 3000, equity: 25 }),
+                createSnapshot({ id: "snap-1", app: "mt5", timestamp: end - 3_000, equity: 70 }),
+                createSnapshot({ id: "snap-2", app: "mt5", timestamp: end - 2_000, equity: 80 }),
+                createSnapshot({ id: "snap-3", app: "mt5", accountId: "acct-a", timestamp: end - 1_000, equity: 25 }),
             ],
         }, {
             app: "mt5",

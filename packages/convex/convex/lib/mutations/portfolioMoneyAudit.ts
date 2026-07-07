@@ -17,6 +17,7 @@ const MONEY_LEVEL_RECONCILIATION_FAULT_PREFIX = "Money-level reconciliation mism
 const INFERRED_ENTRY_FILL_ACCOUNTING_FAULT_MESSAGE = "Provider reconciliation inferred a filled entry order without provider accounting metadata"
 const INFERRED_CLOSE_FILL_ACCOUNTING_FAULT_MESSAGE = "Provider reconciliation inferred a filled close order without provider accounting metadata"
 const INFERRED_CLOSE_AUDIT_MATCH_WINDOW_MS = 24 * 60 * 60 * 1000
+const INFERRED_CLOSE_AUDIT_ORDER_LOOKBACK_MS = 7 * 24 * 60 * 60 * 1000
 
 export async function reconcileAccountMoney(
     ctx: PortfolioMutationCtx,
@@ -48,7 +49,6 @@ export async function reconcileAccountMoney(
     await recordNonSettlementPnlEventFaults(ctx, {
         app: args.app,
         accountId: args.accountId,
-        strategies: args.strategies,
         events: args.accountPnlEvents,
         updatedAt: args.updatedAt,
     })
@@ -165,7 +165,6 @@ async function recordNonSettlementPnlEventFaults(
     args: {
         app: Doc<"strategies">["app"]
         accountId: string
-        strategies: Doc<"strategies">[]
         events: AccountPnlEventInput[]
         updatedAt: number
     }
@@ -181,32 +180,34 @@ async function recordNonSettlementPnlEventFaults(
             q.eq("app", args.app).eq("accountId", args.accountId).eq("blocked", true)
         )
         .collect()
+    const existingMessages = new Set(
+        existingFaults
+            .filter((fault) =>
+                fault.strategyId === undefined &&
+                fault.category === "accounting_mismatch"
+            )
+            .map((fault) => fault.message)
+    )
 
     for (const event of nonSettlementEvents) {
         const message = `Account PnL event ${event.providerEventId} (${event.eventType}) is denominated in ${event.currency}, not the settlement currency; it is excluded from money-level reconciliation until converted`
-        for (const strategy of args.strategies) {
-            const duplicate = existingFaults.some((fault) =>
-                fault.strategyId === strategy._id &&
-                fault.category === "accounting_mismatch" &&
-                fault.message === message
-            )
-            if (duplicate) {
-                continue
-            }
-
-            await ctx.db.insert("execution_safety_faults", {
-                strategyId: strategy._id,
-                app: args.app,
-                accountId: args.accountId,
-                instrument: event.instrument ?? "account",
-                category: "accounting_mismatch",
-                message,
-                providerPayload: JSON.stringify(event),
-                blocked: true,
-                occurredAt: args.updatedAt,
-                resolvedAt: undefined,
-            })
+        if (existingMessages.has(message)) {
+            continue
         }
+
+        await ctx.db.insert("execution_safety_faults", {
+            strategyId: undefined,
+            app: args.app,
+            accountId: args.accountId,
+            instrument: event.instrument ?? "account",
+            category: "accounting_mismatch",
+            message,
+            providerPayload: JSON.stringify(event),
+            blocked: true,
+            occurredAt: args.updatedAt,
+            resolvedAt: undefined,
+        })
+        existingMessages.add(message)
     }
 }
 
@@ -314,7 +315,7 @@ async function resolveMoneyAuditMismatchFaults(
         return
     }
 
-    const resolvedMoneyFaultsByStrategy = new Map<string, { strategyId: Doc<"strategies">["_id"]; count: number }>()
+    const resolvedMoneyFaultGroups = new Map<string, ResolvedFaultAlertGroup>()
     for (const fault of openMoneyFaults) {
         await ctx.db.patch(fault._id, {
             blocked: false,
@@ -322,15 +323,10 @@ async function resolveMoneyAuditMismatchFaults(
             resolutionNote: "Provider money-level reconciliation audit passed within tolerance",
         })
 
-        const entry = resolvedMoneyFaultsByStrategy.get(String(fault.strategyId)) ?? {
-            strategyId: fault.strategyId,
-            count: 0,
-        }
-        entry.count += 1
-        resolvedMoneyFaultsByStrategy.set(String(fault.strategyId), entry)
+        addResolvedFaultAlertGroup(resolvedMoneyFaultGroups, fault)
     }
 
-    const resolvedInferredFillFaultsByStrategy = new Map<string, { strategyId: Doc<"strategies">["_id"]; count: number }>()
+    const resolvedInferredFillFaultGroups = new Map<string, ResolvedFaultAlertGroup>()
     for (const fault of openInferredFillFaults) {
         await ctx.db.patch(fault._id, {
             blocked: false,
@@ -338,15 +334,10 @@ async function resolveMoneyAuditMismatchFaults(
             resolutionNote: "Provider money-level reconciliation audit passed within tolerance after inferred entry fill accounting gap",
         })
 
-        const entry = resolvedInferredFillFaultsByStrategy.get(String(fault.strategyId)) ?? {
-            strategyId: fault.strategyId,
-            count: 0,
-        }
-        entry.count += 1
-        resolvedInferredFillFaultsByStrategy.set(String(fault.strategyId), entry)
+        addResolvedFaultAlertGroup(resolvedInferredFillFaultGroups, fault)
     }
 
-    const resolvedInferredCloseFaultsByStrategy = new Map<string, { strategyId: Doc<"strategies">["_id"]; count: number }>()
+    const resolvedInferredCloseFaultGroups = new Map<string, ResolvedFaultAlertGroup>()
     for (const fault of openInferredCloseFaults) {
         const auditedClose = await resolveAuditedCloseOrderForInferredCloseFault(ctx, fault)
         if (!auditedClose) {
@@ -359,15 +350,10 @@ async function resolveMoneyAuditMismatchFaults(
             resolutionNote: `Provider reconciliation found audited canonical close order ${auditedClose.orderId} for inferred close ${fault.canonicalOrderId}`,
         })
 
-        const entry = resolvedInferredCloseFaultsByStrategy.get(String(fault.strategyId)) ?? {
-            strategyId: fault.strategyId,
-            count: 0,
-        }
-        entry.count += 1
-        resolvedInferredCloseFaultsByStrategy.set(String(fault.strategyId), entry)
+        addResolvedFaultAlertGroup(resolvedInferredCloseFaultGroups, fault)
     }
 
-    for (const entry of resolvedMoneyFaultsByStrategy.values()) {
+    for (const entry of resolvedMoneyFaultGroups.values()) {
         await ctx.db.insert("alerts", {
             strategyId: entry.strategyId,
             app: args.app,
@@ -378,7 +364,7 @@ async function resolveMoneyAuditMismatchFaults(
         })
     }
 
-    for (const entry of resolvedInferredFillFaultsByStrategy.values()) {
+    for (const entry of resolvedInferredFillFaultGroups.values()) {
         await ctx.db.insert("alerts", {
             strategyId: entry.strategyId,
             app: args.app,
@@ -389,7 +375,7 @@ async function resolveMoneyAuditMismatchFaults(
         })
     }
 
-    for (const entry of resolvedInferredCloseFaultsByStrategy.values()) {
+    for (const entry of resolvedInferredCloseFaultGroups.values()) {
         await ctx.db.insert("alerts", {
             strategyId: entry.strategyId,
             app: args.app,
@@ -399,6 +385,24 @@ async function resolveMoneyAuditMismatchFaults(
             timestamp: args.updatedAt,
         })
     }
+}
+
+type ResolvedFaultAlertGroup = {
+    strategyId?: Doc<"strategies">["_id"]
+    count: number
+}
+
+function addResolvedFaultAlertGroup(
+    groups: Map<string, ResolvedFaultAlertGroup>,
+    fault: Doc<"execution_safety_faults">
+): void {
+    const key = fault.strategyId ? String(fault.strategyId) : "account"
+    const entry = groups.get(key) ?? {
+        strategyId: fault.strategyId,
+        count: 0,
+    }
+    entry.count += 1
+    groups.set(key, entry)
 }
 
 function isOpenMoneyAuditMismatchFault(fault: Doc<"execution_safety_faults">): boolean {
@@ -424,10 +428,11 @@ async function resolveAuditedCloseOrderForInferredCloseFault(
     ctx: PortfolioMutationCtx,
     fault: Doc<"execution_safety_faults">
 ): Promise<Doc<"orders"> | undefined> {
-    if (fault.app !== "okx-swap" || !fault.canonicalOrderId) {
+    if (fault.app !== "okx-swap" || !fault.canonicalOrderId || !fault.strategyId) {
         return undefined
     }
 
+    const strategyId = fault.strategyId
     const canonicalOrderId = fault.canonicalOrderId
     const inferredCloseOrder = await ctx.db
         .query("orders")
@@ -447,16 +452,28 @@ async function resolveAuditedCloseOrderForInferredCloseFault(
     if (quantity <= 0 || effectiveAt === undefined) {
         return undefined
     }
+    const windowStart = effectiveAt - INFERRED_CLOSE_AUDIT_ORDER_LOOKBACK_MS
+    const windowEnd = effectiveAt + INFERRED_CLOSE_AUDIT_ORDER_LOOKBACK_MS
 
     const candidates = (
         await Promise.all([
             ctx.db
                 .query("orders")
-                .withIndex("by_strategy_status", (q) => q.eq("strategyId", fault.strategyId).eq("status", "filled"))
+                .withIndex("by_strategy_status_updated_at", (q) =>
+                    q.eq("strategyId", strategyId)
+                        .eq("status", "filled")
+                        .gte("updatedAt", windowStart)
+                        .lte("updatedAt", windowEnd)
+                )
                 .collect(),
             ctx.db
                 .query("orders")
-                .withIndex("by_strategy_status", (q) => q.eq("strategyId", fault.strategyId).eq("status", "partially_filled"))
+                .withIndex("by_strategy_status_updated_at", (q) =>
+                    q.eq("strategyId", strategyId)
+                        .eq("status", "partially_filled")
+                        .gte("updatedAt", windowStart)
+                        .lte("updatedAt", windowEnd)
+                )
                 .collect(),
         ])
     ).flat()
@@ -553,14 +570,6 @@ async function recordMoneyAuditMismatchFaults(
         updatedAt: number
     }
 ): Promise<void> {
-    const strategies = await ctx.db
-        .query("strategies")
-        .withIndex("by_app_account", (q) => q.eq("app", args.app).eq("accountId", args.accountId))
-        .collect()
-    if (strategies.length === 0) {
-        return
-    }
-
     const existingFaults = await ctx.db
         .query("execution_safety_faults")
         .withIndex("by_app_account_blocked", (q) =>
@@ -580,39 +589,37 @@ async function recordMoneyAuditMismatchFaults(
         tolerance: args.tolerance,
     })
 
-    for (const strategy of strategies) {
-        const openFault = existingFaults.find((fault) =>
-            fault.strategyId === strategy._id &&
-            isOpenMoneyAuditMismatchFault(fault)
-        )
-        if (openFault) {
-            if (
-                openFault.message !== faultMessage ||
-                openFault.providerPayload !== providerPayload ||
-                openFault.occurredAt !== args.updatedAt
-            ) {
-                await ctx.db.patch(openFault._id, {
-                    message: faultMessage,
-                    providerPayload,
-                    occurredAt: args.updatedAt,
-                })
-            }
-            continue
+    const openFault = existingFaults.find((fault) =>
+        fault.strategyId === undefined &&
+        isOpenMoneyAuditMismatchFault(fault)
+    )
+    if (openFault) {
+        if (
+            openFault.message !== faultMessage ||
+            openFault.providerPayload !== providerPayload ||
+            openFault.occurredAt !== args.updatedAt
+        ) {
+            await ctx.db.patch(openFault._id, {
+                message: faultMessage,
+                providerPayload,
+                occurredAt: args.updatedAt,
+            })
         }
-
-        await ctx.db.insert("execution_safety_faults", {
-            strategyId: strategy._id,
-            app: args.app,
-            accountId: args.accountId,
-            instrument: "account",
-            category: "accounting_mismatch",
-            message: faultMessage,
-            providerPayload,
-            blocked: true,
-            occurredAt: args.updatedAt,
-            resolvedAt: undefined,
-        })
+        return
     }
+
+    await ctx.db.insert("execution_safety_faults", {
+        strategyId: undefined,
+        app: args.app,
+        accountId: args.accountId,
+        instrument: "account",
+        category: "accounting_mismatch",
+        message: faultMessage,
+        providerPayload,
+        blocked: true,
+        occurredAt: args.updatedAt,
+        resolvedAt: undefined,
+    })
 }
 
 async function resolveAttributedOrderPnlSince(

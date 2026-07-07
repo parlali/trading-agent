@@ -408,7 +408,7 @@ export interface StrategyRiskStateRow extends StrategyRiskState {
 export interface ExecutionSafetyFaultRow {
     _id: Id<"execution_safety_faults">
     _creationTime: number
-    strategyId: Id<"strategies">
+    strategyId?: Id<"strategies">
     app: Exclude<App, "backend">
     instrument: string
     category: ExecutionSafetyFaultCategory

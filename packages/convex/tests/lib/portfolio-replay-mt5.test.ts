@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import { resolveCloseOrderRealizedPnl } from "@valiq-trading/core"
 import { reconcileProviderPortfolio } from "../../convex/lib/mutations/portfolio"
 import { callRegistered, FakeMutationDb as FakeDb } from "./fakeMutationDb"
@@ -264,6 +264,9 @@ describe("Convex MT5 provider close replay", () => {
         const providerPositionId = "900100200"
         const openedAt = 1_782_203_000_000
         const closedAt = openedAt + 120_000
+        const firstSyncAt = closedAt + 60_000
+        const secondSyncAt = firstSyncAt + 300_000
+        const thirdSyncAt = secondSyncAt + 300_000
         const db = new FakeDb({
             strategies: [{
                 _id: strategyId,
@@ -329,54 +332,63 @@ describe("Convex MT5 provider close replay", () => {
             workingOrders: [],
         }
 
-        await callRegistered(reconcileProviderPortfolio, ctx, {
-            ...baseArgs,
-            positionClosures: [],
-        })
+        vi.useFakeTimers()
+        try {
+            vi.setSystemTime(firstSyncAt)
+            await callRegistered(reconcileProviderPortfolio, ctx, {
+                ...baseArgs,
+                positionClosures: [],
+            })
 
-        expect(db.rows.provider_positions ?? []).toHaveLength(0)
-        expect(db.rows.provider_position_history).toEqual([
-            expect.objectContaining({
-                app: "mt5",
-                positionKey: `XAGUSD:${providerPositionId}`,
-                strategyId,
-                ownershipStatus: "owned",
-            }),
-        ])
-        expect((db.rows.provider_sync_state ?? [])[0]).toMatchObject({
-            driftDetected: true,
-            providerStatus: "degraded",
-            lastDriftSummary: expect.stringContaining(`XAGUSD:${providerPositionId}`),
-        })
-
-        await callRegistered(reconcileProviderPortfolio, ctx, {
-            ...baseArgs,
-            positionClosures: [],
-        })
-
-        expect((db.rows.provider_sync_state ?? [])[0]).toMatchObject({
-            driftDetected: true,
-            providerStatus: "degraded",
-            lastDriftSummary: expect.stringContaining(`XAGUSD:${providerPositionId}`),
-        })
-
-        await callRegistered(reconcileProviderPortfolio, ctx, {
-            ...baseArgs,
-            positionClosures: [{
-                instrument: "XAGUSD",
-                providerPositionId,
-                side: "short",
-                quantity: 0.01,
-                fillPrice: 62.105,
-                closedAt,
-                metadata: JSON.stringify({
-                    orderId: 900100201,
-                    positionId: Number(providerPositionId),
-                    fillPnl: -0.57,
-                    profit: -0.57,
+            expect(db.rows.provider_positions).toEqual([
+                expect.objectContaining({
+                    positionKey: `XAGUSD:${providerPositionId}`,
+                    missingSinceSyncAt: firstSyncAt,
                 }),
-            }],
-        })
+            ])
+
+            vi.setSystemTime(secondSyncAt)
+            await callRegistered(reconcileProviderPortfolio, ctx, {
+                ...baseArgs,
+                positionClosures: [],
+            })
+
+            expect(db.rows.provider_positions ?? []).toHaveLength(0)
+            expect(db.rows.provider_position_history).toEqual([
+                expect.objectContaining({
+                    app: "mt5",
+                    positionKey: `XAGUSD:${providerPositionId}`,
+                    strategyId,
+                    ownershipStatus: "owned",
+                }),
+            ])
+            expect((db.rows.provider_sync_state ?? [])[0]).toMatchObject({
+                driftDetected: true,
+                providerStatus: "degraded",
+                lastDriftSummary: expect.stringContaining(`XAGUSD:${providerPositionId}`),
+            })
+
+            vi.setSystemTime(thirdSyncAt)
+            await callRegistered(reconcileProviderPortfolio, ctx, {
+                ...baseArgs,
+                positionClosures: [{
+                    instrument: "XAGUSD",
+                    providerPositionId,
+                    side: "short",
+                    quantity: 0.01,
+                    fillPrice: 62.105,
+                    closedAt,
+                    metadata: JSON.stringify({
+                        orderId: 900100201,
+                        positionId: Number(providerPositionId),
+                        fillPnl: -0.57,
+                        profit: -0.57,
+                    }),
+                }],
+            })
+        } finally {
+            vi.useRealTimers()
+        }
 
         const closeOrder = (db.rows.orders ?? []).find((order) => order.action === "close")
         if (!closeOrder) {

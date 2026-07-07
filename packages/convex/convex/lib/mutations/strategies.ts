@@ -22,6 +22,7 @@ import { mcpToolApprovalV, mcpToolDiscoveryRequestV, venueAppV } from "../valida
 import { enqueueManualRunRequest } from "./systemManualRuns"
 
 const MAX_MCP_DISCOVERY_REQUESTS_PER_PROVIDER = 4
+const ADMIN_RUN_DELETE_BATCH_SIZE = 500
 
 const strategyImportArg = v.object({
     app: venueAppV,
@@ -749,16 +750,25 @@ export const deleteAllRuns = mutation({
     handler: async (ctx, args) => {
         await requireUserOrServiceToken(ctx, args.serviceToken)
 
-        const runs = await ctx.db
-            .query("strategy_runs")
-            .withIndex("by_strategy", (q) => q.eq("strategyId", args.strategyId))
-            .collect()
+        let deleted = 0
 
-        for (const run of runs) {
-            await cascadeDeleteRun(ctx, run._id)
+        while (true) {
+            const runs = await ctx.db
+                .query("strategy_runs")
+                .withIndex("by_strategy", (q) => q.eq("strategyId", args.strategyId))
+                .take(ADMIN_RUN_DELETE_BATCH_SIZE)
+
+            if (runs.length === 0) {
+                break
+            }
+
+            for (const run of runs) {
+                await cascadeDeleteRun(ctx, run._id)
+                deleted++
+            }
         }
 
-        return { deleted: runs.length }
+        return { deleted }
     },
 })
 
@@ -781,12 +791,18 @@ export const replaceAllStrategies = mutation({
 
         const deleted = createEmptyStrategyDeleteCounts()
 
-        const runs = await ctx.db.query("strategy_runs").collect()
+        while (true) {
+            const runs = await ctx.db.query("strategy_runs").take(ADMIN_RUN_DELETE_BATCH_SIZE)
 
-        for (const run of runs) {
-            const result = await cascadeDeleteRun(ctx, run._id)
-            deleted.runs++
-            addCascadeDeleteCounts(deleted, result)
+            if (runs.length === 0) {
+                break
+            }
+
+            for (const run of runs) {
+                const result = await cascadeDeleteRun(ctx, run._id)
+                deleted.runs++
+                addCascadeDeleteCounts(deleted, result)
+            }
         }
         for (const strategy of existingStrategies) {
             const result = await cascadeDeleteStrategy(ctx, strategy._id)

@@ -9,6 +9,8 @@ import {
 } from "./evidenceBounds"
 import { venueAppV } from "../validators"
 
+const TRADE_HISTORY_RECENT_EVENT_LIMIT = 500
+
 export const getOrderById = query({
     args: {
         serviceToken: v.optional(v.string()),
@@ -119,7 +121,8 @@ export const getTradeHistory = query({
             events = await ctx.db
                 .query("trade_events")
                 .withIndex("by_strategy", (q) => q.eq("strategyId", args.strategyId!))
-                .collect()
+                .order("desc")
+                .take(TRADE_HISTORY_RECENT_EVENT_LIMIT)
         } else if (args.app) {
             const appStrategies = await ctx.db
                 .query("strategies")
@@ -130,7 +133,8 @@ export const getTradeHistory = query({
                     ctx.db
                         .query("trade_events")
                         .withIndex("by_strategy", (q) => q.eq("strategyId", strategy._id))
-                        .collect()
+                        .order("desc")
+                        .take(TRADE_HISTORY_RECENT_EVENT_LIMIT)
                 )
             )
             events = perStrategy.flat()
@@ -185,7 +189,8 @@ export const getStrategyOrderHistory = query({
                     .withIndex("by_strategy_status", (q) =>
                         q.eq("strategyId", args.strategyId).eq("status", status)
                     )
-                    .collect())
+                    .order("desc")
+                    .take(limit))
             )
         ).flat()
 

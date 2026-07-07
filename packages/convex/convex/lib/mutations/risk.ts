@@ -4,6 +4,7 @@ import { v } from "convex/values"
 import { computeRiskGovernanceState, resolveRiskWindowStarts } from "@valiq-trading/core"
 import { requireServiceToken } from "../authGuards"
 import { venueAppV, executionSafetyFaultCategoryV } from "../validators"
+import { collectBlockedExecutionSafetyFaultsForStrategy } from "../executionSafetyFaultReads"
 
 const riskPolicyInputV = v.object({
     maxDrawdownDay: v.optional(v.number()),
@@ -56,10 +57,11 @@ export const refreshStrategyRiskState = mutation({
                 .query("strategy_risk_states")
                 .withIndex("by_strategy", (q) => q.eq("strategyId", args.strategyId))
                 .first(),
-            ctx.db
-                .query("execution_safety_faults")
-                .withIndex("by_strategy_blocked", (q) => q.eq("strategyId", args.strategyId).eq("blocked", true))
-                .collect(),
+            collectBlockedExecutionSafetyFaultsForStrategy(ctx, {
+                strategyId: args.strategyId,
+                app: strategy.app,
+                accountId: strategy.accountId,
+            }),
         ])
         const governance = computeRiskGovernanceState({
             now,
@@ -243,7 +245,7 @@ export const resolveExecutionSafetyFaults = mutation({
 
         const faults = await ctx.db
             .query("execution_safety_faults")
-            .withIndex("by_strategy", (q) => q.eq("strategyId", args.strategyId))
+            .withIndex("by_strategy_blocked", (q) => q.eq("strategyId", args.strategyId).eq("blocked", true))
             .collect()
 
         const openFaults = faults.filter((fault) =>

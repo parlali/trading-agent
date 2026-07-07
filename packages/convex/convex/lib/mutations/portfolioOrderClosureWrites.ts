@@ -114,7 +114,7 @@ async function resolveProviderClosureFaultsAfterCanonicalAttach(
         )
         .collect()
 
-    const resolvedByStrategy = new Map<string, { strategyId: Id<"strategies">; count: number }>()
+    const resolvedFaultGroups = new Map<string, ResolvedFaultAlertGroup>()
     const resolutionNote = `Provider closure attached to canonical close order ${args.order.orderId}`
 
     for (const fault of faults) {
@@ -127,7 +127,7 @@ async function resolveProviderClosureFaultsAfterCanonicalAttach(
                 fault,
                 updatedAt: args.updatedAt,
                 resolutionNote,
-                resolvedByStrategy,
+                resolvedFaultGroups,
             })
             continue
         }
@@ -137,7 +137,7 @@ async function resolveProviderClosureFaultsAfterCanonicalAttach(
                 fault,
                 updatedAt: args.updatedAt,
                 resolutionNote,
-                resolvedByStrategy,
+                resolvedFaultGroups,
             })
             continue
         }
@@ -147,7 +147,7 @@ async function resolveProviderClosureFaultsAfterCanonicalAttach(
                 fault,
                 updatedAt: args.updatedAt,
                 resolutionNote,
-                resolvedByStrategy,
+                resolvedFaultGroups,
             })
             continue
         }
@@ -157,7 +157,7 @@ async function resolveProviderClosureFaultsAfterCanonicalAttach(
                 fault,
                 updatedAt: args.updatedAt,
                 resolutionNote,
-                resolvedByStrategy,
+                resolvedFaultGroups,
             })
             continue
         }
@@ -171,12 +171,12 @@ async function resolveProviderClosureFaultsAfterCanonicalAttach(
                 fault,
                 updatedAt: args.updatedAt,
                 resolutionNote,
-                resolvedByStrategy,
+                resolvedFaultGroups,
             })
         }
     }
 
-    for (const resolved of resolvedByStrategy.values()) {
+    for (const resolved of resolvedFaultGroups.values()) {
         await ctx.db.insert("alerts", {
             strategyId: resolved.strategyId,
             app: args.app,
@@ -401,7 +401,7 @@ async function resolveProviderClosureFault(
         fault: Doc<"execution_safety_faults">
         updatedAt: number
         resolutionNote: string
-        resolvedByStrategy: Map<string, { strategyId: Id<"strategies">; count: number }>
+        resolvedFaultGroups: Map<string, ResolvedFaultAlertGroup>
     }
 ): Promise<void> {
     await ctx.db.patch(args.fault._id, {
@@ -410,12 +410,18 @@ async function resolveProviderClosureFault(
         resolutionNote: args.resolutionNote,
     })
 
-    const entry = args.resolvedByStrategy.get(String(args.fault.strategyId)) ?? {
+    const key = args.fault.strategyId ? String(args.fault.strategyId) : "account"
+    const entry = args.resolvedFaultGroups.get(key) ?? {
         strategyId: args.fault.strategyId,
         count: 0,
     }
     entry.count += 1
-    args.resolvedByStrategy.set(String(args.fault.strategyId), entry)
+    args.resolvedFaultGroups.set(key, entry)
+}
+
+type ResolvedFaultAlertGroup = {
+    strategyId?: Id<"strategies">
+    count: number
 }
 
 function providerClosureFaultMatchesClosure(

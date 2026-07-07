@@ -3,6 +3,9 @@ import type { Doc } from "../../_generated/dataModel"
 import { v } from "convex/values"
 import { resolveRiskWindowStarts } from "@valiq-trading/core"
 import { requireUserOrServiceToken } from "../authGuards"
+import { collectBlockedExecutionSafetyFaultsForStrategy } from "../executionSafetyFaultReads"
+
+const STRATEGY_EXECUTION_SAFETY_FAULT_LIMIT = 200
 
 export const SUITE_REAL_APPS = ["okx-swap", "mt5", "alpaca-options"] as const
 export const SUITE_DAY_STOP_PERCENT = 3
@@ -128,10 +131,26 @@ export const getStrategyExecutionSafetyFaults = query({
     handler: async (ctx, args) => {
         await requireUserOrServiceToken(ctx, args.serviceToken)
 
-        const faults = await ctx.db
-            .query("execution_safety_faults")
-            .withIndex("by_strategy", (q) => q.eq("strategyId", args.strategyId))
-            .collect()
+        const strategy = await ctx.db.get(args.strategyId)
+        const [recentFaults, blockingFaults] = await Promise.all([
+            ctx.db
+                .query("execution_safety_faults")
+                .withIndex("by_strategy", (q) => q.eq("strategyId", args.strategyId))
+                .order("desc")
+                .take(STRATEGY_EXECUTION_SAFETY_FAULT_LIMIT),
+            args.unresolvedOnly && strategy
+                ? collectBlockedExecutionSafetyFaultsForStrategy(ctx, {
+                    strategyId: args.strategyId,
+                    app: strategy.app,
+                    accountId: strategy.accountId,
+                })
+                : [],
+        ])
+        const faultsById = new Map<string, Doc<"execution_safety_faults">>()
+        for (const fault of [...recentFaults, ...blockingFaults]) {
+            faultsById.set(String(fault._id), fault)
+        }
+        const faults = Array.from(faultsById.values())
 
         return faults
             .filter((fault) => args.unresolvedOnly ? fault.resolvedAt === undefined : true)

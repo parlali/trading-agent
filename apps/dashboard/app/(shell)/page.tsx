@@ -124,7 +124,7 @@ type MoneyAuditAlert = {
 
 type ExecutionFault = {
     _id: string
-    strategyId: string
+    strategyId?: string
     strategyName: string
     app: string
     accountId: string
@@ -457,12 +457,8 @@ function FaultTriage({ faults }: { faults: ExecutionFault[] }) {
                     <p className="text-sm text-muted-foreground">No unresolved execution safety faults.</p>
                 ) : (
                     <div className="space-y-2">
-                        {faults.slice(0, 8).map((fault) => (
-                            <Link
-                                key={fault._id}
-                                href={`/strategies/${fault.strategyId}`}
-                                className="block rounded-lg border border-border-subtle p-3 transition-colors hover:bg-muted/50 hover:border-border"
-                            >
+                        {faults.slice(0, 8).map((fault) => {
+                            const faultRow = (
                                 <div className="flex items-start justify-between gap-3">
                                     <div className="min-w-0">
                                         <div className="flex items-center gap-2 flex-wrap">
@@ -483,11 +479,30 @@ function FaultTriage({ faults }: { faults: ExecutionFault[] }) {
                                         <span className="text-xs text-muted-foreground">
                                             {formatRelativeTime(fault.occurredAt)}
                                         </span>
-                                        <ChevronRight className="h-4 w-4 text-muted-foreground/50" />
+                                        {fault.strategyId ? (
+                                            <ChevronRight className="h-4 w-4 text-muted-foreground/50" />
+                                        ) : null}
                                     </div>
                                 </div>
-                            </Link>
-                        ))}
+                            )
+
+                            return fault.strategyId ? (
+                                <Link
+                                    key={fault._id}
+                                    href={`/strategies/${fault.strategyId}`}
+                                    className="block rounded-lg border border-border-subtle p-3 transition-colors hover:bg-muted/50 hover:border-border"
+                                >
+                                    {faultRow}
+                                </Link>
+                            ) : (
+                                <div
+                                    key={fault._id}
+                                    className="block rounded-lg border border-border-subtle p-3"
+                                >
+                                    {faultRow}
+                                </div>
+                            )
+                        })}
                     </div>
                 )}
             </CardContent>

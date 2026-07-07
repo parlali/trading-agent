@@ -5,11 +5,11 @@ export async function resolveLatestRunIdForStrategy(
     ctx: PortfolioMutationCtx,
     strategyId: Id<"strategies">
 ): Promise<Id<"strategy_runs"> | undefined> {
-    const runs = await ctx.db
+    const run = await ctx.db
         .query("strategy_runs")
-        .withIndex("by_strategy", (q) => q.eq("strategyId", strategyId))
-        .collect()
+        .withIndex("by_strategy_started_at", (q) => q.eq("strategyId", strategyId))
+        .order("desc")
+        .first()
 
-    return runs
-        .sort((left, right) => right.startedAt - left.startedAt)[0]?._id
+    return run?._id
 }

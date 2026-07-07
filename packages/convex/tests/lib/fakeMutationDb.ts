@@ -9,6 +9,7 @@ type RegisteredFunctionForTest = {
 
 export class FakeMutationDb {
     rows: Record<string, FakeMutationRow[]> = {}
+    documentsRead = 0
     private nextId = 1
 
     constructor(seed: Record<string, Array<Record<string, unknown>>>) {
@@ -21,7 +22,7 @@ export class FakeMutationDb {
     }
 
     query(table: string) {
-        return new FakeMutationQuery(this.rows[table] ?? [])
+        return new FakeMutationQuery(this, this.rows[table] ?? [])
     }
 
     async insert(table: string, row: Record<string, unknown>) {
@@ -73,6 +74,7 @@ class FakeMutationQuery {
     private orderDirection: "asc" | "desc" = "asc"
 
     constructor(
+        private readonly db: FakeMutationDb,
         private readonly rows: FakeMutationRow[]
     ) {}
 
@@ -109,15 +111,20 @@ class FakeMutationQuery {
     }
 
     async collect() {
-        return this.applyFilters()
+        const rows = this.applyFilters()
+        this.recordDocumentsRead(rows)
+        return rows
     }
 
     async first() {
-        return this.applyFilters()[0] ?? null
+        const row = this.applyFilters()[0] ?? null
+        this.recordDocumentsRead(row ? [row] : [])
+        return row
     }
 
     async unique() {
         const rows = this.applyFilters()
+        this.recordDocumentsRead(rows)
         if (rows.length > 1) {
             throw new Error("Fake query expected unique result")
         }
@@ -126,7 +133,9 @@ class FakeMutationQuery {
     }
 
     async take(limit: number) {
-        return this.applyFilters().slice(0, limit)
+        const rows = this.applyFilters().slice(0, limit)
+        this.recordDocumentsRead(rows)
+        return rows
     }
 
     async paginate(args: { cursor: string | null; numItems: number }) {
@@ -134,6 +143,7 @@ class FakeMutationQuery {
         const start = args.cursor ? Number(args.cursor) : 0
         const page = rows.slice(start, start + args.numItems)
         const next = start + page.length
+        this.recordDocumentsRead(page)
 
         return {
             page,
@@ -168,6 +178,10 @@ class FakeMutationQuery {
         }
 
         return filtered
+    }
+
+    private recordDocumentsRead(rows: FakeMutationRow[]): void {
+        this.db.documentsRead += rows.length
     }
 }
 

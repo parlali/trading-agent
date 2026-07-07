@@ -1,4 +1,5 @@
 import { query } from "../../_generated/server"
+import type { QueryCtx } from "../../_generated/server"
 import { v } from "convex/values"
 import {
     VENUE_APPS,
@@ -14,6 +15,8 @@ import { isDryRunLedgerMetadata } from "../dryRunLedger"
 import { parseJson } from "../mutations/portfolioUtils"
 
 const PORTFOLIO_STALE_AFTER_MS = 10 * 60 * 1000
+const PORTFOLIO_TRADE_HISTORY_RECENT_EVENT_LIMIT = 500
+const EQUITY_SERIES_MAX_RANGE_MS = 90 * 24 * 60 * 60 * 1000
 
 const equityTimeRangeV = v.union(
     v.literal("24h"),
@@ -22,6 +25,56 @@ const equityTimeRangeV = v.union(
     v.literal("90d"),
     v.literal("all")
 )
+
+type AccountSnapshotBucket = {
+    app: typeof VENUE_APPS[number]
+    accountId: string | undefined
+}
+
+async function resolveAccountSnapshotBuckets(
+    ctx: QueryCtx,
+    app: typeof VENUE_APPS[number] | undefined,
+    accountId: string | undefined
+): Promise<AccountSnapshotBucket[]> {
+    if (app && accountId) {
+        return [{ app, accountId }]
+    }
+
+    const buckets = new Map<string, AccountSnapshotBucket>()
+    const addBucket = (bucket: AccountSnapshotBucket): void => {
+        buckets.set(`${bucket.app}:${bucket.accountId ?? "unassigned"}`, bucket)
+    }
+
+    if (app) {
+        const accounts = await ctx.db
+            .query("accounts")
+            .withIndex("by_app", (q) => q.eq("app", app))
+            .collect()
+
+        for (const account of accounts) {
+            addBucket({ app: account.app, accountId: account.accountId })
+        }
+        addBucket({ app, accountId: undefined })
+        return Array.from(buckets.values())
+    }
+
+    if (accountId) {
+        for (const venueApp of VENUE_APPS) {
+            addBucket({ app: venueApp, accountId })
+        }
+        return Array.from(buckets.values())
+    }
+
+    const accounts = await ctx.db.query("accounts").collect()
+    for (const account of accounts) {
+        addBucket({ app: account.app, accountId: account.accountId })
+    }
+    for (const venueApp of VENUE_APPS) {
+        addBucket({ app: venueApp, accountId: undefined })
+    }
+
+    return Array.from(buckets.values())
+}
 
 export const getPortfolioFreshness = query({
     args: {
@@ -65,33 +118,20 @@ export const getPortfolioAccountSnapshots = query({
     handler: async (ctx, args) => {
         await requireUserOrServiceToken(ctx, args.serviceToken)
 
-        const rows = args.app
-            ? await ctx.db
-                .query("account_snapshots")
-                .withIndex(
-                    args.accountId ? "by_app_account" : "by_app",
-                    (q) => args.accountId
-                        ? q.eq("app", args.app!).eq("accountId", args.accountId!)
-                        : q.eq("app", args.app!)
-                )
-                .collect()
-            : args.accountId
-                ? await ctx.db
+        const buckets = await resolveAccountSnapshotBuckets(ctx, args.app, args.accountId)
+        const rows = (
+            await Promise.all(
+                buckets.map((bucket) => ctx.db
                     .query("account_snapshots")
-                    .withIndex("by_account", (q) => q.eq("accountId", args.accountId!))
-                    .collect()
-                : await ctx.db.query("account_snapshots").collect()
+                    .withIndex("by_app_account_timestamp", (q) =>
+                        q.eq("app", bucket.app).eq("accountId", bucket.accountId)
+                    )
+                    .order("desc")
+                    .first())
+            )
+        ).filter((row): row is Doc<"account_snapshots"> => row !== null)
 
-        const latestByAccount = new Map<string, typeof rows[number]>()
-        for (const row of rows) {
-            const key = `${row.app}:${row.accountId ?? "unassigned"}`
-            const existing = latestByAccount.get(key)
-            if (!existing || row.timestamp > existing.timestamp) {
-                latestByAccount.set(key, row)
-            }
-        }
-
-        return Array.from(latestByAccount.values())
+        return rows
             .sort((left, right) =>
                 left.app.localeCompare(right.app) ||
                 (left.accountId ?? "unassigned").localeCompare(right.accountId ?? "unassigned")
@@ -324,7 +364,8 @@ export const getPortfolioTradeHistory = query({
             ? await ctx.db
                 .query("trade_events")
                 .withIndex("by_strategy", (q) => q.eq("strategyId", args.strategyId!))
-                .collect()
+                .order("desc")
+                .take(PORTFOLIO_TRADE_HISTORY_RECENT_EVENT_LIMIT)
             : args.app
                 ? await ctx.db
                     .query("trade_events")
@@ -759,10 +800,10 @@ function resolveRangeStart(
         "7d": 7 * 24 * 60 * 60 * 1000,
         "30d": 30 * 24 * 60 * 60 * 1000,
         "90d": 90 * 24 * 60 * 60 * 1000,
-        "all": Infinity,
+        "all": EQUITY_SERIES_MAX_RANGE_MS,
     } as const
 
-    return timeRange === "all" ? 0 : end - durationMsByRange[timeRange]
+    return end - durationMsByRange[timeRange]
 }
 
 function resolveSnapshotEquity(snapshot: Doc<"account_snapshots">): number {

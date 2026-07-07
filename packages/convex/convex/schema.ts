@@ -474,6 +474,7 @@ export default defineSchema({
         ...positionValueFieldsV,
         metadata: v.optional(v.string()),
         syncedAt: v.number(),
+        missingSinceSyncAt: v.optional(v.number()),
     })
         .index("by_app", ["app"])
         .index("by_account", ["accountId"])
@@ -564,7 +565,7 @@ export default defineSchema({
         .index("by_app_state", ["app", "safetyState"]),
 
     execution_safety_faults: defineTable({
-        strategyId: v.id("strategies"),
+        strategyId: v.optional(v.id("strategies")),
         app: venueAppV,
         accountId: v.string(),
         instrument: v.string(),

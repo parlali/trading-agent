@@ -38,10 +38,19 @@ import {
     repairEntryOrderFromProviderClosure,
 } from "./portfolioOrderClosureWrites"
 import { findOrderRowByAlias } from "../orderIdentityAliases"
-import { getProviderInstrumentClaimAliases } from "../instrumentClaims"
+import {
+    getClaimInstrumentsForOrder,
+    getProviderInstrumentClaimAliases,
+} from "../instrumentClaims"
+import {
+    isVanishedPositionAccountingFault,
+    readVanishedPositionFaultPayload,
+} from "./portfolioVanishedPositionFaults"
 
 const PROVIDER_CLOSURE_TIME_SKEW_MS = 5 * 60 * 1000
-const HISTORIC_CANONICAL_CLOSE_MATCH_WINDOW_MS = 24 * 60 * 60 * 1000
+export const HISTORIC_CANONICAL_CLOSE_MATCH_WINDOW_MS = 24 * 60 * 60 * 1000
+export const KNOWN_PROVIDER_CLOSE_LOOKBACK_MS = 7 * 24 * 60 * 60 * 1000
+const MT5_HISTORIC_ENTRY_ORDER_LOOKBACK_MS = 45 * 24 * 60 * 60 * 1000
 const MT5_PROVIDER_POSITION_ORDER_STATUSES = ["pending", "filled", "partially_filled", "cancelled", "rejected", "expired", "timed_out"] as const
 
 const CLOSURE_TRUTH_APPS = new Set<Doc<"strategies">["app"]>(["mt5", "okx-swap"])
@@ -57,6 +66,7 @@ export interface ProviderClosureReconciliationResult {
     unattributedClosures: string[]
     unmatchedClosedPositions: string[]
     repairedEntryOrderIds: string[]
+    graceProviderPositionIds: Id<"provider_positions">[]
 }
 
 type CandidateMatch =
@@ -81,15 +91,13 @@ export async function reconcileProviderPositionClosures(
         ...args.positionClosures,
         ...await resolveKnownProviderCloseInputs(ctx, args),
     ])
-    const disappearedCandidates: TrackedClosureCandidate[] = args.existingProviderPositions
-        .filter((position) =>
-            position.ownershipStatus === "owned" &&
-            position.strategyId !== undefined &&
-            position.expectedExternal !== true &&
-            args.strategyMap.has(String(position.strategyId)) &&
-            !isProviderPositionLive(position, args.livePositionKeys)
-        )
-        .map((position) => trackCandidate({ ...position, strategyId: position.strategyId! }, false))
+    const {
+        candidates: disappearedCandidates,
+        graceProviderPositionIds,
+    } = await resolveDisappearedCandidatesWithGrace(ctx, {
+        ...args,
+        positionClosures,
+    })
 
     const mt5HistoricCandidates = (await resolveHistoricMT5ProviderCloseCandidates(ctx, {
         ...args,
@@ -108,7 +116,12 @@ export async function reconcileProviderPositionClosures(
     ])
 
     if (positionClosures.length === 0 && candidates.length === 0) {
-        return { unattributedClosures: [], unmatchedClosedPositions: [], repairedEntryOrderIds: [] }
+        return {
+            unattributedClosures: [],
+            unmatchedClosedPositions: [],
+            repairedEntryOrderIds: [],
+            graceProviderPositionIds,
+        }
     }
     const latestRunIdsByStrategy = new Map<string, Id<"strategy_runs"> | undefined>()
     const importedClosureKeys = new Set<string>()
@@ -140,13 +153,21 @@ export async function reconcileProviderPositionClosures(
             if (!isRetiredProviderCloseOrder(orderMatch.order)) {
                 const canonicalCloseOrder = await resolveExistingCanonicalCloseOrderForClosure(ctx, {
                     strategyId: orderMatch.order.strategyId,
+                    app: args.app,
+                    accountId: args.accountId,
                     closure,
                 })
+                const attachedOrder = canonicalCloseOrder ?? orderMatch.order
                 await attachClosureToCanonicalCloseOrder(ctx, {
-                    order: canonicalCloseOrder ?? orderMatch.order,
+                    order: attachedOrder,
                     position: candidate?.position,
                     closure,
                     updatedAt: args.updatedAt,
+                })
+                await resolveAttributedFaultBackedCandidate(ctx, {
+                    candidate,
+                    updatedAt: args.updatedAt,
+                    resolutionNote: `Provider closure attached to canonical close order ${attachedOrder.orderId}`,
                 })
             }
             consumeCandidate(candidate, closure.quantity)
@@ -167,6 +188,11 @@ export async function reconcileProviderPositionClosures(
                 position: candidate?.position,
                 closure,
                 updatedAt: args.updatedAt,
+            })
+            await resolveAttributedFaultBackedCandidate(ctx, {
+                candidate,
+                updatedAt: args.updatedAt,
+                resolutionNote: `Provider closure attached to canonical close order ${orderMatch.order.orderId}`,
             })
             consumeCandidate(candidate, closure.quantity)
             importedClosureKeys.add(closureKey)
@@ -246,6 +272,8 @@ export async function reconcileProviderPositionClosures(
 
         const canonicalCloseOrder = await resolveExistingCanonicalCloseOrderForClosure(ctx, {
             strategyId: position.strategyId,
+            app: args.app,
+            accountId: args.accountId,
             closure,
         })
 
@@ -256,6 +284,11 @@ export async function reconcileProviderPositionClosures(
                 closure,
                 updatedAt: args.updatedAt,
             })
+            await resolveAttributedFaultBackedCandidate(ctx, {
+                candidate,
+                updatedAt: args.updatedAt,
+                resolutionNote: `Provider closure attached to canonical close order ${canonicalCloseOrder.orderId}`,
+            })
         } else {
             await importSyntheticProviderClose(ctx, {
                 app: args.app,
@@ -263,6 +296,11 @@ export async function reconcileProviderPositionClosures(
                 closure,
                 runId,
                 updatedAt: args.updatedAt,
+            })
+            await resolveAttributedFaultBackedCandidate(ctx, {
+                candidate,
+                updatedAt: args.updatedAt,
+                resolutionNote: `Provider closure imported as synthetic close for ${position.positionKey}`,
             })
         }
 
@@ -289,6 +327,7 @@ export async function reconcileProviderPositionClosures(
         unattributedClosures,
         unmatchedClosedPositions,
         repairedEntryOrderIds: Array.from(repairedEntryOrderIds),
+        graceProviderPositionIds,
     }
 }
 
@@ -331,15 +370,115 @@ function mergeProviderPositionClosures(
     return Array.from(byKey.values())
 }
 
+async function resolveDisappearedCandidatesWithGrace(
+    ctx: PortfolioMutationCtx,
+    args: {
+        app: Doc<"strategies">["app"]
+        strategyMap: Map<string, StrategyDoc>
+        existingProviderPositions: Doc<"provider_positions">[]
+        livePositionKeys: Set<string>
+        positionClosures: ProviderPositionClosureInput[]
+        updatedAt: number
+    }
+): Promise<{
+    candidates: TrackedClosureCandidate[]
+    graceProviderPositionIds: Id<"provider_positions">[]
+}> {
+    const candidates: TrackedClosureCandidate[] = []
+    const graceProviderPositionIds: Id<"provider_positions">[] = []
+
+    for (const position of args.existingProviderPositions) {
+        if (
+            position.ownershipStatus !== "owned" ||
+            position.strategyId === undefined ||
+            position.expectedExternal === true ||
+            !args.strategyMap.has(String(position.strategyId)) ||
+            isProviderPositionLive(position, args.livePositionKeys)
+        ) {
+            continue
+        }
+
+        const candidatePosition = { ...position, strategyId: position.strategyId }
+        if (
+            hasSameSyncPositionClosureEvidence(candidatePosition, args.positionClosures, args.app) ||
+            isConfirmedMissingProviderPosition(position, args.updatedAt)
+        ) {
+            candidates.push(trackCandidate(candidatePosition, false))
+            continue
+        }
+
+        if (position.missingSinceSyncAt === undefined) {
+            await ctx.db.patch(position._id, { missingSinceSyncAt: args.updatedAt })
+        }
+        graceProviderPositionIds.push(position._id)
+    }
+
+    return { candidates, graceProviderPositionIds }
+}
+
+function hasSameSyncPositionClosureEvidence(
+    position: ProviderClosePositionCandidate,
+    positionClosures: ProviderPositionClosureInput[],
+    app: Doc<"strategies">["app"]
+): boolean {
+    return positionClosures.some((closure) =>
+        resolveMatchingCandidatePosition([trackCandidate(position, false)], closure, app).kind === "matched"
+    )
+}
+
+function isConfirmedMissingProviderPosition(
+    position: Pick<Doc<"provider_positions">, "missingSinceSyncAt">,
+    updatedAt: number
+): boolean {
+    return position.missingSinceSyncAt !== undefined && updatedAt > position.missingSinceSyncAt
+}
+
+async function resolveAttributedFaultBackedCandidate(
+    ctx: PortfolioMutationCtx,
+    args: {
+        candidate: TrackedClosureCandidate | undefined
+        updatedAt: number
+        resolutionNote: string
+    }
+): Promise<void> {
+    const safetyFaultId = readSafetyFaultId(args.candidate?.position.metadata)
+    if (!safetyFaultId) {
+        return
+    }
+
+    const fault = await ctx.db.get(safetyFaultId as Id<"execution_safety_faults">)
+    if (
+        !fault ||
+        fault.blocked !== true ||
+        fault.resolvedAt !== undefined ||
+        !isVanishedPositionAccountingFault(fault)
+    ) {
+        return
+    }
+
+    await ctx.db.patch(fault._id, {
+        blocked: false,
+        resolvedAt: args.updatedAt,
+        resolutionNote: args.resolutionNote,
+    })
+}
+
+function readSafetyFaultId(metadata: string | undefined): string | undefined {
+    const parsed = parseJson<Record<string, unknown>>(metadata)
+    return readIdentifier(parsed?.safetyFaultId)
+}
+
 async function resolveKnownProviderCloseInputs(
     ctx: PortfolioMutationCtx,
     args: {
         app: Doc<"strategies">["app"]
         accountId: string
         strategyMap: Map<string, StrategyDoc>
+        updatedAt: number
     }
 ): Promise<ProviderPositionClosureInput[]> {
     const closures: ProviderPositionClosureInput[] = []
+    const windowStart = args.updatedAt - KNOWN_PROVIDER_CLOSE_LOOKBACK_MS
 
     for (const strategy of args.strategyMap.values()) {
         if (strategy.app !== args.app || strategy.accountId !== args.accountId) {
@@ -348,11 +487,12 @@ async function resolveKnownProviderCloseInputs(
 
         const filledOrders = await ctx.db
             .query("orders")
-            .withIndex("by_strategy_status", (q) =>
-                q.eq("strategyId", strategy._id).eq("status", "filled")
+            .withIndex("by_strategy_status_updated_at", (q) =>
+                q.eq("strategyId", strategy._id)
+                    .eq("status", "filled")
+                    .gte("updatedAt", windowStart)
             )
-            .order("desc")
-            .take(250)
+            .collect()
 
         for (const order of filledOrders) {
             const closure = resolveKnownProviderCloseInput(order, args.app, args.accountId)
@@ -835,18 +975,48 @@ async function hasRecentFilledCanonicalClose(
         updatedAtTo: position.syncedAt + HISTORIC_CANONICAL_CLOSE_MATCH_WINDOW_MS,
     })
 
-    return orders.some((order) =>
-        order.action === "close" &&
-        order.instrument === position.instrument &&
-        orderBelongsToAccount(order, app, position.accountId) &&
-        (
-            hasSharedProviderPositionIdentity(
-                buildOrderCloseIdentityCandidates(order),
-                buildProviderPositionIdentityCandidates(position)
-            ) ||
-            isAuditedOKXCloseOrderMatch(app, order, position)
-        )
-    )
+    return orders.some((order) => {
+        if (
+            order.action !== "close" ||
+            !orderBelongsToAccount(order, app, position.accountId)
+        ) {
+            return false
+        }
+
+        const instrumentMatch = resolveCloseOrderInstrumentMatch(order, position.instrument)
+        if (instrumentMatch === "none") {
+            return false
+        }
+
+        if (instrumentMatch === "leg") {
+            return true
+        }
+
+        return hasSharedProviderPositionIdentity(
+            buildOrderCloseIdentityCandidates(order),
+            buildProviderPositionIdentityCandidates(position)
+        ) || isAuditedOKXCloseOrderMatch(app, order, position)
+    })
+}
+
+type CloseOrderInstrumentMatch = "direct" | "leg" | "none"
+
+function resolveCloseOrderInstrumentMatch(
+    order: Pick<Doc<"orders">, "instrument" | "intent">,
+    providerInstrument: string
+): CloseOrderInstrumentMatch {
+    if (order.instrument === providerInstrument) {
+        return "direct"
+    }
+
+    return orderClaimInstrumentsContain(order, providerInstrument) ? "leg" : "none"
+}
+
+export function orderClaimInstrumentsContain(
+    order: Pick<Doc<"orders">, "instrument" | "intent">,
+    providerInstrument: string
+): boolean {
+    return new Set(getClaimInstrumentsForOrder(order.instrument, order.intent)).has(providerInstrument)
 }
 
 function isAuditedOKXCloseOrderMatch(
@@ -1056,6 +1226,7 @@ async function resolveHistoricMT5ProviderCloseCandidates(
         strategyMap: args.strategyMap,
         closureIdentityCandidates,
         seenOrderIds,
+        updatedAt: args.updatedAt,
     })) {
         seenOrderIds.add(order.orderId)
         const candidate = resolveMT5HistoricProviderCloseCandidate(order)
@@ -1122,113 +1293,61 @@ async function resolveFaultBackedProviderCloseCandidates(
         strategyMap: Map<string, StrategyDoc>
     }
 ): Promise<ProviderClosePositionCandidate[]> {
-    const faults = [
-        ...await collectExecutionSafetyFaultsByBlockedState(ctx, args, true),
-        ...await collectExecutionSafetyFaultsByBlockedState(ctx, args, false),
-    ]
+    const faults = await ctx.db
+        .query("execution_safety_faults")
+        .withIndex("by_app_account_blocked", (q) =>
+            q.eq("app", args.app).eq("accountId", args.accountId).eq("blocked", true)
+        )
+        .collect()
     const candidates: ProviderClosePositionCandidate[] = []
     const seenPositionKeys = new Set<string>()
 
     for (const fault of faults) {
         if (
-            fault.category !== "accounting_mismatch" ||
+            !isVanishedPositionAccountingFault(fault) ||
             !fault.strategyId ||
-            !args.strategyMap.has(String(fault.strategyId)) ||
-            !fault.message.includes("disappeared from") ||
-            !fault.message.includes("without close evidence")
+            !args.strategyMap.has(String(fault.strategyId))
         ) {
             continue
         }
 
-        const payload = parseJson<Record<string, unknown>>(fault.providerPayload)
-        const instrument = readIdentifier(payload?.instrument) ?? fault.instrument
-        const side = readProviderPositionSide(payload?.side)
-        const quantity = readFinitePayloadNumber(payload?.quantity)
-        const entryPrice = readFinitePayloadNumber(payload?.entryPrice)
-        if (!instrument || !side || quantity === undefined || entryPrice === undefined) {
+        const payload = readVanishedPositionFaultPayload(fault)
+        if (
+            !payload.instrument ||
+            !payload.side ||
+            payload.quantity === undefined ||
+            payload.entryPrice === undefined ||
+            !payload.positionKey
+        ) {
             continue
         }
 
-        const positionKey = readIdentifier(payload?.positionKey) ?? `${instrument}:${side}`
-        if (seenPositionKeys.has(positionKey)) {
+        if (seenPositionKeys.has(payload.positionKey)) {
             continue
         }
 
-        const providerPositionId = resolveProviderPositionIdFromFaultPayload(instrument, positionKey, payload)
-        seenPositionKeys.add(positionKey)
+        seenPositionKeys.add(payload.positionKey)
         candidates.push({
             strategyId: fault.strategyId,
             runId: fault.runId,
             accountId: args.accountId,
-            instrument,
-            side,
-            quantity,
-            entryPrice,
-            providerPositionId,
-            positionKey,
+            instrument: payload.instrument,
+            side: payload.side,
+            quantity: payload.quantity,
+            entryPrice: payload.entryPrice,
+            providerPositionId: payload.providerPositionId,
+            positionKey: payload.positionKey,
             syncedAt: 0,
             metadata: JSON.stringify({
                 source: "execution_safety_fault",
-                positionKey,
-                providerPositionId,
+                positionKey: payload.positionKey,
+                providerPositionId: payload.providerPositionId,
                 safetyFaultId: String(fault._id),
             }),
         })
     }
 
     return candidates
-}
-
-async function collectExecutionSafetyFaultsByBlockedState(
-    ctx: PortfolioMutationCtx,
-    args: {
-        app: Doc<"strategies">["app"]
-        accountId: string
-    },
-    blocked: boolean
-): Promise<Array<Doc<"execution_safety_faults">>> {
-    return await ctx.db
-        .query("execution_safety_faults")
-        .withIndex("by_app_account_blocked", (q) =>
-            q.eq("app", args.app).eq("accountId", args.accountId).eq("blocked", blocked)
-        )
-        .collect()
-}
-
-function resolveProviderPositionIdFromFaultPayload(
-    instrument: string,
-    positionKey: string,
-    payload: Record<string, unknown> | undefined
-): string | undefined {
-    const explicit = readIdentifier(payload?.providerPositionId)
-    if (explicit) {
-        return explicit
-    }
-
-    const prefix = `${instrument}:`
-    if (!positionKey.startsWith(prefix)) {
-        return undefined
-    }
-
-    const suffix = positionKey.slice(prefix.length)
-    return suffix && suffix !== "long" && suffix !== "short" ? suffix : undefined
-}
-
-function readProviderPositionSide(value: unknown): "long" | "short" | undefined {
-    return value === "long" || value === "short" ? value : undefined
-}
-
-function readFinitePayloadNumber(value: unknown): number | undefined {
-    if (typeof value === "number" && Number.isFinite(value)) {
-        return value
-    }
-
-    if (typeof value === "string" && value.trim().length > 0) {
-        const parsed = Number(value)
-        return Number.isFinite(parsed) ? parsed : undefined
-    }
-
-    return undefined
 }
 
 async function findMT5EntryOrdersByClosureIdentity(
@@ -1239,9 +1358,11 @@ async function findMT5EntryOrdersByClosureIdentity(
         strategyMap: Map<string, StrategyDoc>
         closureIdentityCandidates: Set<string>
         seenOrderIds: Set<string>
+        updatedAt: number
     }
 ): Promise<Doc<"orders">[]> {
     const matches: Doc<"orders">[] = []
+    const windowStart = args.updatedAt - MT5_HISTORIC_ENTRY_ORDER_LOOKBACK_MS
 
     for (const strategy of args.strategyMap.values()) {
         if (strategy.app !== args.app || strategy.accountId !== args.accountId) {
@@ -1251,8 +1372,10 @@ async function findMT5EntryOrdersByClosureIdentity(
         for (const status of MT5_PROVIDER_POSITION_ORDER_STATUSES) {
             const orders = await ctx.db
                 .query("orders")
-                .withIndex("by_strategy_status", (q) =>
-                    q.eq("strategyId", strategy._id).eq("status", status)
+                .withIndex("by_strategy_status_updated_at", (q) =>
+                    q.eq("strategyId", strategy._id)
+                        .eq("status", status)
+                        .gte("updatedAt", windowStart)
                 )
                 .collect()
 
@@ -1443,6 +1566,8 @@ async function resolveExistingCanonicalCloseOrderForClosure(
     ctx: PortfolioMutationCtx,
     args: {
         strategyId: Id<"strategies">
+        app: Doc<"strategies">["app"]
+        accountId: string
         closure: ProviderPositionClosureInput
     }
 ): Promise<Doc<"orders"> | undefined> {
@@ -1454,15 +1579,29 @@ async function resolveExistingCanonicalCloseOrderForClosure(
     })
     const closureIds = buildPositionClosureIdentityCandidates(args.closure)
 
-    return orders.find((order) =>
-        order.action === "close" &&
-        order.instrument === args.closure.instrument &&
-        !isSyntheticProviderCloseOrder(order) &&
-        hasSharedProviderPositionIdentity(buildOrderCloseIdentityCandidates(order), closureIds)
-    )
+    return orders.find((order) => {
+        if (
+            order.action !== "close" ||
+            !orderBelongsToAccount(order, args.app, args.accountId) ||
+            isSyntheticProviderCloseOrder(order)
+        ) {
+            return false
+        }
+
+        const instrumentMatch = resolveCloseOrderInstrumentMatch(order, args.closure.instrument)
+        if (instrumentMatch === "none") {
+            return false
+        }
+
+        if (instrumentMatch === "leg") {
+            return true
+        }
+
+        return hasSharedProviderPositionIdentity(buildOrderCloseIdentityCandidates(order), closureIds)
+    })
 }
 
-async function collectRecentStrategyOrdersByStatuses(
+export async function collectRecentStrategyOrdersByStatuses(
     ctx: PortfolioMutationCtx,
     args: {
         strategyId: Id<"strategies">

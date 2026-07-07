@@ -1,10 +1,24 @@
 import type { Doc, Id } from "../../_generated/dataModel"
 import { getProviderInstrumentClaimAliases } from "../instrumentClaims"
+import {
+    isSyntheticProviderCloseOrder,
+    orderBelongsToAccount,
+} from "./portfolioCloseIdentity"
+import {
+    collectRecentStrategyOrdersByStatuses,
+    HISTORIC_CANONICAL_CLOSE_MATCH_WINDOW_MS,
+    KNOWN_PROVIDER_CLOSE_LOOKBACK_MS,
+    orderClaimInstrumentsContain,
+} from "./portfolioOrderClosureReconciliation"
 import type {
     PortfolioMutationCtx,
     ReconciliationWriteStats,
 } from "./portfolioTypes"
 import { isInferredFillAccountingFaultMessage } from "./portfolioInferredFillFaults"
+import {
+    isVanishedPositionAccountingFault,
+    readVanishedPositionFaultPayload,
+} from "./portfolioVanishedPositionFaults"
 
 type ProviderPositionRow = Omit<Doc<"provider_positions">, "_id" | "_creationTime">
 type ProviderPositionHistoryRow = Omit<Doc<"provider_position_history">, "_id" | "_creationTime">
@@ -28,6 +42,7 @@ const PROVIDER_POSITION_COMPARE_FIELDS = [
     "stopLoss",
     "takeProfit",
     "metadata",
+    "missingSinceSyncAt",
 ] as const satisfies readonly (keyof ProviderPositionRow)[]
 
 const PROVIDER_POSITION_PATCH_FIELDS = [
@@ -73,7 +88,8 @@ export async function upsertProviderPositionRows(
     accountId: string,
     rows: ProviderPositionRow[],
     updatedAt: number,
-    existingRows?: Array<Doc<"provider_positions">>
+    existingRows?: Array<Doc<"provider_positions">>,
+    retainedMissingProviderPositionIds: Set<Id<"provider_positions">> = new Set()
 ): Promise<ReconciliationWriteStats> {
     const existing = existingRows ?? await ctx.db
         .query("provider_positions")
@@ -96,13 +112,28 @@ export async function upsertProviderPositionRows(
             continue
         }
 
+        const reappearedAfterSuspectSnapshot = current.missingSinceSyncAt !== undefined
         if (!hasFieldChange(current, row, PROVIDER_POSITION_COMPARE_FIELDS)) {
             await ctx.db.patch(current._id, { syncedAt: row.syncedAt })
+            await recordProviderPositionReappearedAlert(ctx, {
+                app,
+                row,
+                current,
+                updatedAt,
+                reappearedAfterSuspectSnapshot,
+            })
             stats.unchanged++
             continue
         }
 
         await ctx.db.patch(current._id, pickFields(row, PROVIDER_POSITION_PATCH_FIELDS))
+        await recordProviderPositionReappearedAlert(ctx, {
+            app,
+            row,
+            current,
+            updatedAt,
+            reappearedAfterSuspectSnapshot,
+        })
         stats.patched++
     }
 
@@ -121,6 +152,10 @@ export async function upsertProviderPositionRows(
             continue
         }
 
+        if (retainedMissingProviderPositionIds.has(row._id)) {
+            continue
+        }
+
         if (PROVIDER_POSITION_HISTORY_APPS.has(app)) {
             await upsertDisappearedProviderPositionHistory(ctx, {
                 row,
@@ -134,6 +169,30 @@ export async function upsertProviderPositionRows(
     }
 
     return stats
+}
+
+async function recordProviderPositionReappearedAlert(
+    ctx: PortfolioMutationCtx,
+    args: {
+        app: Doc<"strategies">["app"]
+        row: ProviderPositionRow
+        current: Doc<"provider_positions">
+        updatedAt: number
+        reappearedAfterSuspectSnapshot: boolean
+    }
+): Promise<void> {
+    if (!args.reappearedAfterSuspectSnapshot) {
+        return
+    }
+
+    await ctx.db.insert("alerts", {
+        strategyId: args.row.strategyId ?? args.current.strategyId,
+        app: args.app,
+        severity: "info",
+        message: `[provider-reconciliation] Position ${args.row.positionKey} reappeared after a suspect provider positions snapshot`,
+        acknowledged: false,
+        timestamp: args.updatedAt,
+    })
 }
 
 function coalesceProviderPositionRows(rows: ProviderPositionRow[]): ProviderPositionRow[] {
@@ -413,7 +472,7 @@ export async function resolveExecutionSafetyFaultsFromProviderTruth(
     args: {
         app: Doc<"strategies">["app"]
         accountId: string
-        positions: Array<Pick<Doc<"provider_positions">, "instrument" | "ownershipStatus">>
+        positions: Array<Pick<Doc<"provider_positions">, "instrument" | "ownershipStatus" | "positionKey">>
         workingOrders: Array<Pick<
             Doc<"provider_working_orders">,
             "orderId" |
@@ -444,7 +503,7 @@ export async function resolveExecutionSafetyFaultsFromProviderTruth(
     const ownedWorkingOrderInstruments = args.workingOrders
         .filter((order) => order.ownershipStatus === "owned")
         .map((order) => order.instrument)
-    const resolvedByStrategy = new Map<string, { strategyId: Id<"strategies">; count: number }>()
+    const resolvedFaultGroups = new Map<string, ResolvedFaultAlertGroup>()
 
     for (const fault of openFaults) {
         if (fault.resolvedAt !== undefined || fault.instrument === "*") {
@@ -457,7 +516,23 @@ export async function resolveExecutionSafetyFaultsFromProviderTruth(
                 fault,
                 updatedAt: args.updatedAt,
                 resolutionNote: `Provider reconciliation proved canonical order ${cancelledOrder.orderId} cancelled unfilled`,
-                resolvedByStrategy,
+                resolvedFaultGroups,
+            })
+            continue
+        }
+
+        const vanishedResolution = await resolveVanishedPositionFaultFromProviderTruth(ctx, {
+            app: args.app,
+            accountId: args.accountId,
+            fault,
+            positions: args.positions,
+        })
+        if (vanishedResolution) {
+            await resolveFault(ctx, {
+                fault,
+                updatedAt: args.updatedAt,
+                resolutionNote: vanishedResolution.resolutionNote,
+                resolvedFaultGroups,
             })
             continue
         }
@@ -483,7 +558,7 @@ export async function resolveExecutionSafetyFaultsFromProviderTruth(
                 fault,
                 updatedAt: args.updatedAt,
                 resolutionNote: `Provider reconciliation proved live canonical working order ${provenWorkingOrder.orderId}`,
-                resolvedByStrategy,
+                resolvedFaultGroups,
             })
             continue
         }
@@ -494,7 +569,7 @@ export async function resolveExecutionSafetyFaultsFromProviderTruth(
                 fault,
                 updatedAt: args.updatedAt,
                 resolutionNote: `Provider reconciliation proved terminal or recovered canonical order ${provenOrder.orderId}`,
-                resolvedByStrategy,
+                resolvedFaultGroups,
             })
             continue
         }
@@ -510,11 +585,11 @@ export async function resolveExecutionSafetyFaultsFromProviderTruth(
             fault,
             updatedAt: args.updatedAt,
             resolutionNote: "Provider reconciliation confirmed flat exposure with no owned working orders on this instrument",
-            resolvedByStrategy,
+            resolvedFaultGroups,
         })
     }
 
-    for (const resolved of resolvedByStrategy.values()) {
+    for (const resolved of resolvedFaultGroups.values()) {
         await ctx.db.insert("alerts", {
             strategyId: resolved.strategyId,
             app: args.app,
@@ -526,13 +601,84 @@ export async function resolveExecutionSafetyFaultsFromProviderTruth(
     }
 }
 
+async function resolveVanishedPositionFaultFromProviderTruth(
+    ctx: PortfolioMutationCtx,
+    args: {
+        app: Doc<"strategies">["app"]
+        accountId: string
+        fault: Doc<"execution_safety_faults">
+        positions: Array<Pick<Doc<"provider_positions">, "instrument" | "ownershipStatus" | "positionKey">>
+    }
+): Promise<{ resolutionNote: string } | undefined> {
+    if (!isVanishedPositionAccountingFault(args.fault)) {
+        return undefined
+    }
+
+    const payload = readVanishedPositionFaultPayload(args.fault)
+    if (!payload.instrument || !payload.positionKey) {
+        return undefined
+    }
+
+    const reappearedPosition = args.positions.find((position) =>
+        position.ownershipStatus === "owned" &&
+        position.positionKey === payload.positionKey
+    )
+    if (reappearedPosition) {
+        return {
+            resolutionNote: `Provider reconciliation proved position ${payload.positionKey} reappeared live at provider`,
+        }
+    }
+
+    const closeOrder = await resolveCanonicalCloseOrderForVanishedPositionFault(ctx, {
+        app: args.app,
+        accountId: args.accountId,
+        fault: args.fault,
+        instrument: payload.instrument,
+    })
+    if (!closeOrder) {
+        return undefined
+    }
+
+    return {
+        resolutionNote: `Provider reconciliation proved canonical close order ${closeOrder.orderId} for vanished position ${payload.positionKey}`,
+    }
+}
+
+async function resolveCanonicalCloseOrderForVanishedPositionFault(
+    ctx: PortfolioMutationCtx,
+    args: {
+        app: Doc<"strategies">["app"]
+        accountId: string
+        fault: Doc<"execution_safety_faults">
+        instrument: string
+    }
+): Promise<Doc<"orders"> | undefined> {
+    if (!args.fault.strategyId) {
+        return undefined
+    }
+
+    const orders = await collectRecentStrategyOrdersByStatuses(ctx, {
+        strategyId: args.fault.strategyId,
+        statuses: ["filled", "partially_filled"],
+        updatedAtFrom: args.fault.occurredAt - HISTORIC_CANONICAL_CLOSE_MATCH_WINDOW_MS,
+        updatedAtTo: args.fault.occurredAt + KNOWN_PROVIDER_CLOSE_LOOKBACK_MS,
+    })
+
+    return orders.find((order) =>
+        order.action === "close" &&
+        !isSyntheticProviderCloseOrder(order) &&
+        orderBelongsToAccount(order, args.app, args.accountId) &&
+        orderClaimInstrumentsContain(order, args.instrument)
+    )
+}
+
 async function resolveFault(
     ctx: PortfolioMutationCtx,
     args: {
         fault: Doc<"execution_safety_faults">
         updatedAt: number
         resolutionNote: string
-        resolvedByStrategy: Map<string, { strategyId: Id<"strategies">; count: number }>
+        resolvedFaultGroups: Map<string, ResolvedFaultAlertGroup>
     }
 ): Promise<void> {
     await ctx.db.patch(args.fault._id, {
@@ -541,12 +687,18 @@ async function resolveFault(
         resolutionNote: args.resolutionNote,
     })
 
-    const existing = args.resolvedByStrategy.get(String(args.fault.strategyId)) ?? {
+    const key = args.fault.strategyId ? String(args.fault.strategyId) : "account"
+    const existing = args.resolvedFaultGroups.get(key) ?? {
         strategyId: args.fault.strategyId,
         count: 0,
     }
     existing.count += 1
-    args.resolvedByStrategy.set(String(args.fault.strategyId), existing)
+    args.resolvedFaultGroups.set(key, existing)
+}
+
+type ResolvedFaultAlertGroup = {
+    strategyId?: Id<"strategies">
+    count: number
 }
 
 export function resolveExecutionFaultWorkingOrder(

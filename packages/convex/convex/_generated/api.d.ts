@@ -17,6 +17,7 @@ import type * as lib_authGuards from "../lib/authGuards.js";
 import type * as lib_cascadeDelete from "../lib/cascadeDelete.js";
 import type * as lib_controlPlaneMetrics from "../lib/controlPlaneMetrics.js";
 import type * as lib_dryRunLedger from "../lib/dryRunLedger.js";
+import type * as lib_executionSafetyFaultReads from "../lib/executionSafetyFaultReads.js";
 import type * as lib_heartbeatModel from "../lib/heartbeatModel.js";
 import type * as lib_instrumentClaims from "../lib/instrumentClaims.js";
 import type * as lib_killSwitchState from "../lib/killSwitchState.js";
@@ -42,6 +43,7 @@ import type * as lib_mutations_portfolioSnapshots from "../lib/mutations/portfol
 import type * as lib_mutations_portfolioTestables from "../lib/mutations/portfolioTestables.js";
 import type * as lib_mutations_portfolioTypes from "../lib/mutations/portfolioTypes.js";
 import type * as lib_mutations_portfolioUtils from "../lib/mutations/portfolioUtils.js";
+import type * as lib_mutations_portfolioVanishedPositionFaults from "../lib/mutations/portfolioVanishedPositionFaults.js";
 import type * as lib_mutations_portfolioWorkingOrders from "../lib/mutations/portfolioWorkingOrders.js";
 import type * as lib_mutations_positions from "../lib/mutations/positions.js";
 import type * as lib_mutations_risk from "../lib/mutations/risk.js";
@@ -90,6 +92,7 @@ declare const fullApi: ApiFromModules<{
   "lib/cascadeDelete": typeof lib_cascadeDelete;
   "lib/controlPlaneMetrics": typeof lib_controlPlaneMetrics;
   "lib/dryRunLedger": typeof lib_dryRunLedger;
+  "lib/executionSafetyFaultReads": typeof lib_executionSafetyFaultReads;
   "lib/heartbeatModel": typeof lib_heartbeatModel;
   "lib/instrumentClaims": typeof lib_instrumentClaims;
   "lib/killSwitchState": typeof lib_killSwitchState;
@@ -115,6 +118,7 @@ declare const fullApi: ApiFromModules<{
   "lib/mutations/portfolioTestables": typeof lib_mutations_portfolioTestables;
   "lib/mutations/portfolioTypes": typeof lib_mutations_portfolioTypes;
   "lib/mutations/portfolioUtils": typeof lib_mutations_portfolioUtils;
+  "lib/mutations/portfolioVanishedPositionFaults": typeof lib_mutations_portfolioVanishedPositionFaults;
   "lib/mutations/portfolioWorkingOrders": typeof lib_mutations_portfolioWorkingOrders;
   "lib/mutations/positions": typeof lib_mutations_positions;
   "lib/mutations/risk": typeof lib_mutations_risk;

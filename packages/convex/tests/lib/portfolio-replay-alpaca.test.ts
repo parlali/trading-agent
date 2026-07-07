@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import { resolveAlpacaCloseGroupsFromPositions } from "@valiq-trading/alpaca-options"
 import { getClaimInstrumentsForOrder } from "../../convex/lib/instrumentClaims"
 import { reconcileProviderPortfolio } from "../../convex/lib/mutations/portfolio"
@@ -267,6 +267,8 @@ describe("Convex Alpaca SPY replay", () => {
         const strategyId = "strategy-vanish"
         const accountId = "alpaca-acct-a"
         const vertical = "VS:BEAR_CALL_CREDIT:SPY:2026-05-01:SPY260501C00720000|SPY260501C00721000"
+        const firstSyncAt = Date.parse("2026-05-01T15:00:00.000Z")
+        const secondSyncAt = firstSyncAt + 300_000
         const db = new FakeDb({
             strategies: [{
                 _id: strategyId,
@@ -288,7 +290,7 @@ describe("Convex Alpaca SPY replay", () => {
                 side: "short",
                 quantity: 1,
                 entryPrice: 0.45,
-                syncedAt: Date.now() - 60_000,
+                syncedAt: firstSyncAt - 60_000,
             }],
             provider_working_orders: [],
             provider_sync_state: [],
@@ -300,8 +302,7 @@ describe("Convex Alpaca SPY replay", () => {
             alerts: [],
         })
         const ctx = { db } as never
-
-        await callRegistered(reconcileProviderPortfolio, ctx, {
+        const reconcileArgs = {
             serviceToken: "test-token",
             app: "alpaca-options",
             accountId,
@@ -318,7 +319,18 @@ describe("Convex Alpaca SPY replay", () => {
             },
             positions: [],
             workingOrders: [],
-        })
+        }
+
+        vi.useFakeTimers()
+        try {
+            vi.setSystemTime(firstSyncAt)
+            await callRegistered(reconcileProviderPortfolio, ctx, reconcileArgs)
+
+            vi.setSystemTime(secondSyncAt)
+            await callRegistered(reconcileProviderPortfolio, ctx, reconcileArgs)
+        } finally {
+            vi.useRealTimers()
+        }
 
         expect(db.rows.execution_safety_faults).toEqual([
             expect.objectContaining({

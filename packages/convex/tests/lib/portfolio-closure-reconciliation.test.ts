@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import { resolveCloseOrderRealizedPnl } from "@valiq-trading/core"
 import { reconcileProviderPortfolio } from "../../convex/lib/mutations/portfolio"
 import { buildPositionClosureKey } from "../../convex/lib/mutations/portfolioCloseIdentity"
@@ -351,8 +351,8 @@ describe("Convex provider closure reconciliation safety", () => {
         const accountId = "account-mt5"
         const strategyId = "strategy-mt5-gold"
         const runId = "run-mt5-gold"
-        const openedAt = 1_782_803_011_197
-        const closedAt = 1_782_803_240_504
+        const closedAt = Date.now() - 60_000
+        const openedAt = closedAt - 240_000
         const providerPositionId = "1781850341"
         const closeProviderOrderId = "1781852052"
         const faultClosedAt = closedAt - 60_000
@@ -715,6 +715,418 @@ describe("Convex provider closure reconciliation safety", () => {
             providerStatus: "healthy",
             driftDetected: false,
         })
+    })
+
+    it("does not fault Alpaca spread legs closed by a filled canonical combo close order", async () => {
+        process.env.BACKEND_SERVICE_TOKEN = "test-token"
+        const accountId = "account-alpaca-options"
+        const strategyId = "strategy-alpaca-qqq"
+        const runId = "run-alpaca-qqq"
+        const openedAt = 1_783_406_400_000
+        const closedAt = openedAt + 300_000
+        const firstSyncAt = closedAt + 60_000
+        const secondSyncAt = firstSyncAt + 300_000
+        const comboInstrument = "VS:BEAR_CALL_CREDIT:QQQ:2026-07-10:QQQ260710C00738000|QQQ260710C00739000"
+        const shortLeg = "QQQ260710C00738000"
+        const longLeg = "QQQ260710C00739000"
+        const db = new FakeDb({
+            strategies: [{
+                _id: strategyId,
+                app: "alpaca-options",
+                accountId,
+                name: "Alpaca QQQ Options",
+                policy: { dryRun: false },
+            }],
+            strategy_runs: [{
+                _id: runId,
+                strategyId,
+                app: "alpaca-options",
+                accountId,
+                status: "completed",
+                startedAt: openedAt,
+                endedAt: openedAt + 30_000,
+            }],
+            instrument_claims: [{
+                _id: "claim-alpaca-qqq-combo",
+                strategyId,
+                app: "alpaca-options",
+                accountId,
+                instrument: comboInstrument,
+                source: "order",
+                sourceId: "alpaca-qqq-entry",
+                updatedAt: openedAt,
+            }],
+            orders: [{
+                _id: "order-alpaca-qqq-close",
+                orderId: "alpaca-qqq-close",
+                canonicalOrderId: "alpaca-qqq-close",
+                providerOrderId: "alpaca-provider-close-qqq",
+                providerClientOrderId: "alpaca-qqq-close-client",
+                providerOrderAliases: [],
+                runId,
+                strategyId,
+                app: "alpaca-options",
+                accountId,
+                venue: "alpaca",
+                instrument: comboInstrument,
+                status: "filled",
+                action: "close",
+                quantity: 1,
+                filledQuantity: 1,
+                remainingQuantity: 0,
+                avgFillPrice: 0.27,
+                submittedAt: closedAt - 1_000,
+                updatedAt: closedAt,
+                intent: {
+                    instrument: comboInstrument,
+                    side: "buy",
+                    quantity: 1,
+                    orderType: "market",
+                    legs: [
+                        { instrument: shortLeg },
+                        { instrument: longLeg },
+                    ],
+                    metadata: {
+                        action: "close",
+                    },
+                },
+                lastTransitionSequence: 1,
+                polling: {
+                    pollIntervalMs: 0,
+                    timeoutMs: 0,
+                    startedAt: closedAt - 1_000,
+                    lastCheckedAt: closedAt,
+                },
+            }],
+            provider_positions: [
+                {
+                    _id: "provider-position-qqq-short",
+                    app: "alpaca-options",
+                    accountId,
+                    positionKey: `${shortLeg}:short`,
+                    strategyId,
+                    ownershipStatus: "owned",
+                    expectedExternal: false,
+                    instrument: shortLeg,
+                    side: "short",
+                    quantity: 1,
+                    entryPrice: 1.89,
+                    currentPrice: 1.91,
+                    unrealizedPnl: -2,
+                    metadata: JSON.stringify({ asset: shortLeg }),
+                    syncedAt: openedAt,
+                },
+                {
+                    _id: "provider-position-qqq-long",
+                    app: "alpaca-options",
+                    accountId,
+                    positionKey: `${longLeg}:long`,
+                    strategyId,
+                    ownershipStatus: "owned",
+                    expectedExternal: false,
+                    instrument: longLeg,
+                    side: "long",
+                    quantity: 1,
+                    entryPrice: 1.62,
+                    currentPrice: 1.64,
+                    unrealizedPnl: 2,
+                    metadata: JSON.stringify({ asset: longLeg }),
+                    syncedAt: openedAt,
+                },
+            ],
+            provider_position_history: [],
+            provider_working_orders: [],
+            provider_sync_state: [],
+            position_syncs: [],
+            positions: [],
+            execution_safety_faults: [],
+            account_snapshots: [],
+            account_pnl_events: [],
+            control_plane_metrics: [],
+            alerts: [],
+            order_transitions: [],
+            trade_events: [],
+            order_identity_aliases: [],
+        })
+        const ctx = { db } as never
+        const reconcileArgs = {
+            serviceToken: "test-token",
+            app: "alpaca-options",
+            accountId,
+            venue: "alpaca",
+            source: "periodic_sync",
+            accountState: {
+                balance: 25_000,
+                equity: 25_000,
+                buyingPower: 20_000,
+                marginUsed: 0,
+                marginAvailable: 20_000,
+                openPnl: 0,
+                dayPnl: 0,
+            },
+            positions: [],
+            workingOrders: [],
+            positionClosures: [],
+        }
+
+        vi.useFakeTimers()
+        try {
+            vi.setSystemTime(firstSyncAt)
+            await callRegistered(reconcileProviderPortfolio, ctx, reconcileArgs)
+
+            vi.setSystemTime(secondSyncAt)
+            await callRegistered(reconcileProviderPortfolio, ctx, reconcileArgs)
+        } finally {
+            vi.useRealTimers()
+        }
+
+        const faults = db.rows.execution_safety_faults ?? []
+        expect(faults.filter((fault) =>
+            fault.category === "accounting_mismatch" &&
+            String(fault.message).includes("disappeared from") &&
+            String(fault.message).includes("without close evidence")
+        )).toHaveLength(0)
+    })
+
+    it("graces a phantom Alpaca empty position snapshot and resolves a reappeared vanished-position fault", async () => {
+        process.env.BACKEND_SERVICE_TOKEN = "test-token"
+        const accountId = "account-alpaca-options"
+        const strategyId = "strategy-alpaca-spy"
+        const runId = "run-alpaca-spy"
+        const openedAt = 1_783_492_800_000
+        const firstSyncAt = openedAt + 60_000
+        const secondSyncAt = firstSyncAt + 300_000
+        const thirdSyncAt = secondSyncAt + 300_000
+        const shortLeg = "SPY260713C00757000"
+        const longLeg = "SPY260713C00758000"
+        const shortPositionKey = `${shortLeg}:short`
+        const longPositionKey = `${longLeg}:long`
+        const db = new FakeDb({
+            strategies: [{
+                _id: strategyId,
+                app: "alpaca-options",
+                accountId,
+                name: "Alpaca SPY Options",
+                policy: { dryRun: false },
+            }],
+            strategy_runs: [{
+                _id: runId,
+                strategyId,
+                app: "alpaca-options",
+                accountId,
+                status: "completed",
+                startedAt: openedAt,
+                endedAt: openedAt + 30_000,
+            }],
+            instrument_claims: [
+                {
+                    _id: "claim-alpaca-spy-short",
+                    strategyId,
+                    app: "alpaca-options",
+                    accountId,
+                    instrument: shortLeg,
+                    source: "position",
+                    sourceId: shortPositionKey,
+                    updatedAt: openedAt,
+                },
+                {
+                    _id: "claim-alpaca-spy-long",
+                    strategyId,
+                    app: "alpaca-options",
+                    accountId,
+                    instrument: longLeg,
+                    source: "position",
+                    sourceId: longPositionKey,
+                    updatedAt: openedAt,
+                },
+            ],
+            orders: [],
+            provider_positions: [
+                {
+                    _id: "provider-position-spy-short",
+                    app: "alpaca-options",
+                    accountId,
+                    positionKey: shortPositionKey,
+                    strategyId,
+                    ownershipStatus: "owned",
+                    expectedExternal: false,
+                    instrument: shortLeg,
+                    side: "short",
+                    quantity: 1,
+                    entryPrice: 1.45,
+                    currentPrice: 1.51,
+                    unrealizedPnl: -6,
+                    metadata: JSON.stringify({ asset: shortLeg }),
+                    syncedAt: openedAt,
+                },
+                {
+                    _id: "provider-position-spy-long",
+                    app: "alpaca-options",
+                    accountId,
+                    positionKey: longPositionKey,
+                    strategyId,
+                    ownershipStatus: "owned",
+                    expectedExternal: false,
+                    instrument: longLeg,
+                    side: "long",
+                    quantity: 1,
+                    entryPrice: 1.18,
+                    currentPrice: 1.22,
+                    unrealizedPnl: 4,
+                    metadata: JSON.stringify({ asset: longLeg }),
+                    syncedAt: openedAt,
+                },
+            ],
+            provider_position_history: [],
+            provider_working_orders: [],
+            provider_sync_state: [],
+            position_syncs: [],
+            positions: [],
+            execution_safety_faults: [],
+            account_snapshots: [],
+            account_pnl_events: [],
+            control_plane_metrics: [],
+            alerts: [],
+            order_transitions: [],
+            trade_events: [],
+            order_identity_aliases: [],
+        })
+        const ctx = { db } as never
+        const accountState = {
+            balance: 25_000,
+            equity: 25_000,
+            buyingPower: 20_000,
+            marginUsed: 0,
+            marginAvailable: 20_000,
+            openPnl: 0,
+            dayPnl: 0,
+        }
+        const livePositions = [
+            {
+                instrument: shortLeg,
+                side: "short" as const,
+                quantity: 1,
+                entryPrice: 1.45,
+                currentPrice: 1.51,
+                unrealizedPnl: -6,
+                metadata: JSON.stringify({ asset: shortLeg }),
+            },
+            {
+                instrument: longLeg,
+                side: "long" as const,
+                quantity: 1,
+                entryPrice: 1.18,
+                currentPrice: 1.22,
+                unrealizedPnl: 4,
+                metadata: JSON.stringify({ asset: longLeg }),
+            },
+        ]
+
+        vi.useFakeTimers()
+        try {
+            vi.setSystemTime(firstSyncAt)
+            await callRegistered(reconcileProviderPortfolio, ctx, {
+                serviceToken: "test-token",
+                app: "alpaca-options",
+                accountId,
+                venue: "alpaca",
+                source: "periodic_sync",
+                accountState,
+                positions: [],
+                workingOrders: [],
+                positionClosures: [],
+            })
+
+            expect((db.rows.execution_safety_faults ?? []).filter((fault) =>
+                fault.category === "accounting_mismatch" &&
+                String(fault.message).includes("disappeared from") &&
+                String(fault.message).includes("without close evidence")
+            )).toHaveLength(0)
+            expect(db.rows.provider_positions).toHaveLength(2)
+            expect(db.rows.provider_positions).toEqual(expect.arrayContaining([
+                expect.objectContaining({
+                    positionKey: shortPositionKey,
+                    missingSinceSyncAt: firstSyncAt,
+                }),
+                expect.objectContaining({
+                    positionKey: longPositionKey,
+                    missingSinceSyncAt: firstSyncAt,
+                }),
+            ]))
+
+            vi.setSystemTime(secondSyncAt)
+            await callRegistered(reconcileProviderPortfolio, ctx, {
+                serviceToken: "test-token",
+                app: "alpaca-options",
+                accountId,
+                venue: "alpaca",
+                source: "periodic_sync",
+                accountState,
+                positions: livePositions,
+                workingOrders: [],
+                positionClosures: [],
+            })
+
+            expect((db.rows.execution_safety_faults ?? []).filter((fault) =>
+                fault.category === "accounting_mismatch" &&
+                String(fault.message).includes("disappeared from") &&
+                String(fault.message).includes("without close evidence")
+            )).toHaveLength(0)
+            expect(db.rows.provider_positions).toEqual(expect.arrayContaining([
+                expect.objectContaining({
+                    positionKey: shortPositionKey,
+                    ownershipStatus: "owned",
+                    missingSinceSyncAt: undefined,
+                }),
+                expect.objectContaining({
+                    positionKey: longPositionKey,
+                    ownershipStatus: "owned",
+                    missingSinceSyncAt: undefined,
+                }),
+            ]))
+
+            await db.insert("execution_safety_faults", {
+                strategyId,
+                app: "alpaca-options",
+                accountId,
+                instrument: shortLeg,
+                category: "accounting_mismatch",
+                message: `Owned position ${shortPositionKey} disappeared from alpaca-options without close evidence or a canonical close order; realized PnL for this exit is unaccounted (expiry, assignment, or settlement must be reconciled manually)`,
+                providerPayload: JSON.stringify({
+                    positionKey: shortPositionKey,
+                    instrument: shortLeg,
+                    side: "short",
+                    quantity: 1,
+                    entryPrice: 1.45,
+                }),
+                blocked: true,
+                occurredAt: firstSyncAt,
+                resolvedAt: undefined,
+                resolutionNote: undefined,
+            })
+
+            vi.setSystemTime(thirdSyncAt)
+            await callRegistered(reconcileProviderPortfolio, ctx, {
+                serviceToken: "test-token",
+                app: "alpaca-options",
+                accountId,
+                venue: "alpaca",
+                source: "periodic_sync",
+                accountState,
+                positions: livePositions,
+                workingOrders: [],
+                positionClosures: [],
+            })
+        } finally {
+            vi.useRealTimers()
+        }
+
+        expect(db.rows.execution_safety_faults).toContainEqual(expect.objectContaining({
+            instrument: shortLeg,
+            blocked: false,
+            resolvedAt: thirdSyncAt,
+            resolutionNote: expect.stringContaining(`position ${shortPositionKey} reappeared live at provider`),
+        }))
     })
 
     it("never matches or retires a foreign-account order with a colliding providerOrderId", async () => {

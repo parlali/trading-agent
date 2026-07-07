@@ -4,6 +4,9 @@ import { getLatestPositionsForStrategy } from "../instrumentClaims"
 import { isDryRunLedgerMetadata } from "../dryRunLedger"
 import { createDefaultKillSwitchState } from "../killSwitchState"
 
+const DASHBOARD_RECENT_ACCOUNT_PNL_EVENT_LIMIT = 100
+const DASHBOARD_RESOLVED_EXECUTION_FAULT_LIMIT = 50
+
 function isNonNullable<T>(value: T): value is NonNullable<T> {
     return value !== null && value !== undefined
 }
@@ -43,8 +46,11 @@ export const getDashboardOverview = query({
                 accounts.map((account) =>
                     ctx.db
                         .query("account_snapshots")
-                        .withIndex("by_app_account", (q) => q.eq("app", account.app).eq("accountId", account.accountId))
-                        .collect()
+                        .withIndex("by_app_account_timestamp", (q) =>
+                            q.eq("app", account.app).eq("accountId", account.accountId)
+                        )
+                        .order("desc")
+                        .first()
                 )
             ),
             Promise.all(
@@ -52,7 +58,8 @@ export const getDashboardOverview = query({
                     ctx.db
                         .query("account_pnl_events")
                         .withIndex("by_app_account", (q) => q.eq("app", account.app).eq("accountId", account.accountId))
-                        .collect()
+                        .order("desc")
+                        .take(DASHBOARD_RECENT_ACCOUNT_PNL_EVENT_LIMIT)
                 )
             ),
             Promise.all(
@@ -70,7 +77,8 @@ export const getDashboardOverview = query({
                                 .withIndex("by_app_account_blocked", (q) =>
                                     q.eq("app", account.app).eq("accountId", account.accountId).eq("blocked", false)
                                 )
-                                .collect(),
+                                .order("desc")
+                                .take(DASHBOARD_RESOLVED_EXECUTION_FAULT_LIMIT),
                         ])
                     ).flat()
                 )
@@ -117,8 +125,7 @@ export const getDashboardOverview = query({
             .map((account, index) => {
                 const key = createAccountKey(account.app, account.accountId)
                 const accountStrategies = strategiesByAccount.get(key) ?? []
-                const latestSnapshot = (accountSnapshotsByAccount[index] ?? [])
-                    .sort((left, right) => right.timestamp - left.timestamp)[0] ?? null
+                const latestSnapshot = accountSnapshotsByAccount[index] ?? null
                 const pnlEvents = accountPnlEventsByAccount[index] ?? []
                 const recentAccountRuns = (latestRunByAccount.get(key) ?? []).slice(0, 10)
                 const accountSyncState = syncStates.find((state) =>
@@ -188,7 +195,9 @@ export const getDashboardOverview = query({
             .slice(0, 20)
             .map((fault) => ({
                 ...fault,
-                strategyName: strategyById.get(String(fault.strategyId))?.name ?? "Unknown strategy",
+                strategyName: fault.strategyId
+                    ? strategyById.get(String(fault.strategyId))?.name ?? "Unknown strategy"
+                    : "Account-level",
             }))
 
         return {

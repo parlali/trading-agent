@@ -349,8 +349,8 @@ describe("Convex OKX net-mode closure replay", () => {
         process.env.BACKEND_SERVICE_TOKEN = "test-token"
         const strategyId = "strategy-okx-btc"
         const runId = "run-okx-btc"
-        const openedAt = 1_782_811_155_420
-        const closedAt = 1_782_821_024_169
+        const closedAt = Date.now() - 60_000
+        const openedAt = closedAt - 3 * 60 * 60 * 1000
         const providerPositionId = "3699684250355539968"
         const closeOrderId = "vokc01bi6mniiq3r"
         const providerOrderId = "3701678773038260224"
@@ -1246,6 +1246,9 @@ describe("Convex OKX net-mode closure replay", () => {
     it("attributes late OKX close evidence to a recently disappeared owned position", async () => {
         process.env.BACKEND_SERVICE_TOKEN = "test-token"
         const providerPositionId = "3618122936764630001"
+        const firstSyncAt = CLOSED_AT + 60_000
+        const secondSyncAt = firstSyncAt + 300_000
+        const thirdSyncAt = secondSyncAt + 300_000
         const db = new FakeDb({
             strategies: [buildOkxStrategy("strategy-okx-a", "OKX A")],
             strategy_runs: [buildOkxRun("run-okx-a", "strategy-okx-a")],
@@ -1270,28 +1273,45 @@ describe("Convex OKX net-mode closure replay", () => {
         })
         const ctx = { db } as never
 
-        await callRegistered(reconcileProviderPortfolio, ctx, buildReconcileArgs([]))
+        vi.useFakeTimers()
+        try {
+            vi.setSystemTime(firstSyncAt)
+            await callRegistered(reconcileProviderPortfolio, ctx, buildReconcileArgs([]))
 
-        expect(db.rows.provider_positions ?? []).toHaveLength(0)
-        expect(db.rows.provider_position_history).toEqual([
-            expect.objectContaining({
-                positionKey: `ETH-USDT-SWAP:${providerPositionId}`,
-                strategyId: "strategy-okx-a",
-                ownershipStatus: "owned",
-            }),
-        ])
-        expect((db.rows.provider_sync_state ?? [])[0]).toMatchObject({
-            driftDetected: true,
-        })
+            expect(db.rows.provider_positions).toEqual([
+                expect.objectContaining({
+                    positionKey: `ETH-USDT-SWAP:${providerPositionId}`,
+                    missingSinceSyncAt: firstSyncAt,
+                }),
+            ])
 
-        await callRegistered(reconcileProviderPortfolio, ctx, buildReconcileArgs([
-            buildClosure({
-                quantity: 5,
-                fillPrice: 1877.49,
-                fillPnl: 0,
-                ordId: "3621806927858888888",
-            }),
-        ]))
+            vi.setSystemTime(secondSyncAt)
+            await callRegistered(reconcileProviderPortfolio, ctx, buildReconcileArgs([]))
+
+            expect(db.rows.provider_positions ?? []).toHaveLength(0)
+            expect(db.rows.provider_position_history).toEqual([
+                expect.objectContaining({
+                    positionKey: `ETH-USDT-SWAP:${providerPositionId}`,
+                    strategyId: "strategy-okx-a",
+                    ownershipStatus: "owned",
+                }),
+            ])
+            expect((db.rows.provider_sync_state ?? [])[0]).toMatchObject({
+                driftDetected: true,
+            })
+
+            vi.setSystemTime(thirdSyncAt)
+            await callRegistered(reconcileProviderPortfolio, ctx, buildReconcileArgs([
+                buildClosure({
+                    quantity: 5,
+                    fillPrice: 1877.49,
+                    fillPnl: 0,
+                    ordId: "3621806927858888888",
+                }),
+            ]))
+        } finally {
+            vi.useRealTimers()
+        }
 
         const syntheticOrderId = `provider-close:okx-swap:ETH-USDT-SWAP:${providerPositionId}:${CLOSED_AT}`
         const syntheticClose = (db.rows.orders ?? []).find((order) => order.orderId === syntheticOrderId)
@@ -1555,7 +1575,7 @@ describe("Convex OKX net-mode closure replay", () => {
         expect(mismatchState?.driftDetected).toBe(true)
         expect(String(mismatchState?.lastDriftSummary)).toContain("account money reconciliation mismatch")
         expect(db.rows.execution_safety_faults).toContainEqual(expect.objectContaining({
-            strategyId: "strategy-okx-a",
+            strategyId: undefined,
             app: "okx-swap",
             accountId,
             instrument: "account",
@@ -1580,7 +1600,7 @@ describe("Convex OKX net-mode closure replay", () => {
         })
 
         expect(db.rows.execution_safety_faults).toContainEqual(expect.objectContaining({
-            strategyId: "strategy-okx-a",
+            strategyId: undefined,
             app: "okx-swap",
             accountId,
             instrument: "account",
@@ -1656,10 +1676,8 @@ describe("Convex OKX net-mode closure replay", () => {
         const moneyFaults = (db.rows.execution_safety_faults ?? []).filter((fault) =>
             String(fault.message).startsWith("Money-level reconciliation mismatch")
         )
-        expect(moneyFaults).toHaveLength(2)
-        expect(new Set(moneyFaults.map((fault) => fault.strategyId))).toEqual(
-            new Set(["strategy-okx-a", "strategy-okx-b"])
-        )
+        expect(moneyFaults).toHaveLength(1)
+        expect(moneyFaults[0]?.strategyId).toBeUndefined()
         for (const fault of moneyFaults) {
             expect(fault.blocked).toBe(true)
             expect(fault.occurredAt).toBe(CLOSED_AT + 60_000)
@@ -2076,6 +2094,8 @@ describe("Convex OKX net-mode closure replay", () => {
 
     it("fails closed when an owned position disappears without broker close evidence", async () => {
         process.env.BACKEND_SERVICE_TOKEN = "test-token"
+        const firstSyncAt = CLOSED_AT + 60_000
+        const secondSyncAt = firstSyncAt + 300_000
         const db = new FakeDb({
             strategies: [buildOkxStrategy("strategy-okx-a", "OKX A")],
             strategy_runs: [buildOkxRun("run-okx-a", "strategy-okx-a")],
@@ -2100,7 +2120,16 @@ describe("Convex OKX net-mode closure replay", () => {
         })
         const ctx = { db } as never
 
-        await callRegistered(reconcileProviderPortfolio, ctx, buildReconcileArgs([]))
+        vi.useFakeTimers()
+        try {
+            vi.setSystemTime(firstSyncAt)
+            await callRegistered(reconcileProviderPortfolio, ctx, buildReconcileArgs([]))
+
+            vi.setSystemTime(secondSyncAt)
+            await callRegistered(reconcileProviderPortfolio, ctx, buildReconcileArgs([]))
+        } finally {
+            vi.useRealTimers()
+        }
 
         expect(db.rows.orders ?? []).toHaveLength(0)
 

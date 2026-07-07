@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest"
 import { createEmptyCascadeDeleteCounts } from "../../convex/lib/cascadeDelete"
-import { operatorReconcileVerifiedFlatProviderState } from "../../convex/lib/mutations/portfolio"
+import {
+    operatorReconcileVerifiedFlatProviderState,
+    reconcileProviderPortfolio,
+} from "../../convex/lib/mutations/portfolio"
+import { refreshStrategyRiskState } from "../../convex/lib/mutations/risk"
 import {
     assertStrategyDeletionSafe,
     cascadeDeleteStrategy,
@@ -226,6 +230,258 @@ describe("portfolio safety guards", () => {
             pendingOrderCount: 1,
         })
         expect(db.rows.alerts?.[0]?.message).toContain("operator reconciled verified provider state")
+    })
+
+    it("keeps MT5 provider reconciliation below the Convex document read limit at production table scale", async () => {
+        process.env.BACKEND_SERVICE_TOKEN = "test-token"
+        const now = Date.now()
+        const oldUpdatedAt = now - 60 * 24 * 60 * 60 * 1000
+        const accountId = "account-mt5-prod"
+        const strategyIds = Array.from({ length: 7 }, (_, index) => `strategy-mt5-${index}`)
+        const strategies = strategyIds.map((strategyId, index) => ({
+            _id: strategyId,
+            app: "mt5",
+            accountId,
+            name: `MT5 Production ${index + 1}`,
+            enabled: true,
+            schedule: "*/5 * * * *",
+            policy: { dryRun: false },
+            context: "",
+            createdAt: oldUpdatedAt,
+            updatedAt: oldUpdatedAt,
+        }))
+        const db = new FakeMutationDb({
+            strategies,
+            strategy_runs: strategyIds.map((strategyId, index) => ({
+                _id: `run-${strategyId}`,
+                strategyId,
+                app: "mt5",
+                accountId,
+                status: "completed",
+                startedAt: oldUpdatedAt + index,
+                endedAt: oldUpdatedAt + index + 1_000,
+            })),
+            instrument_claims: [],
+            orders: Array.from({ length: 700 }, (_, index) => createHistoricMT5Order({
+                index,
+                strategyId: strategyIds[index % strategyIds.length]!,
+                accountId,
+                updatedAt: oldUpdatedAt - index * 1_000,
+            })),
+            provider_positions: [{
+                _id: "provider-position-closed",
+                app: "mt5",
+                accountId,
+                positionKey: "XAUUSD:1600791765",
+                providerPositionId: "1600791765",
+                strategyId: strategyIds[0],
+                ownershipStatus: "owned",
+                expectedExternal: false,
+                instrument: "XAUUSD",
+                side: "long",
+                quantity: 0.02,
+                entryPrice: 3340,
+                currentPrice: 3350,
+                unrealizedPnl: 0,
+                metadata: JSON.stringify({ ticket: 1600791765 }),
+                syncedAt: oldUpdatedAt,
+            }],
+            provider_working_orders: [],
+            provider_position_history: [],
+            provider_sync_state: [],
+            position_syncs: [],
+            positions: [],
+            execution_safety_faults: Array.from({ length: 1_300 }, (_, index) =>
+                index < 10
+                    ? createOpenDisappearedPositionFault({
+                        index,
+                        strategyId: strategyIds[index % strategyIds.length]!,
+                        accountId,
+                        occurredAt: oldUpdatedAt + index,
+                    })
+                    : createResolvedMoneyAuditFault({
+                        index,
+                        strategyId: strategyIds[index % strategyIds.length]!,
+                        accountId,
+                        occurredAt: oldUpdatedAt - index,
+                    })
+            ),
+            account_snapshots: [{
+                _id: "snapshot-mt5-prod-baseline",
+                app: "mt5",
+                accountId,
+                venue: "mt5",
+                balance: 10_000,
+                equity: 10_000,
+                buyingPower: 10_000,
+                marginUsed: 0,
+                marginAvailable: 10_000,
+                openPnl: 0,
+                dayPnl: 0,
+                timestamp: oldUpdatedAt,
+            }],
+            account_pnl_events: [],
+            order_identity_aliases: [],
+            control_plane_metrics: [],
+            alerts: [],
+        })
+
+        await callRegistered(reconcileProviderPortfolio, { db } as never, {
+            serviceToken: "test-token",
+            app: "mt5",
+            accountId,
+            venue: "mt5",
+            source: "periodic_sync",
+            accountState: {
+                balance: 10_000,
+                equity: 10_000,
+                buyingPower: 10_000,
+                marginUsed: 0,
+                marginAvailable: 10_000,
+                openPnl: 0,
+                dayPnl: 0,
+            },
+            positions: [{
+                instrument: "EURUSD",
+                providerPositionId: "1700000001",
+                side: "long",
+                quantity: 0.01,
+                entryPrice: 1.1,
+                currentPrice: 1.1,
+                unrealizedPnl: 0,
+                metadata: JSON.stringify({ ticket: 1700000001 }),
+            }],
+            workingOrders: [],
+            positionClosures: [{
+                instrument: "XAUUSD",
+                providerPositionId: "1600791765",
+                side: "long",
+                quantity: 0.02,
+                fillPrice: 3355,
+                closedAt: now - 30_000,
+                metadata: JSON.stringify({
+                    ticket: 900001,
+                    orderId: 1700000999,
+                    positionId: 1600791765,
+                    fillPnl: 30,
+                    profit: 30,
+                    commission: -1,
+                    swap: 0,
+                }),
+            }],
+            accountPnlEvents: [],
+        })
+
+        expect(db.documentsRead).toBeLessThan(3_000)
+    })
+
+    it("records one account-level money audit fault and applies it to strategy risk", async () => {
+        process.env.BACKEND_SERVICE_TOKEN = "test-token"
+        const accountId = "account-alpaca-options-prod"
+        const previousSnapshotAt = Date.parse("2026-07-07T13:30:00.000Z")
+        const strategyIds = ["strategy-alpaca-1", "strategy-alpaca-2", "strategy-alpaca-3"]
+        const targetStrategyId = strategyIds[0]!
+        const strategies = strategyIds.map((strategyId, index) => ({
+            _id: strategyId,
+            app: "alpaca-options",
+            accountId,
+            name: `Alpaca Options ${index + 1}`,
+            enabled: index !== 2,
+            schedule: "*/5 * * * *",
+            policy: { dryRun: false },
+            context: "",
+            createdAt: previousSnapshotAt,
+            updatedAt: previousSnapshotAt,
+        }))
+        const db = new FakeMutationDb({
+            strategies,
+            orders: [],
+            instrument_claims: [],
+            provider_positions: [],
+            provider_working_orders: [],
+            provider_position_history: [],
+            provider_sync_state: [],
+            account_snapshots: [{
+                _id: "snapshot-alpaca-baseline",
+                app: "alpaca-options",
+                accountId,
+                venue: "alpaca-options",
+                balance: 10_000,
+                equity: 10_000,
+                buyingPower: 10_000,
+                marginUsed: 0,
+                marginAvailable: 10_000,
+                openPnl: 0,
+                dayPnl: 0,
+                timestamp: previousSnapshotAt,
+            }],
+            account_pnl_events: [],
+            execution_safety_faults: [],
+            strategy_risk_states: [],
+            control_plane_metrics: [],
+            alerts: [],
+        })
+
+        await callRegistered(reconcileProviderPortfolio, { db } as never, {
+            serviceToken: "test-token",
+            app: "alpaca-options",
+            accountId,
+            venue: "alpaca-options",
+            source: "periodic_sync",
+            accountState: {
+                balance: 10_000,
+                equity: 9_969,
+                buyingPower: 10_000,
+                marginUsed: 0,
+                marginAvailable: 10_000,
+                openPnl: 19,
+                dayPnl: 0,
+            },
+            positions: [],
+            workingOrders: [],
+            positionClosures: [],
+            accountPnlEvents: [],
+        })
+
+        const faults = db.rows.execution_safety_faults ?? []
+        expect(faults).toHaveLength(1)
+        expect(faults[0]).toMatchObject({
+            strategyId: undefined,
+            app: "alpaca-options",
+            accountId,
+            instrument: "account",
+            category: "accounting_mismatch",
+            blocked: true,
+        })
+        expect(faults[0]?.message).toContain("equity delta -31.000000")
+        expect(faults[0]?.message).toContain("attributed realized 0.000000")
+        expect(faults[0]?.message).toContain("open PnL delta 19.000000")
+        expect(faults[0]?.message).toContain("residual -50.000000")
+
+        const result = await callRegistered(refreshStrategyRiskState, { db } as never, {
+            serviceToken: "test-token",
+            strategyId: targetStrategyId,
+            app: "alpaca-options",
+            policy: {
+                maxDrawdownDay: 100,
+                maxDrawdownWeek: 200,
+                cooldownMinutesAfterDayBreach: 60,
+                cooldownMinutesAfterWeekBreach: 120,
+                strategyTimezone: "UTC",
+            },
+        })
+
+        expect(result).toMatchObject({
+            safetyState: "execution_degraded",
+            blockedInstruments: ["account"],
+            unresolvedExecutionFaultCount: 1,
+        })
+        expect(db.rows.strategy_risk_states).toContainEqual(expect.objectContaining({
+            strategyId: targetStrategyId,
+            safetyState: "execution_degraded",
+            blockedInstruments: ["account"],
+            unresolvedExecutionFaultCount: 1,
+        }))
     })
 
     it("scopes batched last-strategy cleanup to the strategy account and keeps account snapshots", async () => {
@@ -477,3 +733,135 @@ describe("portfolio safety guards", () => {
         ])
     })
 })
+
+const HISTORIC_MT5_ORDER_STATUSES = [
+    "pending",
+    "filled",
+    "partially_filled",
+    "cancelled",
+    "rejected",
+    "expired",
+    "timed_out",
+] as const
+
+function createHistoricMT5Order(args: {
+    index: number
+    strategyId: string
+    accountId: string
+    updatedAt: number
+}) {
+    const status = HISTORIC_MT5_ORDER_STATUSES[args.index % HISTORIC_MT5_ORDER_STATUSES.length]!
+    const ticket = 15_000_000 + args.index
+    const filledQuantity = status === "filled" || status === "partially_filled"
+        ? 0.01
+        : 0
+    const remainingQuantity = status === "partially_filled"
+        ? 0.01
+        : status === "filled"
+            ? 0
+            : 0.02
+
+    return {
+        _id: `historic-order-${args.index}`,
+        orderId: String(ticket),
+        canonicalOrderId: String(ticket),
+        providerOrderId: String(ticket),
+        providerClientOrderId: `historic-client-${args.index}`,
+        providerOrderAliases: [String(ticket)],
+        runId: `run-${args.strategyId}`,
+        strategyId: args.strategyId,
+        app: "mt5",
+        accountId: args.accountId,
+        venue: "mt5",
+        instrument: args.index % 2 === 0 ? "XAUUSD" : "EURUSD",
+        status,
+        action: args.index % 5 === 0 ? "close" : "entry",
+        quantity: 0.02,
+        filledQuantity,
+        remainingQuantity,
+        avgFillPrice: filledQuantity > 0 ? 3340 + args.index / 100 : undefined,
+        submittedAt: args.updatedAt - 10_000,
+        updatedAt: args.updatedAt,
+        intent: {
+            instrument: args.index % 2 === 0 ? "XAUUSD" : "EURUSD",
+            metadata: {
+                ticket,
+                orderId: ticket,
+                positionId: ticket,
+                providerPositionId: String(ticket),
+                providerPositionKey: `${args.index % 2 === 0 ? "XAUUSD" : "EURUSD"}:${ticket}`,
+                estimatedPrice: 3340 + args.index / 100,
+            },
+            side: args.index % 2 === 0 ? "buy" : "sell",
+            quantity: 0.02,
+            orderType: "market",
+        },
+        lastTransitionSequence: 1,
+        polling: {
+            pollIntervalMs: 0,
+            timeoutMs: 0,
+            startedAt: args.updatedAt - 10_000,
+            lastCheckedAt: args.updatedAt,
+        },
+    }
+}
+
+function createResolvedMoneyAuditFault(args: {
+    index: number
+    strategyId: string
+    accountId: string
+    occurredAt: number
+}) {
+    return {
+        _id: `resolved-money-fault-${args.index}`,
+        strategyId: args.strategyId,
+        app: "mt5",
+        accountId: args.accountId,
+        instrument: "account",
+        category: "accounting_mismatch",
+        message: `Money-level reconciliation mismatch: production audit residual ${args.index}`,
+        providerPayload: JSON.stringify({
+            equityDelta: 0,
+            attributedOrderPnl: 0,
+            residual: 0.01,
+            source: "money_audit",
+        }),
+        blocked: false,
+        occurredAt: args.occurredAt,
+        resolvedAt: args.occurredAt + 1_000,
+        resolutionNote: "Provider money-level reconciliation audit passed within tolerance",
+    }
+}
+
+function createOpenDisappearedPositionFault(args: {
+    index: number
+    strategyId: string
+    accountId: string
+    occurredAt: number
+}) {
+    const providerPositionId = String(16_000_000 + args.index)
+    const instrument = args.index % 2 === 0 ? "US30" : "XAGUSD"
+    const side = args.index % 2 === 0 ? "long" : "short"
+
+    return {
+        _id: `open-disappeared-position-fault-${args.index}`,
+        strategyId: args.strategyId,
+        app: "mt5",
+        accountId: args.accountId,
+        instrument,
+        category: "accounting_mismatch",
+        message: `${instrument} ${side} disappeared from provider without close evidence`,
+        providerPayload: JSON.stringify({
+            instrument,
+            side,
+            quantity: 0.01,
+            entryPrice: 3350 + args.index,
+            providerPositionId,
+            positionKey: `${instrument}:${providerPositionId}`,
+        }),
+        blocked: true,
+        occurredAt: args.occurredAt,
+        resolvedAt: undefined,
+        resolutionNote: undefined,
+    }
+}

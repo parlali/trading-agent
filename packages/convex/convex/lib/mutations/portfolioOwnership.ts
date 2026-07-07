@@ -15,6 +15,8 @@ import {
     setsIntersect,
 } from "./portfolioUtils"
 
+const CLAIM_REPAIR_FILLED_ORDER_LOOKBACK_MS = 45 * 24 * 60 * 60 * 1000
+
 export function buildClaimsByInstrument(
     claims: Array<Doc<"instrument_claims">>,
     strategyMap: Map<string, StrategyDoc>
@@ -62,12 +64,15 @@ export async function repairMissingLivePositionClaimsFromFilledOrders(
         return
     }
 
+    const windowStart = args.updatedAt - CLAIM_REPAIR_FILLED_ORDER_LOOKBACK_MS
     const filledOrders = (
         await Promise.all(
             Array.from(args.strategyMap.values()).map(async (strategy) => await ctx.db
                 .query("orders")
-                .withIndex("by_strategy_status", (q) =>
-                    q.eq("strategyId", strategy._id).eq("status", "filled")
+                .withIndex("by_strategy_status_updated_at", (q) =>
+                    q.eq("strategyId", strategy._id)
+                        .eq("status", "filled")
+                        .gte("updatedAt", windowStart)
                 )
                 .collect())
         )
