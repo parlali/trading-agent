@@ -11,11 +11,30 @@ import {
 
 const MAX_MEMORY_SOURCES = 8
 const MAX_BACKFILL_BATCH_SIZE = 200
+const MAX_PROVIDED_AGENT_LOGS = 512
+
+const providedAgentLogV = v.object({
+    runId: v.id("strategy_runs"),
+    strategyId: v.id("strategies"),
+    sequence: v.number(),
+    role: v.union(
+        v.literal("system"),
+        v.literal("user"),
+        v.literal("assistant"),
+        v.literal("tool")
+    ),
+    content: v.string(),
+    toolName: v.optional(v.string()),
+    toolInput: v.optional(v.string()),
+    toolOutput: v.optional(v.string()),
+    timestamp: v.number(),
+})
 
 export const refreshStrategyOperationalMemoryFromRun = mutation({
     args: {
         serviceToken: v.string(),
         runId: v.id("strategy_runs"),
+        agentLogs: v.optional(v.array(providedAgentLogV)),
     },
     handler: async (ctx, args) => {
         requireServiceToken(args.serviceToken)
@@ -42,10 +61,23 @@ export const refreshStrategyOperationalMemoryFromRun = mutation({
             }
         }
 
-        const agentLogs = await ctx.db
+        if (args.agentLogs && args.agentLogs.length > MAX_PROVIDED_AGENT_LOGS) {
+            throw new Error(`refreshStrategyOperationalMemoryFromRun accepts at most ${MAX_PROVIDED_AGENT_LOGS} provided agent logs`)
+        }
+
+        const agentLogs = args.agentLogs ?? await ctx.db
             .query("agent_logs")
             .withIndex("by_run_sequence", (q) => q.eq("runId", args.runId))
             .collect()
+        for (const log of agentLogs) {
+            if (log.runId !== args.runId) {
+                throw new Error(`Provided agent log runId ${log.runId} does not match refresh runId ${args.runId}`)
+            }
+            if (log.strategyId !== run.strategyId) {
+                throw new Error(`Provided agent log strategyId ${log.strategyId} does not match run strategyId ${run.strategyId}`)
+            }
+        }
+
         const now = Date.now()
         const candidates = buildStrategyOperationalMemoryFromRun({
             run: {
@@ -67,7 +99,7 @@ export const refreshStrategyOperationalMemoryFromRun = mutation({
                 accountId: strategy.accountId,
             },
             agentLogs: agentLogs.map((log) => ({
-                _id: log._id,
+                _id: "_id" in log ? String(log._id) : undefined,
                 runId: log.runId,
                 strategyId: log.strategyId,
                 sequence: log.sequence,

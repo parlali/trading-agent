@@ -20,6 +20,8 @@ import type {
     AdoptProviderPositionsResult,
     AckManualRunRequestArgs,
     AckManualRunRequestResult,
+    AgentLogEntryInput,
+    AgentLogMemoryEntry,
     AgentChatMessageRow,
     AlertRow,
     CascadeDeleteCounts,
@@ -71,6 +73,12 @@ import type {
     TradingBackendClientConfig,
     ToolManifestEntry,
 } from "./client-types"
+
+function assertAgentLogRole(role: string): asserts role is AgentLogMemoryEntry["role"] {
+    if (role !== "system" && role !== "user" && role !== "assistant" && role !== "tool") {
+        throw new Error(`Unsupported agent log role: ${role}`)
+    }
+}
 
 function toProviderPositionInput(position: Position) {
     return {
@@ -294,12 +302,16 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
                 } as never) as TradeEventRow[]
             )
         },
-        async refreshStrategyOperationalMemoryFromRun(runId: Id<"strategy_runs">): Promise<{ upserted: number; skipped?: string }> {
+        async refreshStrategyOperationalMemoryFromRun(
+            runId: Id<"strategy_runs">,
+            agentLogs?: AgentLogMemoryEntry[]
+        ): Promise<{ upserted: number; skipped?: string }> {
             return await runWithTimeout(
                 "Convex mutation refreshStrategyOperationalMemoryFromRun",
                 async () => await client.mutation(api.mutations.refreshStrategyOperationalMemoryFromRun, {
                     ...requireMachineAuth(),
                     runId,
+                    agentLogs,
                 } as never) as { upserted: number; skipped?: string }
             )
         },
@@ -418,9 +430,7 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
             toolOutput?: string,
             toolCalls?: string
         ): Promise<void> {
-            if (role !== "system" && role !== "user" && role !== "assistant" && role !== "tool") {
-                throw new Error(`Unsupported agent log role: ${role}`)
-            }
+            assertAgentLogRole(role)
 
             await runWithTimeout(
                 "Convex mutation logAgentMessage",
@@ -436,6 +446,29 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
                     toolOutput,
                     toolCalls,
                 })
+            )
+        },
+        async logBatch(entries: AgentLogEntryInput[]): Promise<AgentLogMemoryEntry[]> {
+            for (const entry of entries) {
+                assertAgentLogRole(entry.role)
+            }
+
+            return await runWithTimeout(
+                "Convex mutation logAgentMessages",
+                async () => await client.mutation(api.mutations.logAgentMessages, {
+                    ...requireMachineAuth(),
+                    entries: entries.map((entry) => ({
+                        runId: entry.runId as Id<"strategy_runs">,
+                        strategyId: entry.strategyId as Id<"strategies">,
+                        sequence: entry.sequence,
+                        role: entry.role,
+                        content: entry.content,
+                        toolName: entry.toolName,
+                        toolInput: entry.toolInput,
+                        toolOutput: entry.toolOutput,
+                        toolCalls: entry.toolCalls,
+                    })),
+                } as never) as AgentLogMemoryEntry[]
             )
         },
         async logIntent(runId: string, strategyId: string, intent: OrderIntent): Promise<void> {
@@ -826,6 +859,14 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
             return await runWithTimeout(
                 "Convex query getManualRunRequests",
                 async () => await client.query(api.queries.getManualRunRequests, { ...requireMachineAuth(), app } as never) as ManualRunRequest[]
+            )
+        },
+        async listAppsWithPendingManualRunRequests(): Promise<Array<Exclude<App, "backend">>> {
+            return await runWithTimeout(
+                "Convex query listAppsWithPendingManualRunRequests",
+                async () => await client.query(api.queries.listAppsWithPendingManualRunRequests, {
+                    ...requireMachineAuth(),
+                } as never) as Array<Exclude<App, "backend">>
             )
         },
         async getRecentAlerts(args: GetRecentAlertsArgs = {}): Promise<AlertRow[]> {

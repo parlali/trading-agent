@@ -50,6 +50,7 @@ import {
 const PROVIDER_CLOSURE_TIME_SKEW_MS = 5 * 60 * 1000
 export const HISTORIC_CANONICAL_CLOSE_MATCH_WINDOW_MS = 24 * 60 * 60 * 1000
 export const KNOWN_PROVIDER_CLOSE_LOOKBACK_MS = 7 * 24 * 60 * 60 * 1000
+const KNOWN_PROVIDER_CLOSE_SCAN_OVERLAP_MS = 10 * 60 * 1000
 const MT5_HISTORIC_ENTRY_ORDER_LOOKBACK_MS = 45 * 24 * 60 * 60 * 1000
 const MT5_PROVIDER_POSITION_ORDER_STATUSES = ["pending", "filled", "partially_filled", "cancelled", "rejected", "expired", "timed_out"] as const
 
@@ -67,6 +68,11 @@ export interface ProviderClosureReconciliationResult {
     unmatchedClosedPositions: string[]
     repairedEntryOrderIds: string[]
     graceProviderPositionIds: Id<"provider_positions">[]
+    knownProviderCloseScan: {
+        scanned: boolean
+        nextWatermark?: number
+        matchedOrderCount: number
+    }
 }
 
 type CandidateMatch =
@@ -85,11 +91,13 @@ export async function reconcileProviderPositionClosures(
         positionClosures: ProviderPositionClosureInput[]
         expectedExternalInstruments: Set<string>
         updatedAt: number
+        lastKnownProviderCloseScanAt?: number
     }
 ): Promise<ProviderClosureReconciliationResult> {
+    const knownProviderCloseScan = await resolveKnownProviderCloseInputs(ctx, args)
     const positionClosures = mergeProviderPositionClosures([
         ...args.positionClosures,
-        ...await resolveKnownProviderCloseInputs(ctx, args),
+        ...knownProviderCloseScan.closures,
     ])
     const {
         candidates: disappearedCandidates,
@@ -121,6 +129,7 @@ export async function reconcileProviderPositionClosures(
             unmatchedClosedPositions: [],
             repairedEntryOrderIds: [],
             graceProviderPositionIds,
+            knownProviderCloseScan: buildKnownProviderCloseScanResult(args, knownProviderCloseScan, false),
         }
     }
     const latestRunIdsByStrategy = new Map<string, Id<"strategy_runs"> | undefined>()
@@ -328,6 +337,15 @@ export async function reconcileProviderPositionClosures(
         unmatchedClosedPositions,
         repairedEntryOrderIds: Array.from(repairedEntryOrderIds),
         graceProviderPositionIds,
+        knownProviderCloseScan: buildKnownProviderCloseScanResult(
+            args,
+            knownProviderCloseScan,
+            knownProviderCloseScan.closures.length > 0 && (
+                unattributedClosures.length > 0 ||
+                unmatchedClosedPositions.length > 0 ||
+                repairedEntryOrderIds.size > 0
+            )
+        ),
     }
 }
 
@@ -475,10 +493,19 @@ async function resolveKnownProviderCloseInputs(
         accountId: string
         strategyMap: Map<string, StrategyDoc>
         updatedAt: number
+        lastKnownProviderCloseScanAt?: number
     }
-): Promise<ProviderPositionClosureInput[]> {
+): Promise<{
+    closures: ProviderPositionClosureInput[]
+    oldestMatchedOrderUpdatedAt?: number
+    outerWindowStart: number
+}> {
     const closures: ProviderPositionClosureInput[] = []
-    const windowStart = args.updatedAt - KNOWN_PROVIDER_CLOSE_LOOKBACK_MS
+    let oldestMatchedOrderUpdatedAt: number | undefined
+    const outerWindowStart = args.updatedAt - KNOWN_PROVIDER_CLOSE_LOOKBACK_MS
+    const windowStart = args.lastKnownProviderCloseScanAt === undefined
+        ? outerWindowStart
+        : Math.max(outerWindowStart, args.lastKnownProviderCloseScanAt - KNOWN_PROVIDER_CLOSE_SCAN_OVERLAP_MS)
 
     for (const strategy of args.strategyMap.values()) {
         if (strategy.app !== args.app || strategy.accountId !== args.accountId) {
@@ -498,11 +525,38 @@ async function resolveKnownProviderCloseInputs(
             const closure = resolveKnownProviderCloseInput(order, args.app, args.accountId)
             if (closure) {
                 closures.push(closure)
+                oldestMatchedOrderUpdatedAt = Math.min(oldestMatchedOrderUpdatedAt ?? order.updatedAt, order.updatedAt)
             }
         }
     }
 
-    return closures
+    return {
+        closures,
+        oldestMatchedOrderUpdatedAt,
+        outerWindowStart,
+    }
+}
+
+function buildKnownProviderCloseScanResult(
+    args: {
+        updatedAt: number
+    },
+    scan: {
+        closures: ProviderPositionClosureInput[]
+        oldestMatchedOrderUpdatedAt?: number
+        outerWindowStart: number
+    },
+    repairAnomaly: boolean
+): ProviderClosureReconciliationResult["knownProviderCloseScan"] {
+    const nextWatermark = repairAnomaly && scan.oldestMatchedOrderUpdatedAt !== undefined
+        ? Math.max(scan.outerWindowStart, scan.oldestMatchedOrderUpdatedAt - KNOWN_PROVIDER_CLOSE_SCAN_OVERLAP_MS)
+        : args.updatedAt
+
+    return {
+        scanned: true,
+        nextWatermark,
+        matchedOrderCount: scan.closures.length,
+    }
 }
 
 function resolveKnownProviderCloseInput(

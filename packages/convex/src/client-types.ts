@@ -210,6 +210,30 @@ export interface AgentLogRow {
     timestamp: number
 }
 
+export interface AgentLogEntryInput {
+    runId: string
+    strategyId: string
+    sequence: number
+    role: string
+    content: string
+    toolName?: string
+    toolInput?: string
+    toolOutput?: string
+    toolCalls?: string
+}
+
+export interface AgentLogMemoryEntry {
+    runId: Id<"strategy_runs">
+    strategyId: Id<"strategies">
+    sequence: number
+    role: AgentLogRow["role"]
+    content: string
+    toolName?: string
+    toolInput?: string
+    toolOutput?: string
+    timestamp: number
+}
+
 export type AgentChatMode = "general" | "portfolio" | "operations" | "mcp"
 
 export interface AgentChatMessageRow {
@@ -615,7 +639,7 @@ export interface TradingBackendClient extends TradeEventLogger, AgentMessageLogg
     recordAgentChatAssistantMessage(args: RecordAgentChatAssistantMessageArgs): Promise<void>
     recordAgentChatToolEvent(args: RecordAgentChatToolEventArgs): Promise<void>
     getTradeEvents(runId: Id<"strategy_runs">): Promise<TradeEventRow[]>
-    refreshStrategyOperationalMemoryFromRun(runId: Id<"strategy_runs">): Promise<{ upserted: number; skipped?: string }>
+    refreshStrategyOperationalMemoryFromRun(runId: Id<"strategy_runs">, agentLogs?: AgentLogMemoryEntry[]): Promise<{ upserted: number; skipped?: string }>
     getApplicableStrategyOperationalMemory(
         strategyId: Id<"strategies">,
         app: Exclude<App, "backend">,
@@ -680,6 +704,7 @@ export interface TradingBackendClient extends TradeEventLogger, AgentMessageLogg
         instruments: string[]
     ): Promise<AdoptProviderPositionsResult>
     getManualRunRequests(app: Exclude<App, "backend">): Promise<ManualRunRequest[]>
+    listAppsWithPendingManualRunRequests(): Promise<Array<Exclude<App, "backend">>>
     getRecentAlerts(args?: GetRecentAlertsArgs): Promise<AlertRow[]>
     claimManualRunRequests(args: ClaimManualRunRequestsArgs): Promise<ClaimManualRunRequestsResult>
     ackManualRunRequest(args: AckManualRunRequestArgs): Promise<AckManualRunRequestResult>
@@ -688,6 +713,7 @@ export interface TradingBackendClient extends TradeEventLogger, AgentMessageLogg
     triggerManualRun(strategyId: Id<"strategies">): Promise<Id<"manual_run_requests">>
     triggerManualRunAsService(strategyId: Id<"strategies">): Promise<Id<"manual_run_requests">>
     acknowledgeAlert(alertId: Id<"alerts">): Promise<void>
+    logBatch(entries: AgentLogEntryInput[]): Promise<AgentLogMemoryEntry[]>
     getStrategyOwnedInstruments(strategyId: Id<"strategies">): Promise<string[]>
     getInstrumentClaimsForStrategy(strategyId: Id<"strategies">): Promise<Array<{ instrument: string }>>
     getStrategyOwnershipScope(strategyId: Id<"strategies">): Promise<StrategyOwnershipScopeRow>

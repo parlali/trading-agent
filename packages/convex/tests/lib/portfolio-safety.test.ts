@@ -375,6 +375,112 @@ describe("portfolio safety guards", () => {
         expect(db.documentsRead).toBeLessThan(3_000)
     })
 
+    it("keeps immediate repeated MT5 reconciliation below 300 reads after repair watermarks advance", async () => {
+        process.env.BACKEND_SERVICE_TOKEN = "test-token"
+        const now = Date.now()
+        const recentUpdatedAt = now - 20 * 60 * 1000
+        const accountId = "account-mt5-watermark"
+        const strategyIds = Array.from({ length: 7 }, (_, index) => `strategy-watermark-${index}`)
+        const strategies = strategyIds.map((strategyId, index) => ({
+            _id: strategyId,
+            app: "mt5",
+            accountId,
+            name: `MT5 Watermark ${index + 1}`,
+            enabled: true,
+            schedule: "*/5 * * * *",
+            policy: { dryRun: false },
+            context: "",
+            createdAt: recentUpdatedAt,
+            updatedAt: recentUpdatedAt,
+        }))
+        const db = new FakeMutationDb({
+            strategies,
+            strategy_runs: strategyIds.map((strategyId, index) => ({
+                _id: `run-${strategyId}`,
+                strategyId,
+                app: "mt5",
+                accountId,
+                status: "completed",
+                startedAt: recentUpdatedAt + index,
+                endedAt: recentUpdatedAt + index + 1_000,
+            })),
+            instrument_claims: [],
+            orders: Array.from({ length: 700 }, (_, index) => createRecentFilledMT5Order({
+                index,
+                strategyId: strategyIds[index % strategyIds.length]!,
+                accountId,
+                updatedAt: recentUpdatedAt - index,
+            })),
+            provider_positions: [],
+            provider_working_orders: [],
+            provider_position_history: [],
+            provider_sync_state: [],
+            position_syncs: [],
+            positions: [],
+            execution_safety_faults: [],
+            account_snapshots: [{
+                _id: "snapshot-mt5-watermark-baseline",
+                app: "mt5",
+                accountId,
+                venue: "mt5",
+                balance: 10_000,
+                equity: 10_000,
+                buyingPower: 10_000,
+                marginUsed: 0,
+                marginAvailable: 10_000,
+                openPnl: 0,
+                dayPnl: 0,
+                timestamp: recentUpdatedAt - 1_000,
+            }],
+            account_pnl_events: [],
+            order_identity_aliases: [],
+            control_plane_metrics: [],
+            alerts: [],
+        })
+        const reconcileArgs = {
+            serviceToken: "test-token",
+            app: "mt5",
+            accountId,
+            venue: "mt5",
+            source: "periodic_sync",
+            accountState: {
+                balance: 10_000,
+                equity: 10_000,
+                buyingPower: 10_000,
+                marginUsed: 0,
+                marginAvailable: 10_000,
+                openPnl: 0,
+                dayPnl: 0,
+            },
+            positions: [{
+                instrument: "EURUSD",
+                providerPositionId: "watermark-live-position",
+                side: "long",
+                quantity: 0.01,
+                entryPrice: 1.1,
+                currentPrice: 1.1,
+                unrealizedPnl: 0,
+            }],
+            workingOrders: [],
+            positionClosures: [],
+            accountPnlEvents: [],
+        }
+
+        await callRegistered(reconcileProviderPortfolio, { db } as never, reconcileArgs)
+        const firstReadCount = db.documentsRead
+        db.documentsRead = 0
+
+        await callRegistered(reconcileProviderPortfolio, { db } as never, reconcileArgs)
+        const secondReadCount = db.documentsRead
+
+        expect(firstReadCount).toBeGreaterThan(1_000)
+        expect(secondReadCount).toBeLessThan(300)
+        expect(db.rows.provider_sync_state?.[0]).toMatchObject({
+            lastFilledOrderRepairScanAt: expect.any(Number),
+            lastKnownProviderCloseScanAt: expect.any(Number),
+        })
+    })
+
     it("records one account-level money audit fault and applies it to strategy risk", async () => {
         process.env.BACKEND_SERVICE_TOKEN = "test-token"
         const accountId = "account-alpaca-options-prod"
@@ -793,6 +899,59 @@ function createHistoricMT5Order(args: {
                 estimatedPrice: 3340 + args.index / 100,
             },
             side: args.index % 2 === 0 ? "buy" : "sell",
+            quantity: 0.02,
+            orderType: "market",
+        },
+        lastTransitionSequence: 1,
+        polling: {
+            pollIntervalMs: 0,
+            timeoutMs: 0,
+            startedAt: args.updatedAt - 10_000,
+            lastCheckedAt: args.updatedAt,
+        },
+    }
+}
+
+function createRecentFilledMT5Order(args: {
+    index: number
+    strategyId: string
+    accountId: string
+    updatedAt: number
+}) {
+    const ticket = 25_000_000 + args.index
+
+    return {
+        _id: `recent-filled-order-${args.index}`,
+        orderId: String(ticket),
+        canonicalOrderId: String(ticket),
+        providerOrderId: String(ticket),
+        providerClientOrderId: `recent-filled-client-${args.index}`,
+        providerOrderAliases: [String(ticket)],
+        runId: `run-${args.strategyId}`,
+        strategyId: args.strategyId,
+        app: "mt5",
+        accountId: args.accountId,
+        venue: "mt5",
+        instrument: "GBPUSD",
+        status: "filled",
+        action: "entry",
+        quantity: 0.02,
+        filledQuantity: 0.02,
+        remainingQuantity: 0,
+        avgFillPrice: 1.25 + args.index / 100_000,
+        submittedAt: args.updatedAt - 10_000,
+        updatedAt: args.updatedAt,
+        intent: {
+            instrument: "GBPUSD",
+            metadata: {
+                ticket,
+                orderId: ticket,
+                positionId: ticket,
+                providerPositionId: String(ticket),
+                providerPositionKey: `GBPUSD:${ticket}`,
+                estimatedPrice: 1.25 + args.index / 100_000,
+            },
+            side: "buy",
             quantity: 0.02,
             orderType: "market",
         },

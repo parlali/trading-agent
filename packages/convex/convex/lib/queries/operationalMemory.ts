@@ -16,6 +16,7 @@ import {
 
 const DEFAULT_MEMORY_LIMIT = 12
 const MAX_MEMORY_LIMIT = 20
+const PER_SCOPE_CANDIDATE_LIMIT = 5
 const STALE_OPERATIONAL_MEMORY_PROJECTION_VERSIONS: Array<number | undefined> = [undefined, 1]
 
 const toolManifestEntryV = v.object({
@@ -217,7 +218,7 @@ async function collectStrategyOperationalMemoryRowsByScope(
                 .eq("scopeSchemaHash", args.schemaHash)
         )
         .order("desc")
-        .take(args.limit)
+        .take(PER_SCOPE_CANDIDATE_LIMIT)
 }
 
 async function collectStrategyOperationalMemoryRowsByStatus(

@@ -455,6 +455,8 @@ export default defineSchema({
         lastPositionSnapshotHash: v.optional(v.string()),
         lastPositionSnapshotDecision: v.optional(v.string()),
         lastReconciliationWriteStats: v.optional(v.any()),
+        lastFilledOrderRepairScanAt: v.optional(v.number()),
+        lastKnownProviderCloseScanAt: v.optional(v.number()),
         positionCount: v.number(),
         pendingOrderCount: v.number(),
         updatedAt: v.number(),

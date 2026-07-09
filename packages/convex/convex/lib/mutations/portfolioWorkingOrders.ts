@@ -801,3 +801,28 @@ export async function listActiveOrdersForApp(
 
     return activeOrders
 }
+
+export async function listActiveOrdersForAccount(
+    ctx: PortfolioMutationCtx,
+    args: {
+        app: StrategyDoc["app"]
+        accountId: string
+    }
+): Promise<OrderDoc[]> {
+    const [pending, partiallyFilled] = await Promise.all([
+        ctx.db
+            .query("orders")
+            .withIndex("by_app_status", (q) =>
+                q.eq("app", args.app).eq("status", "pending")
+            )
+            .collect(),
+        ctx.db
+            .query("orders")
+            .withIndex("by_app_status", (q) =>
+                q.eq("app", args.app).eq("status", "partially_filled")
+            )
+            .collect(),
+    ])
+
+    return [...pending, ...partiallyFilled].filter((order) => order.accountId === args.accountId)
+}

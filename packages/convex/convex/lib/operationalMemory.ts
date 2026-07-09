@@ -52,7 +52,7 @@ export interface OperationalMemoryRunEvidence {
 }
 
 export interface OperationalMemoryAgentLog {
-    _id: string
+    _id?: string
     runId: string
     strategyId: string
     sequence: number
@@ -62,6 +62,21 @@ export interface OperationalMemoryAgentLog {
     toolInput?: string
     toolOutput?: string
     timestamp: number
+}
+
+function createAgentLogSource(
+    input: OperationalMemoryRunEvidence,
+    log: OperationalMemoryAgentLog
+): StrategyOperationalMemory["sources"][number] {
+    const source: StrategyOperationalMemory["sources"][number] = {
+        runId: input.run._id,
+        timestamp: log.timestamp,
+    }
+    if (log._id !== undefined) {
+        source.agentLogId = log._id
+    }
+
+    return source
 }
 
 export function buildStrategyOperationalMemoryFromRun(
@@ -241,11 +256,7 @@ function buildToolFailureMemory(
             schemaHash,
             providerId: readProviderId(tool),
         },
-        sources: [{
-            runId: input.run._id,
-            agentLogId: log._id,
-            timestamp: log.timestamp,
-        }],
+        sources: [createAgentLogSource(input, log)],
         evidence: {
             attemptCount: 1,
             successCount: 0,
@@ -298,11 +309,7 @@ function buildToolSuccessMemory(
             schemaHash: tool.schemaHash,
             providerId: readProviderId(tool),
         },
-        sources: [{
-            runId: input.run._id,
-            agentLogId: log._id,
-            timestamp: log.timestamp,
-        }],
+        sources: [createAgentLogSource(input, log)],
         evidence: {
             attemptCount: 1,
             successCount: 1,
@@ -360,11 +367,7 @@ function buildExternalToolMemory(
             upstreamToolName,
             schemaHash: tool?.schemaHash,
         },
-        sources: [{
-            runId: input.run._id,
-            agentLogId: log._id,
-            timestamp: log.timestamp,
-        }],
+        sources: [createAgentLogSource(input, log)],
         evidence: {
             attemptCount: 1,
             successCount: 1,

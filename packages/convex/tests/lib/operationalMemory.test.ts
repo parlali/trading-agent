@@ -359,7 +359,7 @@ describe("strategy operational memory", () => {
             now,
         }) as StrategyOperationalMemory[]
 
-        expect(result).toHaveLength(12)
+        expect(result).toHaveLength(6)
         expect(result[0].type).toBe("run_handoff_fact")
         expect(result.filter((memory) => memory.type === "run_handoff_fact")).toHaveLength(1)
     })
@@ -416,6 +416,87 @@ describe("strategy operational memory", () => {
             "tool_invocation_success",
             "external_tool_discovery",
         ]))
+    })
+
+    it("mutation uses provided agent logs without reading agent_logs and rejects mismatched runId", async () => {
+        const db = new FakeMutationDb({
+            strategies: [{
+                _id: "strategy-1",
+                app: "polymarket",
+                accountId: "account-1",
+            }],
+            strategy_runs: [{
+                _id: "run-1",
+                strategyId: "strategy-1",
+                app: "polymarket",
+                accountId: "account-1",
+                status: "completed",
+                startedAt: now - 1_000,
+                endedAt: now,
+                summary: "Use the provided transcript.",
+                toolManifest: [{
+                    name: "mcp_macro_rates",
+                    schemaHash: "a".repeat(64),
+                    category: "research",
+                    contractOwner: "mcp:macro",
+                }],
+            }],
+            agent_logs: [{
+                _id: "log-db-should-not-read",
+                runId: "run-1",
+                strategyId: "strategy-1",
+                sequence: 1,
+                role: "tool",
+                content: "db row",
+                timestamp: now,
+            }],
+            strategy_operational_memories: [],
+        })
+        const originalQuery = db.query.bind(db)
+        db.query = (table: string) => {
+            if (table === "agent_logs") {
+                throw new Error("agent_logs should not be queried")
+            }
+
+            return originalQuery(table)
+        }
+        const ctx = {
+            db,
+        }
+        const agentLogs = [{
+            runId: "run-1",
+            strategyId: "strategy-1",
+            sequence: 1,
+            role: "tool",
+            toolName: "mcp_macro_rates",
+            toolInput: JSON.stringify({ topic: "rates" }),
+            toolOutput: JSON.stringify({ ok: true }),
+            content: JSON.stringify({ ok: true }),
+            timestamp: now,
+        }]
+
+        const result = await callRegistered(refreshStrategyOperationalMemoryFromRun, ctx as never, {
+            serviceToken: "test-token",
+            runId: "run-1",
+            agentLogs,
+        }) as { upserted: number }
+
+        expect(result.upserted).toBeGreaterThan(0)
+        expect(db.rows.strategy_operational_memories?.map((row) => row.type)).toEqual(expect.arrayContaining([
+            "tool_invocation_success",
+            "external_tool_discovery",
+        ]))
+
+        await expect(callRegistered(refreshStrategyOperationalMemoryFromRun, ctx as never, {
+            serviceToken: "test-token",
+            runId: "run-1",
+            agentLogs: [{
+                ...agentLogs[0],
+                runId: "run-2",
+            }],
+        }))
+            .rejects
+            .toThrow("does not match refresh runId")
     })
 })
 

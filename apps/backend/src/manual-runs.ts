@@ -5,7 +5,6 @@ import {
     MANUAL_RUN_MAX_ATTEMPTS,
     MANUAL_RUN_CLAIM_LIMIT,
     MANUAL_RUN_WORKER_ID,
-    ALL_APPS,
     backend,
     logger,
     manualRunPollTimer,
@@ -42,7 +41,9 @@ export function stopManualRunPolling(): void {
 }
 
 export async function pollManualRunRequests(scheduler: Scheduler): Promise<void> {
-    for (const app of ALL_APPS) {
+    const pendingApps = await backend.listAppsWithPendingManualRunRequests()
+
+    for (const app of pendingApps) {
         const claimResult = await backend.claimManualRunRequests({
             app,
             workerId: MANUAL_RUN_WORKER_ID,

@@ -22,6 +22,73 @@ import {
 import { findOrderRowByIdentity } from "../orderIdentityLookup"
 import { reconcileOrderIdentityAliases } from "../orderIdentityAliases"
 
+const MAX_AGENT_LOG_BATCH_SIZE = 50
+
+const agentLogEntryV = v.object({
+    runId: v.id("strategy_runs"),
+    strategyId: v.id("strategies"),
+    sequence: v.number(),
+    role: agentLogRoleV,
+    content: v.string(),
+    toolName: v.optional(v.string()),
+    toolInput: v.optional(v.string()),
+    toolOutput: v.optional(v.string()),
+    toolCalls: v.optional(v.string()),
+})
+
+type AgentLogEntryInput = {
+    runId: Id<"strategy_runs">
+    strategyId: Id<"strategies">
+    sequence: number
+    role: Doc<"agent_logs">["role"]
+    content: string
+    toolName?: string
+    toolInput?: string
+    toolOutput?: string
+    toolCalls?: string
+}
+
+async function insertAgentLog(
+    db: DatabaseWriter,
+    entry: AgentLogEntryInput
+): Promise<{
+    runId: Id<"strategy_runs">
+    strategyId: Id<"strategies">
+    sequence: number
+    role: Doc<"agent_logs">["role"]
+    content: string
+    toolName?: string
+    toolInput?: string
+    toolOutput?: string
+    timestamp: number
+}> {
+    const timestamp = Date.now()
+    await db.insert("agent_logs", {
+        runId: entry.runId,
+        strategyId: entry.strategyId,
+        sequence: entry.sequence,
+        role: entry.role,
+        content: entry.content,
+        toolName: entry.toolName,
+        toolInput: entry.toolInput,
+        toolOutput: entry.toolOutput,
+        toolCalls: entry.toolCalls,
+        timestamp,
+    })
+
+    return {
+        runId: entry.runId,
+        strategyId: entry.strategyId,
+        sequence: entry.sequence,
+        role: entry.role,
+        content: entry.content,
+        toolName: entry.toolName,
+        toolInput: entry.toolInput,
+        toolOutput: entry.toolOutput,
+        timestamp,
+    }
+}
+
 export const createRun = mutation({
     args: {
         serviceToken: v.string(),
@@ -334,30 +401,31 @@ export const updateRun = mutation({
 export const logAgentMessage = mutation({
     args: {
         serviceToken: v.string(),
-        runId: v.id("strategy_runs"),
-        strategyId: v.id("strategies"),
-        sequence: v.number(),
-        role: agentLogRoleV,
-        content: v.string(),
-        toolName: v.optional(v.string()),
-        toolInput: v.optional(v.string()),
-        toolOutput: v.optional(v.string()),
-        toolCalls: v.optional(v.string()),
+        ...agentLogEntryV.fields,
     },
     handler: async (ctx, args) => {
         requireServiceToken(args.serviceToken)
-        await ctx.db.insert("agent_logs", {
-            runId: args.runId,
-            strategyId: args.strategyId,
-            sequence: args.sequence,
-            role: args.role,
-            content: args.content,
-            toolName: args.toolName,
-            toolInput: args.toolInput,
-            toolOutput: args.toolOutput,
-            toolCalls: args.toolCalls,
-            timestamp: Date.now(),
-        })
+        await insertAgentLog(ctx.db, args)
+    },
+})
+
+export const logAgentMessages = mutation({
+    args: {
+        serviceToken: v.string(),
+        entries: v.array(agentLogEntryV),
+    },
+    handler: async (ctx, args) => {
+        requireServiceToken(args.serviceToken)
+        if (args.entries.length > MAX_AGENT_LOG_BATCH_SIZE) {
+            throw new Error(`logAgentMessages accepts at most ${MAX_AGENT_LOG_BATCH_SIZE} entries`)
+        }
+
+        const inserted = []
+        for (const entry of args.entries) {
+            inserted.push(await insertAgentLog(ctx.db, entry))
+        }
+
+        return inserted
     },
 })
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { getRecentAlerts } from "../../convex/lib/queries/system"
+import { getRecentAlerts, listAppsWithPendingManualRunRequests } from "../../convex/lib/queries/system"
 import { callRegistered, FakeMutationDb as FakeDb } from "./fakeMutationDb"
 
 describe("system queries", () => {
@@ -26,6 +26,38 @@ describe("system queries", () => {
             "old-match-2",
             "old-match-1",
         ])
+    })
+
+    it("returns only apps with pending manual run requests", async () => {
+        process.env.BACKEND_SERVICE_TOKEN = "test-token"
+        const db = new FakeDb({
+            manual_run_requests: [{
+                _id: "manual-pending-alpaca",
+                app: "alpaca-options",
+                strategyId: "strategy-alpaca",
+                requestedAt: 1,
+                attemptCount: 0,
+            }, {
+                _id: "manual-terminal-mt5",
+                app: "mt5",
+                strategyId: "strategy-mt5",
+                requestedAt: 2,
+                attemptCount: 1,
+                terminalAt: 3,
+            }, {
+                _id: "manual-pending-okx",
+                app: "okx-swap",
+                strategyId: "strategy-okx",
+                requestedAt: 4,
+                attemptCount: 0,
+            }],
+        })
+
+        const apps = await callRegistered(listAppsWithPendingManualRunRequests, { db } as never, {
+            serviceToken: "test-token",
+        })
+
+        expect(apps).toEqual(["alpaca-options", "okx-swap"])
     })
 })
 

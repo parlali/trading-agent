@@ -4,11 +4,14 @@ import {
     type ToolManifestEntry,
 } from "@valiq-trading/agent"
 import type {
+    AgentLogEntryInput,
+    AgentLogMemoryEntry,
     CreateRunMetadata,
     Id,
     RunDiagnostics,
     RunTrigger,
     StoredStrategy,
+    TradingBackendClient,
 } from "@valiq-trading/convex"
 import {
     getNextCronFireMs,
@@ -17,6 +20,7 @@ import {
     resolveStrategyLlmConfig,
     withTimeout,
     type AccountState,
+    type Logger,
     type RunSystemContextDigest,
     type Scheduler,
     type StrategyLlmConfig,
@@ -57,6 +61,10 @@ interface RunStrategyOptions {
     createRunMetadata?: CreateRunMetadata
     failOnSkippedStart?: boolean
 }
+
+const AGENT_TRANSCRIPT_BATCH_SIZE = 25
+const AGENT_TRANSCRIPT_FLUSH_AGE_MS = 2_500
+const OPERATIONAL_MEMORY_AGENT_LOG_PAYLOAD_LIMIT_BYTES = 4 * 1024 * 1024
 
 export interface StrategyRunOutcome {
     runId?: string
@@ -124,6 +132,12 @@ export async function runStrategy(
         runId,
         strategyId: strategy._id,
         app,
+    })
+    const agentTranscript = createBufferedAgentTranscriptLogger({
+        backend,
+        logger: runLogger,
+        runId,
+        strategyId: strategy._id,
     })
 
     let runtime: ScheduledRunRuntime | undefined
@@ -223,7 +237,7 @@ export async function runStrategy(
 
                 const summary = hookResult.reason ?? "Strategy skipped by pre-run hook"
                 await backend.updateRun(runId, "completed", summary)
-                await refreshOperationalMemoryForCompletedRun(runId, strategy._id, app)
+                await refreshOperationalMemoryForCompletedRun(runId, strategy._id, app, agentTranscript)
                 updateHealth("completed", summary)
                 return {
                     runId,
@@ -281,13 +295,14 @@ export async function runStrategy(
                     provider: runtimeProviderConfig,
                     tools: preparedTurn.tools,
                     logger: runLogger,
-                    agentLogger: backend,
+                    agentLogger: agentTranscript,
                     killSwitchChecker: () => checkKillSwitch(app, `mid-run:${strategy._id}`),
                     runTimeoutMs: Math.max(1, STRATEGY_RUN_TIMEOUT_MS - (Date.now() - strategyRunStartedAt)),
                     userMessage: options.userMessage,
                     abortSignal: options.abortSignal,
                 }
             )
+            await flushAgentTranscriptForRun(agentTranscript, runLogger, runId, strategy._id)
 
             if (plugin.postRunHooks) {
                 await withTimeout(
@@ -347,7 +362,7 @@ export async function runStrategy(
             }
 
             await backend.updateRun(runId, "completed", cleanSummary, undefined, runDiagnostics)
-            await refreshOperationalMemoryForCompletedRun(runId, strategy._id, app)
+            await refreshOperationalMemoryForCompletedRun(runId, strategy._id, app, agentTranscript)
             updateHealth("completed", cleanSummary)
 
             if (scheduler && result.summary) {
@@ -445,6 +460,8 @@ export async function runStrategy(
 
         throw error
     } finally {
+        await flushAgentTranscriptForRun(agentTranscript, runLogger, runId, strategy._id)
+        agentTranscript.dispose()
         runtime?.cleanup()
     }
 }
@@ -452,10 +469,12 @@ export async function runStrategy(
 async function refreshOperationalMemoryForCompletedRun(
     runId: Id<"strategy_runs">,
     strategyId: Id<"strategies">,
-    app: VenueApp
+    app: VenueApp,
+    agentTranscript: BufferedAgentTranscriptLogger
 ): Promise<void> {
     try {
-        const result = await backend.refreshStrategyOperationalMemoryFromRun(runId)
+        const agentLogs = resolveAgentLogsForOperationalMemoryRefresh(agentTranscript, runId, strategyId, app)
+        const result = await backend.refreshStrategyOperationalMemoryFromRun(runId, agentLogs)
         logger.info("Refreshed strategy operational memory", {
             runId,
             strategyId,
@@ -471,6 +490,201 @@ async function refreshOperationalMemoryForCompletedRun(
             error: error instanceof Error ? error.message : String(error),
         })
     }
+}
+
+interface BufferedAgentTranscriptLogger {
+    log(
+        runId: string,
+        strategyId: string,
+        sequence: number,
+        role: string,
+        content: string,
+        toolName?: string,
+        toolInput?: string,
+        toolOutput?: string,
+        toolCalls?: string
+    ): Promise<void>
+    flush(): Promise<void>
+    dispose(): void
+    getPersistedAgentLogs(): AgentLogMemoryEntry[]
+    hasCompletePersistedTranscript(): boolean
+}
+
+type QueuedAgentLogEntry = AgentLogEntryInput & {
+    queuedAt: number
+}
+
+function createBufferedAgentTranscriptLogger(args: {
+    backend: TradingBackendClient
+    logger: Logger
+    runId: Id<"strategy_runs">
+    strategyId: Id<"strategies">
+}): BufferedAgentTranscriptLogger {
+    let buffer: QueuedAgentLogEntry[] = []
+    let persistedAgentLogs: AgentLogMemoryEntry[] = []
+    let totalLogged = 0
+    let flushChain: Promise<void> = Promise.resolve()
+    let flushTimer: ReturnType<typeof setTimeout> | undefined
+
+    const clearFlushTimer = (): void => {
+        if (flushTimer) {
+            clearTimeout(flushTimer)
+            flushTimer = undefined
+        }
+    }
+
+    const scheduleFlushTimer = (): void => {
+        clearFlushTimer()
+        const oldest = buffer[0]
+        if (!oldest) {
+            return
+        }
+
+        const delayMs = Math.max(0, AGENT_TRANSCRIPT_FLUSH_AGE_MS - (Date.now() - oldest.queuedAt))
+        flushTimer = setTimeout(() => {
+            void loggerApi.flush().catch((error) => {
+                args.logger.error("Agent transcript write failed", {
+                    runId: args.runId,
+                    strategyId: args.strategyId,
+                    error: error instanceof Error ? error.message : String(error),
+                })
+            })
+        }, delayMs)
+    }
+
+    const flushNow = async (): Promise<void> => {
+        if (buffer.length === 0) {
+            clearFlushTimer()
+            return
+        }
+
+        clearFlushTimer()
+
+        while (buffer.length > 0) {
+            const entries = buffer.slice(0, AGENT_TRANSCRIPT_BATCH_SIZE)
+            buffer = buffer.slice(AGENT_TRANSCRIPT_BATCH_SIZE)
+
+            try {
+                const persisted = await args.backend.logBatch(entries.map(stripQueuedAt))
+                persistedAgentLogs = [...persistedAgentLogs, ...persisted]
+            } catch (error) {
+                buffer = [...entries, ...buffer]
+                scheduleFlushTimer()
+                throw error
+            }
+        }
+
+        scheduleFlushTimer()
+    }
+
+    const loggerApi: BufferedAgentTranscriptLogger = {
+        log: async (
+            runId,
+            strategyId,
+            sequence,
+            role,
+            content,
+            toolName,
+            toolInput,
+            toolOutput,
+            toolCalls
+        ) => {
+            totalLogged++
+            buffer.push({
+                runId,
+                strategyId,
+                sequence,
+                role,
+                content,
+                toolName,
+                toolInput,
+                toolOutput,
+                toolCalls,
+                queuedAt: Date.now(),
+            })
+            scheduleFlushTimer()
+
+            if (buffer.length >= AGENT_TRANSCRIPT_BATCH_SIZE) {
+                await loggerApi.flush()
+            }
+        },
+        flush: async () => {
+            const flush = flushChain.then(flushNow)
+            flushChain = flush.catch(() => undefined)
+            await flush
+        },
+        dispose: () => {
+            clearFlushTimer()
+        },
+        getPersistedAgentLogs: () => [...persistedAgentLogs],
+        hasCompletePersistedTranscript: () => buffer.length === 0 && persistedAgentLogs.length === totalLogged,
+    }
+
+    return loggerApi
+}
+
+function stripQueuedAt(entry: QueuedAgentLogEntry): AgentLogEntryInput {
+    return {
+        runId: entry.runId,
+        strategyId: entry.strategyId,
+        sequence: entry.sequence,
+        role: entry.role,
+        content: entry.content,
+        toolName: entry.toolName,
+        toolInput: entry.toolInput,
+        toolOutput: entry.toolOutput,
+        toolCalls: entry.toolCalls,
+    }
+}
+
+async function flushAgentTranscriptForRun(
+    agentTranscript: BufferedAgentTranscriptLogger,
+    runLogger: Logger,
+    runId: Id<"strategy_runs">,
+    strategyId: Id<"strategies">
+): Promise<void> {
+    try {
+        await agentTranscript.flush()
+    } catch (error) {
+        runLogger.error("Agent transcript write failed", {
+            runId,
+            strategyId,
+            error: error instanceof Error ? error.message : String(error),
+        })
+    }
+}
+
+function resolveAgentLogsForOperationalMemoryRefresh(
+    agentTranscript: BufferedAgentTranscriptLogger,
+    runId: Id<"strategy_runs">,
+    strategyId: Id<"strategies">,
+    app: VenueApp
+): AgentLogMemoryEntry[] | undefined {
+    if (!agentTranscript.hasCompletePersistedTranscript()) {
+        logger.info("Strategy operational memory refresh fell back to DB agent log read", {
+            runId,
+            strategyId,
+            app,
+            reason: "transcript_not_fully_persisted",
+        })
+        return undefined
+    }
+
+    const agentLogs = agentTranscript.getPersistedAgentLogs()
+    const payloadBytes = new TextEncoder().encode(JSON.stringify(agentLogs)).length
+    if (payloadBytes >= OPERATIONAL_MEMORY_AGENT_LOG_PAYLOAD_LIMIT_BYTES) {
+        logger.info("Strategy operational memory refresh fell back to DB agent log read", {
+            runId,
+            strategyId,
+            app,
+            reason: "payload_exceeds_limit",
+            payloadBytes,
+            limitBytes: OPERATIONAL_MEMORY_AGENT_LOG_PAYLOAD_LIMIT_BYTES,
+        })
+        return undefined
+    }
+
+    return agentLogs
 }
 
 function buildFailureRunDiagnostics(

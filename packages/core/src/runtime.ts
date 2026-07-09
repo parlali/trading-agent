@@ -119,7 +119,7 @@ export function wireShutdown(config: {
     process.on("SIGTERM", shutdown)
 }
 
-const KILL_SWITCH_CACHE_TTL = 5000
+const KILL_SWITCH_CACHE_TTL = 60_000
 
 export function createKillSwitchChecker(config: {
     appName: VenueApp

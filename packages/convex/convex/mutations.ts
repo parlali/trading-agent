@@ -12,6 +12,7 @@ export {
     updateRun,
     recordRunCallback,
     logAgentMessage,
+    logAgentMessages,
     logTradeEvent,
     upsertOrder,
     logOrderTransition,

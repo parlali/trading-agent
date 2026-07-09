@@ -53,7 +53,7 @@ export const VENUE_META: Record<ActiveVenueApp, VenueMeta> = {
     },
 } as const
 
-export const STALE_THRESHOLD_MS = 2 * 60 * 1000
+export const STALE_THRESHOLD_MS = 6 * 60 * 1000
 
 export const STATUS_COLORS = {
     healthy: "text-signal-healthy",

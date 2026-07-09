@@ -160,6 +160,9 @@ class FakeMutationQuery {
                 const comparableFilterValue = filter.value as string | number
                 switch (filter.operator) {
                     case "eq":
+                        if (filter.field === "enabled" && filter.value === true && rowValue === undefined) {
+                            return true
+                        }
                         return rowValue === filter.value
                     case "gt":
                         return comparableRowValue > comparableFilterValue

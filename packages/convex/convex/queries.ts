@@ -66,6 +66,7 @@ export {
     getAppHealth,
     assertDashboardUser,
     getManualRunRequests,
+    listAppsWithPendingManualRunRequests,
     getControlPlaneMetrics,
     getRecentAlerts,
     getFullResetAudit,

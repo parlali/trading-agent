@@ -2,6 +2,7 @@ import { query } from "../../_generated/server"
 import type { Doc } from "../../_generated/dataModel"
 import type { QueryCtx } from "../../_generated/server"
 import { v } from "convex/values"
+import { VENUE_APPS } from "@valiq-trading/core"
 import { requireUser, requireServiceToken, requireUserOrServiceToken } from "../authGuards"
 import { createDefaultKillSwitchState } from "../killSwitchState"
 import { severityV, venueAppV } from "../validators"
@@ -59,6 +60,30 @@ export const getManualRunRequests = query({
             )
             .order("asc")
             .collect()
+    },
+})
+
+export const listAppsWithPendingManualRunRequests = query({
+    args: {
+        serviceToken: v.string(),
+    },
+    handler: async (ctx, args) => {
+        requireServiceToken(args.serviceToken)
+
+        const apps: Array<typeof VENUE_APPS[number]> = []
+        for (const app of VENUE_APPS) {
+            const pending = await ctx.db
+                .query("manual_run_requests")
+                .withIndex("by_app_terminal_requested_at", (q) =>
+                    q.eq("app", app).eq("terminalAt", undefined)
+                )
+                .first()
+            if (pending) {
+                apps.push(app)
+            }
+        }
+
+        return apps
     },
 })
 

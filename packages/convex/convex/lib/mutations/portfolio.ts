@@ -34,7 +34,7 @@ import {
     hasUnresolvedLiveWorkingOrderGap,
     importCanonicalProviderProtectionOrder,
     inferClosedOrderStatus,
-    listActiveOrdersForApp,
+    listActiveOrdersForAccount,
     reconcileProviderPositionClosures,
     resolveTerminalLiveWorkingOrderRepairMatch,
     resolveLiveWorkingOrderMatch,
@@ -162,20 +162,38 @@ export const reconcileProviderPortfolio = mutation({
             .withIndex("by_app_account", (q) => q.eq("app", args.app).eq("accountId", args.accountId))
             .first()
 
-        const strategies = await ctx.db
+        const enabledStrategies = await ctx.db
             .query("strategies")
-            .withIndex("by_app_account", (q) => q.eq("app", args.app).eq("accountId", args.accountId))
+            .withIndex("by_app_enabled", (q) => q.eq("app", args.app).eq("enabled", true))
             .collect()
+        const strategyMap = new Map(
+            enabledStrategies
+                .filter((strategy) => strategy.accountId === args.accountId)
+                .map((strategy) => [String(strategy._id), strategy])
+        )
 
-        const strategyMap = new Map(strategies.map((strategy) => [String(strategy._id), strategy]))
-        const activeOrders = await listActiveOrdersForApp(ctx, strategies)
-        const activeOrdersById = buildActiveOrderLookup(activeOrders)
-        const protectionLevelsByInstrument = buildProtectionLevels(args.workingOrders)
-        const expectedExternalInstruments = collectExpectedExternalInstruments(strategies)
         const existingProviderPositions = await ctx.db
             .query("provider_positions")
             .withIndex("by_app_account", (q) => q.eq("app", args.app).eq("accountId", args.accountId))
             .collect()
+        await addReferencedStrategiesToMap(ctx, strategyMap, existingProviderPositions.map((position) => position.strategyId))
+
+        const initialClaims = await ctx.db
+            .query("instrument_claims")
+            .withIndex("by_app_account", (q) => q.eq("app", args.app).eq("accountId", args.accountId))
+            .collect()
+        await addReferencedStrategiesToMap(ctx, strategyMap, initialClaims.map((claim) => claim.strategyId))
+
+        const activeOrders = await listActiveOrdersForAccount(ctx, {
+            app: args.app,
+            accountId: args.accountId,
+        })
+        await addReferencedStrategiesToMap(ctx, strategyMap, activeOrders.map((order) => order.strategyId))
+
+        let strategies = Array.from(strategyMap.values())
+        const activeOrdersById = buildActiveOrderLookup(activeOrders)
+        const protectionLevelsByInstrument = buildProtectionLevels(args.workingOrders)
+        const expectedExternalInstruments = collectExpectedExternalInstruments(strategies)
         const existingProviderPositionsByKey = buildProviderPositionIndex(existingProviderPositions)
         const providerPositionClosures = args.positionClosures ?? []
         const accountPnlEvents = args.accountPnlEvents ?? []
@@ -235,7 +253,7 @@ export const reconcileProviderPortfolio = mutation({
             }
         }
 
-        await repairMissingLivePositionClaimsFromFilledOrders(ctx, {
+        const claimRepairScan = await repairMissingLivePositionClaimsFromFilledOrders(ctx, {
             app: args.app,
             accountId: args.accountId,
             strategyMap,
@@ -247,12 +265,16 @@ export const reconcileProviderPortfolio = mutation({
                 ]
             ),
             updatedAt: now,
+            lastFilledOrderRepairScanAt: previousState?.lastFilledOrderRepairScanAt,
+            existingClaims: initialClaims,
         })
 
         const refreshedClaims = await ctx.db
             .query("instrument_claims")
             .withIndex("by_app_account", (q) => q.eq("app", args.app).eq("accountId", args.accountId))
             .collect()
+        await addReferencedStrategiesToMap(ctx, strategyMap, refreshedClaims.map((claim) => claim.strategyId))
+        strategies = Array.from(strategyMap.values())
         const refreshedClaimsByInstrument = buildClaimsByInstrument(refreshedClaims, strategyMap)
         const ownershipMismatches = new Set<string>()
 
@@ -439,6 +461,7 @@ export const reconcileProviderPortfolio = mutation({
             positionClosures: providerPositionClosures,
             expectedExternalInstruments,
             updatedAt: now,
+            lastKnownProviderCloseScanAt: previousState?.lastKnownProviderCloseScanAt,
         })
         const repairedEntryOrderIds = new Set(closureReconciliation.repairedEntryOrderIds)
         const unresolvedClosedPersistedOrders = closedPersistedOrders.filter((orderId) =>
@@ -662,6 +685,8 @@ export const reconcileProviderPortfolio = mutation({
                 providerWorkingOrders: providerWorkingOrderWriteStats,
                 strategySnapshots: positionSnapshotResult.stats,
             },
+            lastFilledOrderRepairScanAt: claimRepairScan.nextWatermark ?? previousState?.lastFilledOrderRepairScanAt,
+            lastKnownProviderCloseScanAt: closureReconciliation.knownProviderCloseScan.nextWatermark ?? previousState?.lastKnownProviderCloseScanAt,
             positionCount: resolvedPositions.length,
             pendingOrderCount: resolvedWorkingOrders.length,
             updatedAt: now,
@@ -730,6 +755,26 @@ function buildProviderPositionIndex(
     }
 
     return index
+}
+
+async function addReferencedStrategiesToMap(
+    ctx: Pick<PortfolioMutationCtx, "db">,
+    strategyMap: Map<string, StrategyDoc>,
+    strategyIds: Array<Id<"strategies"> | undefined>
+): Promise<void> {
+    const missingIds = new Set(
+        strategyIds
+            .filter((strategyId): strategyId is Id<"strategies"> => strategyId !== undefined)
+            .map((strategyId) => String(strategyId))
+            .filter((strategyId) => !strategyMap.has(strategyId))
+    )
+
+    for (const strategyId of missingIds) {
+        const strategy = await ctx.db.get(strategyId as Id<"strategies">)
+        if (strategy) {
+            strategyMap.set(String(strategy._id), strategy)
+        }
+    }
 }
 
 function buildLiveProviderPositionKeys(

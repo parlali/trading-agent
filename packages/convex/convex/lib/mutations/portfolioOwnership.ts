@@ -16,6 +16,13 @@ import {
 } from "./portfolioUtils"
 
 const CLAIM_REPAIR_FILLED_ORDER_LOOKBACK_MS = 45 * 24 * 60 * 60 * 1000
+const CLAIM_REPAIR_SCAN_OVERLAP_MS = 10 * 60 * 1000
+
+export interface FilledOrderRepairScanResult {
+    scanned: boolean
+    nextWatermark?: number
+    repaired: boolean
+}
 
 export function buildClaimsByInstrument(
     claims: Array<Doc<"instrument_claims">>,
@@ -44,13 +51,18 @@ export async function repairMissingLivePositionClaimsFromFilledOrders(
         strategyMap: Map<string, StrategyDoc>
         liveInstrumentAliases: Map<string, Set<string>>
         updatedAt: number
+        lastFilledOrderRepairScanAt?: number
+        existingClaims?: Array<Doc<"instrument_claims">>
     }
-): Promise<void> {
+): Promise<FilledOrderRepairScanResult> {
     if (args.liveInstrumentAliases.size === 0) {
-        return
+        return {
+            scanned: false,
+            repaired: false,
+        }
     }
 
-    const existingClaims = await ctx.db
+    const existingClaims = args.existingClaims ?? await ctx.db
         .query("instrument_claims")
         .withIndex("by_app_account", (q) => q.eq("app", args.app).eq("accountId", args.accountId))
         .collect()
@@ -61,10 +73,16 @@ export async function repairMissingLivePositionClaimsFromFilledOrders(
         )
     )
     if (unclaimedLiveInstrumentAliases.size === 0) {
-        return
+        return {
+            scanned: false,
+            repaired: false,
+        }
     }
 
-    const windowStart = args.updatedAt - CLAIM_REPAIR_FILLED_ORDER_LOOKBACK_MS
+    const outerWindowStart = args.updatedAt - CLAIM_REPAIR_FILLED_ORDER_LOOKBACK_MS
+    const windowStart = args.lastFilledOrderRepairScanAt === undefined
+        ? outerWindowStart
+        : Math.max(outerWindowStart, args.lastFilledOrderRepairScanAt - CLAIM_REPAIR_SCAN_OVERLAP_MS)
     const filledOrders = (
         await Promise.all(
             Array.from(args.strategyMap.values()).map(async (strategy) => await ctx.db
@@ -78,6 +96,7 @@ export async function repairMissingLivePositionClaimsFromFilledOrders(
         )
     ).flat()
     const candidateStrategiesByInstrument = new Map<string, Set<Id<"strategies">>>()
+    const oldestCandidateOrderUpdatedAtByInstrument = new Map<string, number>()
 
     for (const order of filledOrders) {
         if (!isEntryLikeOrder(order) || !args.strategyMap.has(String(order.strategyId))) {
@@ -93,10 +112,18 @@ export async function repairMissingLivePositionClaimsFromFilledOrders(
             const strategies = candidateStrategiesByInstrument.get(liveInstrument) ?? new Set<Id<"strategies">>()
             strategies.add(order.strategyId)
             candidateStrategiesByInstrument.set(liveInstrument, strategies)
+            oldestCandidateOrderUpdatedAtByInstrument.set(
+                liveInstrument,
+                Math.min(
+                    oldestCandidateOrderUpdatedAtByInstrument.get(liveInstrument) ?? order.updatedAt,
+                    order.updatedAt
+                )
+            )
         }
     }
 
     const instrumentsByStrategy = new Map<string, { strategyId: Id<"strategies">; instruments: string[] }>()
+    let oldestRepairedOrderUpdatedAt: number | undefined
 
     for (const [instrument, strategies] of candidateStrategiesByInstrument) {
         if (strategies.size !== 1) {
@@ -112,6 +139,10 @@ export async function repairMissingLivePositionClaimsFromFilledOrders(
         const entry = instrumentsByStrategy.get(key) ?? { strategyId, instruments: [] }
         entry.instruments.push(instrument)
         instrumentsByStrategy.set(key, entry)
+        const candidateUpdatedAt = oldestCandidateOrderUpdatedAtByInstrument.get(instrument)
+        if (candidateUpdatedAt !== undefined) {
+            oldestRepairedOrderUpdatedAt = Math.min(oldestRepairedOrderUpdatedAt ?? candidateUpdatedAt, candidateUpdatedAt)
+        }
     }
 
     for (const entry of instrumentsByStrategy.values()) {
@@ -122,6 +153,14 @@ export async function repairMissingLivePositionClaimsFromFilledOrders(
             instruments: entry.instruments,
             updatedAt: args.updatedAt,
         })
+    }
+
+    return {
+        scanned: true,
+        repaired: instrumentsByStrategy.size > 0,
+        nextWatermark: oldestRepairedOrderUpdatedAt === undefined
+            ? args.updatedAt
+            : Math.max(outerWindowStart, oldestRepairedOrderUpdatedAt - CLAIM_REPAIR_SCAN_OVERLAP_MS),
     }
 }
 
