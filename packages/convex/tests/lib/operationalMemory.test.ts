@@ -309,6 +309,61 @@ describe("strategy operational memory", () => {
         ])
     })
 
+    it("query reserves the latest handoff when higher scored tool memories fill the default limit", async () => {
+        const toolRows = Array.from({ length: 14 }, (_, index) =>
+            projectMemory({
+                ...createMemory({
+                    memoryKey: `memory-tool-${index}`,
+                    strategyId: "strategy-1",
+                    accountId: "account-1",
+                    type: "tool_invocation_success",
+                    severity: "low",
+                    score: 45,
+                    toolName: "propose_order",
+                    schemaHash: "current",
+                }),
+                _creationTime: now + index,
+                createdAt: now + index,
+                updatedAt: now + index,
+            })
+        )
+        const handoff = projectMemory({
+            ...createMemory({
+                memoryKey: "memory-handoff",
+                strategyId: "strategy-1",
+                accountId: "account-1",
+                type: "run_handoff_fact",
+                severity: "low",
+                score: 20,
+                expiresAt: now + 60_000,
+            }),
+            _creationTime: now - 60_000,
+            createdAt: now - 60_000,
+            updatedAt: now + 60_000,
+        })
+        const rows = {
+            strategy_operational_memories: [
+                ...toolRows,
+                handoff,
+            ] satisfies FakeRow[],
+        }
+
+        const result = await callRegisteredQuery(getApplicableStrategyOperationalMemory, rows, {
+            strategyId: "strategy-1",
+            app: "polymarket",
+            accountId: "account-1",
+            toolManifest: [{
+                name: "propose_order",
+                schemaHash: "current",
+            }],
+            now,
+        }) as StrategyOperationalMemory[]
+
+        expect(result).toHaveLength(12)
+        expect(result[0].type).toBe("run_handoff_fact")
+        expect(result.filter((memory) => memory.type === "run_handoff_fact")).toHaveLength(1)
+    })
+
     it("mutation upserts completed run memory from canonical persisted rows", async () => {
         const db = new FakeMutationDb({
             strategies: [{

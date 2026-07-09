@@ -49,19 +49,54 @@ export const getApplicableStrategyOperationalMemory = query({
             limit,
         })
 
-        return rankStrategyOperationalMemories(
+        const isApplicableMemory = (memory: StrategyOperationalMemory): boolean =>
+            isStrategyOperationalMemoryApplicable({
+                memory,
+                app: args.app,
+                accountId: args.accountId,
+                toolManifest,
+                now,
+            })
+
+        const ranked = rankStrategyOperationalMemories(
             rows
                 .map(toStrategyOperationalMemory)
-                .filter((memory) => isStrategyOperationalMemoryApplicable({
-                    memory,
-                    app: args.app,
-                    accountId: args.accountId,
-                    toolManifest,
-                    now,
-                }))
-        ).slice(0, limit)
+                .filter(isApplicableMemory)
+        )
+
+        const handoffRows = await ctx.db
+            .query("strategy_operational_memories")
+            .withIndex("by_strategy_type", (q) =>
+                q
+                    .eq("strategyId", args.strategyId)
+                    .eq("type", "run_handoff_fact")
+            )
+            .order("desc")
+            .take(8)
+
+        let handoff: StrategyOperationalMemory | undefined
+        for (const memory of handoffRows.map(toStrategyOperationalMemory).filter(isApplicableMemory)) {
+            if (!handoff || memory.updatedAt > handoff.updatedAt) {
+                handoff = memory
+            }
+        }
+
+        return composeStrategyOperationalMemoryRecall(ranked, handoff, limit)
     },
 })
+
+export function composeStrategyOperationalMemoryRecall(
+    ranked: StrategyOperationalMemory[],
+    handoff: StrategyOperationalMemory | undefined,
+    limit: number
+): StrategyOperationalMemory[] {
+    if (!handoff) {
+        return ranked.slice(0, limit)
+    }
+
+    const rankedOthers = ranked.filter((memory) => memory.type !== "run_handoff_fact")
+    return [handoff, ...rankedOthers.slice(0, limit - 1)]
+}
 
 async function collectStrategyOperationalMemoryRows(
     ctx: Pick<QueryCtx, "db">,
