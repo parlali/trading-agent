@@ -32,7 +32,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates nodejs openssl \
     && update-ca-certificates \
     && rm -rf /var/lib/apt/lists/*
-RUN bun install -g @openai/codex@0.138.0
+RUN bun install -g @openai/codex@0.144.0
 
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/package.json ./package.json
