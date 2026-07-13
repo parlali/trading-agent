@@ -199,7 +199,7 @@ export const searchMarketsParamsSchema = z.object({
     livePriceTokenLimit: z.number()
         .int()
         .nonnegative()
-        .max(25)
+        .transform((value) => Math.min(value, 25))
         .optional(),
 })
 

@@ -47,6 +47,22 @@ describe("tool contracts", () => {
         })
     })
 
+    it("clamps live price token limit from production payload", () => {
+        const searchMarkets = getToolContract("search_markets", "polymarket")
+
+        const result = searchMarkets.parameters.safeParse({
+            category: "politics",
+            limit: 20,
+            includeLivePrices: true,
+            livePriceTokenLimit: 40,
+        })
+
+        expect(result.success).toBe(true)
+        expect(result.data).toMatchObject({
+            livePriceTokenLimit: 25,
+        })
+    })
+
     it("does not advertise Alpaca propose_adjustment when venue risk rules reject that lifecycle", () => {
         expect(() => getToolContract("propose_adjustment", "alpaca-options")).toThrow(
             "Tool propose_adjustment is not compatible with venue alpaca-options"
