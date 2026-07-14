@@ -118,6 +118,7 @@ export default defineSchema({
     })
         .index("by_strategy_status", ["strategyId", "status"])
         .index("by_strategy_type", ["strategyId", "type"])
+        .index("by_ranking_expires_at", ["ranking.expiresAt"])
         .index("by_strategy_status_projection", ["strategyId", "status", "projectionVersion"])
         .index("by_strategy_status_scope_provider_tool_schema_rank", [
             "strategyId",

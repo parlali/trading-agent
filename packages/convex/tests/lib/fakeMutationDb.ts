@@ -155,7 +155,10 @@ class FakeMutationQuery {
     private applyFilters() {
         const filtered = this.rows.filter((row) =>
             this.filters.every((filter) => {
-                const rowValue = row[filter.field]
+                const rowValue = readFieldPath(row, filter.field)
+                if (filter.operator !== "eq" && rowValue === undefined) {
+                    return false
+                }
                 const comparableRowValue = rowValue as string | number
                 const comparableFilterValue = filter.value as string | number
                 switch (filter.operator) {
@@ -186,6 +189,18 @@ class FakeMutationQuery {
     private recordDocumentsRead(rows: FakeMutationRow[]): void {
         this.db.documentsRead += rows.length
     }
+}
+
+function readFieldPath(row: FakeMutationRow, field: string): unknown {
+    let value: unknown = row
+    for (const segment of field.split(".")) {
+        if (value === null || typeof value !== "object") {
+            return undefined
+        }
+        value = (value as Record<string, unknown>)[segment]
+    }
+
+    return value
 }
 
 type FakeIndexFilterBuilder = {

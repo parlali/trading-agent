@@ -11,6 +11,7 @@
 import type * as actions from "../actions.js";
 import type * as auth from "../auth.js";
 import type * as connectionTests from "../connectionTests.js";
+import type * as crons from "../crons.js";
 import type * as http from "../http.js";
 import type * as lib_agentChatToolPayload from "../lib/agentChatToolPayload.js";
 import type * as lib_authGuards from "../lib/authGuards.js";
@@ -86,6 +87,7 @@ declare const fullApi: ApiFromModules<{
   actions: typeof actions;
   auth: typeof auth;
   connectionTests: typeof connectionTests;
+  crons: typeof crons;
   http: typeof http;
   "lib/agentChatToolPayload": typeof lib_agentChatToolPayload;
   "lib/authGuards": typeof lib_authGuards;

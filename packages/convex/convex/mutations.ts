@@ -21,6 +21,7 @@ export {
 
 export {
     backfillStrategyOperationalMemoryProjectionsBatch,
+    pruneExpiredStrategyOperationalMemories,
     refreshStrategyOperationalMemoryFromRun,
 } from "./lib/mutations/operationalMemory"
 

@@ -1,4 +1,4 @@
-import { mutation, type DatabaseWriter } from "../../_generated/server"
+import { internalMutation, mutation, type DatabaseWriter } from "../../_generated/server"
 import type { Doc, Id } from "../../_generated/dataModel"
 import { v } from "convex/values"
 import type { StrategyOperationalMemory, StrategyOperationalMemorySeverity } from "@valiq-trading/core"
@@ -12,6 +12,7 @@ import {
 const MAX_MEMORY_SOURCES = 8
 const MAX_BACKFILL_BATCH_SIZE = 200
 const MAX_PROVIDED_AGENT_LOGS = 512
+const MAX_PRUNE_BATCH_SIZE = 512
 
 const providedAgentLogV = v.object({
     runId: v.id("strategy_runs"),
@@ -163,6 +164,35 @@ export const backfillStrategyOperationalMemoryProjectionsBatch = mutation({
             unchanged,
             isDone: page.isDone,
             continueCursor: page.continueCursor,
+        }
+    },
+})
+
+export const pruneExpiredStrategyOperationalMemories = internalMutation({
+    args: {
+        now: v.optional(v.number()),
+        batchSize: v.optional(v.number()),
+    },
+    handler: async (ctx, args) => {
+        const now = args.now ?? Date.now()
+        const batchSize = Math.min(
+            Math.max(Math.floor(args.batchSize ?? MAX_PRUNE_BATCH_SIZE), 1),
+            MAX_PRUNE_BATCH_SIZE
+        )
+        const expired = await ctx.db
+            .query("strategy_operational_memories")
+            .withIndex("by_ranking_expires_at", (q) =>
+                q.gt("ranking.expiresAt", 0).lte("ranking.expiresAt", now)
+            )
+            .take(batchSize)
+
+        for (const row of expired) {
+            await ctx.db.delete(row._id)
+        }
+
+        return {
+            deleted: expired.length,
+            hasMore: expired.length === batchSize,
         }
     },
 })

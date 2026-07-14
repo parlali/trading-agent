@@ -5,7 +5,10 @@ import {
     isStrategyOperationalMemoryApplicable,
 } from "../../convex/lib/operationalMemory"
 import { getApplicableStrategyOperationalMemory } from "../../convex/lib/queries/operationalMemory"
-import { refreshStrategyOperationalMemoryFromRun } from "../../convex/lib/mutations/operationalMemory"
+import {
+    pruneExpiredStrategyOperationalMemories,
+    refreshStrategyOperationalMemoryFromRun,
+} from "../../convex/lib/mutations/operationalMemory"
 import { buildStrategyOperationalMemoryProjection } from "../../convex/lib/operationalMemoryProjection"
 import {
     callRegisteredQuery,
@@ -416,6 +419,54 @@ describe("strategy operational memory", () => {
             "tool_invocation_success",
             "external_tool_discovery",
         ]))
+    })
+
+    it("prunes expired memories in bounded batches without touching unexpired or unexpiring rows", async () => {
+        const db = new FakeMutationDb({
+            strategy_operational_memories: [
+                {
+                    _id: "memory-expired",
+                    type: "tool_invocation_success",
+                    ranking: { score: 45, expiresAt: now - 1 },
+                },
+                {
+                    _id: "memory-expired-handoff",
+                    type: "run_handoff_fact",
+                    ranking: { score: 20, expiresAt: now - 24 * 60 * 60 * 1000 },
+                },
+                {
+                    _id: "memory-active",
+                    type: "tool_invocation_success",
+                    ranking: { score: 45, expiresAt: now + 60_000 },
+                },
+                {
+                    _id: "memory-no-expiry",
+                    type: "provider_truth_warning",
+                    ranking: { score: 50 },
+                },
+            ],
+        })
+        const ctx = {
+            db,
+        }
+
+        const result = await callRegistered(pruneExpiredStrategyOperationalMemories, ctx as never, {
+            now,
+        }) as { deleted: number; hasMore: boolean }
+
+        expect(result).toEqual({ deleted: 2, hasMore: false })
+        expect(db.rows.strategy_operational_memories?.map((row) => row._id).sort()).toEqual([
+            "memory-active",
+            "memory-no-expiry",
+        ])
+        expect(db.documentsRead).toBeLessThanOrEqual(2)
+
+        const capped = await callRegistered(pruneExpiredStrategyOperationalMemories, ctx as never, {
+            now: now + 120_000,
+            batchSize: 1,
+        }) as { deleted: number; hasMore: boolean }
+
+        expect(capped).toEqual({ deleted: 1, hasMore: true })
     })
 
     it("mutation uses provided agent logs without reading agent_logs and rejects mismatched runId", async () => {
