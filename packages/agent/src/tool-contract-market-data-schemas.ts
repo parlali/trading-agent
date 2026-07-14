@@ -137,7 +137,11 @@ export const okxMarketPriceJsonSchema = {
 } satisfies Record<string, unknown>
 
 export const polymarketOrderBookParamsSchema = polymarketTokenReferenceBaseSchema.extend({
-    levels: z.number().int().positive().max(50).optional(),
+    levels: z.number()
+        .int()
+        .positive()
+        .transform((value) => Math.min(value, 50))
+        .optional(),
 }).refine(requirePolymarketTokenReference, {
     message: "Provide tokenHandle from search_markets or a canonical Polymarket tokenId",
     path: ["tokenHandle"],
@@ -156,7 +160,7 @@ export const polymarketOrderBookJsonSchema = {
         },
         levels: {
             type: "number",
-            description: "Optional number of bid and ask levels to return",
+            description: "Optional number of bid and ask levels to return. The venue adapter applies the hard cap.",
         },
     },
 } satisfies Record<string, unknown>

@@ -63,6 +63,20 @@ describe("tool contracts", () => {
         })
     })
 
+    it("clamps order book levels from production payload", () => {
+        const orderBook = getToolContract("get_order_book", "polymarket")
+
+        const result = orderBook.parameters.safeParse({
+            tokenHandle: "pm_00abcdef",
+            levels: 100,
+        })
+
+        expect(result.success).toBe(true)
+        expect(result.data).toMatchObject({
+            levels: 50,
+        })
+    })
+
     it("does not advertise Alpaca propose_adjustment when venue risk rules reject that lifecycle", () => {
         expect(() => getToolContract("propose_adjustment", "alpaca-options")).toThrow(
             "Tool propose_adjustment is not compatible with venue alpaca-options"
