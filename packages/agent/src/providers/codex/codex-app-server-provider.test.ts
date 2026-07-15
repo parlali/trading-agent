@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from "vitest"
 import { createLogger, type StrategyRunContext } from "@valiq-trading/core"
 import { ConversationManager } from "../../conversation"
 import { ToolRegistry } from "../../tool-registry"
-import type { ToolExecutionEngine, ToolExecutionFatalFault } from "../../tool-execution-engine"
+import { ToolExecutionEngine, type ToolExecutionFatalFault } from "../../tool-execution-engine"
 import type { AgentProviderRunArgs } from "../types"
 import type { JsonRpcErrorPayload, JsonRpcId, JsonRpcMessage } from "./codex-json-rpc-client"
 import {
@@ -92,7 +92,7 @@ describe("CodexAppServerProvider", () => {
             baseInstructions: "Trading system prompt",
             developerInstructions: null,
             config: {
-                web_search: "disabled",
+                web_search: "live",
                 approval_policy: "never",
                 sandbox_mode: "read-only",
                 allow_login_shell: false,
@@ -106,9 +106,6 @@ describe("CodexAppServerProvider", () => {
                     plugins: false,
                     shell_tool: false,
                     unified_exec: false,
-                    web_search: false,
-                    web_search_cached: false,
-                    web_search_request: false,
                     workspace_dependencies: false,
                 },
                 plugins: {
@@ -144,6 +141,62 @@ describe("CodexAppServerProvider", () => {
             sandbox: "read-only",
             environments: [],
         })
+    })
+
+    it("records native web-search items into research metric and agent transcript", async () => {
+        const toolEngine = new ToolExecutionEngine({
+            tools: new ToolRegistry(),
+            logger: createLogger({ minLevel: "fatal" }),
+            runStartedAt: Date.now(),
+            runTimeoutMs: 10_000,
+        })
+        const log = vi.fn(async () => undefined)
+        const provider = createProvider({
+            createClient: (args) => new FakeCodexClient(args, async (fake) => {
+                fake.emitNotification({
+                    method: "item/completed",
+                    params: {
+                        threadId: "thread-1",
+                        turnId: "turn-1",
+                        completedAtMs: Date.now(),
+                        item: {
+                            id: "ws-1",
+                            type: "webSearch",
+                            query: "june cpi print",
+                            action: { type: "search", queries: ["june cpi print"] },
+                        },
+                    },
+                })
+                fake.emitNotification({
+                    method: "turn/completed",
+                    params: {
+                        threadId: "thread-1",
+                        turn: {
+                            id: "turn-1",
+                            status: "completed",
+                        },
+                    },
+                })
+            }),
+        })
+
+        await provider.run(createRunArgs({
+            toolEngine,
+            agentLogger: { log },
+        }))
+
+        expect(toolEngine.getOutcome().opportunityCoverage.researched).toBe(1)
+        expect(log).toHaveBeenCalledWith(
+            "run-codex-provider-test",
+            "strategy-codex-provider-test",
+            expect.any(Number),
+            "tool",
+            expect.any(String),
+            "codex_web_search",
+            expect.any(String),
+            expect.any(String),
+            undefined
+        )
     })
 
     it("uses cached turn completion when Codex completes before wait registration", async () => {
@@ -775,6 +828,7 @@ function buildAuthJson(args: {
 function createRunArgs(
     options: {
         toolEngine?: ToolExecutionEngine
+        agentLogger?: AgentProviderRunArgs["agentLogger"]
     } = {}
 ): AgentProviderRunArgs {
     const conversation = new ConversationManager()
@@ -787,7 +841,7 @@ function createRunArgs(
         tools: new ToolRegistry(),
         toolEngine: options.toolEngine ?? createFakeToolEngine(() => undefined),
         logger: createLogger({ minLevel: "fatal" }),
-        agentLogger: {
+        agentLogger: options.agentLogger ?? {
             log: vi.fn(async () => undefined),
         },
         maxIterations: 1,

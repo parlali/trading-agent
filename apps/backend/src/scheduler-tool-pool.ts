@@ -40,6 +40,7 @@ import {
     okxPolicySchema,
     type ExecutionPipeline,
     type Logger,
+    type StrategyLlmConfig,
     type VenueAdapter,
 } from "@valiq-trading/core"
 import { AlpacaOptionsVenueAdapter } from "@valiq-trading/alpaca-options"
@@ -62,6 +63,7 @@ interface BuildToolPoolConfig {
     extraTools: ToolBinding[]
     isCallback: boolean
     runLogger: Logger
+    llmProvider: StrategyLlmConfig["provider"]
 }
 
 function resolveExtraToolCategory(
@@ -125,6 +127,7 @@ export function buildToolPool(config: BuildToolPoolConfig): ToolPool {
         extraTools,
         isCallback,
         runLogger,
+        llmProvider,
     } = config
 
     const toolPool = new ToolPool({
@@ -501,22 +504,24 @@ export function buildToolPool(config: BuildToolPoolConfig): ToolPool {
             return createPolymarketSearchMarketsTool(venue, polymarketHandles)
         },
     })
-    registerCanonicalTool(toolPool, {
-        name: "web_search",
-        compatibleVenues: ["polymarket"],
-        create: () => withCallBudget(
-            createWebSearchTool(searchProvider),
-            isCallback ? 2 : 5
-        ),
-    })
-    registerCanonicalTool(toolPool, {
-        name: "web_fetch",
-        compatibleVenues: ["polymarket"],
-        create: () => withCallBudget(
-            createWebFetchTool(),
-            isCallback ? 1 : 3
-        ),
-    })
+    if (llmProvider === "openrouter") {
+        registerCanonicalTool(toolPool, {
+            name: "web_search",
+            compatibleVenues: ["polymarket"],
+            create: () => withCallBudget(
+                createWebSearchTool(searchProvider),
+                isCallback ? 2 : 5
+            ),
+        })
+        registerCanonicalTool(toolPool, {
+            name: "web_fetch",
+            compatibleVenues: ["polymarket"],
+            create: () => withCallBudget(
+                createWebFetchTool(),
+                isCallback ? 1 : 3
+            ),
+        })
+    }
 
     return toolPool
 }

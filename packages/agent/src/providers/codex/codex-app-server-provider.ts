@@ -591,6 +591,31 @@ export class CodexAppServerProvider implements AgentModelProvider {
             return
         }
 
+        if (message.method === "item/completed") {
+            const params = readRecord(message.params)
+            const item = readRecord(params?.item)
+            if (item?.type !== "webSearch") {
+                return
+            }
+
+            const query = typeof item.query === "string" ? item.query : ""
+            const action = item.action ?? null
+            args.toolEngine.recordProviderNativeResearch()
+            void safeLogAgentMessage({
+                agentLogger: args.agentLogger,
+                logger: args.logger,
+                runId: args.context.runId,
+                strategyId: args.context.strategyId,
+                sequence: args.conversation.reserveSequence(),
+                role: "tool",
+                content: JSON.stringify({ query, action }),
+                toolName: "codex_web_search",
+                toolInput: JSON.stringify({ query }),
+                toolOutput: JSON.stringify({ action }),
+            })
+            return
+        }
+
         if (message.method === "turn/completed") {
             this.resolvePendingTurnCompletion(message)
             return

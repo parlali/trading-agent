@@ -266,6 +266,7 @@ export async function runStrategy(
                 safetyPolicy: riskSnapshot.safetyPolicy,
                 riskState: runRiskState,
                 runtimeContextLines,
+                llmProvider: llmConfig.provider,
             })
             runSystemContextDigest = preparedTurn.runSystemContextDigest
             registeredToolManifest = preparedTurn.toolManifest

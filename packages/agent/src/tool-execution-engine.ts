@@ -265,6 +265,10 @@ export class ToolExecutionEngine {
         return Boolean(this.fatalFault)
     }
 
+    recordProviderNativeResearch(): void {
+        this.opportunityCoverage.researched++
+    }
+
     private validateToolCall(args: {
         toolName: string
         rawInput: string

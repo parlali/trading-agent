@@ -32,6 +32,7 @@ export const DEFAULT_TURN_TIMEOUT_MS = 10 * 60 * 1000
 export const CODEX_RUN_MCP_SERVER_NAME = "valiq_run"
 
 const MCP_TOKEN_ENV_VAR = "VALIQ_CODEX_MCP_TOKEN"
+export const CODEX_WEB_SEARCH_MODE = "live"
 const DISABLED_CODEX_FEATURE_NAMES = [
     "apps",
     "browser_use",
@@ -42,9 +43,6 @@ const DISABLED_CODEX_FEATURE_NAMES = [
     "plugins",
     "shell_tool",
     "unified_exec",
-    "web_search",
-    "web_search_cached",
-    "web_search_request",
     "workspace_dependencies",
 ] as const
 const DISABLED_INHERITED_PLUGIN_NAMES = [
@@ -70,7 +68,7 @@ export function buildCodexAppServerArgs(
 
 export function buildCodexThreadConfig(mcpServer: RunToolServer): Record<string, unknown> {
     return {
-        web_search: "disabled",
+        web_search: CODEX_WEB_SEARCH_MODE,
         approval_policy: "never",
         approvals_reviewer: "user",
         sandbox_mode: "read-only",
@@ -134,7 +132,7 @@ function buildCodexConfigOverrides(
     mcpServer: RunToolServer
 ): Array<[string, string]> {
     const overrides: Array<[string, string]> = [
-        ["web_search", tomlString("disabled")],
+        ["web_search", tomlString(CODEX_WEB_SEARCH_MODE)],
         ["approval_policy", tomlString("never")],
         ["approvals_reviewer", tomlString("user")],
         ["sandbox_mode", tomlString("read-only")],

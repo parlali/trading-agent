@@ -29,6 +29,7 @@ import {
     type RiskValidator,
     type RuntimeStrategySafetyPolicy,
     type RunSystemContextDigest,
+    type StrategyLlmConfig,
     type StrategyRiskState,
     type StrategyRunContext,
     type VenueAdapter,
@@ -372,6 +373,7 @@ export async function prepareScheduledRunAgentTurn(
         safetyPolicy: { strategyTimezone: string }
         riskState: StrategyRiskState
         runtimeContextLines?: string[]
+        llmProvider: StrategyLlmConfig["provider"]
     }
 ): Promise<PreparedScheduledRunAgentTurn> {
     const {
@@ -414,6 +416,7 @@ export async function prepareScheduledRunAgentTurn(
         extraTools: budgetedExtraTools,
         isCallback: args.isCallback,
         runLogger,
+        llmProvider: args.llmProvider,
     })
     for (const tool of toolPool.forVenue(app)) {
         tools.register(tool)
