@@ -86,10 +86,6 @@ export function buildRunDiagnostics(result: {
         qualified: number
         rejectedByModel: number
         rejectedByRisk: number
-        submitted: number
-        filled: number
-        closed: number
-        realizedPnl: number
     }
     degradedResearch?: {
         active: boolean
@@ -127,10 +123,6 @@ export function buildRunDiagnostics(result: {
     diagnostics.opportunityQualified = result.opportunityCoverage.qualified
     diagnostics.opportunityRejectedByModel = result.opportunityCoverage.rejectedByModel
     diagnostics.opportunityRejectedByRisk = result.opportunityCoverage.rejectedByRisk
-    diagnostics.opportunitySubmitted = result.opportunityCoverage.submitted
-    diagnostics.opportunityFilled = result.opportunityCoverage.filled
-    diagnostics.opportunityClosed = result.opportunityCoverage.closed
-    diagnostics.opportunityRealizedPnl = result.opportunityCoverage.realizedPnl
     diagnostics.toolCallCount = result.toolCallCount
 
     if (result.degradedResearch) {

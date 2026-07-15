@@ -79,6 +79,24 @@ describe("provider-neutral tool execution replays", () => {
         }
     })
 
+    it("counts venue market-data sweeps as researched opportunities through both provider paths", async () => {
+        for (const provider of fakeProviders) {
+            const registry = new ToolRegistry()
+            registry.register(createMarketDataSweepTool())
+            const replay = await runReplay(provider, registry, [
+                createCall("call-book-1", "get_order_book", { tokenId: "1".repeat(30) }),
+                createCall("call-book-2", "get_order_book", { tokenId: "2".repeat(30) }),
+            ])
+
+            expect(replay.outcome.fatalFault, provider.name).toBeUndefined()
+            expect(replay.outcome.opportunityCoverage, provider.name).toMatchObject({
+                researched: 2,
+                qualified: 0,
+                rejectedByModel: 1,
+            })
+        }
+    })
+
     it("replays repeated execution-tool failures through both provider paths as fail-closed", async () => {
         for (const provider of fakeProviders) {
             const registry = new ToolRegistry()
@@ -108,8 +126,7 @@ describe("provider-neutral tool execution replays", () => {
         expect(openRouter.outcome.fatalFault).toBeUndefined()
         expect(openRouter.outcome.opportunityCoverage).toMatchObject({
             qualified: 1,
-            submitted: 1,
-            filled: 1,
+            rejectedByRisk: 0,
         })
         const tokenId = dryRunReplayTokenId()
         expect(openRouter.syncedPositions).toContainEqual(expect.objectContaining({
@@ -259,6 +276,31 @@ function createCall(id: string, name: string, args: unknown): ReplayToolCall {
         id,
         name,
         args,
+    }
+}
+
+function createMarketDataSweepTool(): ToolBinding {
+    return {
+        name: "get_order_book",
+        description: "Get order book",
+        parameters: z.object({
+            tokenId: z.string(),
+        }),
+        jsonSchema: {
+            type: "object",
+            properties: {
+                tokenId: {
+                    type: "string",
+                },
+            },
+            required: ["tokenId"],
+        },
+        category: "market-data",
+        handler: async (params) => ({
+            tokenId: (params as { tokenId: string }).tokenId,
+            bids: [{ price: 0.49, size: 100 }],
+            asks: [{ price: 0.51, size: 100 }],
+        }),
     }
 }
 

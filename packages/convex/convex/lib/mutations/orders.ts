@@ -1,4 +1,4 @@
-import { mutation } from "../../_generated/server"
+import { internalMutation, mutation } from "../../_generated/server"
 import type { DatabaseWriter } from "../../_generated/server"
 import type { Doc, Id } from "../../_generated/dataModel"
 import { v } from "convex/values"
@@ -10,6 +10,7 @@ import {
 import { requireServiceToken } from "../authGuards"
 import { getClaimInstrumentsForOrder, reconcileOrderInstrumentClaim } from "../instrumentClaims"
 import { incrementControlPlaneMetric } from "../controlPlaneMetrics"
+import { recomputeRunExecutionOutcomes } from "../runExecutionOutcomes"
 import {
     agentLogRoleV,
     eventTypeV,
@@ -346,10 +347,6 @@ const RUN_DIAGNOSTIC_PATCH_FIELDS = [
     "opportunityQualified",
     "opportunityRejectedByModel",
     "opportunityRejectedByRisk",
-    "opportunitySubmitted",
-    "opportunityFilled",
-    "opportunityClosed",
-    "opportunityRealizedPnl",
     "toolCallCount",
     "systemContextDigest",
     "mcpToolDiagnostics",
@@ -395,6 +392,7 @@ export const updateRun = mutation({
             patch.endedAt = Date.now()
         }
         await ctx.db.patch(args.runId, patch)
+        await recomputeRunExecutionOutcomes(ctx.db, args.runId)
     },
 })
 
@@ -471,6 +469,38 @@ export const logOrderTransition = mutation({
     handler: async (ctx, args) => {
         requireServiceToken(args.serviceToken)
         return await appendOrderTransition(ctx, args)
+    },
+})
+
+export const backfillRunExecutionOutcomesBatch = internalMutation({
+    args: {
+        cursor: v.optional(v.union(v.string(), v.null())),
+        batchSize: v.optional(v.number()),
+    },
+    handler: async (ctx, args) => {
+        const numItems = Math.min(Math.max(Math.floor(args.batchSize ?? 100), 1), 200)
+        const page = await ctx.db
+            .query("orders")
+            .order("asc")
+            .paginate({
+                cursor: args.cursor ?? null,
+                numItems,
+            })
+
+        const runIds = new Set<Id<"strategy_runs">>()
+        for (const order of page.page) {
+            runIds.add(order.runId)
+        }
+        for (const runId of runIds) {
+            await recomputeRunExecutionOutcomes(ctx.db, runId)
+        }
+
+        return {
+            processed: page.page.length,
+            runsRecomputed: runIds.size,
+            isDone: page.isDone,
+            continueCursor: page.continueCursor,
+        }
     },
 })
 
@@ -629,6 +659,7 @@ export async function upsertOrderRow(
             status: args.status,
             updatedAt: args.updatedAt,
         })
+        await recomputeRunExecutionOutcomes(ctx.db, args.runId)
         return existing._id
     }
 
@@ -648,6 +679,7 @@ export async function upsertOrderRow(
         status: args.status,
         updatedAt: args.updatedAt,
     })
+    await recomputeRunExecutionOutcomes(ctx.db, args.runId)
     return orderDocId
 }
 

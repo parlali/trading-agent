@@ -51,10 +51,6 @@ function createAgentRunResult(): AgentRunResult {
             qualified: 1,
             rejectedByModel: 0,
             rejectedByRisk: 0,
-            submitted: 1,
-            filled: 0,
-            closed: 0,
-            realizedPnl: 0,
         },
         toolCallCount: 4,
         degradedResearch: {

@@ -297,10 +297,6 @@ function createAgentRunResult(): AgentRunResult {
             qualified: 0,
             rejectedByModel: 0,
             rejectedByRisk: 0,
-            submitted: 0,
-            filled: 0,
-            closed: 0,
-            realizedPnl: 0,
         },
         toolCallCount: 0,
         providerDiagnostics: {

@@ -165,10 +165,6 @@ export interface RunDiagnostics {
     opportunityQualified?: number
     opportunityRejectedByModel?: number
     opportunityRejectedByRisk?: number
-    opportunitySubmitted?: number
-    opportunityFilled?: number
-    opportunityClosed?: number
-    opportunityRealizedPnl?: number
     toolCallCount?: number
     systemContextDigest?: RunSystemContextDigest
     mcpToolDiagnostics?: McpToolDiagnostic[]
@@ -178,6 +174,10 @@ export interface RunDiagnostics {
 export interface StoredRun extends RunDiagnostics {
     _id: Id<"strategy_runs">
     _creationTime: number
+    opportunitySubmitted?: number
+    opportunityFilled?: number
+    opportunityClosed?: number
+    opportunityRealizedPnl?: number
     strategyId: Id<"strategies">
     app: App
     status: "running" | "completed" | "failed"

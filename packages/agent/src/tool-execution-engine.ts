@@ -1,4 +1,4 @@
-import { readFiniteNumber, type AgentMessageLogger, type Logger, type StrategyRunContext } from "@valiq-trading/core"
+import type { AgentMessageLogger, Logger, StrategyRunContext } from "@valiq-trading/core"
 import { safeLogAgentMessage } from "./agent-transcript"
 import type { ToolCall } from "./llm-client"
 import { normalizeModelToolResultContent } from "./tool-result-content"
@@ -9,10 +9,6 @@ export interface OpportunityCoverageMetrics {
     qualified: number
     rejectedByModel: number
     rejectedByRisk: number
-    submitted: number
-    filled: number
-    closed: number
-    realizedPnl: number
 }
 
 export interface DegradedResearchOutcome {
@@ -90,10 +86,6 @@ const DEFAULT_MAX_REPEATED_TOOL_ERRORS = 3
 const PROPOSAL_TOOL_NAMES = new Set([
     "propose_order",
     "propose_adjustment",
-    "propose_close",
-])
-
-const CLOSE_TOOL_NAMES = new Set([
     "propose_close",
 ])
 
@@ -634,10 +626,6 @@ function createOpportunityCoverageMetrics(): OpportunityCoverageMetrics {
         qualified: 0,
         rejectedByModel: 0,
         rejectedByRisk: 0,
-        submitted: 0,
-        filled: 0,
-        closed: 0,
-        realizedPnl: 0,
     }
 }
 
@@ -701,12 +689,17 @@ function isResearchTool(toolBinding: ToolBinding): boolean {
         toolBinding.contractOwner?.startsWith("mcp:") === true
 }
 
+function isOpportunityResearchTool(toolBinding: ToolBinding): boolean {
+    return isResearchTool(toolBinding) ||
+        toolBinding.category === "market-data"
+}
+
 function recordOpportunityCoverage(
     toolBinding: ToolBinding,
     toolResult: string,
     metrics: OpportunityCoverageMetrics
 ): void {
-    if (isResearchTool(toolBinding)) {
+    if (isOpportunityResearchTool(toolBinding)) {
         metrics.researched++
     }
 
@@ -724,24 +717,6 @@ function recordOpportunityCoverage(
     const riskValidation = readRecord(parsed.riskValidation)
     if (riskValidation?.allowed === false) {
         metrics.rejectedByRisk++
-    }
-
-    const orderId = parsed.orderId
-    const status = parsed.status
-    if (typeof orderId === "string" && orderId.length > 0 && status !== "rejected") {
-        metrics.submitted++
-    }
-
-    if (status === "filled" || status === "partially_filled") {
-        metrics.filled++
-        if (CLOSE_TOOL_NAMES.has(toolBinding.name)) {
-            metrics.closed++
-        }
-    }
-
-    const realizedPnl = readFiniteNumber(parsed.realizedPnl)
-    if (realizedPnl !== undefined) {
-        metrics.realizedPnl += realizedPnl
     }
 }
 

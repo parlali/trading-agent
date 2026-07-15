@@ -71,6 +71,7 @@ import type * as lib_queries_risk from "../lib/queries/risk.js";
 import type * as lib_queries_runs from "../lib/queries/runs.js";
 import type * as lib_queries_strategies from "../lib/queries/strategies.js";
 import type * as lib_queries_system from "../lib/queries/system.js";
+import type * as lib_runExecutionOutcomes from "../lib/runExecutionOutcomes.js";
 import type * as lib_validators from "../lib/validators.js";
 import type * as mutations from "../mutations.js";
 import type * as queries from "../queries.js";
@@ -147,6 +148,7 @@ declare const fullApi: ApiFromModules<{
   "lib/queries/runs": typeof lib_queries_runs;
   "lib/queries/strategies": typeof lib_queries_strategies;
   "lib/queries/system": typeof lib_queries_system;
+  "lib/runExecutionOutcomes": typeof lib_runExecutionOutcomes;
   "lib/validators": typeof lib_validators;
   mutations: typeof mutations;
   queries: typeof queries;
