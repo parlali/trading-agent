@@ -29,8 +29,10 @@ export const ALPACA_ACCOUNT_PNL_ACTIVITY_TYPES = [
 
 export {
     buildGroupCloseIntent,
+    isAlpacaRawOptionLegPosition,
     isAlpacaOptionPosition,
     mapSinglePosition,
+    parseClaimedStructureInstrument,
     resolveGroupForClose,
     roundPrice,
     toNumber,

@@ -909,7 +909,7 @@ function toClaimPositionLike(position: AlpacaPositionResponse): PositionLike {
     }
 }
 
-function parseClaimedStructureInstrument(instrument: string): {
+export function parseClaimedStructureInstrument(instrument: string): {
     structureType: AlpacaStructureType
     verticalSpreadType?: AlpacaVerticalSpreadType
     underlying: string

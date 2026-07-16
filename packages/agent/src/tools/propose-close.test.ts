@@ -110,6 +110,78 @@ describe("createAlpacaProposeCloseTool", () => {
             }
         )
     })
+
+    it("reports when an Alpaca provider leg close closed the entire claimed structure", async () => {
+        const claimInstrument = "VS:BEAR_CALL_CREDIT:SPY:2026-07-24:SPY260724C00763000|SPY260724C00764000"
+        const position = {
+            instrument: "SPY260724C00763000",
+            providerPositionId: "SPY260724C00763000",
+            side: "short" as const,
+            quantity: 1,
+            entryPrice: 1.79,
+            currentPrice: 0.42,
+            metadata: {},
+        }
+        const closeProviderPosition = vi.fn(async () => ({
+            result: {
+                orderId: "alpaca-structure-close",
+                status: "filled" as const,
+                filledQuantity: 1,
+                fillPrice: 0.21,
+                timestamp: Date.now(),
+            },
+            validation: {
+                allowed: true,
+            },
+            structureClose: {
+                claimInstrument,
+                legInstruments: [
+                    "SPY260724C00763000",
+                    "SPY260724C00764000",
+                ],
+            },
+        }))
+        const pipeline = {
+            getPositions: vi.fn(async () => [position]),
+            closeProviderPosition,
+        } as unknown as ExecutionPipeline
+        const venue = {
+            buildCloseIntent: vi.fn(),
+        }
+
+        const tool = createAlpacaProposeCloseTool(pipeline, venue as never)
+        const result = await tool.handler({
+            instrument: "SPY260724C00763000",
+            positionSide: "short",
+            reason: "Close the entire spread as one structure",
+        }) as {
+            status: string
+            structureClose?: {
+                closedEntireStructure?: boolean
+                structureInstrument?: string
+                structureLegs?: string[]
+                note?: string
+            }
+        }
+
+        expect(result.status).toBe("filled")
+        expect(result.structureClose).toMatchObject({
+            closedEntireStructure: true,
+            structureInstrument: claimInstrument,
+            structureLegs: [
+                "SPY260724C00763000",
+                "SPY260724C00764000",
+            ],
+        })
+        expect(result.structureClose?.note).toContain("Do not submit additional per-leg closes")
+        expect(closeProviderPosition).toHaveBeenCalledWith(
+            position,
+            "Close the entire spread as one structure",
+            {
+                estimatedPrice: 0.42,
+            }
+        )
+    })
 })
 
 describe("createMT5ProposeCloseTool", () => {

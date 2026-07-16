@@ -95,19 +95,29 @@ export function createAlpacaProposeCloseTool(
                 }
 
                 const estimatedPrice = target.position.currentPrice ?? target.position.entryPrice
-                const { result, validation } = await pipeline.closeProviderPosition(
+                const { result, validation, structureClose } = await pipeline.closeProviderPosition(
                     target.position,
                     validated.reason,
                     { estimatedPrice }
                 )
+                const extra: Record<string, unknown> = {
+                    providerPositionId: target.position.providerPositionId,
+                    providerPositionKey: buildProviderPositionKey(target.position),
+                    positionSide: target.position.side,
+                }
+
+                if (structureClose) {
+                    extra.structureClose = {
+                        closedEntireStructure: true,
+                        structureInstrument: structureClose.claimInstrument,
+                        structureLegs: structureClose.legInstruments,
+                        note: "The requested leg belongs to a claimed multi-leg structure. The entire structure was closed as one order to prevent naked-leg exposure. Do not submit additional per-leg closes.",
+                    }
+                }
 
                 return toExecutionToolResult(result, {
                     validation,
-                    extra: {
-                        providerPositionId: target.position.providerPositionId,
-                        providerPositionKey: buildProviderPositionKey(target.position),
-                        positionSide: target.position.side,
-                    },
+                    extra,
                 })
             }
 

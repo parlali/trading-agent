@@ -46,8 +46,14 @@ export interface VenueAdapter {
     modifyOrder(orderId: string, changes: Partial<OrderIntent>, context?: OrderOperationContext): Promise<ExecutionResult>
     closePosition(instrument: string, preparedIntent?: OrderIntent, context?: SubmitOrderContext): Promise<ExecutionResult>
     closeProviderPosition?(position: Position, preparedIntent?: OrderIntent, context?: SubmitOrderContext): Promise<ExecutionResult>
+    resolveProviderCloseStructureTarget?(position: Position, claimInstruments: ReadonlySet<string>): Promise<ProviderCloseStructureTarget | null>
     getOrderStatus(orderId: string): Promise<ExecutionResult>
     buildCloseIntent?(instrument: string): Promise<OrderIntent>
+}
+
+export interface ProviderCloseStructureTarget {
+    claimInstrument: string
+    legInstruments: string[]
 }
 
 export interface SubmitOrderContext {
@@ -139,6 +145,7 @@ export interface ExecuteIntentResult {
     result: ExecutionResult
     validation: ValidationResult
     handle?: TrackedOrderHandle
+    structureClose?: ProviderCloseStructureTarget
 }
 
 export interface OrderLifecycleConfig {

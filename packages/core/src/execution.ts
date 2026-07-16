@@ -99,6 +99,7 @@ export type {
     ExecutionOrderOperationLock,
     OrderStatusCallback,
     OrderOperationContext,
+    ProviderCloseStructureTarget,
     SubmitOrderContext,
     SubmitRecoveryResult,
     TradeEventLogger,
@@ -689,6 +690,30 @@ export class ExecutionPipeline {
         reason?: string,
         options: ClosePositionOptions = {}
     ): Promise<ExecuteIntentResult> {
+        const claimInstruments = this.ownershipScope?.instruments ?? this.ownedInstruments
+        if (!this.policy.dryRun && this.venue.resolveProviderCloseStructureTarget && claimInstruments) {
+            const structureTarget = await this.venue.resolveProviderCloseStructureTarget(position, claimInstruments)
+            if (structureTarget) {
+                this.logger.info("Provider position close rerouted to claimed structure close", {
+                    instrument: position.instrument,
+                    claimInstrument: structureTarget.claimInstrument,
+                    providerPositionId: position.providerPositionId,
+                })
+                const delegated = await this.closePositionWithoutOperationLock(
+                    structureTarget.claimInstrument,
+                    reason,
+                    {
+                        ...options,
+                        estimatedPrice: undefined,
+                    }
+                )
+                return {
+                    ...delegated,
+                    structureClose: structureTarget,
+                }
+            }
+        }
+
         const closeSide = resolveCloseOrderSide(position)
         const intent = buildProviderPositionCloseIntent({ position, reason, options })
 

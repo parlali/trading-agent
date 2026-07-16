@@ -12,6 +12,7 @@ import {
     type PriceVerification,
     type PriceVerifier,
     type Position,
+    type ProviderCloseStructureTarget,
     type ProviderPositionClosure,
     type SubmitOrderContext,
     type SubmitRecoveryResult,
@@ -39,10 +40,12 @@ import {
     ALPACA_ACCOUNT_PNL_ACTIVITY_TYPES,
     ALPACA_OPTION_CLOSURE_ACTIVITY_TYPES,
     computeAlpacaStructurePrices,
+    isAlpacaRawOptionLegPosition,
     isAlpacaOptionPosition,
     mapAlpacaAccountPnlEvent,
     mapAlpacaOptionActivityClosure,
     mapSinglePosition,
+    parseClaimedStructureInstrument,
     mapWorkingOrder,
     resolveGroupForClose,
     roundPrice,
@@ -336,6 +339,48 @@ export class AlpacaOptionsVenueAdapter implements VenueAdapter, PriceVerifier {
             : await resolveProviderCloseIntent(this, position)
 
         return await this.client.createOrder(closeIntent, context)
+    }
+
+    async resolveProviderCloseStructureTarget(
+        position: Position,
+        claimInstruments: ReadonlySet<string>
+    ): Promise<ProviderCloseStructureTarget | null> {
+        if (!isAlpacaRawOptionLegPosition(position)) {
+            return null
+        }
+
+        const legSymbol = position.instrument.trim().toUpperCase()
+        const matchingClaims = Array.from(claimInstruments).filter((claimInstrument) => {
+            const claim = parseClaimedStructureInstrument(claimInstrument)
+            return claim?.legs.includes(legSymbol) ?? false
+        })
+
+        if (matchingClaims.length === 0) {
+            return null
+        }
+
+        if (matchingClaims.length > 1) {
+            throw createExecutionError("pre_validation", `Alpaca provider-position close found multiple owned claimed structures for leg ${legSymbol}`, {
+                code: "AMBIGUOUS_STRUCTURE_CLAIM",
+                retryable: false,
+                details: {
+                    instrument: position.instrument,
+                    providerPositionId: position.providerPositionId,
+                    claimInstruments: matchingClaims,
+                },
+            })
+        }
+
+        const claimInstrument = matchingClaims[0]!
+        const group = resolveGroupForClose(await this.client.getPositions(), claimInstrument)
+        if (!group) {
+            return null
+        }
+
+        return {
+            claimInstrument,
+            legInstruments: group.positions.map((groupPosition) => groupPosition.symbol),
+        }
     }
 
     async getOrderStatus(orderId: string): Promise<ExecutionResult> {
