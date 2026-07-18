@@ -12,6 +12,7 @@ import {
     createMT5TransportClient,
     resolveMT5RuntimeConfig,
 } from "./runtime-config.ts"
+import { mapMT5OrderState, resolveMT5FilledQuantity } from "./venue-mappers.ts"
 
 const credentials: MT5WorkerCredentials = {
     login: 111,
@@ -410,6 +411,85 @@ describe("MT5 runtime transport selection", () => {
     })
 })
 
+describe("FiveSocket getOrderStatus remaining volume contract", () => {
+    it("returns remaining volumeCurrent so the adapter can infer filled quantity", async () => {
+        const fetchImpl = createAccountAwareFetch(async (url, method) => {
+            if (method === "GET" && url.includes("/execution/orders/1001")) {
+                return jsonResponse({
+                    accountId: "acc-1",
+                    login: "111",
+                    server: "broker",
+                    observedAt: new Date().toISOString(),
+                    latencyMs: 1,
+                    order: {
+                        id: "1001",
+                        positionId: "2001",
+                        symbol: "XAUUSD",
+                        type: "buy",
+                        rawType: 0,
+                        state: "filled",
+                        rawState: 4,
+                        volumeInitial: "1",
+                        volumeCurrent: "0",
+                        priceOpen: "4715.5",
+                        setupAt: new Date().toISOString(),
+                        magic: "0",
+                        reason: "client",
+                        rawReason: 0,
+                    },
+                    deals: [],
+                    source: "history",
+                })
+            }
+            if (method === "GET" && url.includes("/execution/orders/1002")) {
+                return jsonResponse({
+                    accountId: "acc-1",
+                    login: "111",
+                    server: "broker",
+                    observedAt: new Date().toISOString(),
+                    latencyMs: 1,
+                    order: {
+                        id: "1002",
+                        positionId: "2002",
+                        symbol: "XAUUSD",
+                        type: "buy",
+                        rawType: 0,
+                        state: "partial",
+                        rawState: 3,
+                        volumeInitial: "1",
+                        volumeCurrent: "0.4",
+                        priceOpen: "4715.5",
+                        setupAt: new Date().toISOString(),
+                        magic: "0",
+                        reason: "client",
+                        rawReason: 0,
+                    },
+                    deals: [],
+                    source: "working",
+                })
+            }
+            throw new Error(`Unexpected ${method} ${url}`)
+        })
+
+        const client = createClient(fetchImpl)
+        const filled = await client.getOrderStatus(credentials, 1001)
+        expect(filled).toMatchObject({
+            volume: 0,
+            volumeInitial: 1,
+            state: "filled",
+        })
+        expect(resolveMT5FilledQuantity(filled!, mapMT5OrderState(filled!.state))).toBe(1)
+
+        const partial = await client.getOrderStatus(credentials, 1002)
+        expect(partial).toMatchObject({
+            volume: 0.4,
+            volumeInitial: 1,
+            state: "partial",
+        })
+        expect(resolveMT5FilledQuantity(partial!, mapMT5OrderState(partial!.state))).toBe(0.6)
+    })
+})
+
 function createClient(
     fetchImpl: typeof fetch,
     executionSymbols: Array<{ symbol: string; maxVolume: string }> = []
@@ -421,6 +501,26 @@ function createClient(
         executionSymbols,
         fetchImpl,
     })
+}
+
+function createAccountAwareFetch(
+    handler: (url: string, method: string, body: unknown) => Promise<Response>
+): typeof fetch {
+    return async (input, init) => {
+        const url = String(input)
+        const method = init?.method ?? "GET"
+        const body = init?.body ? JSON.parse(String(init.body)) : undefined
+        if (method === "POST" && url.endsWith("/v1/accounts")) {
+            return jsonResponse({
+                id: "acc-1",
+                login: "111",
+                server: "broker",
+                status: "active",
+                createdAt: new Date().toISOString(),
+            }, 201)
+        }
+        return await handler(url, method, body)
+    }
 }
 
 function createCountingTransport(handler: typeof fetch): {

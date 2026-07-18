@@ -374,14 +374,13 @@ export class FiveSocketClient extends MT5Client {
             const order = response.order
             const volumeInitial = fromRequiredDecimal(order.volumeInitial, "order.volumeInitial")
             const volumeCurrent = fromRequiredDecimal(order.volumeCurrent, "order.volumeCurrent")
-            const filledVolume = Math.max(volumeInitial - volumeCurrent, 0)
             const dealTotals = summarizeDeals(response.deals ?? [])
 
             return {
                 ticket: fromRequiredUnsignedInt(order.id, "order.id"),
                 symbol: order.symbol,
                 type: order.type,
-                volume: filledVolume > 0 ? filledVolume : volumeCurrent,
+                volume: volumeCurrent,
                 volumeInitial,
                 price: fromRequiredDecimal(order.priceOpen, "order.priceOpen"),
                 profit: dealTotals.profit,
