@@ -71,8 +71,96 @@ describe("FiveSocket execution outcome mapping", () => {
             volume: 0.02,
             price: 4715.5,
             comment: "vmte01abcde23456",
+            providerStatus: "filled",
         })
         expect(client.mapOrderResultToExecution(result).status).toBe("filled")
+    })
+
+    it("maps accepted status cases from command.status instead of outcome alone", () => {
+        const placed = mapFiveSocketExecutionCommand({
+            commandId: "cmd-placed",
+            operation: "order.submit",
+            outcome: "accepted",
+            status: "placed",
+            retcode: null,
+            retcodeExternal: null,
+            retcodeDescription: "Order placed",
+            orderId: "1",
+            volume: "0.01",
+            price: "4715.5",
+            recovered: false,
+            observedAt: new Date().toISOString(),
+            latencyMs: 1,
+        })
+        expect(placed).toMatchObject({ success: true, retcode: 10008, providerStatus: "placed" })
+        expect(client.mapOrderResultToExecution(placed)).toMatchObject({
+            status: "pending",
+            filledQuantity: 0,
+        })
+
+        const partial = mapFiveSocketExecutionCommand({
+            commandId: "cmd-partial",
+            operation: "order.submit",
+            outcome: "accepted",
+            status: "partially_filled",
+            retcode: null,
+            retcodeExternal: null,
+            retcodeDescription: "Partial",
+            orderId: "2",
+            volume: "0.6",
+            price: "4715.5",
+            recovered: false,
+            observedAt: new Date().toISOString(),
+            latencyMs: 1,
+        })
+        expect(partial).toMatchObject({ success: true, retcode: 10010, volume: 0.6 })
+        expect(client.mapOrderResultToExecution(partial).status).toBe("partially_filled")
+
+        const canceled = mapFiveSocketExecutionCommand({
+            commandId: "cmd-canceled",
+            operation: "order.cancel",
+            outcome: "accepted",
+            status: "canceled",
+            retcode: 10009,
+            retcodeExternal: null,
+            retcodeDescription: "Canceled",
+            orderId: "3",
+            volume: "0",
+            price: "0",
+            recovered: false,
+            observedAt: new Date().toISOString(),
+            latencyMs: 1,
+        })
+        expect(client.mapOrderResultToExecution(canceled, {
+            successStatus: "cancelled",
+            filledQuantity: 0,
+        }).status).toBe("cancelled")
+    })
+
+    it("does not promote rejected modifies with retcode 10025 via successRetcodes", () => {
+        const result = mapFiveSocketExecutionCommand({
+            commandId: "cmd-rejected-10025",
+            operation: "order.modify",
+            outcome: "rejected",
+            status: "rejected",
+            retcode: 10025,
+            retcodeExternal: null,
+            retcodeDescription: "Rejected despite no-changes code",
+            orderId: "42",
+            volume: "0",
+            price: "0",
+            recovered: false,
+            observedAt: new Date().toISOString(),
+            latencyMs: 1,
+        })
+
+        const execution = client.mapOrderResultToExecution(result, {
+            successStatus: "pending",
+            filledQuantity: 0,
+            successRetcodes: [10025],
+        })
+        expect(execution.status).toBe("rejected")
+        expect(result.allowSuccessRetcodePromotion).toBe(false)
     })
 
     it("maps rejected outcomes without success", () => {

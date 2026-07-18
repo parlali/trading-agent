@@ -287,64 +287,8 @@ export function mapFiveSocketExecutionCommand(
 ): MT5OrderResult {
     const volume = fromDecimalString(command.volume, "command.volume")
     const price = fromDecimalString(command.price, "command.price")
-    const retcode = command.retcode ?? (command.outcome === "accepted" ? 10009 : 10013)
     const comment = command.clientOrderId
-
-    if (command.outcome === "accepted") {
-        return {
-            retcode,
-            retcodeDescription: command.retcodeDescription,
-            retcodeExternal: command.retcodeExternal ?? undefined,
-            orderId: command.orderId ?? "",
-            dealId: command.dealId,
-            volume,
-            price,
-            comment,
-            bid: fromOptionalDecimalString(command.bid),
-            ask: fromOptionalDecimalString(command.ask),
-            success: true,
-            commandId: command.commandId,
-        }
-    }
-
-    if (command.outcome === "rejected") {
-        return {
-            retcode,
-            retcodeDescription: command.retcodeDescription,
-            retcodeExternal: command.retcodeExternal ?? undefined,
-            orderId: command.orderId ?? "",
-            dealId: command.dealId,
-            volume,
-            price,
-            comment,
-            bid: fromOptionalDecimalString(command.bid),
-            ask: fromOptionalDecimalString(command.ask),
-            success: false,
-            commandId: command.commandId,
-        }
-    }
-
-    if (command.outcome === "unresolved") {
-        return {
-            retcode,
-            retcodeDescription: command.retcodeDescription || "FiveSocket mutation unresolved; needs manual reconciliation",
-            retcodeExternal: command.retcodeExternal ?? undefined,
-            orderId: command.orderId ?? "",
-            dealId: command.dealId,
-            volume,
-            price,
-            comment,
-            bid: fromOptionalDecimalString(command.bid),
-            ask: fromOptionalDecimalString(command.ask),
-            success: false,
-            unresolved: true,
-            commandId: command.commandId,
-        }
-    }
-
-    return {
-        retcode,
-        retcodeDescription: command.retcodeDescription || "FiveSocket commit unknown",
+    const base = {
         retcodeExternal: command.retcodeExternal ?? undefined,
         orderId: command.orderId ?? "",
         dealId: command.dealId,
@@ -353,9 +297,84 @@ export function mapFiveSocketExecutionCommand(
         comment,
         bid: fromOptionalDecimalString(command.bid),
         ask: fromOptionalDecimalString(command.ask),
-        success: false,
-        commitUnknown: true,
         commandId: command.commandId,
+        providerStatus: command.status,
+    }
+
+    if (command.outcome === "rejected" || command.status === "rejected") {
+        return {
+            ...base,
+            retcode: command.retcode ?? 10013,
+            retcodeDescription: command.retcodeDescription,
+            success: false,
+            allowSuccessRetcodePromotion: false,
+        }
+    }
+
+    if (command.outcome === "unresolved") {
+        return {
+            ...base,
+            retcode: command.retcode ?? -1,
+            retcodeDescription: command.retcodeDescription || "FiveSocket mutation unresolved; needs manual reconciliation",
+            success: false,
+            unresolved: true,
+            allowSuccessRetcodePromotion: false,
+        }
+    }
+
+    if (command.outcome === "commit_unknown") {
+        return {
+            ...base,
+            retcode: command.retcode ?? -1,
+            retcodeDescription: command.retcodeDescription || "FiveSocket commit unknown",
+            success: false,
+            commitUnknown: true,
+            allowSuccessRetcodePromotion: false,
+        }
+    }
+
+    if (command.status === "filled") {
+        return {
+            ...base,
+            retcode: command.retcode ?? 10009,
+            retcodeDescription: command.retcodeDescription,
+            success: true,
+        }
+    }
+
+    if (command.status === "partially_filled") {
+        return {
+            ...base,
+            retcode: command.retcode ?? 10010,
+            retcodeDescription: command.retcodeDescription,
+            success: true,
+        }
+    }
+
+    if (command.status === "placed" || command.status === "modified") {
+        return {
+            ...base,
+            retcode: command.retcode ?? (command.status === "placed" ? 10008 : 10025),
+            retcodeDescription: command.retcodeDescription,
+            success: true,
+        }
+    }
+
+    if (command.status === "canceled") {
+        return {
+            ...base,
+            retcode: command.retcode ?? 10009,
+            retcodeDescription: command.retcodeDescription,
+            success: true,
+        }
+    }
+
+    return {
+        ...base,
+        retcode: command.retcode ?? -1,
+        retcodeDescription: command.retcodeDescription || `FiveSocket accepted with non-fill status ${command.status}`,
+        success: false,
+        allowSuccessRetcodePromotion: false,
     }
 }
 

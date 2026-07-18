@@ -130,6 +130,8 @@ export interface MT5OrderResult {
     unresolved?: boolean
     commitUnknown?: boolean
     commandId?: string
+    allowSuccessRetcodePromotion?: boolean
+    providerStatus?: "placed" | "filled" | "partially_filled" | "canceled" | "expired" | "modified" | "rejected" | "unknown"
 }
 
 export interface MT5SymbolInfo {
@@ -355,7 +357,10 @@ export class MT5Client {
             }
         }
 
-        const success = result.success || (options.successRetcodes ?? []).includes(result.retcode)
+        const success = result.success || (
+            result.allowSuccessRetcodePromotion !== false
+            && (options.successRetcodes ?? []).includes(result.retcode)
+        )
         const errorDetail = success
             ? undefined
             : createExecutionErrorDetail("venue", result.retcodeDescription, {
@@ -375,8 +380,10 @@ export class MT5Client {
         return {
             orderId: result.orderId || result.dealId || options.fallbackOrderId || "",
             providerOrderId: result.orderId || result.dealId || options.fallbackOrderId || undefined,
-            status: success ? options.successStatus ?? resolveMT5MutationSuccessStatus(result) : "rejected",
-            filledQuantity: success ? options.filledQuantity ?? result.volume : 0,
+            status: success
+                ? options.successStatus ?? resolveMT5MutationSuccessStatus(result)
+                : "rejected",
+            filledQuantity: success ? options.filledQuantity ?? resolveMT5MutationFilledQuantity(result) : 0,
             fillPrice: success
                 ? options.fillPrice ?? (result.price > 0 ? result.price : undefined)
                 : undefined,
@@ -483,7 +490,26 @@ export class MT5Client {
 }
 
 function resolveMT5MutationSuccessStatus(result: MT5OrderResult): ExecutionResult["status"] {
-    return result.retcode === 10010 ? "partially_filled" : "filled"
+    if (result.providerStatus === "placed" || result.providerStatus === "modified") {
+        return "pending"
+    }
+    if (result.providerStatus === "canceled") {
+        return "cancelled"
+    }
+    if (result.providerStatus === "expired") {
+        return "expired"
+    }
+    if (result.providerStatus === "partially_filled" || result.retcode === 10010) {
+        return "partially_filled"
+    }
+    return "filled"
+}
+
+function resolveMT5MutationFilledQuantity(result: MT5OrderResult): number {
+    if (result.providerStatus === "placed" || result.providerStatus === "modified" || result.providerStatus === "canceled") {
+        return 0
+    }
+    return result.volume
 }
 
 function parseWorkerError(text: string): MT5WorkerErrorDetail | undefined {
