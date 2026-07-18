@@ -140,7 +140,7 @@ export class FiveSocketClient extends MT5Client {
             "GET",
             `/v1/accounts/${encodeURIComponent(accountId)}/balance`,
             {
-                timeout: budget?.remaining() ?? this.fsTimeout,
+                ...(budget ? { budget } : { timeout: this.fsTimeout }),
                 retry: true,
             }
         )
@@ -409,18 +409,15 @@ export class FiveSocketClient extends MT5Client {
 
     private async ensureAccount(
         credentials: MT5WorkerCredentials,
-        budgetOrTimeout: TimeoutBudget | number = this.fsTimeout
+        budget?: TimeoutBudget
     ): Promise<string> {
-        const timeoutOf = typeof budgetOrTimeout === "number"
-            ? () => budgetOrTimeout
-            : () => budgetOrTimeout.remaining()
-
         const cacheKey = accountCacheKey(credentials)
         const cached = this.accountIdByKey.get(cacheKey)
         if (cached) {
             return cached
         }
 
+        const linkBudget = budget ?? createTimeoutBudget(this.fsConnectTimeout)
         const login = String(credentials.login)
         const idempotencyKey = `account:${login}:${credentials.server}`
         let linked: LinkedAccount
@@ -435,7 +432,7 @@ export class FiveSocketClient extends MT5Client {
                         password: credentials.password,
                         server: credentials.server,
                     },
-                    timeout: timeoutOf(),
+                    budget: linkBudget,
                     retry: false,
                     idempotencyKey,
                     acceptStatuses: [201],
@@ -444,7 +441,7 @@ export class FiveSocketClient extends MT5Client {
         } catch (error) {
             const detail = getExecutionErrorDetail(error)
             if (detail?.code === "conflict" || detail?.code === "409") {
-                linked = await this.findLinkedAccount(credentials, timeoutOf())
+                linked = await this.findLinkedAccount(credentials, linkBudget)
             } else {
                 throw error
             }
@@ -467,7 +464,7 @@ export class FiveSocketClient extends MT5Client {
             )
         }
 
-        await this.configureExecution(linked.id, timeoutOf())
+        await this.configureExecution(linked.id, linkBudget)
         this.accountIdByKey.set(cacheKey, linked.id)
         this.cachedLogin = credentials.login
         return linked.id
@@ -475,13 +472,13 @@ export class FiveSocketClient extends MT5Client {
 
     private async findLinkedAccount(
         credentials: MT5WorkerCredentials,
-        timeout: number
+        budget: TimeoutBudget
     ): Promise<LinkedAccount> {
         const response = await this.requestJson<{ data: LinkedAccount[] }>(
             "GET",
             "/v1/accounts",
             {
-                timeout,
+                budget,
                 retry: true,
             }
         )
@@ -508,7 +505,7 @@ export class FiveSocketClient extends MT5Client {
 
     private async configureExecution(
         accountId: string,
-        timeout: number
+        budget: TimeoutBudget
     ): Promise<void> {
         const symbols = this.resolveExecutionSymbols()
         if (symbols.length === 0) {
@@ -521,7 +518,7 @@ export class FiveSocketClient extends MT5Client {
             `/v1/accounts/${encodeURIComponent(accountId)}/execution`,
             {
                 body: { symbols },
-                timeout,
+                budget,
                 retry: false,
                 idempotencyKey,
                 acceptStatuses: [200],
@@ -689,14 +686,20 @@ export class FiveSocketClient extends MT5Client {
         path: string,
         options: {
             body?: unknown
-            timeout: number
+            timeout?: number
+            budget?: TimeoutBudget
             retry: boolean
             auth?: boolean
             idempotencyKey?: string
             acceptStatuses?: number[]
         }
     ): Promise<T> {
+        if (options.budget === undefined && options.timeout === undefined) {
+            throw new Error("FiveSocket requestJson requires timeout or budget")
+        }
+
         const execute = async (): Promise<T> => {
+            const timeout = options.budget?.remaining() ?? options.timeout!
             const headers: Record<string, string> = {
                 Accept: "application/json",
             }
@@ -718,7 +721,7 @@ export class FiveSocketClient extends MT5Client {
                         headers,
                         body: options.body === undefined ? undefined : JSON.stringify(options.body),
                     },
-                    options.timeout,
+                    timeout,
                     `FiveSocket ${method} ${path}`,
                     this.fsFetchImpl
                 )
@@ -767,7 +770,11 @@ export class FiveSocketClient extends MT5Client {
             }
         }
 
-        if (options.retry) {
+        if (!options.retry) {
+            return await execute()
+        }
+
+        if (!options.budget) {
             return await retryWithBackoff(execute, 3, 1000, {
                 shouldRetry: (error) => {
                     const detail = getExecutionErrorDetail(error)
@@ -776,7 +783,7 @@ export class FiveSocketClient extends MT5Client {
             })
         }
 
-        return await execute()
+        return await retryWithConnectBudget(execute, options.budget, 3, 1000)
     }
 }
 
@@ -807,6 +814,59 @@ function createTimeoutBudget(totalMs: number): TimeoutBudget {
             return left
         },
     }
+}
+
+async function retryWithConnectBudget<T>(
+    execute: () => Promise<T>,
+    budget: TimeoutBudget,
+    maxRetries: number,
+    baseDelay: number
+): Promise<T> {
+    let lastError: unknown
+    for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+        try {
+            return await execute()
+        } catch (error) {
+            lastError = error
+            const detail = getExecutionErrorDetail(error)
+            if (detail?.code === "CONNECT_BUDGET_EXHAUSTED") {
+                throw error
+            }
+            const shouldRetry = attempt < maxRetries && detail?.retryable === true
+            if (!shouldRetry) {
+                throw error
+            }
+
+            const delay = baseDelay * Math.pow(2, attempt)
+            let remaining: number
+            try {
+                remaining = budget.remaining()
+            } catch {
+                throw error
+            }
+            if (remaining <= delay) {
+                throw createExecutionError(
+                    "timeout",
+                    "FiveSocket connect budget exhausted before retry backoff",
+                    {
+                        code: "CONNECT_BUDGET_EXHAUSTED",
+                        retryable: true,
+                        details: {
+                            remainingMs: remaining,
+                            requiredBackoffMs: delay,
+                            attempt,
+                        },
+                    }
+                )
+            }
+            await sleep(delay)
+        }
+    }
+    throw lastError
+}
+
+function sleep(delayMs: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, delayMs))
 }
 
 function createAttemptIdempotencyKey(operation: "modify" | "cancel", ticket: number): string {
@@ -897,10 +957,6 @@ function parseApiError(text: string): { code?: string; message?: string; request
 
 function stableBodyKey(value: unknown): string {
     return JSON.stringify(value)
-}
-
-function sleep(delayMs: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, delayMs))
 }
 
 function fromRequiredDecimal(value: string, field: string): number {

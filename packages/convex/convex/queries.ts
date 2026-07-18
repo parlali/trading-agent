@@ -2,6 +2,7 @@ export {
     getAccounts,
     getAccountByAppAndId,
     getAccountByAppAndIdInternal,
+    getStrategiesByAppAndAccountInternal,
     getStrategyConfigs,
     getStrategyById,
     getAllStrategies,

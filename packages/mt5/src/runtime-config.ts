@@ -1,10 +1,14 @@
-import { requireResolvedSecret } from "@valiq-trading/core"
+import { requireResolvedSecret, type MT5Policy } from "@valiq-trading/core"
 import type { MT5WorkerCredentials } from "./mt5-client"
 import { MT5Client } from "./mt5-client"
 import {
     FiveSocketClient,
     type FiveSocketExecutionSymbolPolicy,
 } from "./fivesocket-client"
+import {
+    resolveMT5AllowedSymbols,
+    resolveMT5ConfiguredSymbols,
+} from "./symbols"
 
 export const MT5_RUNTIME_SECRET_KEYS = [
     "MT5_TRANSPORT",
@@ -146,4 +150,14 @@ export function toFiveSocketExecutionSymbols(
         symbol,
         maxVolume: normalizedMaxVolume,
     }))
+}
+
+export function resolveFiveSocketExecutionSymbolsForPolicies(
+    policies: readonly MT5Policy[],
+    defaultMaxVolume: string
+): FiveSocketExecutionSymbolPolicy[] {
+    const symbols = resolveMT5AllowedSymbols(
+        policies.flatMap((policy) => resolveMT5ConfiguredSymbols(policy))
+    )
+    return toFiveSocketExecutionSymbols(symbols, defaultMaxVolume)
 }

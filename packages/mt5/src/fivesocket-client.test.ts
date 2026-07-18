@@ -18,6 +18,7 @@ import { FiveSocketClient } from "./fivesocket-client.ts"
 import { MT5Client, type MT5WorkerCredentials } from "./mt5-client.ts"
 import {
     createMT5TransportClient,
+    resolveFiveSocketExecutionSymbolsForPolicies,
     resolveMT5RuntimeConfig,
 } from "./runtime-config.ts"
 import { mapMT5OrderState, resolveMT5FilledQuantity } from "./venue-mappers.ts"
@@ -596,6 +597,188 @@ describe("FiveSocketClient transport policy", () => {
 
         await expect(client.connect(credentials)).rejects.toThrow("connect budget")
         expect(Date.now() - startedAt).toBeLessThan(500)
+    })
+
+    it("bounds connect retries and backoff by the remaining connect budget", async () => {
+        let accountListAttempts = 0
+        const startedAt = Date.now()
+        const fetchImpl: typeof fetch = async (input, init) => {
+            const url = String(input)
+            const method = init?.method ?? "GET"
+            if (method === "POST" && url.endsWith("/v1/accounts")) {
+                return jsonResponse({ error: { code: "conflict", message: "exists" } }, 409)
+            }
+            if (method === "GET" && url.endsWith("/v1/accounts")) {
+                accountListAttempts += 1
+                return jsonResponse({ error: { code: "unavailable", message: "transient" } }, 503)
+            }
+            throw new Error(`Unexpected ${method} ${url}`)
+        }
+
+        const client = new FiveSocketClient({
+            baseUrl: "https://api.fivesocket.com",
+            apiKey: "test-key",
+            connectTimeout: 100,
+            timeout: 30_000,
+            executionSymbols: [{ symbol: "XAUUSD", maxVolume: "1.0" }],
+            fetchImpl,
+        })
+
+        await expect(client.connect(credentials)).rejects.toThrow("connect budget")
+        expect(accountListAttempts).toBe(1)
+        expect(Date.now() - startedAt).toBeLessThan(500)
+    })
+
+    it("uses connect budget for cold account-link on read paths", async () => {
+        let sawPositionsGet = false
+        const fetchImpl: typeof fetch = async (input, init) => {
+            const url = String(input)
+            const method = init?.method ?? "GET"
+            if (method === "POST" && url.endsWith("/v1/accounts")) {
+                await new Promise((resolve) => setTimeout(resolve, 100))
+                return jsonResponse({
+                    id: "acc-1",
+                    login: "111",
+                    server: "broker",
+                    status: "active",
+                    createdAt: new Date().toISOString(),
+                }, 201)
+            }
+            if (method === "PUT" && url.endsWith("/execution")) {
+                return jsonResponse({
+                    accountId: "acc-1",
+                    status: "enabled",
+                    symbols: [{ symbol: "XAUUSD", maxVolume: "1.0" }],
+                    updatedAt: new Date().toISOString(),
+                })
+            }
+            if (method === "GET" && url.endsWith("/positions")) {
+                sawPositionsGet = true
+                return jsonResponse({ positions: [] })
+            }
+            throw new Error(`Unexpected ${method} ${url}`)
+        }
+
+        const client = new FiveSocketClient({
+            baseUrl: "https://api.fivesocket.com",
+            apiKey: "test-key",
+            timeout: 50,
+            connectTimeout: 250,
+            executionSymbols: [{ symbol: "XAUUSD", maxVolume: "1.0" }],
+            fetchImpl,
+        })
+
+        await expect(client.getPositions(credentials)).resolves.toEqual([])
+        expect(sawPositionsGet).toBe(true)
+    })
+
+    it("connection-test style client issues execution-policy PUT on connect", async () => {
+        const runtime = resolveMT5RuntimeConfig({
+            MT5_TRANSPORT: "fivesocket",
+            FIVESOCKET_API_KEY: "fs-key",
+            FIVESOCKET_DEFAULT_MAX_VOLUME: "1.0",
+            MT5_PRIMARY_LOGIN: "111",
+            MT5_PRIMARY_PASSWORD: "secret",
+            MT5_PRIMARY_SERVER: "broker",
+            MT5_WORKER_URL: null,
+            MT5_WORKER_ACCESS_KEY: null,
+            FIVESOCKET_API_BASE_URL: null,
+        }, {})
+        if (runtime.transport !== "fivesocket") {
+            throw new Error("expected fivesocket")
+        }
+
+        const executionSymbols = resolveFiveSocketExecutionSymbolsForPolicies(
+            [{
+                llm: {
+                    provider: "openrouter",
+                    model: "openai/gpt-5.5",
+                },
+                maxRiskPercent: 1,
+                minRiskReward: 1,
+                tradingHours: {
+                    start: "07:00",
+                    end: "21:00",
+                    timezone: "UTC",
+                },
+                safety: {
+                    maxDrawdownDay: 3,
+                    maxDrawdownWeek: 10,
+                    cooldownMinutesAfterDayBreach: 720,
+                    cooldownMinutesAfterWeekBreach: 1440,
+                    strategyTimezone: "UTC",
+                    sessionFlat: {
+                        enabled: false,
+                        closeBufferMinutes: 15,
+                        timezone: "UTC",
+                    },
+                    account: {
+                        allocationPercent: 100,
+                    },
+                    expectedExternalInstruments: [],
+                },
+                dryRun: false,
+                allowMultiplePendingEntryOrdersPerInstrument: false,
+                allowOverlappingExposure: false,
+                marketRegionsByInstrument: {
+                    XAUUSD: ["US"],
+                },
+            }],
+            runtime.defaultMaxVolume
+        )
+
+        let putBody: unknown
+        const fetchImpl: typeof fetch = async (input, init) => {
+            const url = String(input)
+            const method = init?.method ?? "GET"
+            if (method === "POST" && url.endsWith("/v1/accounts")) {
+                return jsonResponse({
+                    id: "acc-1",
+                    login: "111",
+                    server: "broker",
+                    status: "active",
+                    createdAt: new Date().toISOString(),
+                }, 201)
+            }
+            if (method === "PUT" && url.endsWith("/execution")) {
+                putBody = init?.body ? JSON.parse(String(init.body)) : undefined
+                return jsonResponse({
+                    accountId: "acc-1",
+                    status: "enabled",
+                    symbols: executionSymbols,
+                    updatedAt: new Date().toISOString(),
+                })
+            }
+            if (method === "GET" && url.endsWith("/balance")) {
+                return jsonResponse({
+                    accountId: "acc-1",
+                    login: "111",
+                    server: "broker",
+                    observedAt: new Date().toISOString(),
+                    latencyMs: 1,
+                    balance: "1000",
+                    equity: "1000",
+                    currency: "USD",
+                    credit: "0",
+                    margin: "0",
+                    marginFree: "1000",
+                    profit: "0",
+                    leverage: "100",
+                    name: "Demo",
+                    company: "Broker",
+                })
+            }
+            throw new Error(`Unexpected ${method} ${url}`)
+        }
+
+        const client = createMT5TransportClient(runtime, {
+            executionSymbols,
+            fetchImpl,
+        })
+        await client.connect(credentials)
+        expect(putBody).toEqual({
+            symbols: [{ symbol: "XAUUSD", maxVolume: "1.0" }],
+        })
     })
 })
 

@@ -25,6 +25,7 @@ export { mt5RiskValidators } from "./risk-rules"
 export {
     MT5_RUNTIME_SECRET_KEYS,
     createMT5TransportClient,
+    resolveFiveSocketExecutionSymbolsForPolicies,
     resolveMT5RuntimeConfig,
     resolveMT5Transport,
     toFiveSocketExecutionSymbols,
