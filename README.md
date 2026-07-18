@@ -108,14 +108,34 @@ Canonical provider keys:
 | `okx-swap` | `OKX_API_KEY`, `OKX_API_SECRET`, `OKX_API_PASSPHRASE`, `OKX_BASE_URL`, `OKX_DEMO_TRADING`, `OKX_MARGIN_MODE`, `OKX_POSITION_MODE` |
 | `polymarket` | `POLYMARKET_PRIVATE_KEY`, `POLYMARKET_API_KEY`, `POLYMARKET_API_SECRET`, `POLYMARKET_API_PASSPHRASE`, `POLYMARKET_HOST`, `POLYMARKET_CHAIN_ID`, `POLYMARKET_FUNDER_ADDRESS` |
 
-MT5 also needs global worker secrets:
+MT5 also needs global transport secrets. Choose one connectivity path:
 
-- `MT5_WORKER_URL`
-- `MT5_WORKER_ACCESS_KEY`
+- Self-hosted Windows worker (default): `MT5_WORKER_URL`, `MT5_WORKER_ACCESS_KEY`
+- Hosted FiveSocket: `MT5_TRANSPORT=fivesocket`, `FIVESOCKET_API_KEY`, optional `FIVESOCKET_API_BASE_URL`
 
 `OKX_DEMO_TRADING` must be set explicitly to `true` or `false`. `OKX_MARGIN_MODE` must be `cross` or `isolated`. `OKX_POSITION_MODE` must be `net_mode` or `long_short_mode`.
 
-## MT5 Worker
+## FiveSocket MT5 Connectivity
+
+[FiveSocket](https://api.fivesocket.com) is the hosted MT5 connectivity option for this runtime. Strategy logic, `MT5VenueAdapter` recovery semantics, and the execution pipeline stay the same; only the transport behind `MT5Client` changes.
+
+Set:
+
+```bash
+MT5_TRANSPORT=fivesocket
+FIVESOCKET_API_KEY=
+FIVESOCKET_API_BASE_URL=https://api.fivesocket.com
+```
+
+Account credentials remain the existing account-scoped `MT5_PRIMARY_LOGIN` / `MT5_PRIMARY_PASSWORD` / `MT5_PRIMARY_SERVER` secrets. The OpenAPI contract checked into `docs/fivesocket-openapi.json` is authoritative for request/response shapes.
+
+Mutation outcomes map into the existing MT5 result model:
+
+- `accepted` / `rejected` return normal `MT5OrderResult` values
+- `commit_unknown` is polled briefly, then surfaced as a retryable commit-unknown error so adapter recovery by `comment` / `clientOrderId` can run
+- `unresolved` is a terminal `MT5OrderResult.unresolved` result mapped to `NEEDS_MANUAL_RECONCILIATION` (do not retry the mutation)
+
+## MT5 Worker (self-hosted alternative)
 
 Any machine that runs `apps/mt5-worker` must keep the broker server database at `private/mt5-worker/servers.dat`.
 
@@ -126,6 +146,8 @@ Any machine that runs `apps/mt5-worker` must keep the broker server database at 
 If the file is missing, the worker fails closed with a clear error instead of starting against a stale or implicit fallback path.
 
 Use a worker-specific `MT5_PORTABLE_DIR` on machines that run other MT5 automation. On Windows deployments, set `WORKER_EXPECTED_REPO_SUFFIX` if the worker should fail closed unless it is running from an expected repo path.
+
+Keep the worker path available for self-hosted and shadow-run comparisons by setting `MT5_TRANSPORT=worker` (default).
 
 ## Polymarket Credentials
 
