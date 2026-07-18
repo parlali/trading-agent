@@ -3,6 +3,7 @@ import {
     fetchWithTimeout,
     getErrorMessage,
     getExecutionErrorDetail,
+    OperationTimeoutError,
     retryWithBackoff,
     withTimeout,
 } from "@valiq-trading/core"
@@ -910,10 +911,17 @@ async function readUnderConnectBudget<T>(
     try {
         return await withTimeout(operation, remaining, name)
     } catch (error) {
-        throw asConnectBudgetExhausted(error) ?? createConnectBudgetExhaustedError({
-            name,
-            remainingMs: 0,
-        })
+        const alreadyExhausted = asConnectBudgetExhausted(error)
+        if (alreadyExhausted) {
+            throw alreadyExhausted
+        }
+        if (error instanceof OperationTimeoutError) {
+            throw createConnectBudgetExhaustedError({
+                name,
+                remainingMs: 0,
+            })
+        }
+        throw error
     }
 }
 

@@ -668,6 +668,40 @@ describe("FiveSocketClient transport policy", () => {
         }
     })
 
+    it("preserves an immediate body error instead of labeling it budget exhaustion", async () => {
+        const fetchImpl: typeof fetch = async (input, init) => {
+            const url = String(input)
+            const method = init?.method ?? "GET"
+            if (method === "POST" && url.endsWith("/v1/accounts")) {
+                return {
+                    status: 201,
+                    statusText: "Created",
+                    async text() {
+                        return ""
+                    },
+                    async json() {
+                        throw new SyntaxError("Unexpected token < in JSON")
+                    },
+                } as unknown as Response
+            }
+            return jsonResponse({})
+        }
+
+        const client = new FiveSocketClient({
+            baseUrl: "https://api.fivesocket.com",
+            apiKey: "test-key",
+            connectTimeout: 30_000,
+            timeout: 30_000,
+            executionSymbols: [{ symbol: "XAUUSD", maxVolume: "1.0" }],
+            fetchImpl,
+        })
+
+        await expect(client.connect(credentials)).rejects.toThrow()
+        await client.connect(credentials).catch((error) => {
+            expect(getExecutionErrorDetail(error)?.code).not.toBe("CONNECT_BUDGET_EXHAUSTED")
+        })
+    })
+
     it("uses connect budget for cold account-link on read paths", async () => {
         let sawPositionsGet = false
         const fetchImpl: typeof fetch = async (input, init) => {
