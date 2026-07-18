@@ -7,8 +7,8 @@ import {
 } from "@valiq-trading/core"
 import {
     createMT5SpreadContextLine,
+    createMT5TransportClient,
     HolidayGuard,
-    MT5Client,
     MT5_RUNTIME_SECRET_KEYS,
     mt5RiskValidators,
     resolveMT5RuntimeConfig,
@@ -16,6 +16,7 @@ import {
     normalizeMT5Symbol,
     resolveMT5ConfiguredSymbols,
     resolveMT5InstrumentRegions,
+    toFiveSocketExecutionSymbols,
     type MT5MarketSnapshot,
 } from "@valiq-trading/mt5"
 import type {
@@ -46,17 +47,12 @@ export class MT5Plugin implements VenuePlugin {
 
     async validateEnvironment(secrets: Record<string, string | null>): Promise<void> {
         const runtimeConfig = resolveMT5RuntimeConfig(secrets)
-        const healthClient = new MT5Client({
-            workerUrl: runtimeConfig.workerUrl,
-            accessKey: runtimeConfig.accessKey,
+        const healthClient = createMT5TransportClient(runtimeConfig, {
             timeout: 2_000,
         })
         await healthClient.getHealth()
 
-        const client = new MT5Client({
-            workerUrl: runtimeConfig.workerUrl,
-            accessKey: runtimeConfig.accessKey,
-        })
+        const client = createMT5TransportClient(runtimeConfig)
         const venue = new MT5VenueAdapter(client, runtimeConfig.credentials, this.executionCostTracker, {
             allowUnscopedSymbolAccess: true,
         })
@@ -68,11 +64,10 @@ export class MT5Plugin implements VenuePlugin {
         secrets: Record<string, string | null>
     ): VenueAdapter {
         const resolved = resolveMT5RuntimeConfig(secrets)
-        const client = new MT5Client({
-            workerUrl: resolved.workerUrl,
-            accessKey: resolved.accessKey,
-        })
         const allowedSymbols = resolveMT5ConfiguredSymbols(mt5PolicySchema.parse(_policy))
+        const client = createMT5TransportClient(resolved, {
+            executionSymbols: toFiveSocketExecutionSymbols(allowedSymbols),
+        })
         return new MT5VenueAdapter(client, resolved.credentials, this.executionCostTracker, {
             allowedSymbols,
         })

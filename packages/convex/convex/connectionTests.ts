@@ -37,8 +37,8 @@ import {
 } from "@valiq-trading/okx"
 import {
     MT5_RUNTIME_SECRET_KEYS,
-    MT5Client,
     MT5VenueAdapter,
+    createMT5TransportClient,
     resolveMT5RuntimeConfig,
 } from "@valiq-trading/mt5"
 import {
@@ -157,22 +157,30 @@ export const testMT5Connection = action({
             name: "Runtime Config",
             ok: true,
             data: {
-                workerUrl: runtimeConfig.workerUrl,
+                transport: runtimeConfig.transport,
+                ...(runtimeConfig.transport === "worker"
+                    ? { workerUrl: runtimeConfig.workerUrl }
+                    : { baseUrl: runtimeConfig.baseUrl }),
                 login: runtimeConfig.credentials.login,
                 server: runtimeConfig.credentials.server,
             },
         })
 
-        const client = new MT5Client({
-            workerUrl: runtimeConfig.workerUrl,
-            accessKey: runtimeConfig.accessKey,
-        })
+        const client = createMT5TransportClient(runtimeConfig)
 
         try {
             const health = await client.getHealth()
-            steps.push({ name: "Worker Health", ok: true, data: health })
+            steps.push({
+                name: runtimeConfig.transport === "fivesocket" ? "FiveSocket Health" : "Worker Health",
+                ok: true,
+                data: health,
+            })
         } catch (error) {
-            steps.push({ name: "Worker Health", ok: false, error: getErrorMessage(error) })
+            steps.push({
+                name: runtimeConfig.transport === "fivesocket" ? "FiveSocket Health" : "Worker Health",
+                ok: false,
+                error: getErrorMessage(error),
+            })
             return { ok: false, steps }
         }
 

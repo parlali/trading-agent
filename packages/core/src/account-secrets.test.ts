@@ -7,8 +7,11 @@ import {
 describe("account scoped secrets", () => {
     it("does not double-prefix MT5 primary credential keys", () => {
         const canonicalKeys = resolveAccountScopedSecretKeys("mt5", [
+            "MT5_TRANSPORT",
             "MT5_WORKER_URL",
             "MT5_WORKER_ACCESS_KEY",
+            "FIVESOCKET_API_BASE_URL",
+            "FIVESOCKET_API_KEY",
             "MT5_PRIMARY_LOGIN",
             "MT5_PRIMARY_PASSWORD",
             "MT5_PRIMARY_SERVER",
