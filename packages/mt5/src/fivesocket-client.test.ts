@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 import {
     fromDecimalString,
+    fromSafeIntegerString,
     fromUnsignedIntString,
     toDecimalString,
     toPriceDecimalString,
@@ -903,6 +904,54 @@ describe("FiveSocket worker-mirrored read mappings", () => {
             state: "partial",
         })
         expect(resolveMT5FilledQuantity(partial!, mapMT5OrderState(partial!.state))).toBe(0.6)
+    })
+})
+
+describe("FiveSocket round-3 hardening", () => {
+    it("maps accepted+expired to a terminal expired result, not a rejection", () => {
+        const result = mapFiveSocketExecutionCommand({
+            commandId: "cmd-expired",
+            operation: "order.submit",
+            outcome: "accepted",
+            status: "expired",
+            retcode: null,
+            retcodeExternal: null,
+            retcodeDescription: "Order expired",
+            orderId: "9",
+            volume: "0",
+            price: "0",
+            recovered: false,
+            observedAt: new Date().toISOString(),
+            latencyMs: 1,
+        })
+        expect(result.success).toBe(true)
+        expect(result.providerStatus).toBe("expired")
+    })
+
+    it("rejects a positive volume that would round to zero", () => {
+        expect(() => toVolumeDecimalString(1e-9)).toThrow("too small")
+        expect(toVolumeDecimalString(9e-9)).toBe("0.00000001")
+    })
+
+    it("fails closed on read values that exceed safe precision", () => {
+        expect(() => fromSafeIntegerString("9007199254740993", "order.id")).toThrow("safe precision")
+        expect(fromSafeIntegerString("9007199254740991", "order.id")).toBe(9007199254740991)
+        expect(() => fromDecimalString("1.234567890123456", "price")).toThrow("safe precision")
+    })
+
+    it("rejects a whitespace-padded clientOrderId before any network call", async () => {
+        const transport = createCountingTransport(async () =>
+            jsonResponse({ ok: true })
+        )
+        const client = createClient(transport.fetch)
+        await expect(client.submitOrder(credentials, {
+            symbol: "XAUUSD",
+            side: "buy",
+            volume: 0.01,
+            orderType: "market",
+            comment: " vmte01abcde23456 ",
+        })).rejects.toThrow("clientOrderId")
+        expect(transport.calls()).toBe(0)
     })
 })
 

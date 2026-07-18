@@ -11,7 +11,12 @@ export function toVolumeDecimalString(value: number): string {
         throw new Error(`Volume must be a positive decimal, received: ${value}`)
     }
 
-    return formatPlainDecimal(value, VOLUME_MAX_FRACTION_DIGITS)
+    const serialized = formatPlainDecimal(value, VOLUME_MAX_FRACTION_DIGITS)
+    if (Number(serialized) === 0) {
+        throw new Error(`Volume is too small to represent at ${VOLUME_MAX_FRACTION_DIGITS} fraction digits: ${value}`)
+    }
+
+    return serialized
 }
 
 export function toPriceDecimalString(value: number): string {
@@ -105,6 +110,23 @@ export function fromOptionalUnsignedIntString(value: string | null | undefined):
     }
 
     return fromUnsignedIntString(value, "optional")
+}
+
+export function fromSafeIntegerString(value: string | null | undefined, field: string): number {
+    if (value === null || value === undefined || value.trim() === "") {
+        throw new Error(`Missing integer string for ${field}`)
+    }
+
+    if (!/^(?:0|[1-9][0-9]*)$/.test(value)) {
+        throw new Error(`Invalid integer string for ${field}: ${value}`)
+    }
+
+    const parsed = Number(value)
+    if (!Number.isSafeInteger(parsed)) {
+        throw new Error(`Integer string for ${field} exceeds safe precision: ${value}`)
+    }
+
+    return parsed
 }
 
 function formatPlainDecimal(value: number, maxFractionDigits: number): string {

@@ -488,6 +488,15 @@ export function mapFiveSocketExecutionCommand(
         }
     }
 
+    if (command.status === "expired") {
+        return {
+            ...base,
+            retcode: command.retcode ?? 10009,
+            retcodeDescription: command.retcodeDescription,
+            success: true,
+        }
+    }
+
     return {
         ...base,
         retcode: command.retcode ?? -1,

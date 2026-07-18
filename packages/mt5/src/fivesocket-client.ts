@@ -17,6 +17,8 @@ import {
     type MT5WorkerCredentials,
 } from "./mt5-client"
 import {
+    fromDecimalString,
+    fromSafeIntegerString,
     toPriceDecimalString,
     toUnsignedIntString,
     toVolumeDecimalString,
@@ -812,7 +814,7 @@ function createAttemptIdempotencyKey(operation: "modify" | "cancel", ticket: num
 }
 
 function requireClientOrderId(comment: string | undefined): string {
-    const value = comment?.trim()
+    const value = comment
     if (!value) {
         throw createExecutionError(
             "pre_validation",
@@ -902,18 +904,11 @@ function sleep(delayMs: number): Promise<void> {
 }
 
 function fromRequiredDecimal(value: string, field: string): number {
-    const parsed = Number(value)
-    if (!Number.isFinite(parsed)) {
-        throw new Error(`Invalid decimal string for ${field}: ${value}`)
-    }
-    return parsed
+    return fromDecimalString(value, field)
 }
 
 function fromRequiredUnsignedInt(value: string, field: string): number {
-    if (!/^(?:0|[1-9][0-9]*)$/.test(value)) {
-        throw new Error(`Invalid unsigned-int string for ${field}: ${value}`)
-    }
-    return Number(value)
+    return fromSafeIntegerString(value, field)
 }
 
 function summarizeDeals(deals: FiveSocketDeal[]): {
