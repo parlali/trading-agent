@@ -7,7 +7,6 @@ import { v } from "convex/values"
 import { requireUser } from "./lib/authGuards"
 import {
     createLogger,
-    mt5PolicySchema,
     resolveAccountScopedSecretKeys,
     type VenueApp,
     buildAccountSecretKeyMap,
@@ -40,7 +39,7 @@ import {
     MT5_RUNTIME_SECRET_KEYS,
     MT5VenueAdapter,
     createMT5TransportClient,
-    resolveFiveSocketExecutionSymbolsForPolicies,
+    resolveCanonicalFiveSocketAccountExecutionSymbols,
     resolveMT5RuntimeConfig,
 } from "@valiq-trading/mt5"
 import {
@@ -168,16 +167,18 @@ export const testMT5Connection = action({
             },
         })
 
-        let executionSymbols: ReturnType<typeof resolveFiveSocketExecutionSymbolsForPolicies> | undefined
+        let executionSymbols: ReturnType<typeof resolveCanonicalFiveSocketAccountExecutionSymbols> | undefined
         if (runtimeConfig.transport === "fivesocket") {
             const strategies = await ctx.runQuery(internal.queries.getStrategiesByAppAndAccountInternal, {
                 app: "mt5",
                 accountId: args.accountId,
             })
-            const policies = strategies.map((strategy) => mt5PolicySchema.parse(strategy.policy))
             try {
-                executionSymbols = resolveFiveSocketExecutionSymbolsForPolicies(
-                    policies,
+                executionSymbols = resolveCanonicalFiveSocketAccountExecutionSymbols(
+                    strategies.map((strategy) => ({
+                        enabled: strategy.enabled,
+                        policy: strategy.policy,
+                    })),
                     runtimeConfig.defaultMaxVolume
                 )
             } catch (error) {
@@ -200,7 +201,7 @@ export const testMT5Connection = action({
                 name: "Execution Policy",
                 ok: true,
                 data: {
-                    strategyCount: strategies.length,
+                    strategyCount: strategies.filter((strategy) => strategy.enabled).length,
                     symbols: executionSymbols.map((entry) => entry.symbol),
                 },
             })

@@ -25,12 +25,14 @@ export { mt5RiskValidators } from "./risk-rules"
 export {
     MT5_RUNTIME_SECRET_KEYS,
     createMT5TransportClient,
+    resolveCanonicalFiveSocketAccountExecutionSymbols,
     resolveFiveSocketExecutionSymbolsForPolicies,
     resolveMT5RuntimeConfig,
     resolveMT5Transport,
     toFiveSocketExecutionSymbols,
 } from "./runtime-config"
 export type {
+    FiveSocketAccountExecutionPolicySource,
     MT5RuntimeConfig,
     MT5TransportKind,
 } from "./runtime-config"

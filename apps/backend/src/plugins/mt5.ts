@@ -11,12 +11,12 @@ import {
     HolidayGuard,
     MT5_RUNTIME_SECRET_KEYS,
     mt5RiskValidators,
+    resolveCanonicalFiveSocketAccountExecutionSymbols,
     resolveMT5RuntimeConfig,
     MT5VenueAdapter,
     normalizeMT5Symbol,
     resolveMT5ConfiguredSymbols,
     resolveMT5InstrumentRegions,
-    toFiveSocketExecutionSymbols,
     type MT5MarketSnapshot,
 } from "@valiq-trading/mt5"
 import type {
@@ -50,11 +50,15 @@ export class MT5Plugin implements VenuePlugin {
         policy?: Record<string, unknown>
     ): Promise<void> {
         const runtimeConfig = resolveMT5RuntimeConfig(secrets)
+        const accountStrategies = resolveMt5AccountExecutionPolicySources(secrets, policy)
         const allowedSymbols = policy
             ? resolveMT5ConfiguredSymbols(mt5PolicySchema.parse(policy))
             : []
         const executionSymbols = runtimeConfig.transport === "fivesocket"
-            ? toFiveSocketExecutionSymbols(allowedSymbols, runtimeConfig.defaultMaxVolume)
+            ? resolveCanonicalFiveSocketAccountExecutionSymbols(
+                accountStrategies,
+                runtimeConfig.defaultMaxVolume
+            )
             : undefined
 
         if (runtimeConfig.transport === "fivesocket" && (executionSymbols?.length ?? 0) === 0) {
@@ -87,7 +91,10 @@ export class MT5Plugin implements VenuePlugin {
         const resolved = resolveMT5RuntimeConfig(secrets)
         const allowedSymbols = resolveMT5ConfiguredSymbols(mt5PolicySchema.parse(_policy))
         const executionSymbols = resolved.transport === "fivesocket"
-            ? toFiveSocketExecutionSymbols(allowedSymbols, resolved.defaultMaxVolume)
+            ? resolveCanonicalFiveSocketAccountExecutionSymbols(
+                resolveMt5AccountExecutionPolicySources(secrets, _policy),
+                resolved.defaultMaxVolume
+            )
             : undefined
         if (resolved.transport === "fivesocket" && (!executionSymbols || executionSymbols.length === 0)) {
             throw new Error("FiveSocket requires configured marketRegionsByInstrument symbols for execution policy")
@@ -261,4 +268,27 @@ export class MT5Plugin implements VenuePlugin {
         }
     }
 
+}
+
+function resolveMt5AccountExecutionPolicySources(
+    secrets: Record<string, string | null>,
+    fallbackPolicy?: Record<string, unknown>
+): Array<{ enabled: boolean, policy: unknown }> {
+    const { syncStrategies } = require("../state") as typeof import("../state")
+    const login = secrets.MT5_PRIMARY_LOGIN
+    const server = secrets.MT5_PRIMARY_SERVER
+    const siblings = (syncStrategies.mt5 ?? []).filter((entry) =>
+        entry.secrets.MT5_PRIMARY_LOGIN === login
+        && entry.secrets.MT5_PRIMARY_SERVER === server
+    )
+    if (siblings.length > 0) {
+        return siblings.map((entry) => ({
+            enabled: entry.strategy.enabled,
+            policy: entry.policy,
+        }))
+    }
+    if (fallbackPolicy) {
+        return [{ enabled: true, policy: fallbackPolicy }]
+    }
+    return []
 }

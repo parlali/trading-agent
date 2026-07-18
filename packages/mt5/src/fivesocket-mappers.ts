@@ -10,7 +10,8 @@ import type {
 import {
     fromDecimalString,
     fromOptionalDecimalString,
-    fromOptionalUnsignedIntString,
+    fromOptionalSafeIntegerString,
+    fromSafeIntegerString,
     fromUnsignedIntString,
 } from "./fivesocket-decimals"
 
@@ -149,7 +150,7 @@ export function mapFiveSocketBalanceToAccountInfo(balance: FiveSocketBalance): M
     const equity = fromDecimalString(balance.equity, "equity")
 
     return {
-        login: fromUnsignedIntString(balance.login, "login"),
+        login: fromSafeIntegerString(balance.login, "login"),
         name: balance.name,
         server: balance.server,
         company: balance.company,
@@ -165,8 +166,8 @@ export function mapFiveSocketBalanceToAccountInfo(balance: FiveSocketBalance): M
 }
 
 export function mapFiveSocketPosition(position: FiveSocketPosition): MT5Position {
-    const ticket = fromUnsignedIntString(position.id, "position.id")
-    const identifier = fromOptionalUnsignedIntString(position.identifier) ?? ticket
+    const ticket = fromSafeIntegerString(position.id, "position.id")
+    const identifier = fromOptionalSafeIntegerString(position.identifier) ?? ticket
 
     return {
         ticket,
@@ -189,7 +190,7 @@ export function mapFiveSocketPosition(position: FiveSocketPosition): MT5Position
 
 export function mapFiveSocketWorkingOrder(order: FiveSocketWorkingOrder): MT5OpenOrder {
     return {
-        ticket: fromUnsignedIntString(order.id, "order.id"),
+        ticket: fromSafeIntegerString(order.id, "order.id"),
         symbol: order.symbol,
         type: order.type,
         volumeInitial: fromDecimalString(order.volumeInitial, "order.volumeInitial"),
@@ -214,7 +215,7 @@ export function mapFiveSocketPositionClosures(deals: readonly FiveSocketDeal[]):
         if (leftTime !== rightTime) {
             return leftTime - rightTime
         }
-        return fromUnsignedIntString(left.id, "deal.id") - fromUnsignedIntString(right.id, "deal.id")
+        return fromSafeIntegerString(left.id, "deal.id") - fromSafeIntegerString(right.id, "deal.id")
     })
 
     for (const deal of ordered) {
@@ -222,7 +223,7 @@ export function mapFiveSocketPositionClosures(deals: readonly FiveSocketDeal[]):
             continue
         }
 
-        const positionId = fromUnsignedIntString(deal.positionId, "deal.positionId")
+        const positionId = fromSafeIntegerString(deal.positionId, "deal.positionId")
         if (positionId <= 0) {
             continue
         }
@@ -273,7 +274,7 @@ export function mapFiveSocketDealToClosure(
         return null
     }
 
-    const positionId = fromUnsignedIntString(deal.positionId, "deal.positionId")
+    const positionId = fromSafeIntegerString(deal.positionId, "deal.positionId")
     if (positionId <= 0) {
         return null
     }
@@ -281,8 +282,8 @@ export function mapFiveSocketDealToClosure(
     const volume = closedVolume ?? Math.abs(fromDecimalString(deal.volume, "deal.volume"))
 
     return {
-        ticket: fromUnsignedIntString(deal.id, "deal.id"),
-        orderId: fromUnsignedIntString(deal.orderId, "deal.orderId"),
+        ticket: fromSafeIntegerString(deal.id, "deal.id"),
+        orderId: fromSafeIntegerString(deal.orderId, "deal.orderId"),
         positionId,
         symbol: deal.symbol,
         side: deal.type === "buy" ? "short" : "long",
@@ -312,7 +313,7 @@ export function mapFiveSocketDealToPnlEvent(
     deal: FiveSocketDeal,
     currency: string
 ): MT5AccountPnlEvent | null {
-    const ticket = fromUnsignedIntString(deal.id, "deal.id")
+    const ticket = fromSafeIntegerString(deal.id, "deal.id")
     const occurredAt = Date.parse(deal.time) || 0
 
     if (deal.type === "buy" || deal.type === "sell") {

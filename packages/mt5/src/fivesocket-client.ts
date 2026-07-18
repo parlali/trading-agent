@@ -4,6 +4,7 @@ import {
     getErrorMessage,
     getExecutionErrorDetail,
     retryWithBackoff,
+    withTimeout,
 } from "@valiq-trading/core"
 import {
     MT5Client,
@@ -728,7 +729,7 @@ export class FiveSocketClient extends MT5Client {
 
                 const acceptStatuses = options.acceptStatuses ?? [200]
                 if (!acceptStatuses.includes(response.status)) {
-                    const text = await response.text().catch(() => "")
+                    const text = await readResponseText(response, options.budget)
                     const apiError = parseApiError(text)
                     throw createExecutionError(
                         "venue",
@@ -751,8 +752,20 @@ export class FiveSocketClient extends MT5Client {
                     return undefined as T
                 }
 
-                return (await response.json()) as T
+                return await readResponseJson<T>(response, options.budget)
             } catch (error) {
+                if (options.budget) {
+                    const budgetExhausted = asConnectBudgetExhausted(error)
+                    if (budgetExhausted) {
+                        throw budgetExhausted
+                    }
+                    try {
+                        options.budget.remaining()
+                    } catch (budgetError) {
+                        throw asConnectBudgetExhausted(budgetError) ?? budgetError
+                    }
+                }
+
                 const detail = getExecutionErrorDetail(error)
                 if (detail) {
                     throw error
@@ -828,10 +841,11 @@ async function retryWithConnectBudget<T>(
             return await execute()
         } catch (error) {
             lastError = error
-            const detail = getExecutionErrorDetail(error)
-            if (detail?.code === "CONNECT_BUDGET_EXHAUSTED") {
-                throw error
+            const budgetExhausted = asConnectBudgetExhausted(error)
+            if (budgetExhausted) {
+                throw budgetExhausted
             }
+            const detail = getExecutionErrorDetail(error)
             const shouldRetry = attempt < maxRetries && detail?.retryable === true
             if (!shouldRetry) {
                 throw error
@@ -841,28 +855,86 @@ async function retryWithConnectBudget<T>(
             let remaining: number
             try {
                 remaining = budget.remaining()
-            } catch {
-                throw error
+            } catch (budgetError) {
+                throw asConnectBudgetExhausted(budgetError) ?? createConnectBudgetExhaustedError({
+                    remainingMs: 0,
+                    requiredBackoffMs: delay,
+                    attempt,
+                })
             }
             if (remaining <= delay) {
-                throw createExecutionError(
-                    "timeout",
-                    "FiveSocket connect budget exhausted before retry backoff",
-                    {
-                        code: "CONNECT_BUDGET_EXHAUSTED",
-                        retryable: true,
-                        details: {
-                            remainingMs: remaining,
-                            requiredBackoffMs: delay,
-                            attempt,
-                        },
-                    }
-                )
+                throw createConnectBudgetExhaustedError({
+                    remainingMs: remaining,
+                    requiredBackoffMs: delay,
+                    attempt,
+                })
             }
             await sleep(delay)
         }
     }
     throw lastError
+}
+
+async function readResponseText(
+    response: Response,
+    budget?: TimeoutBudget
+): Promise<string> {
+    return await readUnderConnectBudget(
+        budget,
+        "FiveSocket response body",
+        async () => await response.text().catch(() => "")
+    )
+}
+
+async function readResponseJson<T>(
+    response: Response,
+    budget?: TimeoutBudget
+): Promise<T> {
+    return await readUnderConnectBudget(
+        budget,
+        "FiveSocket response json",
+        async () => (await response.json()) as T
+    )
+}
+
+async function readUnderConnectBudget<T>(
+    budget: TimeoutBudget | undefined,
+    name: string,
+    operation: () => Promise<T>
+): Promise<T> {
+    if (!budget) {
+        return await operation()
+    }
+
+    const remaining = budget.remaining()
+    try {
+        return await withTimeout(operation, remaining, name)
+    } catch (error) {
+        throw asConnectBudgetExhausted(error) ?? createConnectBudgetExhaustedError({
+            name,
+            remainingMs: 0,
+        })
+    }
+}
+
+function asConnectBudgetExhausted(error: unknown): Error | undefined {
+    const detail = getExecutionErrorDetail(error)
+    if (detail?.code === "CONNECT_BUDGET_EXHAUSTED") {
+        return error instanceof Error ? error : createConnectBudgetExhaustedError()
+    }
+    return undefined
+}
+
+function createConnectBudgetExhaustedError(details: Record<string, unknown> = {}): Error {
+    return createExecutionError(
+        "timeout",
+        "FiveSocket connect budget exhausted",
+        {
+            code: "CONNECT_BUDGET_EXHAUSTED",
+            retryable: true,
+            details,
+        }
+    )
 }
 
 function sleep(delayMs: number): Promise<void> {

@@ -10,18 +10,23 @@ import {
 } from "./fivesocket-decimals.ts"
 import {
     mapFiveSocketAccountPnlEvents,
+    mapFiveSocketDealToClosure,
     mapFiveSocketExecutionCommand,
     mapFiveSocketExecutionSymbol,
+    mapFiveSocketPosition,
     mapFiveSocketPositionClosures,
+    mapFiveSocketWorkingOrder,
 } from "./fivesocket-mappers.ts"
 import { FiveSocketClient } from "./fivesocket-client.ts"
 import { MT5Client, type MT5WorkerCredentials } from "./mt5-client.ts"
 import {
     createMT5TransportClient,
+    resolveCanonicalFiveSocketAccountExecutionSymbols,
     resolveFiveSocketExecutionSymbolsForPolicies,
     resolveMT5RuntimeConfig,
 } from "./runtime-config.ts"
 import { mapMT5OrderState, resolveMT5FilledQuantity } from "./venue-mappers.ts"
+import { getExecutionErrorDetail } from "@valiq-trading/core"
 
 const credentials: MT5WorkerCredentials = {
     login: 111,
@@ -629,6 +634,40 @@ describe("FiveSocketClient transport policy", () => {
         expect(Date.now() - startedAt).toBeLessThan(500)
     })
 
+    it("returns CONNECT_BUDGET_EXHAUSTED when a retryable body arrives after the connect budget", async () => {
+        const fetchImpl: typeof fetch = async () => {
+            return {
+                status: 503,
+                statusText: "Service Unavailable",
+                async text() {
+                    await new Promise((resolve) => setTimeout(resolve, 150))
+                    return JSON.stringify({
+                        error: { code: "unavailable", message: "slow body" },
+                    })
+                },
+                async json() {
+                    throw new Error("json should not be used")
+                },
+            } as unknown as Response
+        }
+
+        const client = new FiveSocketClient({
+            baseUrl: "https://api.fivesocket.com",
+            apiKey: "test-key",
+            connectTimeout: 40,
+            timeout: 30_000,
+            executionSymbols: [{ symbol: "XAUUSD", maxVolume: "1.0" }],
+            fetchImpl,
+        })
+
+        try {
+            await client.connect(credentials)
+            throw new Error("expected connect budget exhaustion")
+        } catch (error) {
+            expect(getExecutionErrorDetail(error)?.code).toBe("CONNECT_BUDGET_EXHAUSTED")
+        }
+    })
+
     it("uses connect budget for cold account-link on read paths", async () => {
         let sawPositionsGet = false
         const fetchImpl: typeof fetch = async (input, init) => {
@@ -1135,6 +1174,127 @@ describe("FiveSocket round-3 hardening", () => {
             comment: " vmte01abcde23456 ",
         })).rejects.toThrow("clientOrderId")
         expect(transport.calls()).toBe(0)
+    })
+
+    it("parses provider identity fields above uint32 with safe-integer bounds", () => {
+        const position = mapFiveSocketPosition({
+            id: "5000000000",
+            identifier: "5000000001",
+            symbol: "XAUUSD",
+            side: "buy",
+            volume: "0.01",
+            openPrice: "4700",
+            currentPrice: "4701",
+            profit: "1",
+            openedAt: "2026-01-01T00:00:00.000Z",
+            swap: "0",
+            magic: "42",
+        })
+        expect(position.ticket).toBe(5_000_000_000)
+        expect(position.identifier).toBe(5_000_000_001)
+        expect(position.magic).toBe(42)
+
+        const order = mapFiveSocketWorkingOrder({
+            id: "5000000000",
+            positionId: "5000000002",
+            symbol: "XAUUSD",
+            type: "buy",
+            state: "started",
+            volumeInitial: "0.01",
+            volumeCurrent: "0.01",
+            priceOpen: "4700",
+            setupAt: "2026-01-01T00:00:00.000Z",
+            magic: "7",
+        })
+        expect(order.ticket).toBe(5_000_000_000)
+        expect(order.magic).toBe(7)
+
+        const closure = mapFiveSocketDealToClosure({
+            id: "5000000000",
+            orderId: "5000000003",
+            positionId: "5000000004",
+            symbol: "XAUUSD",
+            type: "sell",
+            entry: "out",
+            volume: "0.01",
+            price: "4701",
+            profit: "1",
+            commission: "0",
+            swap: "0",
+            fee: "0",
+            magic: "9",
+            time: "2026-01-01T00:00:00.000Z",
+        })
+        expect(closure?.ticket).toBe(5_000_000_000)
+        expect(closure?.orderId).toBe(5_000_000_003)
+        expect(closure?.positionId).toBe(5_000_000_004)
+
+        expect(() => mapFiveSocketPosition({
+            id: "9007199254740993",
+            symbol: "XAUUSD",
+            side: "buy",
+            volume: "0.01",
+            openPrice: "4700",
+            currentPrice: "4701",
+            profit: "1",
+            openedAt: "2026-01-01T00:00:00.000Z",
+            swap: "0",
+            magic: "1",
+        })).toThrow("safe precision")
+        expect(() => fromUnsignedIntString("5000000000", "magic")).toThrow("Unsafe unsigned-int")
+    })
+
+    it("resolves the canonical enabled-strategy execution policy set", () => {
+        const enabledGold = {
+            enabled: true,
+            policy: {
+                llm: { provider: "openrouter", model: "openai/gpt-5.5" },
+                maxRiskPercent: 1,
+                minRiskReward: 1,
+                tradingHours: { start: "07:00", end: "21:00", timezone: "UTC" },
+                safety: {
+                    maxDrawdownDay: 3,
+                    maxDrawdownWeek: 10,
+                    cooldownMinutesAfterDayBreach: 720,
+                    cooldownMinutesAfterWeekBreach: 1440,
+                    strategyTimezone: "UTC",
+                    sessionFlat: { enabled: false, closeBufferMinutes: 15, timezone: "UTC" },
+                    account: { allocationPercent: 100 },
+                    expectedExternalInstruments: [],
+                },
+                dryRun: false,
+                allowMultiplePendingEntryOrdersPerInstrument: false,
+                allowOverlappingExposure: false,
+                marketRegionsByInstrument: { XAUUSD: ["US"] },
+            },
+        }
+        const enabledFx = {
+            enabled: true,
+            policy: {
+                ...enabledGold.policy,
+                marketRegionsByInstrument: { EURUSD: ["EU"] },
+            },
+        }
+        const disabledExtra = {
+            enabled: false,
+            policy: {
+                ...enabledGold.policy,
+                marketRegionsByInstrument: { BTCUSD: ["US"] },
+            },
+        }
+
+        expect(resolveCanonicalFiveSocketAccountExecutionSymbols(
+            [enabledGold, enabledFx, disabledExtra],
+            "1.0"
+        )).toEqual([
+            { symbol: "EURUSD", maxVolume: "1.0" },
+            { symbol: "XAUUSD", maxVolume: "1.0" },
+        ])
+
+        expect(() => resolveCanonicalFiveSocketAccountExecutionSymbols(
+            [{ enabled: true, policy: { broken: true } }],
+            "1.0"
+        )).toThrow()
     })
 })
 

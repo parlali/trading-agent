@@ -1,4 +1,4 @@
-import { requireResolvedSecret, type MT5Policy } from "@valiq-trading/core"
+import { requireResolvedSecret, mt5PolicySchema, type MT5Policy } from "@valiq-trading/core"
 import type { MT5WorkerCredentials } from "./mt5-client"
 import { MT5Client } from "./mt5-client"
 import {
@@ -160,4 +160,19 @@ export function resolveFiveSocketExecutionSymbolsForPolicies(
         policies.flatMap((policy) => resolveMT5ConfiguredSymbols(policy))
     )
     return toFiveSocketExecutionSymbols(symbols, defaultMaxVolume)
+}
+
+export type FiveSocketAccountExecutionPolicySource = {
+    enabled: boolean
+    policy: unknown
+}
+
+export function resolveCanonicalFiveSocketAccountExecutionSymbols(
+    strategies: readonly FiveSocketAccountExecutionPolicySource[],
+    defaultMaxVolume: string
+): FiveSocketExecutionSymbolPolicy[] {
+    const policies = strategies
+        .filter((strategy) => strategy.enabled)
+        .map((strategy) => mt5PolicySchema.parse(strategy.policy))
+    return resolveFiveSocketExecutionSymbolsForPolicies(policies, defaultMaxVolume)
 }

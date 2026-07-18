@@ -129,6 +129,14 @@ export function fromSafeIntegerString(value: string | null | undefined, field: s
     return parsed
 }
 
+export function fromOptionalSafeIntegerString(value: string | null | undefined): number | undefined {
+    if (value === null || value === undefined || value.trim() === "") {
+        return undefined
+    }
+
+    return fromSafeIntegerString(value, "optional")
+}
+
 function formatPlainDecimal(value: number, maxFractionDigits: number): string {
     if (!Number.isFinite(value)) {
         throw new Error(`Cannot serialize non-finite number: ${value}`)
