@@ -202,8 +202,8 @@ export class FiveSocketClient extends MT5Client {
         comment?: string
         deviation?: number
     }): Promise<MT5OrderResult> {
-        const accountId = await this.ensureAccount(credentials)
         const clientOrderId = requireClientOrderId(params.comment)
+        const accountId = await this.ensureAccount(credentials)
         const side = normalizeSide(params.side)
         const type = normalizeOrderType(params.orderType)
 
@@ -289,8 +289,8 @@ export class FiveSocketClient extends MT5Client {
         deviation?: number
         comment?: string
     }): Promise<MT5OrderResult> {
-        const accountId = await this.ensureAccount(credentials)
         const clientOrderId = requireClientOrderId(params.comment)
+        const accountId = await this.ensureAccount(credentials)
         const body: Record<string, unknown> = {
             clientOrderId,
         }
@@ -820,6 +820,20 @@ function requireClientOrderId(comment: string | undefined): string {
             {
                 code: "MISSING_CLIENT_ORDER_ID",
                 retryable: false,
+            }
+        )
+    }
+    if (value.length > 31 || !/^[A-Za-z0-9._:-]+$/.test(value)) {
+        throw createExecutionError(
+            "pre_validation",
+            `FiveSocket clientOrderId must match ^[A-Za-z0-9._:-]+$ and be 1..31 chars, received: ${value}`,
+            {
+                code: "INVALID_CLIENT_ORDER_ID",
+                retryable: false,
+                details: {
+                    clientOrderId: value,
+                    length: value.length,
+                },
             }
         )
     }

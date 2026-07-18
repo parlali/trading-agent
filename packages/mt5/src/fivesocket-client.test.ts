@@ -475,6 +475,33 @@ describe("FiveSocketClient transport policy", () => {
         expect(result.success).toBe(false)
     })
 
+    it("rejects invalid clientOrderId values before any network call", async () => {
+        let calls = 0
+        const fetchImpl: typeof fetch = async () => {
+            calls += 1
+            throw new Error("network should not be reached")
+        }
+        const client = createClient(fetchImpl)
+
+        await expect(client.submitOrder(credentials, {
+            symbol: "XAUUSD",
+            side: "buy",
+            volume: 0.01,
+            orderType: "market",
+            comment: "bad comment with spaces",
+        })).rejects.toThrow("clientOrderId")
+
+        await expect(client.submitOrder(credentials, {
+            symbol: "XAUUSD",
+            side: "buy",
+            volume: 0.01,
+            orderType: "market",
+            comment: "x".repeat(32),
+        })).rejects.toThrow("clientOrderId")
+
+        expect(calls).toBe(0)
+    })
+
     it("uses a unique Idempotency-Key per modify attempt even for A->B->A content replay", async () => {
         const modifyKeys: string[] = []
         const fetchImpl = createAccountAwareFetch(async (url, method, body, headers) => {
