@@ -162,6 +162,10 @@ async function recoverRejectedSubmitResult(
     },
     result: ExecutionResult
 ): Promise<ExecutionResult> {
+    if (result.errorDetail?.code === "NEEDS_MANUAL_RECONCILIATION") {
+        return result
+    }
+
     if (!args.venue.recoverSubmittedOrder) {
         return result
     }
