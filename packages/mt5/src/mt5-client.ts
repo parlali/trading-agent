@@ -127,6 +127,9 @@ export interface MT5OrderResult {
     bid?: number
     ask?: number
     success: boolean
+    unresolved?: boolean
+    commitUnknown?: boolean
+    commandId?: string
 }
 
 export interface MT5SymbolInfo {
@@ -322,6 +325,36 @@ export class MT5Client {
             successRetcodes?: number[]
         } = {}
     ): ExecutionResult {
+        if (result.unresolved) {
+            const errorDetail = createExecutionErrorDetail(
+                "venue",
+                result.retcodeDescription || "MT5 mutation unresolved; needs manual reconciliation",
+                {
+                    code: "NEEDS_MANUAL_RECONCILIATION",
+                    retryable: false,
+                    details: {
+                        retcode: result.retcode,
+                        retcodeExternal: result.retcodeExternal,
+                        comment: result.comment,
+                        bid: result.bid,
+                        ask: result.ask,
+                        commandId: result.commandId,
+                        unresolved: true,
+                    },
+                }
+            )
+
+            return {
+                orderId: result.orderId || result.dealId || options.fallbackOrderId || "",
+                providerOrderId: result.orderId || result.dealId || options.fallbackOrderId || undefined,
+                status: "rejected",
+                filledQuantity: 0,
+                timestamp: Date.now(),
+                error: formatExecutionError(errorDetail),
+                errorDetail,
+            }
+        }
+
         const success = result.success || (options.successRetcodes ?? []).includes(result.retcode)
         const errorDetail = success
             ? undefined
@@ -334,6 +367,8 @@ export class MT5Client {
                     comment: result.comment,
                     bid: result.bid,
                     ask: result.ask,
+                    commandId: result.commandId,
+                    commitUnknown: result.commitUnknown,
                 },
             })
 
