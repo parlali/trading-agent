@@ -252,7 +252,7 @@ export class FiveSocketClient extends MT5Client {
             body.takeProfit = toDecimalString(params.takeProfit)
         }
 
-        const idempotencyKey = `modify:${params.ticket}:${stableBodyKey(body)}`
+        const idempotencyKey = createAttemptIdempotencyKey("modify", params.ticket)
         const command = await this.mutateExecutionCommand(
             accountId,
             "PATCH",
@@ -267,7 +267,7 @@ export class FiveSocketClient extends MT5Client {
         ticket: number
     }): Promise<MT5OrderResult> {
         const accountId = await this.ensureAccount(credentials)
-        const idempotencyKey = `cancel:${params.ticket}`
+        const idempotencyKey = createAttemptIdempotencyKey("cancel", params.ticket)
         const command = await this.mutateExecutionCommand(
             accountId,
             "DELETE",
@@ -747,6 +747,10 @@ export class FiveSocketClient extends MT5Client {
 
 function accountCacheKey(credentials: MT5WorkerCredentials): string {
     return `${credentials.login}:${credentials.server}`
+}
+
+function createAttemptIdempotencyKey(operation: "modify" | "cancel", ticket: number): string {
+    return `${operation}:${ticket}:${crypto.randomUUID()}`
 }
 
 function requireClientOrderId(comment: string | undefined): string {

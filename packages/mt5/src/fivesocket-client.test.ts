@@ -366,6 +366,43 @@ describe("FiveSocketClient transport policy", () => {
         expect(result.unresolved).toBe(true)
         expect(result.success).toBe(false)
     })
+
+    it("uses a unique Idempotency-Key per modify attempt even for A->B->A content replay", async () => {
+        const modifyKeys: string[] = []
+        const fetchImpl = createAccountAwareFetch(async (url, method, body, headers) => {
+            if (method === "PATCH" && url.includes("/execution/orders/42")) {
+                modifyKeys.push(headers.get("Idempotency-Key") ?? "")
+                return jsonResponse({
+                    commandId: `cmd-${modifyKeys.length}`,
+                    operation: "order.modify",
+                    outcome: "accepted",
+                    status: "modified",
+                    retcode: 10009,
+                    retcodeExternal: null,
+                    retcodeDescription: "Request completed",
+                    orderId: "42",
+                    volume: "0",
+                    price: "0",
+                    stopLoss: body?.stopLoss,
+                    recovered: false,
+                    observedAt: new Date().toISOString(),
+                    latencyMs: 2,
+                })
+            }
+            throw new Error(`Unexpected ${method} ${url}`)
+        })
+
+        const client = createClient(fetchImpl)
+        await client.modifyOrder(credentials, { ticket: 42, stopLoss: 4700 })
+        await client.modifyOrder(credentials, { ticket: 42, stopLoss: 4680 })
+        await client.modifyOrder(credentials, { ticket: 42, stopLoss: 4700 })
+
+        expect(modifyKeys).toHaveLength(3)
+        expect(new Set(modifyKeys).size).toBe(3)
+        for (const key of modifyKeys) {
+            expect(key.startsWith("modify:42:")).toBe(true)
+        }
+    })
 })
 
 describe("MT5 runtime transport selection", () => {
@@ -504,11 +541,12 @@ function createClient(
 }
 
 function createAccountAwareFetch(
-    handler: (url: string, method: string, body: unknown) => Promise<Response>
+    handler: (url: string, method: string, body: any, headers: Headers) => Promise<Response>
 ): typeof fetch {
     return async (input, init) => {
         const url = String(input)
         const method = init?.method ?? "GET"
+        const headers = new Headers(init?.headers)
         const body = init?.body ? JSON.parse(String(init.body)) : undefined
         if (method === "POST" && url.endsWith("/v1/accounts")) {
             return jsonResponse({
@@ -519,7 +557,7 @@ function createAccountAwareFetch(
                 createdAt: new Date().toISOString(),
             }, 201)
         }
-        return await handler(url, method, body)
+        return await handler(url, method, body, headers)
     }
 }
 
