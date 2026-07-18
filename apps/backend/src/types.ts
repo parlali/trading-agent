@@ -13,7 +13,10 @@ export interface VenuePlugin {
     resolveSecretKeys(): string[]
     resolveAdditionalSecretKeys?(policy: Record<string, unknown>): string[]
 
-    validateEnvironment(secrets: Record<string, string | null>): Promise<void>
+    validateEnvironment(
+        secrets: Record<string, string | null>,
+        policy?: Record<string, unknown>
+    ): Promise<void>
 
     createVenueAdapter(
         policy: Record<string, unknown>,

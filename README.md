@@ -125,7 +125,10 @@ Set:
 MT5_TRANSPORT=fivesocket
 FIVESOCKET_API_KEY=
 FIVESOCKET_API_BASE_URL=https://api.fivesocket.com
+FIVESOCKET_DEFAULT_MAX_VOLUME=
 ```
+
+`FIVESOCKET_DEFAULT_MAX_VOLUME` is required for FiveSocket and is the explicit per-symbol execution-policy max volume (plain positive decimal string). There is no silent default.
 
 Account credentials remain the existing account-scoped `MT5_PRIMARY_LOGIN` / `MT5_PRIMARY_PASSWORD` / `MT5_PRIMARY_SERVER` secrets. The OpenAPI contract checked into `docs/fivesocket-openapi.json` is authoritative for request/response shapes.
 

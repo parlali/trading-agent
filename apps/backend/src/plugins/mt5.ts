@@ -45,16 +45,37 @@ export class MT5Plugin implements VenuePlugin {
         return []
     }
 
-    async validateEnvironment(secrets: Record<string, string | null>): Promise<void> {
+    async validateEnvironment(
+        secrets: Record<string, string | null>,
+        policy?: Record<string, unknown>
+    ): Promise<void> {
         const runtimeConfig = resolveMT5RuntimeConfig(secrets)
+        const allowedSymbols = policy
+            ? resolveMT5ConfiguredSymbols(mt5PolicySchema.parse(policy))
+            : []
+        const executionSymbols = runtimeConfig.transport === "fivesocket"
+            ? toFiveSocketExecutionSymbols(allowedSymbols, runtimeConfig.defaultMaxVolume)
+            : undefined
+
+        if (runtimeConfig.transport === "fivesocket" && (executionSymbols?.length ?? 0) === 0) {
+            throw new Error("FiveSocket preflight requires marketRegionsByInstrument symbols to configure execution policy")
+        }
+
         const healthClient = createMT5TransportClient(runtimeConfig, {
             timeout: 2_000,
+            executionSymbols,
         })
         await healthClient.getHealth()
 
-        const client = createMT5TransportClient(runtimeConfig)
+        const client = createMT5TransportClient(runtimeConfig, {
+            executionSymbols,
+        })
+        if (runtimeConfig.transport === "fivesocket") {
+            await client.connect(runtimeConfig.credentials)
+        }
         const venue = new MT5VenueAdapter(client, runtimeConfig.credentials, this.executionCostTracker, {
             allowUnscopedSymbolAccess: true,
+            ...(allowedSymbols.length > 0 ? { allowedSymbols } : {}),
         })
         await venue.ensureConnected()
     }
@@ -65,8 +86,14 @@ export class MT5Plugin implements VenuePlugin {
     ): VenueAdapter {
         const resolved = resolveMT5RuntimeConfig(secrets)
         const allowedSymbols = resolveMT5ConfiguredSymbols(mt5PolicySchema.parse(_policy))
+        const executionSymbols = resolved.transport === "fivesocket"
+            ? toFiveSocketExecutionSymbols(allowedSymbols, resolved.defaultMaxVolume)
+            : undefined
+        if (resolved.transport === "fivesocket" && (!executionSymbols || executionSymbols.length === 0)) {
+            throw new Error("FiveSocket requires configured marketRegionsByInstrument symbols for execution policy")
+        }
         const client = createMT5TransportClient(resolved, {
-            executionSymbols: toFiveSocketExecutionSymbols(allowedSymbols),
+            executionSymbols,
         })
         return new MT5VenueAdapter(client, resolved.credentials, this.executionCostTracker, {
             allowedSymbols,

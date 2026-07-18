@@ -51,7 +51,6 @@ export interface FiveSocketClientConfig {
     connectTimeout?: number
     fetchImpl?: typeof fetch
     executionSymbols?: readonly FiveSocketExecutionSymbolPolicy[]
-    defaultMaxVolume?: string
     commandPollAttempts?: number
     commandPollDelayMs?: number
     maxDealPages?: number
@@ -79,7 +78,6 @@ export class FiveSocketClient extends MT5Client {
     private readonly fsConnectTimeout: number
     private readonly fsFetchImpl: typeof fetch
     private readonly executionSymbols: readonly FiveSocketExecutionSymbolPolicy[]
-    private readonly defaultMaxVolume: string
     private readonly commandPollAttempts: number
     private readonly commandPollDelayMs: number
     private readonly maxDealPages: number
@@ -100,15 +98,15 @@ export class FiveSocketClient extends MT5Client {
         this.fsConnectTimeout = config.connectTimeout ?? Math.max(this.fsTimeout, 90_000)
         this.fsFetchImpl = config.fetchImpl ?? fetch
         this.executionSymbols = config.executionSymbols ?? []
-        this.defaultMaxVolume = config.defaultMaxVolume ?? "100"
         this.commandPollAttempts = config.commandPollAttempts ?? 3
         this.commandPollDelayMs = config.commandPollDelayMs ?? 250
         this.maxDealPages = config.maxDealPages ?? 10_000
     }
 
     override async connect(credentials: MT5WorkerCredentials): Promise<MT5AccountInfo> {
-        await this.ensureAccount(credentials, this.fsConnectTimeout)
-        return await this.getAccount(credentials)
+        const budget = createTimeoutBudget(this.fsConnectTimeout)
+        await this.ensureAccount(credentials, budget)
+        return await this.readAccountInfo(credentials, budget)
     }
 
     override async disconnect(): Promise<void> {
@@ -128,12 +126,19 @@ export class FiveSocketClient extends MT5Client {
     }
 
     override async getAccount(credentials: MT5WorkerCredentials): Promise<MT5AccountInfo> {
-        const accountId = await this.ensureAccount(credentials)
+        return await this.readAccountInfo(credentials)
+    }
+
+    private async readAccountInfo(
+        credentials: MT5WorkerCredentials,
+        budget?: TimeoutBudget
+    ): Promise<MT5AccountInfo> {
+        const accountId = await this.ensureAccount(credentials, budget)
         const balance = await this.requestJson<FiveSocketBalance>(
             "GET",
             `/v1/accounts/${encodeURIComponent(accountId)}/balance`,
             {
-                timeout: this.fsTimeout,
+                timeout: budget?.remaining() ?? this.fsTimeout,
                 retry: true,
             }
         )
@@ -402,8 +407,12 @@ export class FiveSocketClient extends MT5Client {
 
     private async ensureAccount(
         credentials: MT5WorkerCredentials,
-        timeout: number = this.fsTimeout
+        budgetOrTimeout: TimeoutBudget | number = this.fsTimeout
     ): Promise<string> {
+        const timeoutOf = typeof budgetOrTimeout === "number"
+            ? () => budgetOrTimeout
+            : () => budgetOrTimeout.remaining()
+
         const cacheKey = accountCacheKey(credentials)
         const cached = this.accountIdByKey.get(cacheKey)
         if (cached) {
@@ -424,7 +433,7 @@ export class FiveSocketClient extends MT5Client {
                         password: credentials.password,
                         server: credentials.server,
                     },
-                    timeout,
+                    timeout: timeoutOf(),
                     retry: false,
                     idempotencyKey,
                     acceptStatuses: [201],
@@ -433,7 +442,7 @@ export class FiveSocketClient extends MT5Client {
         } catch (error) {
             const detail = getExecutionErrorDetail(error)
             if (detail?.code === "conflict" || detail?.code === "409") {
-                linked = await this.findLinkedAccount(credentials, timeout)
+                linked = await this.findLinkedAccount(credentials, timeoutOf())
             } else {
                 throw error
             }
@@ -456,7 +465,7 @@ export class FiveSocketClient extends MT5Client {
             )
         }
 
-        await this.configureExecution(linked.id, timeout)
+        await this.configureExecution(linked.id, timeoutOf())
         this.accountIdByKey.set(cacheKey, linked.id)
         this.cachedLogin = credentials.login
         return linked.id
@@ -519,13 +528,27 @@ export class FiveSocketClient extends MT5Client {
     }
 
     private resolveExecutionSymbols(): FiveSocketExecutionSymbolPolicy[] {
-        if (this.executionSymbols.length > 0) {
-            return this.executionSymbols.map((entry) => ({
-                symbol: entry.symbol,
-                maxVolume: entry.maxVolume,
-            }))
+        if (this.executionSymbols.length === 0) {
+            return []
         }
-        return []
+        return this.executionSymbols.map((entry) => {
+            const maxVolume = entry.maxVolume.trim()
+            if (!maxVolume) {
+                throw createExecutionError(
+                    "pre_validation",
+                    `FiveSocket execution maxVolume is required for symbol ${entry.symbol}`,
+                    {
+                        code: "MISSING_MAX_VOLUME",
+                        retryable: false,
+                        details: { symbol: entry.symbol },
+                    }
+                )
+            }
+            return {
+                symbol: entry.symbol,
+                maxVolume,
+            }
+        })
     }
 
     private async listDeals(
@@ -757,6 +780,31 @@ export class FiveSocketClient extends MT5Client {
 
 function accountCacheKey(credentials: MT5WorkerCredentials): string {
     return `${credentials.login}:${credentials.server}`
+}
+
+type TimeoutBudget = {
+    remaining: () => number
+}
+
+function createTimeoutBudget(totalMs: number): TimeoutBudget {
+    const deadline = Date.now() + totalMs
+    return {
+        remaining: () => {
+            const left = deadline - Date.now()
+            if (left <= 0) {
+                throw createExecutionError(
+                    "timeout",
+                    `FiveSocket connect budget of ${totalMs}ms exhausted`,
+                    {
+                        code: "CONNECT_BUDGET_EXHAUSTED",
+                        retryable: true,
+                        details: { totalMs },
+                    }
+                )
+            }
+            return left
+        },
+    }
 }
 
 function createAttemptIdempotencyKey(operation: "modify" | "cancel", ticket: number): string {

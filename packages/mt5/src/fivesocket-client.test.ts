@@ -511,6 +511,64 @@ describe("FiveSocketClient transport policy", () => {
             expect(key.startsWith("modify:42:")).toBe(true)
         }
     })
+
+    it("applies the connect timeout as a cumulative cold-start budget", async () => {
+        const startedAt = Date.now()
+        const fetchImpl: typeof fetch = async (input, init) => {
+            const url = String(input)
+            const method = init?.method ?? "GET"
+            await new Promise((resolve) => setTimeout(resolve, 40))
+            if (method === "POST" && url.endsWith("/v1/accounts")) {
+                return jsonResponse({
+                    id: "acc-1",
+                    login: "111",
+                    server: "broker",
+                    status: "active",
+                    createdAt: new Date().toISOString(),
+                }, 201)
+            }
+            if (method === "PUT" && url.endsWith("/execution")) {
+                return jsonResponse({
+                    accountId: "acc-1",
+                    status: "enabled",
+                    symbols: [{ symbol: "XAUUSD", maxVolume: "1.0" }],
+                    updatedAt: new Date().toISOString(),
+                })
+            }
+            if (method === "GET" && url.endsWith("/balance")) {
+                return jsonResponse({
+                    accountId: "acc-1",
+                    login: "111",
+                    server: "broker",
+                    observedAt: new Date().toISOString(),
+                    latencyMs: 1,
+                    balance: "1000",
+                    equity: "1000",
+                    currency: "USD",
+                    credit: "0",
+                    margin: "0",
+                    marginFree: "1000",
+                    profit: "0",
+                    leverage: "100",
+                    name: "Demo",
+                    company: "Broker",
+                })
+            }
+            throw new Error(`Unexpected ${method} ${url}`)
+        }
+
+        const client = new FiveSocketClient({
+            baseUrl: "https://api.fivesocket.com",
+            apiKey: "test-key",
+            connectTimeout: 50,
+            timeout: 1_000,
+            executionSymbols: [{ symbol: "XAUUSD", maxVolume: "1.0" }],
+            fetchImpl,
+        })
+
+        await expect(client.connect(credentials)).rejects.toThrow("connect budget")
+        expect(Date.now() - startedAt).toBeLessThan(500)
+    })
 })
 
 describe("MT5 runtime transport selection", () => {
@@ -518,6 +576,7 @@ describe("MT5 runtime transport selection", () => {
         const runtime = resolveMT5RuntimeConfig({
             MT5_TRANSPORT: "fivesocket",
             FIVESOCKET_API_KEY: "fs-key",
+            FIVESOCKET_DEFAULT_MAX_VOLUME: "1.0",
             MT5_PRIMARY_LOGIN: "111",
             MT5_PRIMARY_PASSWORD: "secret",
             MT5_PRIMARY_SERVER: "broker",
@@ -532,6 +591,7 @@ describe("MT5 runtime transport selection", () => {
         }
         expect(runtime.baseUrl).toBe("https://api.fivesocket.com")
         expect(runtime.apiKey).toBe("fs-key")
+        expect(runtime.defaultMaxVolume).toBe("1.0")
 
         const client = createMT5TransportClient(runtime)
         expect(client).toBeInstanceOf(FiveSocketClient)
@@ -547,6 +607,7 @@ describe("MT5 runtime transport selection", () => {
             MT5_PRIMARY_SERVER: "broker",
             FIVESOCKET_API_KEY: null,
             FIVESOCKET_API_BASE_URL: null,
+            FIVESOCKET_DEFAULT_MAX_VOLUME: null,
         }, {})
 
         expect(runtime.transport).toBe("worker")

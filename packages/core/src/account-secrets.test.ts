@@ -12,6 +12,7 @@ describe("account scoped secrets", () => {
             "MT5_WORKER_ACCESS_KEY",
             "FIVESOCKET_API_BASE_URL",
             "FIVESOCKET_API_KEY",
+            "FIVESOCKET_DEFAULT_MAX_VOLUME",
             "MT5_PRIMARY_LOGIN",
             "MT5_PRIMARY_PASSWORD",
             "MT5_PRIMARY_SERVER",

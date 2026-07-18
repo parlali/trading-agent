@@ -12,6 +12,7 @@ export const MT5_RUNTIME_SECRET_KEYS = [
     "MT5_WORKER_ACCESS_KEY",
     "FIVESOCKET_API_BASE_URL",
     "FIVESOCKET_API_KEY",
+    "FIVESOCKET_DEFAULT_MAX_VOLUME",
     "MT5_PRIMARY_LOGIN",
     "MT5_PRIMARY_PASSWORD",
     "MT5_PRIMARY_SERVER",
@@ -30,6 +31,7 @@ export interface MT5FiveSocketRuntimeConfig {
     transport: "fivesocket"
     baseUrl: string
     apiKey: string
+    defaultMaxVolume: string
     credentials: MT5WorkerCredentials
 }
 
@@ -70,11 +72,23 @@ export function resolveMT5RuntimeConfig(
         if (!apiKey) {
             throw new Error("Missing required secret: FIVESOCKET_API_KEY")
         }
+        const defaultMaxVolume = (
+            secrets.FIVESOCKET_DEFAULT_MAX_VOLUME
+            ?? env.FIVESOCKET_DEFAULT_MAX_VOLUME
+            ?? ""
+        ).trim()
+        if (!defaultMaxVolume) {
+            throw new Error("Missing required secret: FIVESOCKET_DEFAULT_MAX_VOLUME")
+        }
+        if (!/^(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$/.test(defaultMaxVolume) || Number(defaultMaxVolume) <= 0) {
+            throw new Error("FIVESOCKET_DEFAULT_MAX_VOLUME must be a positive plain decimal string")
+        }
 
         return {
             transport: "fivesocket",
             baseUrl,
             apiKey,
+            defaultMaxVolume,
             credentials,
         }
     }
@@ -91,7 +105,6 @@ export function createMT5TransportClient(
     runtime: MT5RuntimeConfig,
     options: {
         executionSymbols?: readonly FiveSocketExecutionSymbolPolicy[]
-        defaultMaxVolume?: string
         timeout?: number
         connectTimeout?: number
         fetchImpl?: typeof fetch
@@ -102,7 +115,6 @@ export function createMT5TransportClient(
             baseUrl: runtime.baseUrl,
             apiKey: runtime.apiKey,
             executionSymbols: options.executionSymbols,
-            defaultMaxVolume: options.defaultMaxVolume,
             timeout: options.timeout,
             connectTimeout: options.connectTimeout,
             fetchImpl: options.fetchImpl,
@@ -120,10 +132,18 @@ export function createMT5TransportClient(
 
 export function toFiveSocketExecutionSymbols(
     symbols: readonly string[],
-    defaultMaxVolume: string = "100"
+    maxVolume: string
 ): FiveSocketExecutionSymbolPolicy[] {
+    const normalizedMaxVolume = maxVolume.trim()
+    if (!normalizedMaxVolume) {
+        throw new Error("FiveSocket maxVolume is required")
+    }
+    if (!/^(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$/.test(normalizedMaxVolume) || Number(normalizedMaxVolume) <= 0) {
+        throw new Error(`FiveSocket maxVolume must be a positive plain decimal string, received: ${maxVolume}`)
+    }
+
     return symbols.map((symbol) => ({
         symbol,
-        maxVolume: defaultMaxVolume,
+        maxVolume: normalizedMaxVolume,
     }))
 }
