@@ -17,8 +17,9 @@ import {
     type MT5WorkerCredentials,
 } from "./mt5-client"
 import {
-    toDecimalString,
+    toPriceDecimalString,
     toUnsignedIntString,
+    toVolumeDecimalString,
 } from "./fivesocket-decimals"
 import {
     mapFiveSocketBalanceToAccountInfo,
@@ -207,18 +208,18 @@ export class FiveSocketClient extends MT5Client {
             symbol: params.symbol,
             side,
             type,
-            volume: toDecimalString(params.volume),
+            volume: toVolumeDecimalString(params.volume),
             magic: toUnsignedIntString(params.magic ?? 0),
         }
 
         if (params.price !== undefined) {
-            body.price = toDecimalString(params.price)
+            body.price = toPriceDecimalString(params.price)
         }
         if (params.stopLoss !== undefined) {
-            body.stopLoss = toDecimalString(params.stopLoss)
+            body.stopLoss = toPriceDecimalString(params.stopLoss)
         }
         if (params.takeProfit !== undefined) {
-            body.takeProfit = toDecimalString(params.takeProfit)
+            body.takeProfit = toPriceDecimalString(params.takeProfit)
         }
         if (params.deviation !== undefined) {
             body.deviationPoints = params.deviation
@@ -243,13 +244,13 @@ export class FiveSocketClient extends MT5Client {
         const accountId = await this.ensureAccount(credentials)
         const body: Record<string, unknown> = {}
         if (params.price !== undefined) {
-            body.price = toDecimalString(params.price)
+            body.price = toPriceDecimalString(params.price)
         }
         if (params.stopLoss !== undefined) {
-            body.stopLoss = toDecimalString(params.stopLoss)
+            body.stopLoss = toPriceDecimalString(params.stopLoss)
         }
         if (params.takeProfit !== undefined) {
-            body.takeProfit = toDecimalString(params.takeProfit)
+            body.takeProfit = toPriceDecimalString(params.takeProfit)
         }
 
         const idempotencyKey = createAttemptIdempotencyKey("modify", params.ticket)
@@ -290,7 +291,7 @@ export class FiveSocketClient extends MT5Client {
             clientOrderId,
         }
         if (params.volume !== undefined) {
-            body.volume = toDecimalString(params.volume)
+            body.volume = toVolumeDecimalString(params.volume)
         }
         if (params.deviation !== undefined) {
             body.deviationPoints = params.deviation

@@ -3,7 +3,9 @@ import {
     fromDecimalString,
     fromUnsignedIntString,
     toDecimalString,
+    toPriceDecimalString,
     toUnsignedIntString,
+    toVolumeDecimalString,
 } from "./fivesocket-decimals.ts"
 import { mapFiveSocketExecutionCommand } from "./fivesocket-mappers.ts"
 import { FiveSocketClient } from "./fivesocket-client.ts"
@@ -22,11 +24,12 @@ const credentials: MT5WorkerCredentials = {
 
 describe("FiveSocket decimal string conversion", () => {
     it("round-trips volumes, prices, magic, and leverage as decimal/unsigned strings", () => {
-        expect(toDecimalString(0.01)).toBe("0.01")
-        expect(toDecimalString(4715.5)).toBe("4715.5")
+        expect(toVolumeDecimalString(0.01)).toBe("0.01")
+        expect(toPriceDecimalString(4715.5)).toBe("4715.5")
         expect(toDecimalString(0)).toBe("0")
         expect(toUnsignedIntString(0)).toBe("0")
         expect(toUnsignedIntString(123456)).toBe("123456")
+        expect(toUnsignedIntString(4_294_967_295)).toBe("4294967295")
 
         expect(fromDecimalString("0.01", "volume")).toBe(0.01)
         expect(fromDecimalString("4715.5", "price")).toBe(4715.5)
@@ -34,10 +37,22 @@ describe("FiveSocket decimal string conversion", () => {
         expect(fromUnsignedIntString("0", "magic")).toBe(0)
     })
 
+    it("rejects scientific notation, float artifacts, and invalid volumes", () => {
+        expect(toVolumeDecimalString(0.1 + 0.2)).toBe("0.3")
+        expect(toVolumeDecimalString(1e-7)).toBe("0.0000001")
+        expect(() => toVolumeDecimalString(0)).toThrow("positive decimal")
+        expect(() => toVolumeDecimalString(-0.01)).toThrow("positive decimal")
+        expect(() => toVolumeDecimalString(1e21)).toThrow("safe plain serialization")
+        expect(() => fromDecimalString("1e-7", "volume")).toThrow("Invalid decimal")
+        expect(() => fromDecimalString("1234567890123456", "volume")).toThrow("safe precision")
+    })
+
     it("rejects invalid magic/leverage strings", () => {
         expect(() => fromUnsignedIntString("1.5", "magic")).toThrow("Invalid unsigned-int")
         expect(() => fromUnsignedIntString("-1", "leverage")).toThrow("Invalid unsigned-int")
         expect(() => toUnsignedIntString(1.5)).toThrow("non-negative integer")
+        expect(() => toUnsignedIntString(4_294_967_296)).toThrow("uint32 max")
+        expect(() => fromUnsignedIntString("4294967296", "magic")).toThrow("Unsafe unsigned-int")
     })
 })
 
