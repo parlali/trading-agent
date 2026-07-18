@@ -7,7 +7,12 @@ import {
     toUnsignedIntString,
     toVolumeDecimalString,
 } from "./fivesocket-decimals.ts"
-import { mapFiveSocketExecutionCommand } from "./fivesocket-mappers.ts"
+import {
+    mapFiveSocketAccountPnlEvents,
+    mapFiveSocketExecutionCommand,
+    mapFiveSocketExecutionSymbol,
+    mapFiveSocketPositionClosures,
+} from "./fivesocket-mappers.ts"
 import { FiveSocketClient } from "./fivesocket-client.ts"
 import { MT5Client, type MT5WorkerCredentials } from "./mt5-client.ts"
 import {
@@ -551,7 +556,190 @@ describe("MT5 runtime transport selection", () => {
     })
 })
 
-describe("FiveSocket getOrderStatus remaining volume contract", () => {
+describe("FiveSocket worker-mirrored read mappings", () => {
+    it("maps sell exits as long closures and reconstructs INOUT reversal volume", () => {
+        const closures = mapFiveSocketPositionClosures([
+            {
+                id: "1",
+                orderId: "10",
+                positionId: "100",
+                symbol: "XAUUSD",
+                type: "buy",
+                entry: "in",
+                volume: "1.0",
+                price: "4700",
+                profit: "0",
+                commission: "-0.5",
+                swap: "0",
+                fee: "0",
+                magic: "0",
+                time: "2026-01-01T00:00:00.000Z",
+            },
+            {
+                id: "2",
+                orderId: "11",
+                positionId: "100",
+                symbol: "XAUUSD",
+                type: "sell",
+                entry: "inout",
+                volume: "1.5",
+                price: "4710",
+                profit: "10",
+                commission: "-0.5",
+                swap: "0",
+                fee: "0",
+                magic: "0",
+                time: "2026-01-01T01:00:00.000Z",
+            },
+        ])
+
+        expect(closures).toHaveLength(1)
+        expect(closures[0]).toMatchObject({
+            side: "long",
+            volume: 1,
+            positionId: 100,
+        })
+    })
+
+    it("emits entry-charge pnl events for entry deal commission/fee/swap", () => {
+        const events = mapFiveSocketAccountPnlEvents([
+            {
+                id: "9",
+                orderId: "90",
+                positionId: "900",
+                symbol: "XAUUSD",
+                type: "buy",
+                entry: "in",
+                volume: "0.1",
+                price: "4700",
+                profit: "0",
+                commission: "-1.25",
+                swap: "0",
+                fee: "-0.25",
+                magic: "0",
+                time: "2026-01-01T00:00:00.000Z",
+            },
+        ], "USD")
+
+        expect(events).toEqual([
+            expect.objectContaining({
+                providerEventId: "mt5-deal:9:entry-charges",
+                eventType: "fee",
+                amount: -1.5,
+                currency: "USD",
+            }),
+        ])
+    })
+
+    it("uses point as pip size for 2/4-digit symbols", () => {
+        expect(mapFiveSocketExecutionSymbol({
+            symbol: "EURUSD",
+            digits: 4,
+            point: "0.0001",
+            contractSize: "100000",
+            tickSize: "0.0001",
+            tickValue: "1",
+            currencyBase: "EUR",
+            currencyProfit: "USD",
+            volumeMin: "0.01",
+            volumeMax: "100",
+            volumeStep: "0.01",
+            bid: "1.1",
+            ask: "1.1002",
+            spreadPoints: 2,
+            fillingMode: 1,
+        }).pipSize).toBe(0.0001)
+
+        expect(mapFiveSocketExecutionSymbol({
+            symbol: "EURUSD",
+            digits: 5,
+            point: "0.00001",
+            contractSize: "100000",
+            tickSize: "0.00001",
+            tickValue: "1",
+            currencyBase: "EUR",
+            currencyProfit: "USD",
+            volumeMin: "0.01",
+            volumeMax: "100",
+            volumeStep: "0.01",
+            bid: "1.1",
+            ask: "1.10002",
+            spreadPoints: 2,
+            fillingMode: 1,
+        }).pipSize).toBe(0.0001)
+    })
+
+    it("fails loudly when deals pagination cannot exhaust nextCursor", async () => {
+        const fetchImpl = createAccountAwareFetch(async (url, method) => {
+            if (method === "GET" && url.includes("/deals")) {
+                return jsonResponse({
+                    accountId: "acc-1",
+                    login: "111",
+                    server: "broker",
+                    observedAt: new Date().toISOString(),
+                    latencyMs: 1,
+                    data: [],
+                    nextCursor: "keep-going",
+                })
+            }
+            if (method === "GET" && url.endsWith("/balance")) {
+                return jsonResponse({
+                    accountId: "acc-1",
+                    login: "111",
+                    server: "broker",
+                    observedAt: new Date().toISOString(),
+                    latencyMs: 1,
+                    balance: "1000",
+                    equity: "1000",
+                    currency: "USD",
+                    credit: "0",
+                    margin: "0",
+                    marginFree: "1000",
+                    profit: "0",
+                    leverage: "100",
+                    name: "Demo",
+                    company: "Broker",
+                })
+            }
+            throw new Error(`Unexpected ${method} ${url}`)
+        })
+
+        const client = new FiveSocketClient({
+            baseUrl: "https://api.fivesocket.com",
+            apiKey: "test-key",
+            timeout: 1_000,
+            maxDealPages: 2,
+            fetchImpl,
+        })
+
+        await expect(client.getPositionClosures(credentials, 1)).rejects.toThrow("pagination exceeded")
+    })
+
+    it("treats only HTTP 404 as order-not-found, not 500 messages mentioning 404", async () => {
+        const fetchImpl = createAccountAwareFetch(async (url, method) => {
+            if (method === "GET" && url.includes("/execution/orders/404")) {
+                return new Response(JSON.stringify({
+                    error: { code: "order_not_found", message: "missing", requestId: "r1" },
+                }), { status: 404 })
+            }
+            if (method === "GET" && url.includes("/execution/orders/500")) {
+                return new Response(JSON.stringify({
+                    error: { code: "internal_error", message: "upstream 404 while reading history", requestId: "r2" },
+                }), { status: 500 })
+            }
+            throw new Error(`Unexpected ${method} ${url}`)
+        })
+
+        const client = new FiveSocketClient({
+            baseUrl: "https://api.fivesocket.com",
+            apiKey: "test-key",
+            timeout: 200,
+            fetchImpl,
+        })
+        expect(await client.getOrderStatus(credentials, 404)).toBeNull()
+        await expect(client.getOrderStatus(credentials, 500)).rejects.toThrow("FiveSocket error")
+    }, 20_000)
+
     it("returns remaining volumeCurrent so the adapter can infer filled quantity", async () => {
         const fetchImpl = createAccountAwareFetch(async (url, method) => {
             if (method === "GET" && url.includes("/execution/orders/1001")) {

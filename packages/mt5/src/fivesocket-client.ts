@@ -22,12 +22,12 @@ import {
     toVolumeDecimalString,
 } from "./fivesocket-decimals"
 import {
+    mapFiveSocketAccountPnlEvents,
     mapFiveSocketBalanceToAccountInfo,
-    mapFiveSocketDealToClosure,
-    mapFiveSocketDealToPnlEvent,
     mapFiveSocketExecutionCommand,
     mapFiveSocketExecutionSymbol,
     mapFiveSocketPosition,
+    mapFiveSocketPositionClosures,
     mapFiveSocketReadiness,
     mapFiveSocketWorkingOrder,
     type FiveSocketApiReadiness,
@@ -54,6 +54,7 @@ export interface FiveSocketClientConfig {
     defaultMaxVolume?: string
     commandPollAttempts?: number
     commandPollDelayMs?: number
+    maxDealPages?: number
 }
 
 type FiveSocketApiErrorBody = {
@@ -81,6 +82,7 @@ export class FiveSocketClient extends MT5Client {
     private readonly defaultMaxVolume: string
     private readonly commandPollAttempts: number
     private readonly commandPollDelayMs: number
+    private readonly maxDealPages: number
     private readonly accountIdByKey = new Map<string, string>()
     private cachedLogin: number | null = null
 
@@ -101,6 +103,7 @@ export class FiveSocketClient extends MT5Client {
         this.defaultMaxVolume = config.defaultMaxVolume ?? "100"
         this.commandPollAttempts = config.commandPollAttempts ?? 3
         this.commandPollDelayMs = config.commandPollDelayMs ?? 250
+        this.maxDealPages = config.maxDealPages ?? 10_000
     }
 
     override async connect(credentials: MT5WorkerCredentials): Promise<MT5AccountInfo> {
@@ -170,9 +173,7 @@ export class FiveSocketClient extends MT5Client {
         lookbackHours: number = 24
     ): Promise<MT5PositionClosure[]> {
         const deals = await this.listDeals(credentials, lookbackHours)
-        return deals
-            .map(mapFiveSocketDealToClosure)
-            .filter((closure): closure is MT5PositionClosure => closure !== null)
+        return mapFiveSocketPositionClosures(deals)
     }
 
     override async getAccountPnlEvents(
@@ -181,9 +182,7 @@ export class FiveSocketClient extends MT5Client {
     ): Promise<MT5AccountPnlEvent[]> {
         const account = await this.getAccount(credentials)
         const deals = await this.listDeals(credentials, lookbackHours)
-        return deals
-            .map((deal) => mapFiveSocketDealToPnlEvent(deal, account.currency))
-            .filter((event): event is MT5AccountPnlEvent => event !== null)
+        return mapFiveSocketAccountPnlEvents(deals, account.currency)
     }
 
     override async submitOrder(credentials: MT5WorkerCredentials, params: {
@@ -393,11 +392,8 @@ export class FiveSocketClient extends MT5Client {
             }
         } catch (error) {
             const detail = getExecutionErrorDetail(error)
-            if (detail?.code === "404" || detail?.code === "order_not_found") {
-                return null
-            }
-            const message = error instanceof Error ? error.message : String(error)
-            if (message.includes("404")) {
+            const status = detail?.details?.status
+            if (status === 404 || detail?.code === "order_not_found") {
                 return null
             }
             throw error
@@ -541,8 +537,9 @@ export class FiveSocketClient extends MT5Client {
         const from = new Date(to.getTime() - Math.max(lookbackHours, 1) * 60 * 60 * 1000)
         const deals: FiveSocketDeal[] = []
         let cursor: string | null = null
+        const maxPages = this.maxDealPages
 
-        for (let page = 0; page < 20; page += 1) {
+        for (let page = 0; page < maxPages; page += 1) {
             const query = new URLSearchParams({
                 from: from.toISOString(),
                 to: to.toISOString(),
@@ -567,11 +564,23 @@ export class FiveSocketClient extends MT5Client {
             deals.push(...(response.data ?? []))
             cursor = response.nextCursor
             if (!cursor) {
-                break
+                return deals
             }
         }
 
-        return deals
+        throw createExecutionError(
+            "venue",
+            `FiveSocket deals pagination exceeded ${maxPages} pages without exhausting nextCursor`,
+            {
+                code: "DEALS_PAGINATION_EXHAUSTED",
+                retryable: false,
+                details: {
+                    accountId,
+                    pages: maxPages,
+                    collected: deals.length,
+                },
+            }
+        )
     }
 
     private async mutateExecutionCommand(

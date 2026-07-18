@@ -205,7 +205,66 @@ export function mapFiveSocketWorkingOrder(order: FiveSocketWorkingOrder): MT5Ope
     }
 }
 
-export function mapFiveSocketDealToClosure(deal: FiveSocketDeal): MT5PositionClosure | null {
+export function mapFiveSocketPositionClosures(deals: readonly FiveSocketDeal[]): MT5PositionClosure[] {
+    const result: MT5PositionClosure[] = []
+    const positionVolumes = new Map<number, number>()
+    const ordered = [...deals].sort((left, right) => {
+        const leftTime = Date.parse(left.time) || 0
+        const rightTime = Date.parse(right.time) || 0
+        if (leftTime !== rightTime) {
+            return leftTime - rightTime
+        }
+        return fromUnsignedIntString(left.id, "deal.id") - fromUnsignedIntString(right.id, "deal.id")
+    })
+
+    for (const deal of ordered) {
+        if (deal.type !== "buy" && deal.type !== "sell") {
+            continue
+        }
+
+        const positionId = fromUnsignedIntString(deal.positionId, "deal.positionId")
+        if (positionId <= 0) {
+            continue
+        }
+
+        const dealVolume = Math.abs(fromDecimalString(deal.volume, "deal.volume"))
+        if (deal.entry === "in") {
+            positionVolumes.set(positionId, (positionVolumes.get(positionId) ?? 0) + dealVolume)
+            continue
+        }
+
+        if (deal.entry === "out" || deal.entry === "out_by") {
+            const mapped = mapFiveSocketDealToClosure(deal, dealVolume)
+            if (mapped) {
+                result.push(mapped)
+            }
+            positionVolumes.set(
+                positionId,
+                Math.max((positionVolumes.get(positionId) ?? 0) - dealVolume, 0)
+            )
+            continue
+        }
+
+        if (deal.entry === "inout") {
+            const previousVolume = positionVolumes.get(positionId) ?? 0
+            if (previousVolume <= 0) {
+                throw new Error(`Cannot determine closed volume for FiveSocket INOUT reversal deal ${deal.id}`)
+            }
+            const mapped = mapFiveSocketDealToClosure(deal, previousVolume)
+            if (mapped) {
+                result.push(mapped)
+            }
+            positionVolumes.set(positionId, Math.max(dealVolume - previousVolume, 0))
+        }
+    }
+
+    return result
+}
+
+export function mapFiveSocketDealToClosure(
+    deal: FiveSocketDeal,
+    closedVolume?: number
+): MT5PositionClosure | null {
     if (deal.entry !== "out" && deal.entry !== "inout" && deal.entry !== "out_by") {
         return null
     }
@@ -214,13 +273,20 @@ export function mapFiveSocketDealToClosure(deal: FiveSocketDeal): MT5PositionClo
         return null
     }
 
+    const positionId = fromUnsignedIntString(deal.positionId, "deal.positionId")
+    if (positionId <= 0) {
+        return null
+    }
+
+    const volume = closedVolume ?? Math.abs(fromDecimalString(deal.volume, "deal.volume"))
+
     return {
         ticket: fromUnsignedIntString(deal.id, "deal.id"),
         orderId: fromUnsignedIntString(deal.orderId, "deal.orderId"),
-        positionId: fromUnsignedIntString(deal.positionId, "deal.positionId"),
+        positionId,
         symbol: deal.symbol,
-        side: deal.type === "buy" ? "long" : "short",
-        volume: fromDecimalString(deal.volume, "deal.volume"),
+        side: deal.type === "buy" ? "short" : "long",
+        volume,
         price: fromDecimalString(deal.price, "deal.price"),
         profit: fromDecimalString(deal.profit, "deal.profit"),
         swap: fromDecimalString(deal.swap, "deal.swap"),
@@ -233,26 +299,78 @@ export function mapFiveSocketDealToClosure(deal: FiveSocketDeal): MT5PositionClo
     }
 }
 
+export function mapFiveSocketAccountPnlEvents(
+    deals: readonly FiveSocketDeal[],
+    currency: string
+): MT5AccountPnlEvent[] {
+    return deals
+        .map((deal) => mapFiveSocketDealToPnlEvent(deal, currency))
+        .filter((event): event is MT5AccountPnlEvent => event !== null)
+}
+
 export function mapFiveSocketDealToPnlEvent(
     deal: FiveSocketDeal,
     currency: string
 ): MT5AccountPnlEvent | null {
-    const eventType = resolvePnlEventType(deal.type)
+    const ticket = fromUnsignedIntString(deal.id, "deal.id")
+    const occurredAt = Date.parse(deal.time) || 0
+
+    if (deal.type === "buy" || deal.type === "sell") {
+        if (deal.entry === "out" || deal.entry === "out_by" || deal.entry === "inout") {
+            return null
+        }
+
+        const commission = fromDecimalString(deal.commission, "deal.commission")
+        const fee = fromDecimalString(deal.fee, "deal.fee")
+        const swap = fromDecimalString(deal.swap, "deal.swap")
+        const amount = commission + fee + swap
+        if (amount === 0) {
+            return null
+        }
+
+        return {
+            providerEventId: `mt5-deal:${ticket}:entry-charges`,
+            eventType: commission + fee !== 0 ? "fee" : "adjustment",
+            instrument: deal.symbol || undefined,
+            amount,
+            currency,
+            occurredAt,
+            metadata: {
+                source: "fivesocket_history_deals",
+                dealTicket: ticket,
+                orderId: deal.orderId,
+                positionId: deal.positionId,
+                entry: deal.entry,
+                dealType: deal.type,
+                commission,
+                fee,
+                swap,
+            },
+        }
+    }
+
+    const eventType = resolveBalancePnlEventType(deal.type)
     if (!eventType) {
         return null
     }
 
+    const amount = fromDecimalString(deal.profit, "deal.profit")
+    if (amount === 0) {
+        return null
+    }
+
     return {
-        providerEventId: deal.id,
+        providerEventId: `mt5-deal:${ticket}:balance`,
         eventType,
         instrument: deal.symbol || undefined,
-        amount: fromDecimalString(deal.profit, "deal.profit"),
+        amount,
         currency,
-        occurredAt: Date.parse(deal.time) || 0,
+        occurredAt,
         metadata: {
-            dealType: deal.type,
+            source: "fivesocket_history_deals",
+            dealTicket: ticket,
             orderId: deal.orderId,
-            positionId: deal.positionId,
+            dealType: deal.type,
             comment: deal.comment,
         },
     }
@@ -262,12 +380,13 @@ export function mapFiveSocketExecutionSymbol(symbol: FiveSocketExecutionSymbol):
     const point = fromDecimalString(symbol.point, "symbol.point")
     const bid = fromDecimalString(symbol.bid, "symbol.bid")
     const ask = fromDecimalString(symbol.ask, "symbol.ask")
+    const pipSize = symbol.digits === 3 || symbol.digits === 5 ? point * 10 : point
 
     return {
         symbol: symbol.symbol,
         digits: symbol.digits,
         point,
-        pipSize: point * 10,
+        pipSize,
         tickValue: fromDecimalString(symbol.tickValue, "symbol.tickValue"),
         contractSize: fromDecimalString(symbol.contractSize, "symbol.contractSize"),
         currency: symbol.currencyProfit || symbol.currencyBase,
@@ -390,7 +509,7 @@ export function mapFiveSocketReadiness(readiness: FiveSocketApiReadiness, login:
     }
 }
 
-function resolvePnlEventType(dealType: string): MT5AccountPnlEvent["eventType"] | null {
+function resolveBalancePnlEventType(dealType: string): MT5AccountPnlEvent["eventType"] | null {
     switch (dealType) {
         case "interest":
             return "funding_fee"
@@ -399,12 +518,11 @@ function resolvePnlEventType(dealType: string): MT5AccountPnlEvent["eventType"] 
         case "commission_monthly":
         case "agent_daily":
         case "agent_monthly":
-        case "fee":
+        case "charge":
         case "tax":
             return "fee"
         case "balance":
         case "credit":
-        case "charge":
         case "correction":
         case "bonus":
         case "dividend":
