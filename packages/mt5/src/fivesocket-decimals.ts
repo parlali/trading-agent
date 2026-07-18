@@ -1,4 +1,5 @@
 const OPENAPI_DECIMAL_PATTERN = /^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$/
+const DECIMAL_READ_PATTERN = /^[-+]?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][-+]?[0-9]+)?$/
 const VOLUME_MAX_FRACTION_DIGITS = 8
 const PRICE_MAX_FRACTION_DIGITS = 8
 const UNSIGNED_32_MAX = 4_294_967_295
@@ -59,11 +60,8 @@ export function fromDecimalString(value: string | null | undefined, field: strin
     }
 
     const trimmed = value.trim()
-    if (!OPENAPI_DECIMAL_PATTERN.test(trimmed)) {
+    if (!DECIMAL_READ_PATTERN.test(trimmed)) {
         throw new Error(`Invalid decimal string for ${field}: ${value}`)
-    }
-    if (/[eE]/.test(trimmed)) {
-        throw new Error(`Scientific notation is not allowed for ${field}: ${value}`)
     }
 
     const parsed = Number(trimmed)
@@ -71,7 +69,11 @@ export function fromDecimalString(value: string | null | undefined, field: strin
         throw new Error(`Invalid decimal string for ${field}: ${value}`)
     }
 
-    const significantDigits = trimmed.replace("-", "").replace(/^0+(?=\d)/, "").replace(".", "")
+    const significantDigits = trimmed
+        .replace(/^[-+]/, "")
+        .replace(/[eE][-+]?[0-9]+$/, "")
+        .replace(".", "")
+        .replace(/^0+(?=\d)/, "")
     if (significantDigits.length > 15) {
         throw new Error(`Decimal string for ${field} exceeds safe precision: ${value}`)
     }

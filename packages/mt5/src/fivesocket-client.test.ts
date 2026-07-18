@@ -49,14 +49,18 @@ describe("FiveSocket decimal string conversion", () => {
         expect(fromUnsignedIntString("0", "magic")).toBe(0)
     })
 
-    it("rejects scientific notation, float artifacts, and invalid volumes", () => {
+    it("serializes plainly, accepts scientific-notation reads, and rejects invalid volumes", () => {
         expect(toVolumeDecimalString(0.1 + 0.2)).toBe("0.3")
         expect(toVolumeDecimalString(1e-7)).toBe("0.0000001")
         expect(() => toVolumeDecimalString(0)).toThrow("positive decimal")
         expect(() => toVolumeDecimalString(-0.01)).toThrow("positive decimal")
         expect(() => toVolumeDecimalString(1e21)).toThrow("safe plain serialization")
-        expect(() => fromDecimalString("1e-7", "volume")).toThrow("Invalid decimal")
+        expect(fromDecimalString("1e-7", "volume")).toBe(1e-7)
+        expect(fromDecimalString("1e-05", "symbol.point")).toBe(0.00001)
+        expect(fromDecimalString("-2.5e-3", "swap")).toBe(-0.0025)
         expect(() => fromDecimalString("1234567890123456", "volume")).toThrow("safe precision")
+        expect(() => fromDecimalString("1.23456789012345e-10", "price")).not.toThrow()
+        expect(() => fromDecimalString("not-a-number", "price")).toThrow("Invalid decimal")
     })
 
     it("rejects invalid magic/leverage strings", () => {
