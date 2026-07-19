@@ -1,5 +1,6 @@
 import { query } from "../../_generated/server"
 import type { Doc } from "../../_generated/dataModel"
+import type { QueryCtx } from "../../_generated/server"
 import { v } from "convex/values"
 import { resolveRiskWindowStarts } from "@valiq-trading/core"
 import { requireUserOrServiceToken } from "../authGuards"
@@ -21,6 +22,11 @@ export interface SuiteLossComputationRow {
     latest: SuiteLossSnapshotValue
     dayBaseline?: SuiteLossSnapshotValue
     weekBaseline?: SuiteLossSnapshotValue
+}
+
+type SuiteLossAccountBucket = {
+    app: typeof SUITE_REAL_APPS[number]
+    accountId: string
 }
 
 export interface SuiteLossState {
@@ -85,42 +91,82 @@ export const getSuiteLossState = query({
 
         const evaluatedAt = Date.now()
         const { dayStartAt, weekStartAt } = resolveRiskWindowStarts(evaluatedAt, "UTC")
-        const rows: SuiteLossComputationRow[] = []
-
-        for (const app of SUITE_REAL_APPS) {
-            const [latest, dayBaseline, weekBaseline] = await Promise.all([
-                ctx.db
-                    .query("account_snapshots")
-                    .withIndex("by_app_timestamp", (q) => q.eq("app", app))
-                    .order("desc")
-                    .first(),
-                ctx.db
-                    .query("account_snapshots")
-                    .withIndex("by_app_timestamp", (q) => q.eq("app", app).lte("timestamp", dayStartAt))
-                    .order("desc")
-                    .first(),
-                ctx.db
-                    .query("account_snapshots")
-                    .withIndex("by_app_timestamp", (q) => q.eq("app", app).lte("timestamp", weekStartAt))
-                    .order("desc")
-                    .first(),
-            ])
-
-            if (!latest) {
-                continue
-            }
-
-            rows.push({
-                app,
-                latest,
-                dayBaseline: dayBaseline ?? undefined,
-                weekBaseline: weekBaseline ?? undefined,
-            })
-        }
+        const accountBuckets = await getSuiteLossAccountBuckets(ctx)
+        const rows = (
+            await Promise.all(
+                accountBuckets.map((bucket) =>
+                    getSuiteLossComputationRow(ctx, bucket, dayStartAt, weekStartAt)
+                )
+            )
+        ).filter((row): row is SuiteLossComputationRow => row !== null)
 
         return computeSuiteLossState(rows, evaluatedAt)
     },
 })
+
+async function getSuiteLossAccountBuckets(ctx: QueryCtx): Promise<SuiteLossAccountBucket[]> {
+    const accountRowsByApp = await Promise.all(
+        SUITE_REAL_APPS.map((app) =>
+            ctx.db
+                .query("accounts")
+                .withIndex("by_app", (q) => q.eq("app", app))
+                .collect()
+        )
+    )
+
+    return accountRowsByApp.flatMap((accounts, index) => {
+        const app = SUITE_REAL_APPS[index]
+        if (!app) {
+            return []
+        }
+
+        return accounts.map((account) => ({
+            app,
+            accountId: account.accountId,
+        }))
+    })
+}
+
+async function getSuiteLossComputationRow(
+    ctx: QueryCtx,
+    bucket: SuiteLossAccountBucket,
+    dayStartAt: number,
+    weekStartAt: number
+): Promise<SuiteLossComputationRow | null> {
+    const [latest, dayBaseline, weekBaseline] = await Promise.all([
+        getAccountSnapshotAtOrBefore(ctx, bucket),
+        getAccountSnapshotAtOrBefore(ctx, bucket, dayStartAt),
+        getAccountSnapshotAtOrBefore(ctx, bucket, weekStartAt),
+    ])
+
+    if (!latest) {
+        return null
+    }
+
+    return {
+        app: bucket.app,
+        latest,
+        dayBaseline: dayBaseline ?? undefined,
+        weekBaseline: weekBaseline ?? undefined,
+    }
+}
+
+async function getAccountSnapshotAtOrBefore(
+    ctx: QueryCtx,
+    bucket: SuiteLossAccountBucket,
+    atOrBefore?: number
+): Promise<Doc<"account_snapshots"> | null> {
+    return await ctx.db
+        .query("account_snapshots")
+        .withIndex("by_app_account_timestamp", (q) => {
+            const scoped = q.eq("app", bucket.app).eq("accountId", bucket.accountId)
+            return atOrBefore === undefined
+                ? scoped
+                : scoped.lte("timestamp", atOrBefore)
+        })
+        .order("desc")
+        .first()
+}
 
 export const getStrategyExecutionSafetyFaults = query({
     args: {

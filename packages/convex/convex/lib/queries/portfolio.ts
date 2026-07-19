@@ -476,9 +476,10 @@ export const getPortfolioEquitySeries = query({
                     accountBuckets.map((accountId) =>
                         ctx.db
                             .query("account_snapshots")
-                            .withIndex("by_app_timestamp", (q) => q.eq("app", app).lt("timestamp", rangeStart))
+                            .withIndex("by_app_account_timestamp", (q) =>
+                                q.eq("app", app).eq("accountId", accountId).lt("timestamp", rangeStart)
+                            )
                             .order("desc")
-                            .filter((q) => q.eq(q.field("accountId"), accountId))
                             .first()
                     )
                 )
