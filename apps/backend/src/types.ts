@@ -15,12 +15,14 @@ export interface VenuePlugin {
 
     validateEnvironment(
         secrets: Record<string, string | null>,
-        policy?: Record<string, unknown>
+        policy?: Record<string, unknown>,
+        account?: VenueAccountContext
     ): Promise<void>
 
     createVenueAdapter(
         policy: Record<string, unknown>,
-        secrets: Record<string, string | null>
+        secrets: Record<string, string | null>,
+        account?: VenueAccountContext
     ): VenueAdapter
 
     getRiskValidators(): readonly RiskValidator[]
@@ -30,6 +32,12 @@ export interface VenuePlugin {
     preRunHooks?(config: PreRunHookConfig): Promise<PreRunHookResult>
 
     postRunHooks?(config: PostRunHookConfig): Promise<void>
+}
+
+export interface VenueAccountContext {
+    accountId: string
+    label?: string
+    credentialEnvPrefix?: string
 }
 
 export interface ExtraToolsConfig {

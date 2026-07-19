@@ -20,6 +20,7 @@ import {
     type MT5MarketSnapshot,
 } from "@valiq-trading/mt5"
 import type {
+    VenueAccountContext,
     VenuePlugin,
     ExtraToolsConfig,
     PreRunHookConfig,
@@ -47,10 +48,11 @@ export class MT5Plugin implements VenuePlugin {
 
     async validateEnvironment(
         secrets: Record<string, string | null>,
-        policy?: Record<string, unknown>
+        policy?: Record<string, unknown>,
+        account?: VenueAccountContext
     ): Promise<void> {
-        const runtimeConfig = resolveMT5RuntimeConfig(secrets)
-        const accountStrategies = resolveMt5AccountExecutionPolicySources(secrets, policy)
+        const runtimeConfig = resolveMT5RuntimeConfig(secrets, process.env, account?.credentialEnvPrefix)
+        const accountStrategies = resolveMt5AccountExecutionPolicySources(account?.accountId, policy)
         const allowedSymbols = policy
             ? resolveMT5ConfiguredSymbols(mt5PolicySchema.parse(policy))
             : []
@@ -82,12 +84,13 @@ export class MT5Plugin implements VenuePlugin {
 
     createVenueAdapter(
         _policy: Record<string, unknown>,
-        secrets: Record<string, string | null>
+        secrets: Record<string, string | null>,
+        account?: VenueAccountContext
     ): VenueAdapter {
-        const resolved = resolveMT5RuntimeConfig(secrets)
+        const resolved = resolveMT5RuntimeConfig(secrets, process.env, account?.credentialEnvPrefix)
         const allowedSymbols = resolveMT5ConfiguredSymbols(mt5PolicySchema.parse(_policy))
         const executionSymbols = resolveCanonicalFiveSocketAccountExecutionSymbols(
-            resolveMt5AccountExecutionPolicySources(secrets, _policy),
+            resolveMt5AccountExecutionPolicySources(account?.accountId, _policy),
             resolved.defaultMaxVolume
         )
         if (executionSymbols.length === 0) {
@@ -264,17 +267,14 @@ export class MT5Plugin implements VenuePlugin {
 
 }
 
-function resolveMt5AccountExecutionPolicySources(
-    secrets: Record<string, string | null>,
+export function resolveMt5AccountExecutionPolicySources(
+    accountId: string | undefined,
     fallbackPolicy?: Record<string, unknown>
 ): Array<{ enabled: boolean, policy: unknown }> {
     const { syncStrategies } = require("../state") as typeof import("../state")
-    const login = secrets.MT5_PRIMARY_LOGIN
-    const server = secrets.MT5_PRIMARY_SERVER
-    const siblings = (syncStrategies.mt5 ?? []).filter((entry) =>
-        entry.secrets.MT5_PRIMARY_LOGIN === login
-        && entry.secrets.MT5_PRIMARY_SERVER === server
-    )
+    const siblings = accountId
+        ? (syncStrategies.mt5 ?? []).filter((entry) => entry.account.accountId === accountId)
+        : []
     if (siblings.length > 0) {
         return siblings.map((entry) => ({
             enabled: entry.strategy.enabled,

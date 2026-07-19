@@ -101,7 +101,7 @@ Canonical provider keys:
 
 | App | Keys |
 |---|---|
-| `mt5` | `MT5_PRIMARY_LOGIN`, `MT5_PRIMARY_PASSWORD`, `MT5_PRIMARY_SERVER`, `FIVESOCKET_API_KEY`, `FIVESOCKET_API_BASE_URL`, `FIVESOCKET_DEFAULT_MAX_VOLUME` |
+| `mt5` | `MT5_LOGIN`, `MT5_PASSWORD`, `MT5_SERVER`, `FIVESOCKET_API_KEY`, `FIVESOCKET_API_BASE_URL`, `FIVESOCKET_DEFAULT_MAX_VOLUME` |
 | `alpaca-options` | `ALPACA_API_KEY`, `ALPACA_SECRET_KEY`, `ALPACA_ENVIRONMENT`, `ALPACA_ACCOUNT_ID` |
 | `okx-swap` | `OKX_API_KEY`, `OKX_API_SECRET`, `OKX_API_PASSPHRASE`, `OKX_BASE_URL`, `OKX_DEMO_TRADING`, `OKX_MARGIN_MODE`, `OKX_POSITION_MODE` |
 | `polymarket` | `POLYMARKET_PRIVATE_KEY`, `POLYMARKET_API_KEY`, `POLYMARKET_API_SECRET`, `POLYMARKET_API_PASSPHRASE`, `POLYMARKET_HOST`, `POLYMARKET_CHAIN_ID`, `POLYMARKET_FUNDER_ADDRESS` |
@@ -127,7 +127,7 @@ FIVESOCKET_DEFAULT_MAX_VOLUME=
 
 `FIVESOCKET_API_KEY` and `FIVESOCKET_DEFAULT_MAX_VOLUME` are required. `FIVESOCKET_API_BASE_URL` defaults to `https://api.fivesocket.com` when unset. `FIVESOCKET_DEFAULT_MAX_VOLUME` is the explicit per-symbol execution-policy max volume (plain positive decimal string). There is no silent volume default.
 
-Account credentials remain the existing account-scoped `MT5_PRIMARY_LOGIN` / `MT5_PRIMARY_PASSWORD` / `MT5_PRIMARY_SERVER` secrets. The OpenAPI contract checked into `docs/fivesocket-openapi.json` is authoritative for request/response shapes.
+Account credentials use each account's `credentialEnvPrefix`: an account with `MT5_SECONDARY` resolves canonical `MT5_LOGIN` / `MT5_PASSWORD` / `MT5_SERVER` from `MT5_SECONDARY_LOGIN` / `MT5_SECONDARY_PASSWORD` / `MT5_SECONDARY_SERVER`. The OpenAPI contract checked into `docs/fivesocket-openapi.json` is authoritative for request/response shapes.
 
 Mutation outcomes map into the existing MT5 result model:
 

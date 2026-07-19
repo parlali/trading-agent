@@ -23,7 +23,10 @@ export function buildAccountSecretKeyMap(
 
 function isAccountScopedSecretKey(app: VenueApp, key: string): boolean {
     if (app === "mt5") {
-        return key === "MT5_PRIMARY_LOGIN" ||
+        return key === "MT5_LOGIN" ||
+            key === "MT5_PASSWORD" ||
+            key === "MT5_SERVER" ||
+            key === "MT5_PRIMARY_LOGIN" ||
             key === "MT5_PRIMARY_PASSWORD" ||
             key === "MT5_PRIMARY_SERVER"
     }

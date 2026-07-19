@@ -5,29 +5,29 @@ import {
 } from "./account-secrets"
 
 describe("account scoped secrets", () => {
-    it("does not double-prefix MT5 primary credential keys", () => {
+    it("maps MT5 canonical account credentials into account-prefixed secret keys", () => {
         const canonicalKeys = resolveAccountScopedSecretKeys("mt5", [
             "FIVESOCKET_API_BASE_URL",
             "FIVESOCKET_API_KEY",
             "FIVESOCKET_DEFAULT_MAX_VOLUME",
-            "MT5_PRIMARY_LOGIN",
-            "MT5_PRIMARY_PASSWORD",
-            "MT5_PRIMARY_SERVER",
+            "MT5_LOGIN",
+            "MT5_PASSWORD",
+            "MT5_SERVER",
         ])
 
         expect(Object.fromEntries(buildAccountSecretKeyMap({
             credentialEnvPrefix: "MT5_PRIMARY",
         }, canonicalKeys))).toEqual({
-            MT5_PRIMARY_LOGIN: "MT5_PRIMARY_LOGIN",
-            MT5_PRIMARY_PASSWORD: "MT5_PRIMARY_PASSWORD",
-            MT5_PRIMARY_SERVER: "MT5_PRIMARY_SERVER",
+            MT5_LOGIN: "MT5_PRIMARY_LOGIN",
+            MT5_PASSWORD: "MT5_PRIMARY_PASSWORD",
+            MT5_SERVER: "MT5_PRIMARY_SERVER",
         })
         expect(Object.fromEntries(buildAccountSecretKeyMap({
             credentialEnvPrefix: "MT5_SECONDARY",
         }, canonicalKeys))).toEqual({
-            MT5_PRIMARY_LOGIN: "MT5_SECONDARY_LOGIN",
-            MT5_PRIMARY_PASSWORD: "MT5_SECONDARY_PASSWORD",
-            MT5_PRIMARY_SERVER: "MT5_SECONDARY_SERVER",
+            MT5_LOGIN: "MT5_SECONDARY_LOGIN",
+            MT5_PASSWORD: "MT5_SECONDARY_PASSWORD",
+            MT5_SERVER: "MT5_SECONDARY_SERVER",
         })
     })
 

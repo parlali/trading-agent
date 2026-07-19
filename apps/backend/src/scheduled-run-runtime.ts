@@ -51,7 +51,7 @@ import {
     mergePendingOrderBlockedInstrumentsIntoRiskState,
     resolveRuntimeSafetyPolicyForRun,
 } from "./scheduler-run-support"
-import type { VenueApp, VenuePlugin } from "./types"
+import type { VenueAccountContext, VenueApp, VenuePlugin } from "./types"
 import { reconcilePendingOrdersForRun } from "./pending-orders"
 import { runProviderAccountOperation } from "./provider-account-coordinator"
 import { assertNoMT5ConfiguredInstrumentConflicts } from "./mt5-configured-instrument-governance"
@@ -119,7 +119,11 @@ export async function createScheduledRunRuntime(
         runId,
         runLogger,
     } = args
-    const venue = plugin.createVenueAdapter(policy, strategySecrets)
+    const venue = plugin.createVenueAdapter(
+        policy,
+        strategySecrets,
+        resolveVenueAccountContext(app, strategy)
+    )
     const isDryRun = Boolean(policy.dryRun)
     if (app === "mt5" && !isDryRun) {
         assertNoMT5ConfiguredInstrumentConflicts(resolveCurrentMT5RuntimeStrategies(strategy))
@@ -333,6 +337,19 @@ export async function createScheduledRunRuntime(
             cleanedUp = true
             pipeline.stopAllTracking()
         },
+    }
+}
+
+function resolveVenueAccountContext(
+    app: VenueApp,
+    strategy: StoredStrategy
+): VenueAccountContext {
+    const entry = (syncStrategies[app] ?? []).find((candidate) =>
+        candidate.strategy._id === strategy._id
+    )
+
+    return entry?.account ?? {
+        accountId: strategy.accountId,
     }
 }
 

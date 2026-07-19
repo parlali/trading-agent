@@ -10,10 +10,12 @@ export const MT5_RUNTIME_SECRET_KEYS = [
     "FIVESOCKET_API_BASE_URL",
     "FIVESOCKET_API_KEY",
     "FIVESOCKET_DEFAULT_MAX_VOLUME",
-    "MT5_PRIMARY_LOGIN",
-    "MT5_PRIMARY_PASSWORD",
-    "MT5_PRIMARY_SERVER",
+    "MT5_LOGIN",
+    "MT5_PASSWORD",
+    "MT5_SERVER",
 ] as const
+
+const DEFAULT_MT5_CREDENTIAL_ENV_PREFIX = "MT5_PRIMARY"
 
 export interface MT5RuntimeConfig {
     baseUrl: string
@@ -24,14 +26,15 @@ export interface MT5RuntimeConfig {
 
 export function resolveMT5RuntimeConfig(
     secrets: Record<string, string | null>,
-    env: NodeJS.ProcessEnv = process.env
+    env: NodeJS.ProcessEnv = process.env,
+    credentialEnvPrefix = DEFAULT_MT5_CREDENTIAL_ENV_PREFIX
 ): MT5RuntimeConfig {
     assertMT5TransportGuard(secrets, env)
 
     const credentials: MT5AccountCredentials = {
-        login: Number(requireResolvedSecret(secrets, "MT5_PRIMARY_LOGIN")),
-        password: requireResolvedSecret(secrets, "MT5_PRIMARY_PASSWORD"),
-        server: requireResolvedSecret(secrets, "MT5_PRIMARY_SERVER"),
+        login: Number(resolveMT5AccountSecret(secrets, env, credentialEnvPrefix, "LOGIN")),
+        password: resolveMT5AccountSecret(secrets, env, credentialEnvPrefix, "PASSWORD"),
+        server: resolveMT5AccountSecret(secrets, env, credentialEnvPrefix, "SERVER"),
     }
 
     const baseUrl = (
@@ -61,6 +64,30 @@ export function resolveMT5RuntimeConfig(
         defaultMaxVolume,
         credentials,
     }
+}
+
+function resolveMT5AccountSecret(
+    secrets: Record<string, string | null>,
+    env: NodeJS.ProcessEnv,
+    credentialEnvPrefix: string,
+    suffix: "LOGIN" | "PASSWORD" | "SERVER"
+): string {
+    const normalizedPrefix = credentialEnvPrefix.trim()
+    if (!normalizedPrefix) {
+        throw new Error(
+            `MT5 account has an empty credentialEnvPrefix; refusing to resolve ${suffix} against a default account`
+        )
+    }
+    const scopedKey = `${normalizedPrefix}_${suffix}`
+    const value = secrets[scopedKey] ?? env[scopedKey]
+
+    if (!value) {
+        throw new Error(
+            `Missing required secret: ${scopedKey}. Set this in Convex environment variables.`
+        )
+    }
+
+    return value
 }
 
 export function createMT5Client(

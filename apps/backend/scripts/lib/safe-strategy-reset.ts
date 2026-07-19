@@ -210,7 +210,7 @@ export async function createVenue(
         venue: plugin.createVenueAdapter(policy, {
             ...sharedSecrets,
             ...accountSecrets,
-        }),
+        }, account),
         venueName: plugin.venueName,
         policy,
     }

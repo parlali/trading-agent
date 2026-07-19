@@ -71,7 +71,7 @@ export async function validateAllEnvironments(apps: VenueApp[]): Promise<void> {
         for (const entry of entries) {
             const accountId = entry.account.accountId
             try {
-                await plugin.validateEnvironment(entry.secrets, entry.policy)
+                await plugin.validateEnvironment(entry.secrets, entry.policy, entry.account)
                 accounts[accountId] = {
                     ...accounts[accountId],
                     label: entry.account.label,

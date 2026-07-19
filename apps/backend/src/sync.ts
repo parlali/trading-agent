@@ -68,7 +68,7 @@ async function syncProviderPortfolioForApp(
 
     for (const entry of entriesByAccount.values()) {
         try {
-            const venue = plugin.createVenueAdapter(entry.policy, entry.secrets)
+            const venue = plugin.createVenueAdapter(entry.policy, entry.secrets, entry.account)
             const syncResult = source === "periodic_sync"
                 ? await reconcileProviderPortfolioIfIdle({
                     app,

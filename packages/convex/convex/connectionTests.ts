@@ -66,6 +66,15 @@ async function getAccountSecrets(
     accountId: string,
     keys: readonly string[]
 ): Promise<Record<string, string | null>> {
+    return (await getAccountSecretResolution(ctx, app, accountId, keys)).secrets
+}
+
+async function getAccountSecretResolution(
+    ctx: ActionCtx,
+    app: VenueApp,
+    accountId: string,
+    keys: readonly string[]
+) {
     const account = await ctx.runQuery(internal.queries.getAccountByAppAndIdInternal, {
         app,
         accountId,
@@ -86,7 +95,7 @@ async function getAccountSecrets(
         secrets[key] = env(scopedKey ?? key)
     }
 
-    return secrets
+    return { account, secrets }
 }
 
 function getErrorMessage(error: unknown): string {
@@ -144,7 +153,12 @@ export const testMT5Connection = action({
         let runtimeConfig: ReturnType<typeof resolveMT5RuntimeConfig>
 
         try {
-            runtimeConfig = resolveMT5RuntimeConfig(await getAccountSecrets(ctx, "mt5", args.accountId, MT5_RUNTIME_SECRET_KEYS))
+            const resolved = await getAccountSecretResolution(ctx, "mt5", args.accountId, MT5_RUNTIME_SECRET_KEYS)
+            runtimeConfig = resolveMT5RuntimeConfig(
+                resolved.secrets,
+                process.env,
+                resolved.account.credentialEnvPrefix
+            )
         } catch (error) {
             steps.push({
                 name: "Runtime Config",
