@@ -281,6 +281,8 @@ export function validateAccountConfig(raw: unknown): AccountConfig {
 
 export const alpacaOptionsPolicySchema = baseStrategyPolicySchema.extend({
     maxLossPerPlay: z.number().positive(),
+    minCreditToWidthPercent: z.number().positive().optional(),
+    minCreditToSpreadRatio: z.number().positive().optional(),
 })
 
 export type AlpacaOptionsPolicy = z.infer<typeof alpacaOptionsPolicySchema>

@@ -305,6 +305,69 @@ describe("FiveSocketClient transport policy", () => {
         expect(connectTransport.calls()).toBe(1)
     })
 
+    it("keeps the execution-policy Idempotency-Key within the 128-character API limit for multi-symbol policies", async () => {
+        const requests: Array<{ url: string; method: string; headers: Headers }> = []
+        const fetchImpl: typeof fetch = async (input, init) => {
+            const url = String(input)
+            const method = init?.method ?? "GET"
+            requests.push({ url, method, headers: new Headers(init?.headers) })
+
+            if (method === "POST" && url.endsWith("/v1/accounts")) {
+                return jsonResponse({
+                    id: "acc-1",
+                    login: "111",
+                    server: "broker",
+                    status: "active",
+                    createdAt: new Date().toISOString(),
+                }, 201)
+            }
+
+            if (method === "PUT" && url.endsWith("/execution")) {
+                return jsonResponse({
+                    accountId: "acc-1",
+                    status: "enabled",
+                    symbols: [],
+                    updatedAt: new Date().toISOString(),
+                })
+            }
+
+            if (method === "GET" && url.includes("/balance")) {
+                return jsonResponse({
+                    login: "111",
+                    name: "test",
+                    server: "broker",
+                    company: "test",
+                    balance: "1000",
+                    equity: "1000",
+                    margin: "0",
+                    marginFree: "1000",
+                    marginLevel: "0",
+                    currency: "USD",
+                    leverage: "100",
+                    profit: "0",
+                    marginMode: "retail_hedging",
+                    tradeAllowed: true,
+                })
+            }
+
+            throw new Error(`Unexpected request ${method} ${url}`)
+        }
+
+        const symbols = ["XAUUSD", "GBPUSD", "USDJPY", "EURUSD", "USDCAD", "XAGUSD"].map((symbol) => ({
+            symbol,
+            maxVolume: "0.5",
+        }))
+        const client = createClient(fetchImpl, symbols)
+        await client.connect(credentials)
+
+        const executionPut = requests.find((request) =>
+            request.method === "PUT" && request.url.endsWith("/execution")
+        )
+        const key = executionPut?.headers.get("Idempotency-Key")
+        expect(key).toBeTruthy()
+        expect((key ?? "").length).toBeLessThanOrEqual(128)
+    })
+
     it("serializes mutation bodies as decimal strings and sets clientOrderId + Idempotency-Key", async () => {
         const requests: Array<{ url: string; method: string; headers: Headers; body: unknown }> = []
         const fetchImpl: typeof fetch = async (input, init) => {

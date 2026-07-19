@@ -2,6 +2,8 @@ import {
     alpacaOptionsPolicySchema,
     getIntentAction,
     openIntentRiskValidator,
+    readFiniteNumber,
+    readTrimmedString,
     type AccountState,
     type OrderIntent,
     type OrderLeg,
@@ -34,15 +36,18 @@ interface ResolvedStructure {
     underlying: string
     expiration: string
     spreadWidth: number
+    sideSpreadWidths: number[]
     legs: NormalizedOptionLeg[]
 }
 
 const SUPPORTED_ALPACA_ORDER_TYPE = "limit"
 const SUPPORTED_ALPACA_TIME_IN_FORCE = "day"
 const SUPPORTED_LEG_COUNTS = new Set([2, 4])
+const CREDIT_GATE_EPSILON = 1e-9
 
 export const alpacaRiskValidators: readonly RiskValidator[] = [
     alpacaStructureValidator,
+    openIntentRiskValidator(minCreditEntryValidator),
     openIntentRiskValidator(maxLossPerPlayValidator),
     expiryValidationValidator,
 ]
@@ -323,6 +328,67 @@ function maxLossPerPlayValidator(
     return { allowed: true }
 }
 
+function minCreditEntryValidator(
+    intent: OrderIntent,
+    rawPolicy: Record<string, unknown>,
+    _state: AccountState,
+    _positions: Position[]
+) {
+    const policy = alpacaOptionsPolicySchema.parse(rawPolicy)
+    if (
+        policy.minCreditToWidthPercent === undefined &&
+        policy.minCreditToSpreadRatio === undefined
+    ) {
+        return { allowed: true }
+    }
+
+    const structure = resolveEntryCreditStructure(intent)
+    if (!structure) {
+        return { allowed: true }
+    }
+
+    const netCredit = readFiniteNumber(intent.limitPrice)
+    if (netCredit === undefined || netCredit <= 0) {
+        return {
+            allowed: false,
+            reason: "Alpaca minimum credit gate requires a positive net credit limit price",
+        }
+    }
+
+    if (policy.minCreditToWidthPercent !== undefined) {
+        const narrowestWidth = Math.min(...structure.sideSpreadWidths)
+        const creditToWidthPercent = (netCredit / narrowestWidth) * 100
+        if (creditToWidthPercent + CREDIT_GATE_EPSILON < policy.minCreditToWidthPercent) {
+            return {
+                allowed: false,
+                reason: `Alpaca entry credit-to-width ${formatPercent(creditToWidthPercent)} is below policy floor ${formatPercent(policy.minCreditToWidthPercent)} (credit ${formatNumber(netCredit)}, width ${formatNumber(narrowestWidth)})`,
+            }
+        }
+    }
+
+    if (policy.minCreditToSpreadRatio !== undefined) {
+        const structureSpread = resolveMetadataStructureSpread(intent, structure)
+        if (structureSpread.status === "incomplete") {
+            return {
+                allowed: false,
+                reason: `Alpaca entry credit-to-spread gate requires complete bid/ask metadata for every structure leg; missing ${structureSpread.missingSymbols.join(", ")}`,
+            }
+        }
+
+        if (structureSpread.status === "complete" && structureSpread.value > 0) {
+            const creditToSpreadRatio = netCredit / structureSpread.value
+            if (creditToSpreadRatio + CREDIT_GATE_EPSILON < policy.minCreditToSpreadRatio) {
+                return {
+                    allowed: false,
+                    reason: `Alpaca entry credit-to-spread ${formatRatio(creditToSpreadRatio)} is below policy floor ${formatRatio(policy.minCreditToSpreadRatio)} (credit ${formatNumber(netCredit)}, live structure spread ${formatNumber(structureSpread.value)})`,
+                }
+            }
+        }
+    }
+
+    return { allowed: true }
+}
+
 function expiryValidationValidator(intent: OrderIntent) {
     const expirations = getIntentExpirations(intent)
 
@@ -396,6 +462,23 @@ function estimateStructureMaxLoss(intent: OrderIntent): number | null {
     const creditOffset = credit * 100 * intent.quantity
 
     return Math.max(grossRisk - creditOffset, 0)
+}
+
+function resolveEntryCreditStructure(intent: OrderIntent): ResolvedStructure | null {
+    if (getIntentAction(intent) !== "entry" || intent.side !== "sell") {
+        return null
+    }
+
+    const normalizedLegs = normalizeOptionLegs(intent)
+    if (!Array.isArray(normalizedLegs)) {
+        return null
+    }
+
+    if (normalizedLegs.some((leg) => leg.positionEffect !== "open")) {
+        return null
+    }
+
+    return resolveStructureFromNormalizedLegs(normalizedLegs)
 }
 
 function diffDays(expiration: string): number | null {
@@ -518,7 +601,10 @@ function resolveIronCondorStructure(legs: NormalizedOptionLeg[]): ResolvedStruct
         return null
     }
 
-    const spreadWidth = calculateNormalizedStructureWidth(legs)
+    const putSpreadWidth = shortPut.strike - longPut.strike
+    const callSpreadWidth = longCall.strike - shortCall.strike
+    const sideSpreadWidths = [putSpreadWidth, callSpreadWidth]
+    const spreadWidth = calculateSpreadWidthFromSides(sideSpreadWidths)
     if (spreadWidth === null) {
         return null
     }
@@ -528,6 +614,7 @@ function resolveIronCondorStructure(legs: NormalizedOptionLeg[]): ResolvedStruct
         underlying: legs[0]!.underlying,
         expiration: legs[0]!.expiration,
         spreadWidth,
+        sideSpreadWidths,
         legs,
     }
 }
@@ -573,8 +660,18 @@ function resolveCreditVerticalStructure(legs: NormalizedOptionLeg[]): ResolvedSt
         underlying: shortLeg.underlying,
         expiration: shortLeg.expiration,
         spreadWidth,
+        sideSpreadWidths: [spreadWidth],
         legs: [shortLeg, longLeg],
     }
+}
+
+function calculateSpreadWidthFromSides(sideSpreadWidths: number[]): number | null {
+    const positiveWidths = sideSpreadWidths.filter((width) => Number.isFinite(width) && width > 0)
+    if (positiveWidths.length === 0) {
+        return null
+    }
+
+    return Math.max(...positiveWidths)
 }
 
 function calculateNormalizedStructureWidth(legs: NormalizedOptionLeg[]): number | null {
@@ -592,4 +689,133 @@ function calculateNormalizedStructureWidth(legs: NormalizedOptionLeg[]): number 
     const width = Math.max(callWidth, putWidth)
 
     return width > 0 ? width : null
+}
+
+type MetadataStructureSpread =
+    | { status: "absent" }
+    | { status: "complete"; value: number }
+    | { status: "incomplete"; missingSymbols: string[] }
+
+function resolveMetadataStructureSpread(
+    intent: OrderIntent,
+    structure: ResolvedStructure
+): MetadataStructureSpread {
+    const quoteEntries = readMetadataLegQuoteEntries(intent.metadata)
+    if (quoteEntries.length === 0) {
+        return { status: "absent" }
+    }
+
+    const quotesBySymbol = new Map<string, { bid: number; ask: number }>()
+    for (const entry of quoteEntries) {
+        const symbol = readMetadataQuoteSymbol(entry)
+        const bid = readFiniteNumber(entry.bid) ?? readFiniteNumber(entry.bidPrice)
+        const ask = readFiniteNumber(entry.ask) ?? readFiniteNumber(entry.askPrice)
+        if (!symbol || bid === undefined || ask === undefined || ask < bid) {
+            continue
+        }
+
+        quotesBySymbol.set(symbol, { bid, ask })
+    }
+
+    const missingSymbols: string[] = []
+    let structureSpread = 0
+    for (const leg of structure.legs) {
+        const symbol = leg.instrument.trim().toUpperCase()
+        const quote = quotesBySymbol.get(symbol)
+        if (!quote) {
+            missingSymbols.push(symbol)
+            continue
+        }
+
+        structureSpread += quote.ask - quote.bid
+    }
+
+    if (missingSymbols.length > 0) {
+        return { status: "incomplete", missingSymbols }
+    }
+
+    return { status: "complete", value: structureSpread }
+}
+
+function readMetadataLegQuoteEntries(
+    metadata: Record<string, unknown> | undefined
+): Record<string, unknown>[] {
+    if (!metadata) {
+        return []
+    }
+
+    const candidates = [
+        metadata.legQuotes,
+        metadata.legs,
+        metadata.optionLegQuotes,
+    ]
+
+    for (const candidate of candidates) {
+        const entries = readLegQuoteEntries(candidate)
+        const quoteEntries = entries.filter(hasMetadataQuoteFields)
+        if (quoteEntries.length > 0) {
+            return quoteEntries
+        }
+    }
+
+    return []
+}
+
+function readLegQuoteEntries(value: unknown): Record<string, unknown>[] {
+    if (Array.isArray(value)) {
+        return value
+            .map(readRecord)
+            .filter((entry): entry is Record<string, unknown> => entry !== undefined)
+    }
+
+    const record = readRecord(value)
+    if (!record) {
+        return []
+    }
+
+    return Object.entries(record)
+        .map(([symbol, quote]): Record<string, unknown> | undefined => {
+            const quoteRecord = readRecord(quote)
+            return quoteRecord
+                ? {
+                    ...quoteRecord,
+                    symbol: readTrimmedString(quoteRecord.symbol) ?? symbol,
+                }
+                : undefined
+        })
+        .filter((entry): entry is Record<string, unknown> => entry !== undefined)
+}
+
+function readMetadataQuoteSymbol(entry: Record<string, unknown>): string | undefined {
+    return (
+        readTrimmedString(entry.symbol) ??
+        readTrimmedString(entry.instrument)
+    )?.toUpperCase()
+}
+
+function hasMetadataQuoteFields(entry: Record<string, unknown>): boolean {
+    return (
+        readFiniteNumber(entry.bid) !== undefined ||
+        readFiniteNumber(entry.bidPrice) !== undefined ||
+        readFiniteNumber(entry.ask) !== undefined ||
+        readFiniteNumber(entry.askPrice) !== undefined
+    )
+}
+
+function readRecord(value: unknown): Record<string, unknown> | undefined {
+    return value && typeof value === "object" && !Array.isArray(value)
+        ? value as Record<string, unknown>
+        : undefined
+}
+
+function formatPercent(value: number): string {
+    return `${formatNumber(value)}%`
+}
+
+function formatRatio(value: number): string {
+    return `${formatNumber(value)}x`
+}
+
+function formatNumber(value: number): string {
+    return value.toFixed(4).replace(/\.?0+$/, "")
 }

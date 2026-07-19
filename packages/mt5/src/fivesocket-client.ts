@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto"
 import {
     createExecutionError,
     fetchWithTimeout,
@@ -1030,7 +1031,7 @@ function parseApiError(text: string): { code?: string; message?: string; request
 }
 
 function stableBodyKey(value: unknown): string {
-    return JSON.stringify(value)
+    return createHash("sha256").update(JSON.stringify(value)).digest("hex")
 }
 
 function fromRequiredDecimal(value: string, field: string): number {

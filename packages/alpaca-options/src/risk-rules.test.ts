@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import type { OrderIntent, Position, AccountState } from "@valiq-trading/core"
+import { validateIntent, type OrderIntent, type Position, type AccountState } from "@valiq-trading/core"
 import { alpacaRiskValidators } from "./risk-rules"
 
 const structureValidator = alpacaRiskValidators[0]!
@@ -27,6 +27,10 @@ const maxLossPolicy = {
 
 function validate(intent: OrderIntent) {
     return structureValidator(intent, {}, accountState, positions)
+}
+
+function validateRisk(intent: OrderIntent, policy: Record<string, unknown>) {
+    return validateIntent(intent, policy, accountState, positions, alpacaRiskValidators)
 }
 
 describe("alpaca structure validator", () => {
@@ -110,6 +114,46 @@ describe("alpaca structure validator", () => {
         }
     })
 
+    it("enforces opt-in minimum credit floors for Alpaca credit entries", () => {
+        const policy = {
+            ...maxLossPolicy,
+            minCreditToWidthPercent: 18,
+        }
+        const lowCredit = validateRisk(createIwmBullPutIntent(0.09), policy)
+
+        expect(lowCredit.allowed).toBe(false)
+        expect(lowCredit.reason).toContain("credit-to-width 9%")
+        expect(lowCredit.reason).toContain("floor 18%")
+
+        const enoughCredit = validateRisk(createIwmBullPutIntent(0.28), policy)
+        expect(enoughCredit.allowed).toBe(true)
+
+        const gateDisabled = validateRisk(createIwmBullPutIntent(0.09), maxLossPolicy)
+        expect(gateDisabled.allowed).toBe(true)
+
+        const wideLiveSpread = validateRisk(createIwmBullPutIntent(0.28, {
+            legQuotes: [
+                {
+                    symbol: "IWM260717P00284000",
+                    bid: 0.35,
+                    ask: 0.45,
+                },
+                {
+                    symbol: "IWM260717P00283000",
+                    bid: 0.06,
+                    ask: 0.16,
+                },
+            ],
+        }), {
+            ...maxLossPolicy,
+            minCreditToSpreadRatio: 1.5,
+        })
+
+        expect(wideLiveSpread.allowed).toBe(false)
+        expect(wideLiveSpread.reason).toContain("credit-to-spread 1.4x")
+        expect(wideLiveSpread.reason).toContain("floor 1.5x")
+    })
+
     it("accepts 2-leg credit vertical closes and normalizes top-level side to buy", () => {
         const result = validate({
             instrument: "SPY",
@@ -145,7 +189,7 @@ describe("alpaca structure validator", () => {
     })
 
     it("nets the credit received when enforcing max loss per play", () => {
-        const maxLossValidator = alpacaRiskValidators[1]!
+        const maxLossValidator = alpacaRiskValidators[2]!
         const nvdaWideStrikesIntent: OrderIntent = {
             instrument: "NVDA",
             side: "sell",
@@ -196,7 +240,7 @@ describe("alpaca structure validator", () => {
     })
 
     it("never blocks closes on max loss per play", () => {
-        const maxLossValidator = alpacaRiskValidators[1]!
+        const maxLossValidator = alpacaRiskValidators[2]!
         const result = maxLossValidator(
             {
                 instrument: "NVDA",
@@ -250,3 +294,30 @@ describe("alpaca structure validator", () => {
         expect(result.reason).toContain("2 or 4")
     })
 })
+
+function createIwmBullPutIntent(
+    limitPrice: number,
+    metadata?: Record<string, unknown>
+): OrderIntent {
+    return {
+        instrument: "IWM",
+        side: "sell",
+        quantity: 1,
+        orderType: "limit",
+        limitPrice,
+        timeInForce: "day",
+        metadata,
+        legs: [
+            {
+                instrument: "IWM260717P00284000",
+                side: "sell_to_open",
+                quantity: 1,
+            },
+            {
+                instrument: "IWM260717P00283000",
+                side: "buy_to_open",
+                quantity: 1,
+            },
+        ],
+    }
+}

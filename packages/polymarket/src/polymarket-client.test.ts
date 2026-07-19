@@ -141,6 +141,32 @@ describe("PolymarketClient public read paths", () => {
         expect(market).toBeNull()
         expect(fetchMock).toHaveBeenCalledTimes(2)
     })
+
+    it("maps CLOB market 404s to null without swallowing other failures", async () => {
+        fetchMock.mockResolvedValueOnce(createStatusResponse(404, "Not Found"))
+
+        await expect(createClient().getMarket("resolved-condition")).resolves.toBeNull()
+
+        fetchMock.mockReset()
+        fetchMock.mockImplementation(async () => createStatusResponse(500, "Internal Server Error"))
+        const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout").mockImplementation(((
+            handler: Parameters<typeof setTimeout>[0],
+            _timeout?: number,
+            ...args: unknown[]
+        ) => {
+            if (typeof handler === "function") {
+                handler(...args)
+            }
+
+            return 0 as unknown as ReturnType<typeof setTimeout>
+        }) as typeof setTimeout)
+        try {
+            await expect(createClient().getMarket("temporary-failure")).rejects.toThrow("500")
+            expect(fetchMock).toHaveBeenCalledTimes(4)
+        } finally {
+            setTimeoutSpy.mockRestore()
+        }
+    })
 })
 
 describe("PolymarketClient.getMarketBySlug", () => {

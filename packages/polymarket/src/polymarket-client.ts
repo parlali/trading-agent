@@ -290,9 +290,17 @@ export class PolymarketClient {
         return direct ? [direct] : []
     }
 
-    async getMarket(conditionId: string): Promise<PolymarketMarket> {
-        const raw = await this.requestPublic<RawMarket>(`/market/${conditionId}`)
-        return mapRawMarket(raw)
+    async getMarket(conditionId: string): Promise<PolymarketMarket | null> {
+        try {
+            const raw = await this.requestPublic<RawMarket>(`/market/${conditionId}`)
+            return mapRawMarket(raw)
+        } catch (error) {
+            if (error instanceof PolymarketApiError && error.status === 404) {
+                return null
+            }
+
+            throw error
+        }
     }
 
     async getOrderBook(tokenId: string): Promise<PolymarketOrderBook> {

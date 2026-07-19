@@ -139,7 +139,7 @@ export class PolymarketVenueAdapter implements VenueAdapter, PriceVerifier, DryR
 
         if (params.conditionId) {
             const market = await this.client.getMarket(params.conditionId)
-            return [await this.buildSearchResult(market, livePriceBudget)]
+            return market ? [await this.buildSearchResult(market, livePriceBudget)] : []
         }
 
         if (params.marketSlug) {

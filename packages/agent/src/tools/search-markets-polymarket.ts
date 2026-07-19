@@ -26,7 +26,10 @@ export function createPolymarketSearchMarketsTool(
                     ? validated.livePriceTokenLimit
                     : undefined,
             })
-            return { markets: handles.registerMarkets(markets) }
+            const registeredMarkets = handles.registerMarkets(markets)
+            return validated.conditionId && registeredMarkets.length === 0
+                ? { markets: registeredMarkets, note: "market_resolved_or_not_found" }
+                : { markets: registeredMarkets }
         },
     })
 }
