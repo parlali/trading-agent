@@ -26,6 +26,7 @@ export function buildClosePositionIntent(args: {
     if (args.venueIntent) {
         return {
             ...args.venueIntent,
+            quantity: args.options.quantity ?? args.venueIntent.quantity,
             metadata: {
                 ...args.position?.metadata,
                 ...args.options.metadata,
@@ -44,7 +45,7 @@ export function buildClosePositionIntent(args: {
     return {
         instrument: args.instrument,
         side: closeSide,
-        quantity: args.position?.quantity ?? 0,
+        quantity: args.options.quantity ?? args.position?.quantity ?? 0,
         orderType: "market",
         timeInForce: "day",
         metadata: {
@@ -69,7 +70,7 @@ export function buildProviderPositionCloseIntent(args: {
     return {
         instrument: args.position.instrument,
         side: resolveCloseOrderSide(args.position),
-        quantity: args.position.quantity,
+        quantity: args.options.quantity ?? args.position.quantity,
         orderType: "market",
         timeInForce: "ioc",
         metadata: {

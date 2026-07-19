@@ -334,9 +334,19 @@ export class AlpacaOptionsVenueAdapter implements VenueAdapter, PriceVerifier {
     }
 
     async closeProviderPosition(position: Position, preparedIntent?: OrderIntent, context?: SubmitOrderContext): Promise<ExecutionResult> {
-        const closeIntent = preparedIntent?.legs && preparedIntent.legs.length > 0
+        const resolvedIntent = preparedIntent?.legs && preparedIntent.legs.length > 0
             ? preparedIntent
             : await resolveProviderCloseIntent(this, position)
+        const closeIntent = preparedIntent && resolvedIntent !== preparedIntent
+            ? {
+                ...resolvedIntent,
+                quantity: preparedIntent.quantity,
+                metadata: {
+                    ...resolvedIntent.metadata,
+                    ...preparedIntent.metadata,
+                },
+            }
+            : resolvedIntent
 
         return await this.client.createOrder(closeIntent, context)
     }

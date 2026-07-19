@@ -483,6 +483,7 @@ export class MT5VenueAdapter implements VenueAdapter, PriceVerifier {
         const position = matchingPositions[0]!
         const result = await this.client.closePosition(this.credentials, {
             ticket: position.ticket,
+            volume: preparedIntent?.quantity,
             comment: providerClientOrderId,
         })
 
@@ -496,7 +497,7 @@ export class MT5VenueAdapter implements VenueAdapter, PriceVerifier {
 
     async closeProviderPosition(
         position: Position,
-        _preparedIntent?: OrderIntent,
+        preparedIntent?: OrderIntent,
         context?: SubmitOrderContext
     ): Promise<ExecutionResult> {
         const providerClientOrderId = requireMT5CloseProviderClientOrderId(context, position.instrument)
@@ -514,6 +515,7 @@ export class MT5VenueAdapter implements VenueAdapter, PriceVerifier {
 
         const result = await this.client.closePosition(this.credentials, {
             ticket,
+            volume: preparedIntent?.quantity,
             comment: providerClientOrderId,
         })
         return {

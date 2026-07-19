@@ -24,6 +24,10 @@ import {
     createMcpTools,
 } from "./shared"
 
+const POLYMARKET_LOSS_EXIT_MAX_SPREAD = 0.05
+const POLYMARKET_LOSS_EXIT_MAX_TRIGGER_DISTANCE = 0.05
+const POLYMARKET_LOSS_EXIT_PRICE_EPSILON = 1e-9
+
 export class PolymarketPlugin implements VenuePlugin {
     readonly app = "polymarket"
     readonly venueName = "polymarket"
@@ -100,10 +104,36 @@ export class PolymarketPlugin implements VenuePlugin {
         const lossExitPrice = readPolymarketLossExitPrice(config.policy)
 
         if (lossExitPrice !== undefined) {
-            const breached = pricedPositions.filter(({ marketPrice }) => {
-                const livePrice = resolvePolymarketLossExitLivePrice(marketPrice)
-                return livePrice !== undefined && livePrice <= lossExitPrice
-            })
+            const lossExitEvaluations: PolymarketLossExitEvaluationItem[] = pricedPositions.map(({ position, marketPrice }) => ({
+                position,
+                marketPrice,
+                evaluation: resolvePolymarketLossExitEvaluation(position, marketPrice, lossExitPrice),
+            }))
+            const unevaluable = lossExitEvaluations.filter(isUnevaluableLossExitEvaluation)
+            for (const item of unevaluable) {
+                const label = formatPolymarketPositionLabel(item.position)
+                config.logger.warn("Polymarket loss cap book unevaluable; leaving position open", {
+                    strategyId: config.strategyId,
+                    instrument: item.position.instrument,
+                    lossExitPrice,
+                    reason: item.evaluation.reason,
+                    bestBid: item.marketPrice.bestBid,
+                    bestAsk: item.marketPrice.bestAsk,
+                    spread: item.marketPrice.spread,
+                    lastTradePrice: item.marketPrice.lastTradePrice,
+                })
+                await config.createAlert({
+                    strategyId: config.strategyId,
+                    app: "polymarket",
+                    severity: "warning",
+                    message: `Polymarket loss cap unevaluable for ${label}: ${item.evaluation.reason}`,
+                })
+                runtimeContextLines.push(
+                    `LOSS CAP UNEVALUABLE: ${label} was not force-closed because ${item.evaluation.reason}.`
+                )
+            }
+
+            const breached = lossExitEvaluations.filter(isBreachedLossExitEvaluation)
 
             if (breached.length > 0) {
                 if (!config.sessionFlat) {
@@ -119,6 +149,8 @@ export class PolymarketPlugin implements VenuePlugin {
                     lossExitPrice,
                     positionCount: breachedPositions.length,
                     instruments: breachedPositions.map((position) => position.instrument),
+                    evaluatedPrices: breached.map(({ evaluation }) => evaluation.evaluatedPrice),
+                    executablePrices: breached.map(({ evaluation }) => evaluation.executablePrice),
                 })
 
                 await config.sessionFlat.execute({
@@ -187,10 +219,6 @@ function readPolymarketLossExitPrice(policy: Record<string, unknown>): number | 
         : undefined
 }
 
-function resolvePolymarketLossExitLivePrice(marketPrice: PolymarketMarketPrice): number | undefined {
-    return marketPrice.executionCost.metrics.midpoint ?? marketPrice.midpoint ?? marketPrice.executablePrice
-}
-
 function formatPolymarketExecutionContextLine(
     position: Position,
     marketPrice: PolymarketMarketPrice
@@ -207,4 +235,117 @@ function formatPolymarketPositionLabel(position: Position): string {
         : "position"
 
     return `${question} [${outcome}]`
+}
+
+type PolymarketLossExitEvaluation =
+    | {
+        status: "safe"
+        evaluatedPrice: number
+        executablePrice: number
+    }
+    | {
+        status: "breached"
+        evaluatedPrice: number
+        executablePrice: number
+    }
+    | {
+        status: "unevaluable"
+        reason: string
+    }
+
+interface PolymarketLossExitEvaluationItem {
+    position: Position
+    marketPrice: PolymarketMarketPrice
+    evaluation: PolymarketLossExitEvaluation
+}
+
+function isUnevaluableLossExitEvaluation(
+    item: PolymarketLossExitEvaluationItem
+): item is PolymarketLossExitEvaluationItem & {
+    evaluation: Extract<PolymarketLossExitEvaluation, { status: "unevaluable" }>
+} {
+    return item.evaluation.status === "unevaluable"
+}
+
+function isBreachedLossExitEvaluation(
+    item: PolymarketLossExitEvaluationItem
+): item is PolymarketLossExitEvaluationItem & {
+    evaluation: Extract<PolymarketLossExitEvaluation, { status: "breached" }>
+} {
+    return item.evaluation.status === "breached"
+}
+
+function resolvePolymarketLossExitEvaluation(
+    position: Position,
+    marketPrice: PolymarketMarketPrice,
+    lossExitPrice: number
+): PolymarketLossExitEvaluation {
+    if (position.side !== "long") {
+        return {
+            status: "unevaluable",
+            reason: "short Polymarket loss-cap evaluation is unsupported for a long-token lossExitPrice policy",
+        }
+    }
+
+    const bestBid = readExecutableProbability(marketPrice.bestBid)
+    if (bestBid === undefined) {
+        return {
+            status: "unevaluable",
+            reason: "book has no executable bid for the held token",
+        }
+    }
+
+    const bestAsk = readExecutableProbability(marketPrice.bestAsk)
+    if (bestAsk === undefined) {
+        return {
+            status: "unevaluable",
+            reason: "book has no executable ask to validate spread quality",
+        }
+    }
+
+    if (marketPrice.liquidityWarning === true) {
+        return {
+            status: "unevaluable",
+            reason: "visible top-of-book does not satisfy minimum executable size",
+        }
+    }
+
+    const spread = readProbability(marketPrice.spread) ?? Math.max(bestAsk - bestBid, 0)
+    if (spread > POLYMARKET_LOSS_EXIT_MAX_SPREAD) {
+        return {
+            status: "unevaluable",
+            reason: `book spread ${spread.toFixed(4)} exceeds loss-cap evaluation limit ${POLYMARKET_LOSS_EXIT_MAX_SPREAD.toFixed(2)}`,
+        }
+    }
+
+    const midpoint = readExecutableProbability(marketPrice.midpoint) ?? (bestBid + bestAsk) / 2
+    const triggerDistance = Math.abs(lossExitPrice - bestBid)
+    if (
+        midpoint <= lossExitPrice &&
+        triggerDistance > POLYMARKET_LOSS_EXIT_MAX_TRIGGER_DISTANCE + POLYMARKET_LOSS_EXIT_PRICE_EPSILON
+    ) {
+        return {
+            status: "unevaluable",
+            reason: `loss cap ${lossExitPrice.toFixed(2)} is not executable within ${POLYMARKET_LOSS_EXIT_MAX_TRIGGER_DISTANCE.toFixed(2)} of best bid ${bestBid.toFixed(4)}`,
+        }
+    }
+
+    return {
+        status: midpoint <= lossExitPrice ? "breached" : "safe",
+        evaluatedPrice: midpoint,
+        executablePrice: bestBid,
+    }
+}
+
+function readExecutableProbability(value: unknown): number | undefined {
+    const probability = readProbability(value)
+    return probability !== undefined && probability > 0 && probability < 1
+        ? probability
+        : undefined
+}
+
+function readProbability(value: unknown): number | undefined {
+    return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1
+        ? value
+        : undefined
 }

@@ -78,6 +78,7 @@ import {
     simulateDryRunOrder,
 } from "./execution-dry-run"
 import { runExecutionPriceVerification } from "./execution-price-verification"
+import { validateCloseIntentInventory } from "./execution-close-inventory"
 import {
     reconcileOwnedInstrumentsFromSnapshots,
     updateOwnedInstrumentsFromResult,
@@ -567,7 +568,6 @@ export class ExecutionPipeline {
     ): Promise<ExecuteIntentResult> {
         const positions = await this.getPositions()
         const position = positions.find((item) => item.instrument === instrument)
-        const closeSide = resolveCloseOrderSide(position)
         let venueIntent: OrderIntent | undefined
         if (!this.policy.dryRun && this.venue.buildCloseIntent) {
             try {
@@ -591,16 +591,17 @@ export class ExecutionPipeline {
             reason,
             options,
         })
+        const closeSide = intent.side
 
         this.logger.info("Closing position", { instrument, reason })
         void this.tradeEventLogger?.logIntent(this.runId, this.strategyId, intent)
 
-        if (!position && !venueIntent) {
-            const validation = createNoOpenPositionValidation(instrument)
-            void this.tradeEventLogger?.logValidation(this.runId, this.strategyId, validation, intent)
+        const inventoryFailure = await this.validateCloseInventory(intent)
+        if (inventoryFailure) {
+            void this.tradeEventLogger?.logValidation(this.runId, this.strategyId, inventoryFailure.validation, intent)
             return createRejectedExecuteIntentResult(
-                validation,
-                createExecutionErrorDetail("pre_validation", validation.reason ?? "No open position found")
+                inventoryFailure.validation,
+                inventoryFailure.errorDetail
             )
         }
 
@@ -608,19 +609,11 @@ export class ExecutionPipeline {
         const submitContext = await this.createSubmitContext(intent, "close")
 
         if (this.policy.dryRun) {
-            if (!position) {
-                const validation = createNoOpenPositionValidation(instrument)
-                return createRejectedExecuteIntentResult(
-                    validation,
-                    createExecutionErrorDetail("pre_validation", validation.reason ?? "No open position found")
-                )
-            }
-
             return await this.recordCloseResult({
                 instrument,
                 closeSide,
-                quantity: position.quantity,
-                fallbackFillPrice: position.currentPrice ?? position.entryPrice,
+                quantity: intent.quantity,
+                fallbackFillPrice: position?.currentPrice ?? position?.entryPrice ?? 0,
                 intent,
                 reason,
                 dryRun: true,
@@ -632,11 +625,12 @@ export class ExecutionPipeline {
                     submitAttemptSequence: submitContext.identity.submitAttemptSequence,
                     commitOutcome: "accepted",
                     status: "filled",
-                    filledQuantity: position.quantity,
+                    filledQuantity: intent.quantity,
                     fillPrice:
                         (intent.metadata?.estimatedPrice as number | undefined) ??
-                        position.currentPrice ??
-                        position.entryPrice,
+                        position?.currentPrice ??
+                        position?.entryPrice ??
+                        0,
                     timestamp: Date.now(),
                 },
             })
@@ -665,7 +659,7 @@ export class ExecutionPipeline {
         return await this.recordCloseResult({
             instrument,
             closeSide,
-            quantity: position?.quantity ?? 0,
+            quantity: intent.quantity,
             fallbackFillPrice: position?.currentPrice ?? position?.entryPrice ?? 0,
             intent,
             reason,
@@ -723,6 +717,16 @@ export class ExecutionPipeline {
             reason,
         })
         void this.tradeEventLogger?.logIntent(this.runId, this.strategyId, intent)
+
+        const inventoryFailure = await this.validateCloseInventory(intent)
+        if (inventoryFailure) {
+            void this.tradeEventLogger?.logValidation(this.runId, this.strategyId, inventoryFailure.validation, intent)
+            return createRejectedExecuteIntentResult(
+                inventoryFailure.validation,
+                inventoryFailure.errorDetail
+            )
+        }
+
         void this.tradeEventLogger?.logValidation(this.runId, this.strategyId, ALLOWED_VALIDATION, intent)
         const submitContext = await this.createSubmitContext(intent, "close")
 
@@ -730,7 +734,7 @@ export class ExecutionPipeline {
             return await this.recordCloseResult({
                 instrument: position.instrument,
                 closeSide,
-                quantity: position.quantity,
+                quantity: intent.quantity,
                 fallbackFillPrice: position.currentPrice ?? position.entryPrice,
                 intent,
                 reason,
@@ -743,7 +747,7 @@ export class ExecutionPipeline {
                     submitAttemptSequence: submitContext.identity.submitAttemptSequence,
                     commitOutcome: "accepted",
                     status: "filled",
-                    filledQuantity: position.quantity,
+                    filledQuantity: intent.quantity,
                     fillPrice: options.estimatedPrice ?? position.currentPrice ?? position.entryPrice,
                     timestamp: Date.now(),
                 },
@@ -775,7 +779,7 @@ export class ExecutionPipeline {
         return await this.recordCloseResult({
             instrument: position.instrument,
             closeSide,
-            quantity: position.quantity,
+            quantity: intent.quantity,
             fallbackFillPrice: position.currentPrice ?? position.entryPrice,
             intent,
             reason,
@@ -861,6 +865,33 @@ export class ExecutionPipeline {
         this.reserveSubmitAttempt(identity.submitAttemptId, identity.canonicalOrderId, intent)
 
         return { identity }
+    }
+
+    private async validateCloseInventory(
+        intent: OrderIntent
+    ): Promise<ReturnType<typeof validateCloseIntentInventory>> {
+        return validateCloseIntentInventory({
+            intent,
+            positions: await this.resolveCloseInventoryPositions(intent),
+        })
+    }
+
+    private async resolveCloseInventoryPositions(intent: OrderIntent): Promise<Position[]> {
+        const positions = await this.getPositions()
+        if (
+            positions.length > 0 ||
+            !intent.legs ||
+            intent.legs.length === 0 ||
+            !this.ownedInstruments?.has(intent.instrument) ||
+            this.ownershipScope
+        ) {
+            return positions
+        }
+
+        const legInstruments = new Set(intent.legs.map((leg) => leg.instrument))
+        return (await this.venue.getPositions()).filter((position) =>
+            legInstruments.has(position.instrument)
+        )
     }
 
     private async validateSubmitAttemptProgression(
@@ -1270,13 +1301,6 @@ function isDuplicateExposureRecoveryEvidence(evidence: Record<string, unknown> |
     return evidence.outcome === "ambiguous" ||
         Array.isArray(evidence.matches) && evidence.matches.length > 1 ||
         Array.isArray(evidence.providerOrderAliases) && evidence.providerOrderAliases.length > 1
-}
-
-function createNoOpenPositionValidation(instrument: string): ValidationResult {
-    return {
-        allowed: false,
-        reason: `No open position found for ${instrument}`,
-    }
 }
 
 function createRejectedExecuteIntentResult(

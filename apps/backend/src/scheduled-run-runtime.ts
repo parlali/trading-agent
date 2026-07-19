@@ -271,6 +271,9 @@ export async function createScheduledRunRuntime(
             })
         },
     })
+    if (isDryRun) {
+        pipeline.seedDryRunPositions(initialPositions)
+    }
 
     let cleanedUp = false
     const runtimeRiskValidators: RiskValidator[] = []
@@ -516,10 +519,6 @@ export async function prepareScheduledRunAgentTurn(
         runtimeContextLines,
         formatRunSystemContextDigestLines(runSystemContextDigest)
     )
-
-    if (isDryRun) {
-        pipeline.seedDryRunPositions(allPositions)
-    }
 
     const positions = isDryRun
         ? pipeline.getDryRunPositions()

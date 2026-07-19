@@ -297,8 +297,15 @@ describe("session-flat ownership scope", () => {
                 return []
             },
         }
+        const position = {
+            instrument: "BTC-USDT-SWAP",
+            side: "long" as const,
+            quantity: 0.1,
+            entryPrice: 80_000,
+            providerPositionId: "pos-1",
+        }
         const venue = {
-            getPositions: vi.fn(async () => []),
+            getPositions: vi.fn(async () => [position]),
             getAccountState: vi.fn(),
             submitOrder: vi.fn(),
             cancelOrder: vi.fn(async (orderId: string) => ({
@@ -333,13 +340,7 @@ describe("session-flat ownership scope", () => {
             logger,
             strategyId: "strategy-session-flat",
             app: "okx-swap",
-            positions: [{
-                instrument: "BTC-USDT-SWAP",
-                side: "long",
-                quantity: 0.1,
-                entryPrice: 80_000,
-                providerPositionId: "pos-1",
-            }],
+            positions: [position],
             workingOrders: [],
             reason: "session-flat replay",
         })

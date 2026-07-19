@@ -158,6 +158,7 @@ export type OrderStatusCallback = (
 ) => OrderUpdateDecision | void | Promise<OrderUpdateDecision | void>
 
 export interface ClosePositionOptions {
+    quantity?: number
     estimatedPrice?: number
     metadata?: Record<string, unknown>
 }

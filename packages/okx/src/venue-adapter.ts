@@ -434,7 +434,7 @@ export class OKXVenueAdapter implements VenueAdapter, PriceVerifier {
         return await this.mapExecutionResult(parsed.instId, order)
     }
 
-    async closePosition(instrument: string, _preparedIntent?: OrderIntent, context?: SubmitOrderContext): Promise<ExecutionResult> {
+    async closePosition(instrument: string, preparedIntent?: OrderIntent, context?: SubmitOrderContext): Promise<ExecutionResult> {
         const instId = normalizeInstrument(instrument)
         const positions = await this.getPositions()
         const position = positions.find((entry) => entry.instrument === instId)
@@ -458,10 +458,10 @@ export class OKXVenueAdapter implements VenueAdapter, PriceVerifier {
             }
         }
 
-        return await this.closeProviderPosition(position, undefined, context)
+        return await this.closeProviderPosition(position, preparedIntent, context)
     }
 
-    async closeProviderPosition(position: Position, _preparedIntent?: OrderIntent, context?: SubmitOrderContext): Promise<ExecutionResult> {
+    async closeProviderPosition(position: Position, preparedIntent?: OrderIntent, context?: SubmitOrderContext): Promise<ExecutionResult> {
         if (!context?.identity.providerClientOrderId) {
             throw createExecutionError("pre_validation", "OKX close submission requires canonical execution identity", {
                 code: "MISSING_CANONICAL_ORDER_ID",
@@ -479,7 +479,7 @@ export class OKXVenueAdapter implements VenueAdapter, PriceVerifier {
             side: position.side,
             resolvePositionPosSide: (side) => this.resolvePositionPosSide(side),
         })
-        const sizing = await this.normalizeQuantity(instId, position.quantity)
+        const sizing = await this.normalizeQuantity(instId, preparedIntent?.quantity ?? position.quantity)
         const ack = await this.client.placeOrder({
             instId,
             clOrdId: context.identity.providerClientOrderId,

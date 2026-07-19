@@ -514,6 +514,14 @@ describe("ExecutionPipeline commit-unknown safety", () => {
     })
 
     it("passes canonical close identity through provider-position reset closes", async () => {
+        const position: Position = {
+            instrument: "BTC-USDT-SWAP",
+            providerPositionId: "pos-1",
+            side: "short",
+            quantity: 0.5,
+            entryPrice: 95000,
+            currentPrice: 94000,
+        }
         const closeProviderPosition = vi.fn(async (_position: Position, _intent: OrderIntent | undefined, context?: SubmitOrderContext) => ({
             orderId: "provider-close-order",
             providerOrderId: "provider-close-order",
@@ -531,20 +539,14 @@ describe("ExecutionPipeline commit-unknown safety", () => {
         const pipeline = createPipeline({
             venue: {
                 ...createVenue(),
+                getPositions: async () => [position],
                 closeProviderPosition,
             },
             venueName: "okx-swap",
             orderPersistence,
         })
 
-        const result = await pipeline.closeProviderPosition({
-            instrument: "BTC-USDT-SWAP",
-            providerPositionId: "pos-1",
-            side: "short",
-            quantity: 0.5,
-            entryPrice: 95000,
-            currentPrice: 94000,
-        }, "reset flatten")
+        const result = await pipeline.closeProviderPosition(position, "reset flatten")
 
         const context = closeProviderPosition.mock.calls[0]?.[2]
         expect(context?.identity.canonicalOrderId).toMatch(/^vokc01[a-z2-7]{10}$/)
@@ -607,6 +609,20 @@ describe("ExecutionPipeline commit-unknown safety", () => {
         const pipeline = createPipeline({
             venue: {
                 ...createVenue(),
+                getPositions: async () => [
+                    {
+                        instrument: "SPY260724C00763000",
+                        side: "short",
+                        quantity: 1,
+                        entryPrice: 1.79,
+                    },
+                    {
+                        instrument: "SPY260724C00764000",
+                        side: "long",
+                        quantity: 1,
+                        entryPrice: 1.58,
+                    },
+                ],
                 buildCloseIntent,
                 closePosition,
                 closeProviderPosition,
@@ -1133,6 +1149,118 @@ describe("ExecutionPipeline dry-run accounting", () => {
         })
     })
 
+    it("rejects a stale Polymarket dry-run close after auto-flatten consumed the position", async () => {
+        const position: Position = {
+            instrument: "token-war-funding-no",
+            providerPositionId: "condition-war-funding:NO",
+            side: "long",
+            quantity: 10,
+            entryPrice: 0.77,
+            currentPrice: 0.77,
+            unrealizedPnl: 0,
+            metadata: {
+                tokenId: "token-war-funding-no",
+                conditionId: "condition-war-funding",
+                marketSlug: "senate-war-funding",
+                question: "Will Senate pass war funding?",
+                outcome: "No",
+            },
+        }
+        const pipeline = createPipeline({
+            policy: {
+                dryRun: true,
+                virtualCash: 1000,
+            },
+            runId: "run-polymarket-double-close",
+        })
+        pipeline.seedDryRunPositions([position])
+
+        const first = await pipeline.closeProviderPosition(position, "Loss cap 0.55 breached", {
+            estimatedPrice: 0.73,
+            metadata: {
+                sessionFlat: true,
+                sessionFlatApp: "polymarket",
+            },
+        })
+        const second = await pipeline.closeProviderPosition(position, "mandatory exit", {
+            estimatedPrice: 0.7546,
+        })
+
+        expect(first.result.status).toBe("filled")
+        expect(first.result.filledQuantity).toBe(10)
+        expect(second.result.status).toBe("rejected")
+        expect(second.result.filledQuantity).toBe(0)
+        expect(second.result.errorDetail).toMatchObject({
+            code: "POSITION_ALREADY_CLOSED",
+            details: {
+                requestedQuantity: 10,
+                remainingQuantity: 0,
+            },
+        })
+        expect(pipeline.getDryRunPositions()).toHaveLength(0)
+    })
+
+    it("allows legitimate partial dry-run closes and rejects quantity above remaining inventory", async () => {
+        const position: Position = {
+            instrument: "token-partial-no",
+            providerPositionId: "condition-partial:NO",
+            side: "long",
+            quantity: 10,
+            entryPrice: 0.5,
+            currentPrice: 0.5,
+            unrealizedPnl: 0,
+            metadata: {
+                tokenId: "token-partial-no",
+                conditionId: "condition-partial",
+                marketSlug: "partial-market",
+                question: "Will partial close work?",
+                outcome: "No",
+            },
+        }
+        const pipeline = createPipeline({
+            policy: {
+                dryRun: true,
+                virtualCash: 1000,
+            },
+            runId: "run-polymarket-partial-close",
+        })
+        pipeline.seedDryRunPositions([position])
+
+        const first = await pipeline.closeProviderPosition(position, "trim risk", {
+            quantity: 4,
+            estimatedPrice: 0.55,
+        })
+        const oversized = await pipeline.closeProviderPosition(position, "oversized stale close", {
+            quantity: 7,
+            estimatedPrice: 0.56,
+        })
+        const remaining = pipeline.getDryRunPositions()[0]!
+        const second = await pipeline.closeProviderPosition(remaining, "close remainder", {
+            quantity: 6,
+            estimatedPrice: 0.57,
+        })
+        const third = await pipeline.closeProviderPosition(position, "extra close", {
+            quantity: 1,
+            estimatedPrice: 0.58,
+        })
+
+        expect(first.result.status).toBe("filled")
+        expect(first.result.filledQuantity).toBe(4)
+        expect(oversized.result.status).toBe("rejected")
+        expect(oversized.result.errorDetail).toMatchObject({
+            code: "CLOSE_EXCEEDS_REMAINING_INVENTORY",
+            details: {
+                requestedQuantity: 7,
+                remainingQuantity: 6,
+            },
+        })
+        expect(second.result.status).toBe("filled")
+        expect(second.result.filledQuantity).toBe(6)
+        expect(third.result.status).toBe("rejected")
+        expect(third.result.errorDetail?.code).toBe("POSITION_ALREADY_CLOSED")
+        expect(pipeline.getDryRunPositions()).toHaveLength(0)
+    })
+
     it("applies explicit dry-run fill fees to cash, equity, and day PnL", async () => {
         const venue = {
             ...createVenue(),
@@ -1385,7 +1513,20 @@ describe("ExecutionPipeline dry-run accounting", () => {
         let capturedIntent: OrderIntent | undefined
         const venue: VenueAdapter = {
             ...createVenue(),
-            getPositions: async () => [],
+            getPositions: async () => [
+                {
+                    instrument: "SPY260424P00650000",
+                    side: "short",
+                    quantity: 1,
+                    entryPrice: 0.9,
+                },
+                {
+                    instrument: "SPY260424P00649000",
+                    side: "long",
+                    quantity: 1,
+                    entryPrice: 0.9,
+                },
+            ],
             buildCloseIntent: async () => ({
                 instrument: "VS:BULL_PUT_CREDIT:SPY:2026-04-24:SPY260424P00649000|SPY260424P00650000",
                 side: "buy",
