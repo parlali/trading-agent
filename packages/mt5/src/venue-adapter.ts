@@ -28,7 +28,7 @@ import {
     type MT5Position,
     type MT5PositionClosure,
     type MT5SymbolInfo,
-    type MT5WorkerCredentials,
+    type MT5AccountCredentials,
 } from "./mt5-client"
 import { toMT5MarketSnapshot, type MT5MarketSnapshot } from "./market-context"
 import {
@@ -65,7 +65,7 @@ export class MT5VenueAdapter implements VenueAdapter, PriceVerifier {
 
     constructor(
         private readonly client: MT5Client,
-        private readonly credentials: MT5WorkerCredentials,
+        private readonly credentials: MT5AccountCredentials,
         private readonly executionCostTracker: ExecutionCostTracker = new ExecutionCostTracker(),
         options: MT5VenueAdapterOptions | readonly string[] = {}
     ) {
@@ -91,7 +91,7 @@ export class MT5VenueAdapter implements VenueAdapter, PriceVerifier {
         if (reportedLogin !== this.credentials.login) {
             throw createExecutionError(
                 "venue",
-                `MT5 worker served account ${reportedLogin} but this adapter is bound to login ${this.credentials.login}`,
+                `FiveSocket served account ${reportedLogin} but this adapter is bound to login ${this.credentials.login}`,
                 {
                     code: "session_login_mismatch",
                     retryable: false,

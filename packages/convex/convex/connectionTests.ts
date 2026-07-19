@@ -6,10 +6,10 @@ import type { Id } from "./_generated/dataModel"
 import { v } from "convex/values"
 import { requireUser } from "./lib/authGuards"
 import {
-    buildAccountSecretKeyMap,
     createLogger,
     resolveAccountScopedSecretKeys,
     type VenueApp,
+    buildAccountSecretKeyMap,
 } from "@valiq-trading/core"
 import {
     createHttpMcpToolBindingResolution,
@@ -37,8 +37,9 @@ import {
 } from "@valiq-trading/okx"
 import {
     MT5_RUNTIME_SECRET_KEYS,
-    MT5Client,
     MT5VenueAdapter,
+    createMT5Client,
+    resolveCanonicalFiveSocketAccountExecutionSymbols,
     resolveMT5RuntimeConfig,
 } from "@valiq-trading/mt5"
 import {
@@ -157,22 +158,88 @@ export const testMT5Connection = action({
             name: "Runtime Config",
             ok: true,
             data: {
-                workerUrl: runtimeConfig.workerUrl,
+                baseUrl: runtimeConfig.baseUrl,
                 login: runtimeConfig.credentials.login,
                 server: runtimeConfig.credentials.server,
             },
         })
 
-        const client = new MT5Client({
-            workerUrl: runtimeConfig.workerUrl,
-            accessKey: runtimeConfig.accessKey,
+        const strategies = await ctx.runQuery(internal.queries.getStrategiesByAppAndAccountInternal, {
+            app: "mt5",
+            accountId: args.accountId,
+        })
+        let executionSymbols: ReturnType<typeof resolveCanonicalFiveSocketAccountExecutionSymbols>
+        try {
+            executionSymbols = resolveCanonicalFiveSocketAccountExecutionSymbols(
+                strategies.map((strategy) => ({
+                    enabled: strategy.enabled,
+                    policy: strategy.policy,
+                })),
+                runtimeConfig.defaultMaxVolume
+            )
+        } catch (error) {
+            steps.push({
+                name: "Execution Policy",
+                ok: false,
+                error: getErrorMessage(error),
+            })
+            return { ok: false, steps }
+        }
+        if (executionSymbols.length === 0) {
+            steps.push({
+                name: "Execution Policy",
+                ok: false,
+                error: "FiveSocket connection test requires marketRegionsByInstrument symbols to configure execution policy",
+            })
+            return { ok: false, steps }
+        }
+        steps.push({
+            name: "Execution Policy",
+            ok: true,
+            data: {
+                strategyCount: strategies.filter((strategy) => strategy.enabled).length,
+                symbols: executionSymbols.map((entry) => entry.symbol),
+            },
+        })
+
+        const client = createMT5Client(runtimeConfig, {
+            executionSymbols,
         })
 
         try {
             const health = await client.getHealth()
-            steps.push({ name: "Worker Health", ok: true, data: health })
+            steps.push({
+                name: "FiveSocket Health",
+                ok: true,
+                data: health,
+            })
         } catch (error) {
-            steps.push({ name: "Worker Health", ok: false, error: getErrorMessage(error) })
+            steps.push({
+                name: "FiveSocket Health",
+                ok: false,
+                error: getErrorMessage(error),
+            })
+            return { ok: false, steps }
+        }
+
+        try {
+            const accountInfo = await client.connect(runtimeConfig.credentials)
+            steps.push({
+                name: "Execution Connect",
+                ok: true,
+                data: {
+                    login: accountInfo.login,
+                    server: accountInfo.server,
+                    balance: accountInfo.balance,
+                    equity: accountInfo.equity,
+                },
+            })
+        } catch (error) {
+            steps.push({
+                name: "Execution Connect",
+                ok: false,
+                error: getErrorMessage(error),
+            })
             return { ok: false, steps }
         }
 

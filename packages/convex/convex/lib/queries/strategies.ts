@@ -74,6 +74,21 @@ export const getAccountByAppAndIdInternal = internalQuery({
     },
 })
 
+export const getStrategiesByAppAndAccountInternal = internalQuery({
+    args: {
+        app: venueAppV,
+        accountId: v.string(),
+    },
+    handler: async (ctx, args) => {
+        return await ctx.db
+            .query("strategies")
+            .withIndex("by_app_account", (q) =>
+                q.eq("app", args.app).eq("accountId", args.accountId)
+            )
+            .collect()
+    },
+})
+
 export const getStrategyById = query({
     args: { serviceToken: v.optional(v.string()), id: v.id("strategies") },
     handler: async (ctx, args) => {

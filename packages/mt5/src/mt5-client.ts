@@ -1,37 +1,14 @@
-/**
- * MT5 HTTP client -- communicates with the Python worker over HTTP.
- *
- * The Python worker wraps the MT5 SDK. This client proxies the VenueAdapter
- * interface calls to the worker's REST endpoints.
- */
-
 import {
     createExecutionError,
     createExecutionErrorDetail,
-    fetchWithTimeout,
     formatExecutionError,
-    getErrorMessage,
-    getExecutionErrorDetail,
-    retryWithBackoff,
     type ExecutionResult,
-    type OrderIntent,
 } from "@valiq-trading/core"
 
-export interface MT5WorkerCredentials {
+export interface MT5AccountCredentials {
     login: number
     password: string
     server: string
-}
-
-export interface MT5ClientConfig {
-    /** Base URL of the Python worker */
-    workerUrl: string
-    /** Shared access key for auth */
-    accessKey?: string
-    /** Request timeout in ms */
-    timeout?: number
-    connectTimeout?: number
-    fetchImpl?: typeof fetch
 }
 
 export type MT5MarginModeName = "retail_hedging" | "retail_netting" | "exchange" | "unknown"
@@ -127,6 +104,11 @@ export interface MT5OrderResult {
     bid?: number
     ask?: number
     success: boolean
+    unresolved?: boolean
+    commitUnknown?: boolean
+    commandId?: string
+    allowSuccessRetcodePromotion?: boolean
+    providerStatus?: "placed" | "filled" | "partially_filled" | "canceled" | "expired" | "modified" | "rejected" | "unknown"
 }
 
 export interface MT5SymbolInfo {
@@ -147,102 +129,64 @@ export interface MT5SymbolInfo {
     ask: number
 }
 
-type MT5WorkerErrorDetail = {
-    error?: string
-    errorType?: string
-    retryable?: boolean
-    [key: string]: unknown
-}
-
-type MT5WorkerErrorBody = {
-    detail?: string | MT5WorkerErrorDetail
-    error?: string
-    errorType?: string
-    retryable?: boolean
+export interface MT5OrderStatus {
+    ticket: number
+    symbol: string
+    type: string
+    volume: number
+    volumeInitial?: number
+    price: number
+    profit?: number
+    commission?: number
+    swap?: number
+    fee?: number
+    positionId?: number
+    state: string
 }
 
 export class MT5Client {
-    private readonly workerUrl: string
-    private readonly accessKey: string
-    private readonly timeout: number
-    private readonly connectTimeout: number
-    private readonly fetchImpl: typeof fetch
-
-    constructor(config: MT5ClientConfig) {
-        this.workerUrl = config.workerUrl.replace(/\/$/, "")
-        this.accessKey = config.accessKey ?? ""
-        this.timeout = config.timeout ?? 30_000
-        this.connectTimeout = config.connectTimeout ?? Math.max(this.timeout, 90_000)
-        this.fetchImpl = config.fetchImpl ?? fetch
+    constructor(_config?: unknown) {
     }
 
-    async connect(credentials: MT5WorkerCredentials): Promise<MT5AccountInfo> {
-        const response = await this.postMutation<{
-            success: boolean
-            accountInfo?: MT5AccountInfo
-            error?: string
-            errorType?: string
-            retryable?: boolean
-        }>("/connect", credentials, this.connectTimeout)
-
-        if (!response.success) {
-            throw createExecutionError("venue", `MT5 connection failed: ${response.error ?? "unknown error"}`, {
-                code: response.errorType ?? "unknown",
-                retryable: response.retryable ?? true,
-                details: {
-                    workerUrl: this.workerUrl,
-                    login: credentials.login,
-                    server: credentials.server,
-                },
-            })
-        }
-
-        return response.accountInfo!
+    async connect(_credentials: MT5AccountCredentials): Promise<MT5AccountInfo> {
+        throw unimplementedMT5TransportMethod("connect")
     }
 
     async disconnect(): Promise<void> {
-        try {
-            await this.postMutation("/disconnect", {})
-        } catch {
-            // Best effort
-        }
+        throw unimplementedMT5TransportMethod("disconnect")
     }
 
     async getHealth(): Promise<{ status: string; connected: boolean; login: number | null }> {
-        return await this.get("/health")
+        throw unimplementedMT5TransportMethod("getHealth")
     }
 
-    async getAccount(credentials: MT5WorkerCredentials): Promise<MT5AccountInfo> {
-        return await this.postRead<MT5AccountInfo>("/account", this.accountScopedBody(credentials))
+    async getAccount(_credentials: MT5AccountCredentials): Promise<MT5AccountInfo> {
+        throw unimplementedMT5TransportMethod("getAccount")
     }
 
-    async getPositions(credentials: MT5WorkerCredentials): Promise<MT5Position[]> {
-        return await this.postRead<MT5Position[]>("/positions", this.accountScopedBody(credentials))
+    async getPositions(_credentials: MT5AccountCredentials): Promise<MT5Position[]> {
+        throw unimplementedMT5TransportMethod("getPositions")
     }
 
-    async getOpenOrders(credentials: MT5WorkerCredentials): Promise<MT5OpenOrder[]> {
-        return await this.postRead<MT5OpenOrder[]>("/orders", this.accountScopedBody(credentials))
+    async getOpenOrders(_credentials: MT5AccountCredentials): Promise<MT5OpenOrder[]> {
+        throw unimplementedMT5TransportMethod("getOpenOrders")
     }
 
     async getPositionClosures(
-        credentials: MT5WorkerCredentials,
-        lookbackHours: number = 24
+        _credentials: MT5AccountCredentials,
+        _lookbackHours: number = 24
     ): Promise<MT5PositionClosure[]> {
-        return await this.postRead<MT5PositionClosure[]>("/position/closures", this.accountScopedBody(credentials, {
-            lookbackHours,
-        }))
+        throw unimplementedMT5TransportMethod("getPositionClosures")
     }
 
     async getAccountPnlEvents(
-        credentials: MT5WorkerCredentials,
-        lookbackHours: number = 24
+        _credentials: MT5AccountCredentials,
+        _lookbackHours: number = 24
     ): Promise<MT5AccountPnlEvent[]> {
-        return await this.postRead<MT5AccountPnlEvent[]>("/account/pnl-events", this.accountScopedBody(credentials, {
-            lookbackHours,
-        }))
+        throw unimplementedMT5TransportMethod("getAccountPnlEvents")
     }
 
-    async submitOrder(credentials: MT5WorkerCredentials, params: {
+    async submitOrder(_credentials: MT5AccountCredentials, _params: {
         symbol: string
         side: string
         volume: number
@@ -254,63 +198,40 @@ export class MT5Client {
         comment?: string
         deviation?: number
     }): Promise<MT5OrderResult> {
-        return await this.postMutation<MT5OrderResult>("/order/submit", this.accountScopedBody(credentials, params))
+        throw unimplementedMT5TransportMethod("submitOrder")
     }
 
-    async modifyOrder(credentials: MT5WorkerCredentials, params: {
+    async modifyOrder(_credentials: MT5AccountCredentials, _params: {
         ticket: number
         price?: number
         stopLoss?: number
         takeProfit?: number
     }): Promise<MT5OrderResult> {
-        return await this.postMutation<MT5OrderResult>("/order/modify", this.accountScopedBody(credentials, params))
+        throw unimplementedMT5TransportMethod("modifyOrder")
     }
 
-    async cancelOrder(credentials: MT5WorkerCredentials, params: {
+    async cancelOrder(_credentials: MT5AccountCredentials, _params: {
         ticket: number
     }): Promise<MT5OrderResult> {
-        return await this.postMutation<MT5OrderResult>("/order/cancel", this.accountScopedBody(credentials, params))
+        throw unimplementedMT5TransportMethod("cancelOrder")
     }
 
-    async closePosition(credentials: MT5WorkerCredentials, params: {
+    async closePosition(_credentials: MT5AccountCredentials, _params: {
         ticket: number
         volume?: number
         deviation?: number
         comment?: string
     }): Promise<MT5OrderResult> {
-        return await this.postMutation<MT5OrderResult>("/position/close", this.accountScopedBody(credentials, params))
+        throw unimplementedMT5TransportMethod("closePosition")
     }
 
-    async getSymbolInfo(credentials: MT5WorkerCredentials, symbols: string[]): Promise<MT5SymbolInfo[]> {
-        return await this.postRead<MT5SymbolInfo[]>("/symbol/info", this.accountScopedBody(credentials, { symbols }))
+    async getSymbolInfo(_credentials: MT5AccountCredentials, _symbols: string[]): Promise<MT5SymbolInfo[]> {
+        throw unimplementedMT5TransportMethod("getSymbolInfo")
     }
 
-    async getOrderStatus(credentials: MT5WorkerCredentials, orderId: number): Promise<{
-        ticket: number
-        symbol: string
-        type: string
-        volume: number
-        volumeInitial?: number
-        price: number
-        profit?: number
-        commission?: number
-        swap?: number
-        fee?: number
-        positionId?: number
-        state: string
-    } | null> {
-        try {
-            return await this.postRead("/order/status", this.accountScopedBody(credentials, { orderId }))
-        } catch (error) {
-            const message = error instanceof Error ? error.message : String(error)
-            if (message.includes("404")) {
-                return null
-            }
-            throw error
-        }
+    async getOrderStatus(_credentials: MT5AccountCredentials, _orderId: number): Promise<MT5OrderStatus | null> {
+        throw unimplementedMT5TransportMethod("getOrderStatus")
     }
-
-    // -- Mapping helpers for VenueAdapter -------------------------------------
 
     mapOrderResultToExecution(
         result: MT5OrderResult,
@@ -322,7 +243,40 @@ export class MT5Client {
             successRetcodes?: number[]
         } = {}
     ): ExecutionResult {
-        const success = result.success || (options.successRetcodes ?? []).includes(result.retcode)
+        if (result.unresolved) {
+            const errorDetail = createExecutionErrorDetail(
+                "venue",
+                result.retcodeDescription || "MT5 mutation unresolved; needs manual reconciliation",
+                {
+                    code: "NEEDS_MANUAL_RECONCILIATION",
+                    retryable: false,
+                    details: {
+                        retcode: result.retcode,
+                        retcodeExternal: result.retcodeExternal,
+                        comment: result.comment,
+                        bid: result.bid,
+                        ask: result.ask,
+                        commandId: result.commandId,
+                        unresolved: true,
+                    },
+                }
+            )
+
+            return {
+                orderId: result.orderId || result.dealId || options.fallbackOrderId || "",
+                providerOrderId: result.orderId || result.dealId || options.fallbackOrderId || undefined,
+                status: "rejected",
+                filledQuantity: 0,
+                timestamp: Date.now(),
+                error: formatExecutionError(errorDetail),
+                errorDetail,
+            }
+        }
+
+        const success = result.success || (
+            result.allowSuccessRetcodePromotion !== false
+            && (options.successRetcodes ?? []).includes(result.retcode)
+        )
         const errorDetail = success
             ? undefined
             : createExecutionErrorDetail("venue", result.retcodeDescription, {
@@ -334,14 +288,18 @@ export class MT5Client {
                     comment: result.comment,
                     bid: result.bid,
                     ask: result.ask,
+                    commandId: result.commandId,
+                    commitUnknown: result.commitUnknown,
                 },
             })
 
         return {
             orderId: result.orderId || result.dealId || options.fallbackOrderId || "",
             providerOrderId: result.orderId || result.dealId || options.fallbackOrderId || undefined,
-            status: success ? options.successStatus ?? resolveMT5MutationSuccessStatus(result) : "rejected",
-            filledQuantity: success ? options.filledQuantity ?? result.volume : 0,
+            status: success
+                ? options.successStatus ?? resolveMT5MutationSuccessStatus(result)
+                : "rejected",
+            filledQuantity: success ? options.filledQuantity ?? resolveMT5MutationFilledQuantity(result) : 0,
             fillPrice: success
                 ? options.fillPrice ?? (result.price > 0 ? result.price : undefined)
                 : undefined,
@@ -350,152 +308,34 @@ export class MT5Client {
             errorDetail,
         }
     }
-
-    // -- HTTP transport -------------------------------------------------------
-
-    private accountScopedBody(
-        credentials: MT5WorkerCredentials,
-        params: Record<string, unknown> = {}
-    ): Record<string, unknown> {
-        return {
-            ...params,
-            login: credentials.login,
-            password: credentials.password,
-            server: credentials.server,
-        }
-    }
-
-    private async get<T = unknown>(path: string): Promise<T> {
-        return await retryWithBackoff(async () => {
-            return await this.request<T>("GET", path, undefined, this.timeout)
-        }, 3, 1000)
-    }
-
-    private async postRead<T = unknown>(path: string, body: unknown): Promise<T> {
-        return await this.request<T>("POST", path, body, this.timeout)
-    }
-
-    private async postMutation<T = unknown>(
-        path: string,
-        body: unknown,
-        timeout: number = this.timeout
-    ): Promise<T> {
-        return await this.request<T>("POST", path, body, timeout)
-    }
-
-    private async request<T = unknown>(
-        method: "GET" | "POST",
-        path: string,
-        body: unknown,
-        timeout: number
-    ): Promise<T> {
-        const controller = new AbortController()
-        const timeoutId = setTimeout(() => controller.abort(), timeout)
-
-        try {
-            const response = await fetchWithTimeout(`${this.workerUrl}${path}`, {
-                method,
-                headers: this.headers(),
-                body: body === undefined ? undefined : JSON.stringify(body),
-                signal: controller.signal,
-            }, timeout, `MT5 worker ${method} ${path}`, this.fetchImpl)
-
-            if (!response.ok) {
-                const text = await response.text().catch(() => "")
-                const workerError = parseWorkerError(text)
-                const message = workerError?.error ?? text
-                throw createExecutionError("venue", `MT5 worker error: ${response.status} ${response.statusText} ${message}`.trim(), {
-                    code: workerError?.errorType ?? String(response.status),
-                    retryable: workerError?.retryable ?? (response.status >= 500 || response.status === 429),
-                    details: {
-                        path,
-                        status: response.status,
-                        statusText: response.statusText,
-                        body: text,
-                        workerError,
-                    },
-                })
-            }
-
-            return (await response.json()) as T
-        } catch (error) {
-            const detail = getExecutionErrorDetail(error)
-            if (detail) {
-                throw error
-            }
-
-            throw createExecutionError("network", getErrorMessage(error), {
-                code: "MT5_WORKER_NETWORK",
-                retryable: true,
-                details: {
-                    method,
-                    path,
-                    workerUrl: this.workerUrl,
-                },
-            })
-        } finally {
-            clearTimeout(timeoutId)
-        }
-    }
-
-    private headers(): Record<string, string> {
-        const h: Record<string, string> = { "Content-Type": "application/json" }
-        if (this.accessKey) {
-            h["x-worker-key"] = this.accessKey
-        }
-        return h
-    }
 }
 
 function resolveMT5MutationSuccessStatus(result: MT5OrderResult): ExecutionResult["status"] {
-    return result.retcode === 10010 ? "partially_filled" : "filled"
+    if (result.providerStatus === "placed" || result.providerStatus === "modified") {
+        return "pending"
+    }
+    if (result.providerStatus === "canceled") {
+        return "cancelled"
+    }
+    if (result.providerStatus === "expired") {
+        return "expired"
+    }
+    if (result.providerStatus === "partially_filled" || result.retcode === 10010) {
+        return "partially_filled"
+    }
+    return "filled"
 }
 
-function parseWorkerError(text: string): MT5WorkerErrorDetail | undefined {
-    if (!text.trim()) {
-        return undefined
+function resolveMT5MutationFilledQuantity(result: MT5OrderResult): number {
+    if (result.providerStatus === "placed" || result.providerStatus === "modified" || result.providerStatus === "canceled") {
+        return 0
     }
-
-    let parsed: MT5WorkerErrorBody
-    try {
-        parsed = JSON.parse(text) as MT5WorkerErrorBody
-    } catch {
-        return undefined
-    }
-
-    if (typeof parsed.detail === "string") {
-        return {
-            error: parsed.detail,
-        }
-    }
-
-    if (isRecord(parsed.detail)) {
-        return parsed.detail as MT5WorkerErrorDetail
-    }
-
-    if (parsed.error || parsed.errorType || parsed.retryable !== undefined) {
-        return {
-            error: parsed.error,
-            errorType: parsed.errorType,
-            retryable: parsed.retryable,
-        }
-    }
-
-    return undefined
+    return result.volume
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-    return value !== null && typeof value === "object" && !Array.isArray(value)
-}
-
-export function isRecoverableMT5ConnectionError(error: unknown): boolean {
-    const detail = getExecutionErrorDetail(error)
-    if (!detail?.retryable) {
-        return false
-    }
-
-    return detail.code === "not_connected"
-        || detail.code === "session_lost"
-        || detail.code === "connect_in_progress"
-        || detail.code === "operation_in_progress"
+function unimplementedMT5TransportMethod(method: string): Error {
+    return createExecutionError("venue", `MT5 ${method} requires FiveSocket client construction through createMT5Client`, {
+        code: "MT5_CLIENT_NOT_CONFIGURED",
+        retryable: false,
+    })
 }

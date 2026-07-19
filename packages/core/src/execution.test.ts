@@ -217,6 +217,103 @@ describe("ExecutionPipeline commit-unknown safety", () => {
         expect(venue.submitOrder).toHaveBeenCalledTimes(1)
     })
 
+    it("keeps NEEDS_MANUAL_RECONCILIATION submit rejections terminal even when recovery finds a match", async () => {
+        const recoverSubmittedOrder = vi.fn(async () => ({
+            outcome: "accepted" as const,
+            result: {
+                orderId: "recovered-order",
+                status: "filled" as const,
+                filledQuantity: 1,
+                fillPrice: 4715.5,
+                timestamp: Date.now(),
+                commitOutcome: "recovered" as const,
+            },
+        }))
+        const unresolvedDetail = createExecutionError("venue", "Modify response lost", {
+            code: "NEEDS_MANUAL_RECONCILIATION",
+            retryable: false,
+        }).executionError
+        const venue = {
+            ...createVenue(),
+            submitOrder: vi.fn(async () => ({
+                orderId: "",
+                status: "rejected" as const,
+                filledQuantity: 0,
+                timestamp: Date.now(),
+                error: unresolvedDetail ? `${unresolvedDetail.source}/${unresolvedDetail.code}: ${unresolvedDetail.message}` : "unresolved",
+                errorDetail: unresolvedDetail,
+            })),
+            recoverSubmittedOrder,
+        }
+        const pipeline = createPipeline({
+            venue,
+            venueName: "mt5",
+        })
+
+        const result = await pipeline.executeIntent({
+            instrument: "XAUUSD",
+            side: "buy",
+            quantity: 1,
+            orderType: "market",
+            timeInForce: "gtc",
+        }, account, [])
+
+        expect(result.result.status).toBe("rejected")
+        expect(result.result.errorDetail?.code).toBe("NEEDS_MANUAL_RECONCILIATION")
+        expect(result.result.commitOutcome).toBe("rejected")
+        expect(recoverSubmittedOrder).not.toHaveBeenCalled()
+    })
+
+    it("keeps NEEDS_MANUAL_RECONCILIATION close rejections terminal even when recovery finds a match", async () => {
+        const recoverSubmittedOrder = vi.fn(async () => ({
+            outcome: "accepted" as const,
+            result: {
+                orderId: "recovered-close",
+                status: "filled" as const,
+                filledQuantity: 1,
+                fillPrice: 4715.5,
+                timestamp: Date.now(),
+                commitOutcome: "recovered" as const,
+            },
+        }))
+        const unresolvedDetail = createExecutionError("venue", "Close response lost", {
+            code: "NEEDS_MANUAL_RECONCILIATION",
+            retryable: false,
+        }).executionError
+        const venue = {
+            ...createVenue(),
+            getPositions: async () => [{
+                instrument: "XAUUSD",
+                side: "long" as const,
+                quantity: 1,
+                entryPrice: 4700,
+                currentPrice: 4715,
+                unrealizedPnl: 15,
+                providerPositionId: "pos-1",
+            }],
+            closePosition: vi.fn(async () => ({
+                orderId: "",
+                status: "rejected" as const,
+                filledQuantity: 0,
+                timestamp: Date.now(),
+                error: unresolvedDetail ? `${unresolvedDetail.source}/${unresolvedDetail.code}: ${unresolvedDetail.message}` : "unresolved",
+                errorDetail: unresolvedDetail,
+            })),
+            recoverSubmittedOrder,
+        }
+        const pipeline = createPipeline({
+            venue,
+            venueName: "mt5",
+        })
+
+        const result = await pipeline.closePosition("XAUUSD", "manual")
+
+        expect(result.result.status).toBe("rejected")
+        expect(result.result.errorDetail?.code).toBe("NEEDS_MANUAL_RECONCILIATION")
+        expect(result.result.commitOutcome).toBe("rejected")
+        expect(recoverSubmittedOrder).not.toHaveBeenCalled()
+    })
+
     it("captures recovery probe failures as commit-unknown instead of escaping", async () => {
         const faultRecorder = vi.fn(async () => {})
         const venue = {

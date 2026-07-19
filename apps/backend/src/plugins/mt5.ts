@@ -7,10 +7,11 @@ import {
 } from "@valiq-trading/core"
 import {
     createMT5SpreadContextLine,
+    createMT5Client,
     HolidayGuard,
-    MT5Client,
     MT5_RUNTIME_SECRET_KEYS,
     mt5RiskValidators,
+    resolveCanonicalFiveSocketAccountExecutionSymbols,
     resolveMT5RuntimeConfig,
     MT5VenueAdapter,
     normalizeMT5Symbol,
@@ -44,21 +45,37 @@ export class MT5Plugin implements VenuePlugin {
         return []
     }
 
-    async validateEnvironment(secrets: Record<string, string | null>): Promise<void> {
+    async validateEnvironment(
+        secrets: Record<string, string | null>,
+        policy?: Record<string, unknown>
+    ): Promise<void> {
         const runtimeConfig = resolveMT5RuntimeConfig(secrets)
-        const healthClient = new MT5Client({
-            workerUrl: runtimeConfig.workerUrl,
-            accessKey: runtimeConfig.accessKey,
+        const accountStrategies = resolveMt5AccountExecutionPolicySources(secrets, policy)
+        const allowedSymbols = policy
+            ? resolveMT5ConfiguredSymbols(mt5PolicySchema.parse(policy))
+            : []
+        const executionSymbols = resolveCanonicalFiveSocketAccountExecutionSymbols(
+            accountStrategies,
+            runtimeConfig.defaultMaxVolume
+        )
+
+        if (executionSymbols.length === 0) {
+            throw new Error("FiveSocket preflight requires marketRegionsByInstrument symbols to configure execution policy")
+        }
+
+        const healthClient = createMT5Client(runtimeConfig, {
             timeout: 2_000,
+            executionSymbols,
         })
         await healthClient.getHealth()
 
-        const client = new MT5Client({
-            workerUrl: runtimeConfig.workerUrl,
-            accessKey: runtimeConfig.accessKey,
+        const client = createMT5Client(runtimeConfig, {
+            executionSymbols,
         })
+        await client.connect(runtimeConfig.credentials)
         const venue = new MT5VenueAdapter(client, runtimeConfig.credentials, this.executionCostTracker, {
             allowUnscopedSymbolAccess: true,
+            ...(allowedSymbols.length > 0 ? { allowedSymbols } : {}),
         })
         await venue.ensureConnected()
     }
@@ -68,11 +85,17 @@ export class MT5Plugin implements VenuePlugin {
         secrets: Record<string, string | null>
     ): VenueAdapter {
         const resolved = resolveMT5RuntimeConfig(secrets)
-        const client = new MT5Client({
-            workerUrl: resolved.workerUrl,
-            accessKey: resolved.accessKey,
-        })
         const allowedSymbols = resolveMT5ConfiguredSymbols(mt5PolicySchema.parse(_policy))
+        const executionSymbols = resolveCanonicalFiveSocketAccountExecutionSymbols(
+            resolveMt5AccountExecutionPolicySources(secrets, _policy),
+            resolved.defaultMaxVolume
+        )
+        if (executionSymbols.length === 0) {
+            throw new Error("FiveSocket requires configured marketRegionsByInstrument symbols for execution policy")
+        }
+        const client = createMT5Client(resolved, {
+            executionSymbols,
+        })
         return new MT5VenueAdapter(client, resolved.credentials, this.executionCostTracker, {
             allowedSymbols,
         })
@@ -239,4 +262,27 @@ export class MT5Plugin implements VenuePlugin {
         }
     }
 
+}
+
+function resolveMt5AccountExecutionPolicySources(
+    secrets: Record<string, string | null>,
+    fallbackPolicy?: Record<string, unknown>
+): Array<{ enabled: boolean, policy: unknown }> {
+    const { syncStrategies } = require("../state") as typeof import("../state")
+    const login = secrets.MT5_PRIMARY_LOGIN
+    const server = secrets.MT5_PRIMARY_SERVER
+    const siblings = (syncStrategies.mt5 ?? []).filter((entry) =>
+        entry.secrets.MT5_PRIMARY_LOGIN === login
+        && entry.secrets.MT5_PRIMARY_SERVER === server
+    )
+    if (siblings.length > 0) {
+        return siblings.map((entry) => ({
+            enabled: entry.strategy.enabled,
+            policy: entry.policy,
+        }))
+    }
+    if (fallbackPolicy) {
+        return [{ enabled: true, policy: fallbackPolicy }]
+    }
+    return []
 }
