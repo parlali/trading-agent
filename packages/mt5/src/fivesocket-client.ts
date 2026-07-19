@@ -16,7 +16,7 @@ import {
     type MT5Position,
     type MT5PositionClosure,
     type MT5SymbolInfo,
-    type MT5WorkerCredentials,
+    type MT5AccountCredentials,
 } from "./mt5-client"
 import {
     fromDecimalString,
@@ -89,13 +89,7 @@ export class FiveSocketClient extends MT5Client {
     private cachedLogin: number | null = null
 
     constructor(config: FiveSocketClientConfig) {
-        super({
-            workerUrl: config.baseUrl,
-            accessKey: config.apiKey,
-            timeout: config.timeout,
-            connectTimeout: config.connectTimeout,
-            fetchImpl: config.fetchImpl,
-        })
+        super()
         this.fsBaseUrl = config.baseUrl.replace(/\/$/, "")
         this.apiKey = config.apiKey
         this.fsTimeout = config.timeout ?? 30_000
@@ -107,7 +101,7 @@ export class FiveSocketClient extends MT5Client {
         this.maxDealPages = config.maxDealPages ?? 10_000
     }
 
-    override async connect(credentials: MT5WorkerCredentials): Promise<MT5AccountInfo> {
+    override async connect(credentials: MT5AccountCredentials): Promise<MT5AccountInfo> {
         const budget = createTimeoutBudget(this.fsConnectTimeout)
         await this.ensureAccount(credentials, budget)
         return await this.readAccountInfo(credentials, budget)
@@ -129,12 +123,12 @@ export class FiveSocketClient extends MT5Client {
         return mapFiveSocketReadiness(readiness, this.cachedLogin)
     }
 
-    override async getAccount(credentials: MT5WorkerCredentials): Promise<MT5AccountInfo> {
+    override async getAccount(credentials: MT5AccountCredentials): Promise<MT5AccountInfo> {
         return await this.readAccountInfo(credentials)
     }
 
     private async readAccountInfo(
-        credentials: MT5WorkerCredentials,
+        credentials: MT5AccountCredentials,
         budget?: TimeoutBudget
     ): Promise<MT5AccountInfo> {
         const accountId = await this.ensureAccount(credentials, budget)
@@ -151,7 +145,7 @@ export class FiveSocketClient extends MT5Client {
         return info
     }
 
-    override async getPositions(credentials: MT5WorkerCredentials): Promise<MT5Position[]> {
+    override async getPositions(credentials: MT5AccountCredentials): Promise<MT5Position[]> {
         const accountId = await this.ensureAccount(credentials)
         const response = await this.requestJson<{ positions: FiveSocketPosition[] }>(
             "GET",
@@ -164,7 +158,7 @@ export class FiveSocketClient extends MT5Client {
         return (response.positions ?? []).map(mapFiveSocketPosition)
     }
 
-    override async getOpenOrders(credentials: MT5WorkerCredentials): Promise<MT5OpenOrder[]> {
+    override async getOpenOrders(credentials: MT5AccountCredentials): Promise<MT5OpenOrder[]> {
         const accountId = await this.ensureAccount(credentials)
         const response = await this.requestJson<{ data: FiveSocketWorkingOrder[] }>(
             "GET",
@@ -178,7 +172,7 @@ export class FiveSocketClient extends MT5Client {
     }
 
     override async getPositionClosures(
-        credentials: MT5WorkerCredentials,
+        credentials: MT5AccountCredentials,
         lookbackHours: number = 24
     ): Promise<MT5PositionClosure[]> {
         const deals = await this.listDeals(credentials, lookbackHours)
@@ -186,7 +180,7 @@ export class FiveSocketClient extends MT5Client {
     }
 
     override async getAccountPnlEvents(
-        credentials: MT5WorkerCredentials,
+        credentials: MT5AccountCredentials,
         lookbackHours: number = 24
     ): Promise<MT5AccountPnlEvent[]> {
         const account = await this.getAccount(credentials)
@@ -194,7 +188,7 @@ export class FiveSocketClient extends MT5Client {
         return mapFiveSocketAccountPnlEvents(deals, account.currency)
     }
 
-    override async submitOrder(credentials: MT5WorkerCredentials, params: {
+    override async submitOrder(credentials: MT5AccountCredentials, params: {
         symbol: string
         side: string
         volume: number
@@ -243,7 +237,7 @@ export class FiveSocketClient extends MT5Client {
         return await this.resolveMutationCommand(accountId, command)
     }
 
-    override async modifyOrder(credentials: MT5WorkerCredentials, params: {
+    override async modifyOrder(credentials: MT5AccountCredentials, params: {
         ticket: number
         price?: number
         stopLoss?: number
@@ -272,7 +266,7 @@ export class FiveSocketClient extends MT5Client {
         return await this.resolveMutationCommand(accountId, command)
     }
 
-    override async cancelOrder(credentials: MT5WorkerCredentials, params: {
+    override async cancelOrder(credentials: MT5AccountCredentials, params: {
         ticket: number
     }): Promise<MT5OrderResult> {
         const accountId = await this.ensureAccount(credentials)
@@ -287,7 +281,7 @@ export class FiveSocketClient extends MT5Client {
         return await this.resolveMutationCommand(accountId, command)
     }
 
-    override async closePosition(credentials: MT5WorkerCredentials, params: {
+    override async closePosition(credentials: MT5AccountCredentials, params: {
         ticket: number
         volume?: number
         deviation?: number
@@ -315,7 +309,7 @@ export class FiveSocketClient extends MT5Client {
         return await this.resolveMutationCommand(accountId, command)
     }
 
-    override async getSymbolInfo(credentials: MT5WorkerCredentials, symbols: string[]): Promise<MT5SymbolInfo[]> {
+    override async getSymbolInfo(credentials: MT5AccountCredentials, symbols: string[]): Promise<MT5SymbolInfo[]> {
         if (symbols.length === 0) {
             return []
         }
@@ -353,7 +347,7 @@ export class FiveSocketClient extends MT5Client {
         return (response.data ?? []).map(mapFiveSocketExecutionSymbol)
     }
 
-    override async getOrderStatus(credentials: MT5WorkerCredentials, orderId: number): Promise<{
+    override async getOrderStatus(credentials: MT5AccountCredentials, orderId: number): Promise<{
         ticket: number
         symbol: string
         type: string
@@ -410,7 +404,7 @@ export class FiveSocketClient extends MT5Client {
     }
 
     private async ensureAccount(
-        credentials: MT5WorkerCredentials,
+        credentials: MT5AccountCredentials,
         budget?: TimeoutBudget
     ): Promise<string> {
         const cacheKey = accountCacheKey(credentials)
@@ -473,7 +467,7 @@ export class FiveSocketClient extends MT5Client {
     }
 
     private async findLinkedAccount(
-        credentials: MT5WorkerCredentials,
+        credentials: MT5AccountCredentials,
         budget: TimeoutBudget
     ): Promise<LinkedAccount> {
         const response = await this.requestJson<{ data: LinkedAccount[] }>(
@@ -553,7 +547,7 @@ export class FiveSocketClient extends MT5Client {
     }
 
     private async listDeals(
-        credentials: MT5WorkerCredentials,
+        credentials: MT5AccountCredentials,
         lookbackHours: number
     ): Promise<FiveSocketDeal[]> {
         const accountId = await this.ensureAccount(credentials)
@@ -801,7 +795,7 @@ export class FiveSocketClient extends MT5Client {
     }
 }
 
-function accountCacheKey(credentials: MT5WorkerCredentials): string {
+function accountCacheKey(credentials: MT5AccountCredentials): string {
     return `${credentials.login}:${credentials.server}`
 }
 

@@ -8,7 +8,6 @@ The repository contains the reusable runtime, venue adapters, dashboard, agent t
 
 - `apps/backend`: TypeScript scheduler, strategy orchestration, provider sync, agent runtime, and backend health server
 - `apps/dashboard`: Next.js operator dashboard backed by Convex
-- `apps/mt5-worker`: Python FastAPI worker exposing MetaTrader 5 operations over authenticated HTTP
 - `packages/core`: shared types, strategy config parsing, risk gates, accounting helpers, and runtime utilities
 - `packages/agent`: tool contracts, MCP integration, transcript handling, and model provider adapters
 - `packages/convex`: schema, queries, mutations, generated API bindings, and backend client helpers
@@ -27,7 +26,6 @@ This repo ignores `private/` by default. Use it for operator-local files:
 - `private/strategies.md`: account pool and strategy source of truth
 - `private/plan.md`: local rollout and audit plan
 - `private/context.md`: private operational context
-- `private/mt5-worker/servers.dat`: broker server database required by MT5 worker machines
 - deployment notes, runbooks, and one-off maintenance scripts tied to your own accounts
 
 Do not commit credentials, broker files, deployment secrets, private strategy prompts, or audit exports.
@@ -82,7 +80,7 @@ Convex env must also include `BACKEND_SERVICE_TOKEN`. Generate machine credentia
 openssl rand -hex 32
 ```
 
-Use distinct values for backend machine auth and MT5 worker auth.
+Use distinct values for each machine-auth boundary.
 
 After auth is deployed, create the initial dashboard user from the Convex dashboard Functions page by running `seedUserAction:seedUser`:
 
@@ -103,32 +101,31 @@ Canonical provider keys:
 
 | App | Keys |
 |---|---|
-| `mt5` | `MT5_PRIMARY_LOGIN`, `MT5_PRIMARY_PASSWORD`, `MT5_PRIMARY_SERVER` |
+| `mt5` | `MT5_PRIMARY_LOGIN`, `MT5_PRIMARY_PASSWORD`, `MT5_PRIMARY_SERVER`, `FIVESOCKET_API_KEY`, `FIVESOCKET_API_BASE_URL`, `FIVESOCKET_DEFAULT_MAX_VOLUME` |
 | `alpaca-options` | `ALPACA_API_KEY`, `ALPACA_SECRET_KEY`, `ALPACA_ENVIRONMENT`, `ALPACA_ACCOUNT_ID` |
 | `okx-swap` | `OKX_API_KEY`, `OKX_API_SECRET`, `OKX_API_PASSPHRASE`, `OKX_BASE_URL`, `OKX_DEMO_TRADING`, `OKX_MARGIN_MODE`, `OKX_POSITION_MODE` |
 | `polymarket` | `POLYMARKET_PRIVATE_KEY`, `POLYMARKET_API_KEY`, `POLYMARKET_API_SECRET`, `POLYMARKET_API_PASSPHRASE`, `POLYMARKET_HOST`, `POLYMARKET_CHAIN_ID`, `POLYMARKET_FUNDER_ADDRESS` |
 
-MT5 also needs global transport secrets. Choose one connectivity path:
-
-- Self-hosted Windows worker (default): `MT5_WORKER_URL`, `MT5_WORKER_ACCESS_KEY`
-- Hosted FiveSocket: `MT5_TRANSPORT=fivesocket`, `FIVESOCKET_API_KEY`, optional `FIVESOCKET_API_BASE_URL`
+MT5 connectivity is FiveSocket-only. The Windows worker transport was removed; rollback is via git history, not runtime config.
 
 `OKX_DEMO_TRADING` must be set explicitly to `true` or `false`. `OKX_MARGIN_MODE` must be `cross` or `isolated`. `OKX_POSITION_MODE` must be `net_mode` or `long_short_mode`.
 
 ## FiveSocket MT5 Connectivity
 
-[FiveSocket](https://api.fivesocket.com) is the hosted MT5 connectivity option for this runtime. Strategy logic, `MT5VenueAdapter` recovery semantics, and the execution pipeline stay the same; only the transport behind `MT5Client` changes.
+[FiveSocket](https://api.fivesocket.com) is the MT5 connectivity path for this runtime. Strategy logic, `MT5VenueAdapter` recovery semantics, and the execution pipeline stay the same; `MT5Client` construction always creates a FiveSocket client.
 
 Set:
 
 ```bash
-MT5_TRANSPORT=fivesocket
+MT5_PRIMARY_LOGIN=
+MT5_PRIMARY_PASSWORD=
+MT5_PRIMARY_SERVER=
 FIVESOCKET_API_KEY=
 FIVESOCKET_API_BASE_URL=https://api.fivesocket.com
 FIVESOCKET_DEFAULT_MAX_VOLUME=
 ```
 
-`FIVESOCKET_DEFAULT_MAX_VOLUME` is required for FiveSocket and is the explicit per-symbol execution-policy max volume (plain positive decimal string). There is no silent default.
+`FIVESOCKET_API_KEY` and `FIVESOCKET_DEFAULT_MAX_VOLUME` are required. `FIVESOCKET_API_BASE_URL` defaults to `https://api.fivesocket.com` when unset. `FIVESOCKET_DEFAULT_MAX_VOLUME` is the explicit per-symbol execution-policy max volume (plain positive decimal string). There is no silent volume default.
 
 Account credentials remain the existing account-scoped `MT5_PRIMARY_LOGIN` / `MT5_PRIMARY_PASSWORD` / `MT5_PRIMARY_SERVER` secrets. The OpenAPI contract checked into `docs/fivesocket-openapi.json` is authoritative for request/response shapes.
 
@@ -137,20 +134,6 @@ Mutation outcomes map into the existing MT5 result model:
 - `accepted` / `rejected` return normal `MT5OrderResult` values
 - `commit_unknown` is polled briefly, then surfaced as a retryable commit-unknown error so adapter recovery by `comment` / `clientOrderId` can run
 - `unresolved` is a terminal `MT5OrderResult.unresolved` result mapped to `NEEDS_MANUAL_RECONCILIATION` (do not retry the mutation)
-
-## MT5 Worker (self-hosted alternative)
-
-Any machine that runs `apps/mt5-worker` must keep the broker server database at `private/mt5-worker/servers.dat`.
-
-- The worker copies that file into each portable MT5 instance before `MetaTrader5.initialize(...)`
-- The file is required and intentionally not committed
-- If you intentionally keep it outside the repo private overlay, set `MT5_SERVERS_DAT_PATH`
-
-If the file is missing, the worker fails closed with a clear error instead of starting against a stale or implicit fallback path.
-
-Use a worker-specific `MT5_PORTABLE_DIR` on machines that run other MT5 automation. On Windows deployments, set `WORKER_EXPECTED_REPO_SUFFIX` if the worker should fail closed unless it is running from an expected repo path.
-
-Keep the worker path available for self-hosted and shadow-run comparisons by setting `MT5_TRANSPORT=worker` (default).
 
 ## Polymarket Credentials
 
@@ -268,7 +251,6 @@ Live Codex execution remains blocked until replay, export audit, and provider-sy
 
 - Dashboard users authenticate with Convex Auth
 - Backend machine traffic uses `BACKEND_SERVICE_TOKEN` for machine-only Convex actions such as secret resolution
-- MT5 worker traffic uses `MT5_WORKER_ACCESS_KEY` on every backend-to-worker request, including health checks
 - Kill switches live in Convex and are enforced by the backend runtime
 
 Rotate machine secrets by generating a new value, updating the target service first, then updating the caller, and redeploying both ends so there is no mismatch window.
@@ -288,7 +270,7 @@ bun run strategies:diff
 bun run provider:identity-preflight
 ```
 
-For MT5, SSH into the Windows worker host and verify the service manager status plus authenticated `/health` endpoint. Treat the deployment as incomplete until the service is running, the worker returns `status: ok`, and provider-sync evidence is clean.
+For MT5, run the dashboard connection test for the target account and confirm FiveSocket health, execution connect, and provider-sync evidence are clean before enabling scheduled runs.
 
 ## Stack
 
@@ -298,7 +280,6 @@ For MT5, SSH into the Windows worker host and verify the service manager status 
 - Convex
 - Next.js
 - Vercel AI SDK
-- Python for the MT5 worker only
 
 ## Open Source Boundary
 

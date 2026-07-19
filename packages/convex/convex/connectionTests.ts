@@ -38,7 +38,7 @@ import {
 import {
     MT5_RUNTIME_SECRET_KEYS,
     MT5VenueAdapter,
-    createMT5TransportClient,
+    createMT5Client,
     resolveCanonicalFiveSocketAccountExecutionSymbols,
     resolveMT5RuntimeConfig,
 } from "@valiq-trading/mt5"
@@ -158,96 +158,89 @@ export const testMT5Connection = action({
             name: "Runtime Config",
             ok: true,
             data: {
-                transport: runtimeConfig.transport,
-                ...(runtimeConfig.transport === "worker"
-                    ? { workerUrl: runtimeConfig.workerUrl }
-                    : { baseUrl: runtimeConfig.baseUrl }),
+                baseUrl: runtimeConfig.baseUrl,
                 login: runtimeConfig.credentials.login,
                 server: runtimeConfig.credentials.server,
             },
         })
 
-        let executionSymbols: ReturnType<typeof resolveCanonicalFiveSocketAccountExecutionSymbols> | undefined
-        if (runtimeConfig.transport === "fivesocket") {
-            const strategies = await ctx.runQuery(internal.queries.getStrategiesByAppAndAccountInternal, {
-                app: "mt5",
-                accountId: args.accountId,
-            })
-            try {
-                executionSymbols = resolveCanonicalFiveSocketAccountExecutionSymbols(
-                    strategies.map((strategy) => ({
-                        enabled: strategy.enabled,
-                        policy: strategy.policy,
-                    })),
-                    runtimeConfig.defaultMaxVolume
-                )
-            } catch (error) {
-                steps.push({
-                    name: "Execution Policy",
-                    ok: false,
-                    error: getErrorMessage(error),
-                })
-                return { ok: false, steps }
-            }
-            if (executionSymbols.length === 0) {
-                steps.push({
-                    name: "Execution Policy",
-                    ok: false,
-                    error: "FiveSocket connection test requires marketRegionsByInstrument symbols to configure execution policy",
-                })
-                return { ok: false, steps }
-            }
+        const strategies = await ctx.runQuery(internal.queries.getStrategiesByAppAndAccountInternal, {
+            app: "mt5",
+            accountId: args.accountId,
+        })
+        let executionSymbols: ReturnType<typeof resolveCanonicalFiveSocketAccountExecutionSymbols>
+        try {
+            executionSymbols = resolveCanonicalFiveSocketAccountExecutionSymbols(
+                strategies.map((strategy) => ({
+                    enabled: strategy.enabled,
+                    policy: strategy.policy,
+                })),
+                runtimeConfig.defaultMaxVolume
+            )
+        } catch (error) {
             steps.push({
                 name: "Execution Policy",
-                ok: true,
-                data: {
-                    strategyCount: strategies.filter((strategy) => strategy.enabled).length,
-                    symbols: executionSymbols.map((entry) => entry.symbol),
-                },
+                ok: false,
+                error: getErrorMessage(error),
             })
+            return { ok: false, steps }
         }
+        if (executionSymbols.length === 0) {
+            steps.push({
+                name: "Execution Policy",
+                ok: false,
+                error: "FiveSocket connection test requires marketRegionsByInstrument symbols to configure execution policy",
+            })
+            return { ok: false, steps }
+        }
+        steps.push({
+            name: "Execution Policy",
+            ok: true,
+            data: {
+                strategyCount: strategies.filter((strategy) => strategy.enabled).length,
+                symbols: executionSymbols.map((entry) => entry.symbol),
+            },
+        })
 
-        const client = createMT5TransportClient(runtimeConfig, {
+        const client = createMT5Client(runtimeConfig, {
             executionSymbols,
         })
 
         try {
             const health = await client.getHealth()
             steps.push({
-                name: runtimeConfig.transport === "fivesocket" ? "FiveSocket Health" : "Worker Health",
+                name: "FiveSocket Health",
                 ok: true,
                 data: health,
             })
         } catch (error) {
             steps.push({
-                name: runtimeConfig.transport === "fivesocket" ? "FiveSocket Health" : "Worker Health",
+                name: "FiveSocket Health",
                 ok: false,
                 error: getErrorMessage(error),
             })
             return { ok: false, steps }
         }
 
-        if (runtimeConfig.transport === "fivesocket") {
-            try {
-                const accountInfo = await client.connect(runtimeConfig.credentials)
-                steps.push({
-                    name: "Execution Connect",
-                    ok: true,
-                    data: {
-                        login: accountInfo.login,
-                        server: accountInfo.server,
-                        balance: accountInfo.balance,
-                        equity: accountInfo.equity,
-                    },
-                })
-            } catch (error) {
-                steps.push({
-                    name: "Execution Connect",
-                    ok: false,
-                    error: getErrorMessage(error),
-                })
-                return { ok: false, steps }
-            }
+        try {
+            const accountInfo = await client.connect(runtimeConfig.credentials)
+            steps.push({
+                name: "Execution Connect",
+                ok: true,
+                data: {
+                    login: accountInfo.login,
+                    server: accountInfo.server,
+                    balance: accountInfo.balance,
+                    equity: accountInfo.equity,
+                },
+            })
+        } catch (error) {
+            steps.push({
+                name: "Execution Connect",
+                ok: false,
+                error: getErrorMessage(error),
+            })
+            return { ok: false, steps }
         }
 
         const venue = new MT5VenueAdapter(client, runtimeConfig.credentials, undefined, {

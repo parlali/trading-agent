@@ -18,9 +18,9 @@ import {
     mapFiveSocketWorkingOrder,
 } from "./fivesocket-mappers.ts"
 import { FiveSocketClient } from "./fivesocket-client.ts"
-import { MT5Client, type MT5WorkerCredentials } from "./mt5-client.ts"
+import { MT5Client, type MT5AccountCredentials } from "./mt5-client.ts"
 import {
-    createMT5TransportClient,
+    createMT5Client,
     resolveCanonicalFiveSocketAccountExecutionSymbols,
     resolveFiveSocketExecutionSymbolsForPolicies,
     resolveMT5RuntimeConfig,
@@ -28,7 +28,7 @@ import {
 import { mapMT5OrderState, resolveMT5FilledQuantity } from "./venue-mappers.ts"
 import { getExecutionErrorDetail } from "@valiq-trading/core"
 
-const credentials: MT5WorkerCredentials = {
+const credentials: MT5AccountCredentials = {
     login: 111,
     password: "secret",
     server: "broker",
@@ -73,7 +73,7 @@ describe("FiveSocket decimal string conversion", () => {
 })
 
 describe("FiveSocket execution outcome mapping", () => {
-    const client = new MT5Client({ workerUrl: "http://localhost:8090" })
+    const client = new MT5Client()
 
     it("maps accepted outcomes to successful MT5 order results", () => {
         const result = mapFiveSocketExecutionCommand({
@@ -751,19 +751,13 @@ describe("FiveSocketClient transport policy", () => {
 
     it("connection-test style client issues execution-policy PUT on connect", async () => {
         const runtime = resolveMT5RuntimeConfig({
-            MT5_TRANSPORT: "fivesocket",
             FIVESOCKET_API_KEY: "fs-key",
             FIVESOCKET_DEFAULT_MAX_VOLUME: "1.0",
             MT5_PRIMARY_LOGIN: "111",
             MT5_PRIMARY_PASSWORD: "secret",
             MT5_PRIMARY_SERVER: "broker",
-            MT5_WORKER_URL: null,
-            MT5_WORKER_ACCESS_KEY: null,
             FIVESOCKET_API_BASE_URL: null,
         }, {})
-        if (runtime.transport !== "fivesocket") {
-            throw new Error("expected fivesocket")
-        }
 
         const executionSymbols = resolveFiveSocketExecutionSymbolsForPolicies(
             [{
@@ -848,7 +842,7 @@ describe("FiveSocketClient transport policy", () => {
             throw new Error(`Unexpected ${method} ${url}`)
         }
 
-        const client = createMT5TransportClient(runtime, {
+        const client = createMT5Client(runtime, {
             executionSymbols,
             fetchImpl,
         })
@@ -856,52 +850,6 @@ describe("FiveSocketClient transport policy", () => {
         expect(putBody).toEqual({
             symbols: [{ symbol: "XAUUSD", maxVolume: "1.0" }],
         })
-    })
-})
-
-describe("MT5 runtime transport selection", () => {
-    it("selects FiveSocket transport from env/config", () => {
-        const runtime = resolveMT5RuntimeConfig({
-            MT5_TRANSPORT: "fivesocket",
-            FIVESOCKET_API_KEY: "fs-key",
-            FIVESOCKET_DEFAULT_MAX_VOLUME: "1.0",
-            MT5_PRIMARY_LOGIN: "111",
-            MT5_PRIMARY_PASSWORD: "secret",
-            MT5_PRIMARY_SERVER: "broker",
-            MT5_WORKER_URL: null,
-            MT5_WORKER_ACCESS_KEY: null,
-            FIVESOCKET_API_BASE_URL: null,
-        }, {})
-
-        expect(runtime.transport).toBe("fivesocket")
-        if (runtime.transport !== "fivesocket") {
-            throw new Error("expected fivesocket")
-        }
-        expect(runtime.baseUrl).toBe("https://api.fivesocket.com")
-        expect(runtime.apiKey).toBe("fs-key")
-        expect(runtime.defaultMaxVolume).toBe("1.0")
-
-        const client = createMT5TransportClient(runtime)
-        expect(client).toBeInstanceOf(FiveSocketClient)
-    })
-
-    it("keeps worker transport as the default", () => {
-        const runtime = resolveMT5RuntimeConfig({
-            MT5_TRANSPORT: null,
-            MT5_WORKER_URL: "http://localhost:8090",
-            MT5_WORKER_ACCESS_KEY: "worker-key",
-            MT5_PRIMARY_LOGIN: "111",
-            MT5_PRIMARY_PASSWORD: "secret",
-            MT5_PRIMARY_SERVER: "broker",
-            FIVESOCKET_API_KEY: null,
-            FIVESOCKET_API_BASE_URL: null,
-            FIVESOCKET_DEFAULT_MAX_VOLUME: null,
-        }, {})
-
-        expect(runtime.transport).toBe("worker")
-        const client = createMT5TransportClient(runtime)
-        expect(client).toBeInstanceOf(MT5Client)
-        expect(client).not.toBeInstanceOf(FiveSocketClient)
     })
 })
 

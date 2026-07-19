@@ -1,18 +1,16 @@
 import { describe, expect, it, vi } from "vitest"
 import { createExecutionError, type Position } from "@valiq-trading/core"
-import { MT5Client, type MT5AccountPnlEvent, type MT5OrderResult, type MT5Position, type MT5PositionClosure, type MT5SymbolInfo, type MT5WorkerCredentials } from "./mt5-client.ts"
+import { MT5Client, type MT5AccountPnlEvent, type MT5OrderResult, type MT5Position, type MT5PositionClosure, type MT5SymbolInfo, type MT5AccountCredentials } from "./mt5-client.ts"
 import { MT5VenueAdapter } from "./venue-adapter.ts"
 
-const credentials: MT5WorkerCredentials = {
+const credentials: MT5AccountCredentials = {
     login: 123456,
     password: "test",
     server: "test-server",
 }
 
 function createClient(): MT5Client {
-    const client = new MT5Client({
-        workerUrl: "http://localhost:8090",
-    })
+    const client = new MT5Client()
 
     client.getHealth = async () => ({
         status: "ok",
@@ -58,10 +56,10 @@ describe("MT5VenueAdapter", () => {
         expect(client.getSymbolInfo).not.toHaveBeenCalled()
     })
 
-    it("passes the bound account credentials on every account-scoped worker call", async () => {
+    it("passes the bound account credentials on every account-scoped MT5 call", async () => {
         const client = createClient()
         const seenLogins: Array<{ method: string; login: number }> = []
-        const record = (method: string, passed: MT5WorkerCredentials) => {
+        const record = (method: string, passed: MT5AccountCredentials) => {
             seenLogins.push({ method, login: passed.login })
             expect(passed).toEqual(credentials)
         }
@@ -114,7 +112,7 @@ describe("MT5VenueAdapter", () => {
         expect(seenLogins.every((entry) => entry.login === credentials.login)).toBe(true)
     })
 
-    it("fails closed when the worker serves account data for a different login", async () => {
+    it("fails closed when FiveSocket serves account data for a different login", async () => {
         const client = createClient()
         client.getAccount = async () => ({
             ...createAccountInfo(),
@@ -139,12 +137,12 @@ describe("MT5VenueAdapter", () => {
         await expect(adapter.getAccountState()).rejects.toThrow("MT5 account currency EUR is unsupported")
     })
 
-    it("surfaces worker session mismatch rejections instead of serving another account", async () => {
+    it("surfaces session mismatch rejections instead of serving another account", async () => {
         const client = createClient()
         client.getPositions = async () => {
             throw createExecutionError(
                 "venue",
-                "MT5 worker error: 503 Service Unavailable MT5 active session login 222222 does not match requested login 123456",
+                "FiveSocket error: 503 Service Unavailable MT5 active session login 222222 does not match requested login 123456",
                 {
                     code: "session_login_mismatch",
                     retryable: false,
@@ -163,7 +161,7 @@ describe("MT5VenueAdapter", () => {
         client.getAccount = async () => {
             accountCalls++
             if (accountCalls === 1) {
-                throw createExecutionError("venue", "MT5 worker error: 503 Service Unavailable MT5 not connected", {
+                throw createExecutionError("venue", "FiveSocket error: 503 Service Unavailable MT5 not connected", {
                     code: "not_connected",
                     retryable: true,
                 })
