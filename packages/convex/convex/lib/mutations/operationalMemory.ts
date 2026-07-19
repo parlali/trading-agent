@@ -197,6 +197,32 @@ export const pruneExpiredStrategyOperationalMemories = internalMutation({
     },
 })
 
+export const wipeStrategyOperationalMemories = internalMutation({
+    args: {
+        strategyId: v.id("strategies"),
+        batchSize: v.optional(v.number()),
+    },
+    handler: async (ctx, args) => {
+        const batchSize = Math.min(
+            Math.max(Math.floor(args.batchSize ?? MAX_PRUNE_BATCH_SIZE), 1),
+            MAX_PRUNE_BATCH_SIZE
+        )
+        const rows = await ctx.db
+            .query("strategy_operational_memories")
+            .withIndex("by_strategy_status", (q) => q.eq("strategyId", args.strategyId))
+            .take(batchSize)
+
+        for (const row of rows) {
+            await ctx.db.delete(row._id)
+        }
+
+        return {
+            deleted: rows.length,
+            hasMore: rows.length === batchSize,
+        }
+    },
+})
+
 async function upsertMemory(
     db: DatabaseWriter,
     candidate: StrategyOperationalMemory
