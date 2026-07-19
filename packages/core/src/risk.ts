@@ -2,6 +2,7 @@ import { getCurrentTimeInTimezone, padTime } from "./runtime-time"
 import type {
     OrderIntent,
     AccountState,
+    GateEvaluation,
     Position,
     ValidationResult,
     StrategySafetyState,
@@ -24,8 +25,127 @@ export {
 
 export const ALLOWED_VALIDATION_RESULT = { allowed: true } as const
 
+export type GateComparison = "min" | "max"
+
 export function rejectRisk(reason: string): { allowed: false; reason: string } {
     return { allowed: false, reason }
+}
+
+export function createGateEvaluation(args: {
+    gateKey: string
+    observed: number
+    threshold: number
+    comparison: GateComparison
+    scale?: number
+    tolerance?: number
+}): GateEvaluation {
+    const distance = args.comparison === "min"
+        ? args.observed - args.threshold + (args.tolerance ?? 0)
+        : args.threshold - args.observed + (args.tolerance ?? 0)
+
+    return {
+        gateKey: args.gateKey,
+        observed: args.observed,
+        threshold: args.threshold,
+        margin: distance / resolveGateScale(args.threshold, args.scale),
+    }
+}
+
+export function createWindowGateEvaluation(args: {
+    gateKey: string
+    observed: number
+    start: number
+    end: number
+    withinWindow: boolean
+    scale?: number
+}): GateEvaluation {
+    const scale = resolveGateScale(1, args.scale)
+    const candidates = resolveWindowBoundaryDistances(args.observed, args.start, args.end, args.withinWindow)
+    const nearest = candidates.reduce((best, candidate) =>
+        Math.abs(candidate.distance) < Math.abs(best.distance) ? candidate : best
+    )
+
+    return {
+        gateKey: args.gateKey,
+        observed: args.observed,
+        threshold: nearest.threshold,
+        margin: nearest.distance / scale,
+    }
+}
+
+export function allowWithGateEvaluation(gateEvaluation: GateEvaluation): ValidationResult {
+    return allowWithGateEvaluations([gateEvaluation])
+}
+
+export function allowWithGateEvaluations(gateEvaluations: readonly GateEvaluation[]): ValidationResult {
+    return gateEvaluations.length === 0
+        ? ALLOWED_VALIDATION_RESULT
+        : {
+            allowed: true,
+            gateEvaluations: [...gateEvaluations],
+        }
+}
+
+export function rejectRiskWithGateEvaluation(
+    reason: string,
+    gateEvaluation: GateEvaluation
+): ValidationResult {
+    return rejectRiskWithGateEvaluations(reason, [gateEvaluation])
+}
+
+export function rejectRiskWithGateEvaluations(
+    reason: string,
+    gateEvaluations: readonly GateEvaluation[]
+): ValidationResult {
+    return {
+        allowed: false,
+        reason,
+        gateEvaluations: [...gateEvaluations],
+    }
+}
+
+function resolveGateScale(threshold: number, scale?: number): number {
+    const candidate = scale ?? Math.abs(threshold)
+    return Number.isFinite(candidate) && candidate > 0
+        ? candidate
+        : 1
+}
+
+function resolveWindowBoundaryDistances(
+    observed: number,
+    start: number,
+    end: number,
+    withinWindow: boolean
+): Array<{ threshold: number; distance: number }> {
+    if (start <= end) {
+        if (withinWindow) {
+            return [
+                { threshold: start, distance: observed - start },
+                { threshold: end, distance: end - observed },
+            ]
+        }
+
+        return observed < start
+            ? [{ threshold: start, distance: observed - start }]
+            : [{ threshold: end, distance: end - observed }]
+    }
+
+    if (withinWindow) {
+        return observed >= start
+            ? [
+                { threshold: start, distance: observed - start },
+                { threshold: end, distance: 1_440 - observed + end },
+            ]
+            : [
+                { threshold: end, distance: end - observed },
+                { threshold: start, distance: observed + 1_440 - start },
+            ]
+    }
+
+    return [
+        { threshold: end, distance: end - observed },
+        { threshold: start, distance: observed - start },
+    ]
 }
 
 export const POLYMARKET_CONDITION_ALIAS_PREFIX = "polymarket-condition:"
@@ -109,6 +229,7 @@ export function validateTradingHoursWindow(args: {
     start: string
     end: string
     timezone: string
+    gateKey?: string
 }): ValidationResult {
     const now = getCurrentTimeInTimezone(args.timezone)
     const [startHour, startMinute] = args.start.split(":").map(Number) as [number, number]
@@ -121,14 +242,23 @@ export function validateTradingHoursWindow(args: {
     const withinWindow = startMinutes <= endMinutes
         ? currentMinutes >= startMinutes && currentMinutes < endMinutes
         : currentMinutes >= startMinutes || currentMinutes < endMinutes
+    const gateEvaluation = createWindowGateEvaluation({
+        gateKey: args.gateKey ?? "core.tradingHours",
+        observed: currentMinutes,
+        start: startMinutes,
+        end: endMinutes,
+        withinWindow,
+        scale: 1_440,
+    })
 
     if (!withinWindow) {
-        return rejectRisk(
-            `Outside trading hours. Current time: ${padTime(now.hours)}:${padTime(now.minutes)} ${args.timezone}. Allowed: ${args.start}-${args.end}`
+        return rejectRiskWithGateEvaluation(
+            `Outside trading hours. Current time: ${padTime(now.hours)}:${padTime(now.minutes)} ${args.timezone}. Allowed: ${args.start}-${args.end}`,
+            gateEvaluation
         )
     }
 
-    return ALLOWED_VALIDATION_RESULT
+    return allowWithGateEvaluation(gateEvaluation)
 }
 
 export function createStrategySafetyValidator(args: {
@@ -194,16 +324,39 @@ export function validateIntent(
     validators: readonly RiskValidator[] = BASE_RISK_VALIDATORS
 ): ValidationResult {
     let currentIntent = intent
+    const gateEvaluations: GateEvaluation[] = []
 
     for (const validator of validators) {
         const result = validator(currentIntent, policy, state, positions)
+        if (result.gateEvaluations) {
+            gateEvaluations.push(...result.gateEvaluations)
+        }
+
         if (!result.allowed) {
-            return result
+            return gateEvaluations.length === 0
+                ? result
+                : {
+                    ...result,
+                    gateEvaluations,
+                }
         }
 
         if (result.adjustedIntent) {
             currentIntent = result.adjustedIntent
         }
+    }
+
+    if (gateEvaluations.length > 0) {
+        return currentIntent === intent
+            ? {
+                allowed: true,
+                gateEvaluations,
+            }
+            : {
+                allowed: true,
+                adjustedIntent: currentIntent,
+                gateEvaluations,
+            }
     }
 
     return currentIntent === intent

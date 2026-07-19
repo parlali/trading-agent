@@ -1,10 +1,15 @@
 import {
+    allowWithGateEvaluation,
+    allowWithGateEvaluations,
+    createGateEvaluation,
     getRiskBudgetBase,
     isDryRunAccountLedgerPosition,
     openIntentRiskValidator,
     polymarketPolicySchema,
     readFiniteNumber,
     readTrimmedString,
+    rejectRiskWithGateEvaluation,
+    rejectRiskWithGateEvaluations,
     type AccountState,
     type OrderIntent,
     type Position,
@@ -69,18 +74,25 @@ function maxBetValidator(
         maxAllowed = (policy.maxBet.value / 100) * getRiskBudgetBase(state)
     }
 
+    const gateEvaluation = createGateEvaluation({
+        gateKey: "polymarket.maxBet",
+        observed: intentCost,
+        threshold: maxAllowed,
+        comparison: "max",
+    })
+
     if (intentCost > maxAllowed) {
         const modeLabel = policy.maxBet.mode === "fixed"
             ? `$${policy.maxBet.value}`
             : `${policy.maxBet.value}% of balance ($${maxAllowed.toFixed(2)})`
 
-        return {
-            allowed: false,
-            reason: `Bet cost $${intentCost.toFixed(2)} exceeds max bet ${modeLabel}`,
-        }
+        return rejectRiskWithGateEvaluation(
+            `Bet cost $${intentCost.toFixed(2)} exceeds max bet ${modeLabel}`,
+            gateEvaluation
+        )
     }
 
-    return { allowed: true }
+    return allowWithGateEvaluation(gateEvaluation)
 }
 
 const PRICE_LOWER_BOUND = 0.02
@@ -98,21 +110,35 @@ function priceBoundsValidator(
         return { allowed: true }
     }
 
+    const lowerGateEvaluation = createGateEvaluation({
+        gateKey: "polymarket.priceLowerBound",
+        observed: price,
+        threshold: PRICE_LOWER_BOUND,
+        comparison: "min",
+    })
+
     if (price < PRICE_LOWER_BOUND) {
-        return {
-            allowed: false,
-            reason: `Buy price ${price} is below the safety floor ${PRICE_LOWER_BOUND} -- near-zero probability markets carry extreme risk`,
-        }
+        return rejectRiskWithGateEvaluation(
+            `Buy price ${price} is below the safety floor ${PRICE_LOWER_BOUND} -- near-zero probability markets carry extreme risk`,
+            lowerGateEvaluation
+        )
     }
+
+    const upperGateEvaluation = createGateEvaluation({
+        gateKey: "polymarket.priceUpperBound",
+        observed: price,
+        threshold: PRICE_UPPER_BOUND,
+        comparison: "max",
+    })
 
     if (price > PRICE_UPPER_BOUND) {
-        return {
-            allowed: false,
-            reason: `Buy price ${price} exceeds the safety ceiling ${PRICE_UPPER_BOUND} -- near-certain markets offer minimal upside`,
-        }
+        return rejectRiskWithGateEvaluations(
+            `Buy price ${price} exceeds the safety ceiling ${PRICE_UPPER_BOUND} -- near-certain markets offer minimal upside`,
+            [lowerGateEvaluation, upperGateEvaluation]
+        )
     }
 
-    return { allowed: true }
+    return allowWithGateEvaluations([lowerGateEvaluation, upperGateEvaluation])
 }
 
 function liquidityValidator(
@@ -136,14 +162,21 @@ function liquidityValidator(
         }
     }
 
+    const gateEvaluation = createGateEvaluation({
+        gateKey: "polymarket.minLiquidity",
+        observed: liquidity,
+        threshold: policy.minLiquidity,
+        comparison: "min",
+    })
+
     if (liquidity < policy.minLiquidity) {
-        return {
-            allowed: false,
-            reason: `Polymarket liquidity ${liquidity} is below policy minimum ${policy.minLiquidity}`,
-        }
+        return rejectRiskWithGateEvaluation(
+            `Polymarket liquidity ${liquidity} is below policy minimum ${policy.minLiquidity}`,
+            gateEvaluation
+        )
     }
 
-    return { allowed: true }
+    return allowWithGateEvaluation(gateEvaluation)
 }
 
 function resolutionBufferValidator(
@@ -176,14 +209,21 @@ function resolutionBufferValidator(
     }
 
     const hoursUntilResolution = (endAt - Date.now()) / (60 * 60 * 1000)
+    const gateEvaluation = createGateEvaluation({
+        gateKey: "polymarket.minResolutionBufferHours",
+        observed: hoursUntilResolution,
+        threshold: policy.minResolutionBufferHours,
+        comparison: "min",
+    })
+
     if (hoursUntilResolution < policy.minResolutionBufferHours) {
-        return {
-            allowed: false,
-            reason: `Polymarket market resolves in ${hoursUntilResolution.toFixed(1)}h, below policy buffer ${policy.minResolutionBufferHours}h`,
-        }
+        return rejectRiskWithGateEvaluation(
+            `Polymarket market resolves in ${hoursUntilResolution.toFixed(1)}h, below policy buffer ${policy.minResolutionBufferHours}h`,
+            gateEvaluation
+        )
     }
 
-    return { allowed: true }
+    return allowWithGateEvaluation(gateEvaluation)
 }
 
 function categoryAllowlistValidator(
@@ -232,15 +272,21 @@ function totalExposureValidator(
     )
     const newExposure = intent.quantity * resolveIntentPrice(intent)
     const totalExposure = existingExposure + newExposure
+    const gateEvaluation = createGateEvaluation({
+        gateKey: "polymarket.maxTotalExposure",
+        observed: totalExposure,
+        threshold: policy.maxTotalExposure,
+        comparison: "max",
+    })
 
     if (totalExposure > policy.maxTotalExposure) {
-        return {
-            allowed: false,
-            reason: `Polymarket total exposure ${totalExposure.toFixed(2)} exceeds policy maximum ${policy.maxTotalExposure}`,
-        }
+        return rejectRiskWithGateEvaluation(
+            `Polymarket total exposure ${totalExposure.toFixed(2)} exceeds policy maximum ${policy.maxTotalExposure}`,
+            gateEvaluation
+        )
     }
 
-    return { allowed: true }
+    return allowWithGateEvaluation(gateEvaluation)
 }
 
 const maxEntryPriceValidator: RiskValidator = openIntentRiskValidator((
@@ -260,14 +306,21 @@ const maxEntryPriceValidator: RiskValidator = openIntentRiskValidator((
         }
     }
 
+    const gateEvaluation = createGateEvaluation({
+        gateKey: "polymarket.maxEntryPrice",
+        observed: price,
+        threshold: policy.maxEntryPrice,
+        comparison: "max",
+    })
+
     if (price > policy.maxEntryPrice) {
-        return {
-            allowed: false,
-            reason: `Entry price ${price.toFixed(2)} exceeds the maximum entry price ${policy.maxEntryPrice.toFixed(2)} for this strategy. The last cents of a longshot fade are not the edge.`,
-        }
+        return rejectRiskWithGateEvaluation(
+            `Entry price ${price.toFixed(2)} exceeds the maximum entry price ${policy.maxEntryPrice.toFixed(2)} for this strategy. The last cents of a longshot fade are not the edge.`,
+            gateEvaluation
+        )
     }
 
-    return { allowed: true }
+    return allowWithGateEvaluation(gateEvaluation)
 })
 
 const maxConcurrentPositionsValidator: RiskValidator = openIntentRiskValidator((
@@ -290,14 +343,21 @@ const maxConcurrentPositionsValidator: RiskValidator = openIntentRiskValidator((
         return { allowed: true }
     }
 
+    const gateEvaluation = createGateEvaluation({
+        gateKey: "polymarket.maxConcurrentPositions",
+        observed: activePositions.length + 1,
+        threshold: policy.maxConcurrentPositions,
+        comparison: "max",
+    })
+
     if (activePositions.length >= policy.maxConcurrentPositions) {
-        return {
-            allowed: false,
-            reason: `Position cap reached: ${activePositions.length} of ${policy.maxConcurrentPositions} concurrent positions. Close something before opening a new market.`,
-        }
+        return rejectRiskWithGateEvaluation(
+            `Position cap reached: ${activePositions.length} of ${policy.maxConcurrentPositions} concurrent positions. Close something before opening a new market.`,
+            gateEvaluation
+        )
     }
 
-    return { allowed: true }
+    return allowWithGateEvaluation(gateEvaluation)
 })
 
 function isExpectedExternalPosition(position: Position): boolean {

@@ -1,5 +1,11 @@
 import type { RiskValidator } from "./risk-types"
-import { openIntentRiskValidator } from "./risk"
+import type { GateEvaluation } from "./types"
+import {
+    allowWithGateEvaluations,
+    createGateEvaluation,
+    openIntentRiskValidator,
+    rejectRiskWithGateEvaluations,
+} from "./risk"
 import { resolveRiskWindowStarts } from "./risk-governance"
 
 const ENTRY_BUDGET_CONSUMING_STATUSES = new Set(["pending", "filled", "partially_filled"])
@@ -54,26 +60,45 @@ export function createEntryBudgetValidator(args: {
     const byInstrument = new Map(args.counts.byInstrument)
 
     return openIntentRiskValidator((intent) => {
-        if (maxEntriesPerWeek !== undefined && total >= maxEntriesPerWeek) {
-            return {
-                allowed: false,
-                reason: `Weekly entry budget exhausted: ${total} of ${maxEntriesPerWeek} entries used since the week started. No further entries this week; manage existing positions only.`,
+        const gateEvaluations: GateEvaluation[] = []
+
+        if (maxEntriesPerWeek !== undefined) {
+            const gateEvaluation = createGateEvaluation({
+                gateKey: "core.entryBudget.maxEntriesPerWeek",
+                observed: total + 1,
+                threshold: maxEntriesPerWeek,
+                comparison: "max",
+            })
+            gateEvaluations.push(gateEvaluation)
+
+            if (total >= maxEntriesPerWeek) {
+                return rejectRiskWithGateEvaluations(
+                    `Weekly entry budget exhausted: ${total} of ${maxEntriesPerWeek} entries used since the week started. No further entries this week; manage existing positions only.`,
+                    gateEvaluations
+                )
             }
         }
 
         const instrumentCount = byInstrument.get(intent.instrument) ?? 0
-        if (
-            maxEntriesPerInstrumentPerWeek !== undefined &&
-            instrumentCount >= maxEntriesPerInstrumentPerWeek
-        ) {
-            return {
-                allowed: false,
-                reason: `Weekly per-instrument entry budget exhausted for ${intent.instrument}: ${instrumentCount} of ${maxEntriesPerInstrumentPerWeek} entries used since the week started. Pick a different market or wait for the weekly reset.`,
+        if (maxEntriesPerInstrumentPerWeek !== undefined) {
+            const gateEvaluation = createGateEvaluation({
+                gateKey: "core.entryBudget.maxEntriesPerInstrumentPerWeek",
+                observed: instrumentCount + 1,
+                threshold: maxEntriesPerInstrumentPerWeek,
+                comparison: "max",
+            })
+            gateEvaluations.push(gateEvaluation)
+
+            if (instrumentCount >= maxEntriesPerInstrumentPerWeek) {
+                return rejectRiskWithGateEvaluations(
+                    `Weekly per-instrument entry budget exhausted for ${intent.instrument}: ${instrumentCount} of ${maxEntriesPerInstrumentPerWeek} entries used since the week started. Pick a different market or wait for the weekly reset.`,
+                    gateEvaluations
+                )
             }
         }
 
         total++
         byInstrument.set(intent.instrument, instrumentCount + 1)
-        return { allowed: true }
+        return allowWithGateEvaluations(gateEvaluations)
     })
 }

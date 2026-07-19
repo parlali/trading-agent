@@ -1,10 +1,16 @@
 import {
+    allowWithGateEvaluation,
+    allowWithGateEvaluations,
     alpacaOptionsPolicySchema,
+    createGateEvaluation,
     getIntentAction,
     openIntentRiskValidator,
     readFiniteNumber,
     readTrimmedString,
+    rejectRiskWithGateEvaluation,
+    rejectRiskWithGateEvaluations,
     type AccountState,
+    type GateEvaluation,
     type OrderIntent,
     type OrderLeg,
     type OrderLegSide,
@@ -318,14 +324,21 @@ function maxLossPerPlayValidator(
         }
     }
 
+    const gateEvaluation = createGateEvaluation({
+        gateKey: "alpacaOptions.maxLossPerPlay",
+        observed: estimatedMaxLoss,
+        threshold: policy.maxLossPerPlay,
+        comparison: "max",
+    })
+
     if (estimatedMaxLoss > policy.maxLossPerPlay) {
-        return {
-            allowed: false,
-            reason: `Estimated max loss ${estimatedMaxLoss} exceeds limit ${policy.maxLossPerPlay}`,
-        }
+        return rejectRiskWithGateEvaluation(
+            `Estimated max loss ${estimatedMaxLoss} exceeds limit ${policy.maxLossPerPlay}`,
+            gateEvaluation
+        )
     }
 
-    return { allowed: true }
+    return allowWithGateEvaluation(gateEvaluation)
 }
 
 function minCreditEntryValidator(
@@ -355,14 +368,25 @@ function minCreditEntryValidator(
         }
     }
 
+    const gateEvaluations: GateEvaluation[] = []
+
     if (policy.minCreditToWidthPercent !== undefined) {
         const narrowestWidth = Math.min(...structure.sideSpreadWidths)
         const creditToWidthPercent = (netCredit / narrowestWidth) * 100
+        const gateEvaluation = createGateEvaluation({
+            gateKey: "alpacaOptions.minCreditToWidthPercent",
+            observed: creditToWidthPercent,
+            threshold: policy.minCreditToWidthPercent,
+            comparison: "min",
+            tolerance: CREDIT_GATE_EPSILON,
+        })
+        gateEvaluations.push(gateEvaluation)
+
         if (creditToWidthPercent + CREDIT_GATE_EPSILON < policy.minCreditToWidthPercent) {
-            return {
-                allowed: false,
-                reason: `Alpaca entry credit-to-width ${formatPercent(creditToWidthPercent)} is below policy floor ${formatPercent(policy.minCreditToWidthPercent)} (credit ${formatNumber(netCredit)}, width ${formatNumber(narrowestWidth)})`,
-            }
+            return rejectRiskWithGateEvaluations(
+                `Alpaca entry credit-to-width ${formatPercent(creditToWidthPercent)} is below policy floor ${formatPercent(policy.minCreditToWidthPercent)} (credit ${formatNumber(netCredit)}, width ${formatNumber(narrowestWidth)})`,
+                gateEvaluations
+            )
         }
     }
 
@@ -377,16 +401,25 @@ function minCreditEntryValidator(
 
         if (structureSpread.status === "complete" && structureSpread.value > 0) {
             const creditToSpreadRatio = netCredit / structureSpread.value
+            const gateEvaluation = createGateEvaluation({
+                gateKey: "alpacaOptions.minCreditToSpreadRatio",
+                observed: creditToSpreadRatio,
+                threshold: policy.minCreditToSpreadRatio,
+                comparison: "min",
+                tolerance: CREDIT_GATE_EPSILON,
+            })
+            gateEvaluations.push(gateEvaluation)
+
             if (creditToSpreadRatio + CREDIT_GATE_EPSILON < policy.minCreditToSpreadRatio) {
-                return {
-                    allowed: false,
-                    reason: `Alpaca entry credit-to-spread ${formatRatio(creditToSpreadRatio)} is below policy floor ${formatRatio(policy.minCreditToSpreadRatio)} (credit ${formatNumber(netCredit)}, live structure spread ${formatNumber(structureSpread.value)})`,
-                }
+                return rejectRiskWithGateEvaluations(
+                    `Alpaca entry credit-to-spread ${formatRatio(creditToSpreadRatio)} is below policy floor ${formatRatio(policy.minCreditToSpreadRatio)} (credit ${formatNumber(netCredit)}, live structure spread ${formatNumber(structureSpread.value)})`,
+                    gateEvaluations
+                )
             }
         }
     }
 
-    return { allowed: true }
+    return allowWithGateEvaluations(gateEvaluations)
 }
 
 function expiryValidationValidator(intent: OrderIntent) {

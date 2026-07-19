@@ -77,4 +77,5 @@ export {
     getStrategyRiskState,
     getStrategyExecutionSafetyFaults,
     getSuiteLossState,
+    getGateEvaluationStats,
 } from "./lib/queries/risk"

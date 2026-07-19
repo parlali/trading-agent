@@ -1,8 +1,10 @@
 import { describe, expect, it, vi } from "vitest"
 import { refreshStrategyRiskState } from "../../convex/lib/mutations/risk"
 import {
+    getGateEvaluationStats,
     computeSuiteLossState,
     getSuiteLossState,
+    type GateEvaluationStats,
     type SuiteLossState,
 } from "../../convex/lib/queries/risk"
 import { callRegistered, FakeMutationDb as FakeDb } from "./fakeMutationDb"
@@ -204,6 +206,64 @@ describe("suite loss state", () => {
     })
 })
 
+describe("gate evaluation stats", () => {
+    it("aggregates recent gate records and counts near misses", async () => {
+        const previousToken = process.env.BACKEND_SERVICE_TOKEN
+        process.env.BACKEND_SERVICE_TOKEN = "test-token"
+        const strategyId = "strategy-gate-stats"
+        const db = new FakeDb({
+            trade_events: [
+                createGateEvent("event-1", strategyId, true, [{
+                    gateKey: "mt5.minRiskReward",
+                    observed: 2.2,
+                    threshold: 2,
+                    margin: 0.1,
+                }]),
+                createGateEvent("event-2", strategyId, true, [{
+                    gateKey: "mt5.minRiskReward",
+                    observed: 3,
+                    threshold: 2,
+                    margin: 0.5,
+                }]),
+                createGateEvent("event-3", strategyId, false, [{
+                    gateKey: "mt5.maxRiskPercent",
+                    observed: 0.5,
+                    threshold: 1,
+                    margin: 0.5,
+                }, {
+                    gateKey: "mt5.minRiskReward",
+                    observed: 1,
+                    threshold: 2,
+                    margin: -0.5,
+                }]),
+            ],
+        })
+
+        try {
+            const stats = await callRegistered(getGateEvaluationStats, { db } as never, {
+                serviceToken: "test-token",
+                strategyId,
+                gateKey: "mt5.minRiskReward",
+                limit: 10,
+            }) as GateEvaluationStats
+
+            expect(stats).toEqual({
+                evaluations: 3,
+                rejections: 1,
+                nearMisses: 1,
+                minMargin: -0.5,
+                maxMargin: 0.5,
+            })
+        } finally {
+            if (previousToken === undefined) {
+                delete process.env.BACKEND_SERVICE_TOKEN
+            } else {
+                process.env.BACKEND_SERVICE_TOKEN = previousToken
+            }
+        }
+    })
+})
+
 async function callSuiteLossQuery(
     rows: Record<string, Array<Record<string, unknown>>>,
     evaluatedAt: number
@@ -260,5 +320,34 @@ function createSuiteSnapshot(
         openPnl: 0,
         dayPnl: 0,
         timestamp,
+    }
+}
+
+function createGateEvent(
+    id: string,
+    strategyId: string,
+    allowed: boolean,
+    gateEvaluations: Array<{
+        gateKey: string
+        observed: number
+        threshold: number
+        margin: number
+    }>
+): Record<string, unknown> {
+    return {
+        _id: id,
+        runId: "run-gates",
+        strategyId,
+        eventType: allowed ? "validation" : "rejected",
+        payload: JSON.stringify({
+            result: {
+                allowed,
+                gateEvaluations,
+            },
+            intent: {
+                instrument: "XAUUSD",
+            },
+        }),
+        timestamp: Date.now(),
     }
 }

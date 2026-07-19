@@ -345,10 +345,18 @@ export interface RunSystemContextDigest {
     }>
 }
 
+export interface GateEvaluation {
+    gateKey: string
+    observed: number
+    threshold: number
+    margin: number
+}
+
 export interface ValidationResult {
     allowed: boolean
     reason?: string
     adjustedIntent?: OrderIntent
+    gateEvaluations?: GateEvaluation[]
 }
 
 export interface OrderLifecycleContext {

@@ -1,8 +1,11 @@
 import {
     ALLOWED_VALIDATION_RESULT,
+    allowWithGateEvaluation,
+    createGateEvaluation,
     openIntentRiskValidator,
     okxPolicySchema,
     rejectRisk,
+    rejectRiskWithGateEvaluation,
     validateTradingHoursWindow,
     type OrderIntent,
     type RiskValidator,
@@ -74,12 +77,21 @@ const minRiskRewardValidator: RiskValidator = openIntentRiskValidator((intent, r
     }
 
     const riskReward = Math.abs(takeProfit - entryPrice) / riskDistance
+    const gateEvaluation = createGateEvaluation({
+        gateKey: "okx.minRiskReward",
+        observed: riskReward,
+        threshold: policy.minRiskReward,
+        comparison: "min",
+    })
 
     if (riskReward < policy.minRiskReward) {
-        return rejectRisk(`Risk-reward ratio ${riskReward.toFixed(2)} is below minimum ${policy.minRiskReward}. Widen your take-profit or use a wider structural stop.`)
+        return rejectRiskWithGateEvaluation(
+            `Risk-reward ratio ${riskReward.toFixed(2)} is below minimum ${policy.minRiskReward}. Widen your take-profit or use a wider structural stop.`,
+            gateEvaluation
+        )
     }
 
-    return ALLOWED_VALIDATION_RESULT
+    return allowWithGateEvaluation(gateEvaluation)
 })
 
 const minStopDistanceValidator: RiskValidator = openIntentRiskValidator((intent, rawPolicy) => {
@@ -100,12 +112,21 @@ const minStopDistanceValidator: RiskValidator = openIntentRiskValidator((intent,
     }
 
     const distancePercent = 100 * Math.abs(entryPrice - stopLoss) / entryPrice
+    const gateEvaluation = createGateEvaluation({
+        gateKey: "okx.minStopDistancePercent",
+        observed: distancePercent,
+        threshold: policy.minStopDistancePercent,
+        comparison: "min",
+    })
 
     if (distancePercent < policy.minStopDistancePercent) {
-        return rejectRisk(`Stop distance ${distancePercent.toFixed(2)}% of entry is below the minimum ${policy.minStopDistancePercent}%. Stops inside execution-cost noise get harvested; place the stop beyond real structure or skip the trade.`)
+        return rejectRiskWithGateEvaluation(
+            `Stop distance ${distancePercent.toFixed(2)}% of entry is below the minimum ${policy.minStopDistancePercent}%. Stops inside execution-cost noise get harvested; place the stop beyond real structure or skip the trade.`,
+            gateEvaluation
+        )
     }
 
-    return ALLOWED_VALIDATION_RESULT
+    return allowWithGateEvaluation(gateEvaluation)
 })
 
 const explicitTimeInForceValidator: RiskValidator = openIntentRiskValidator((intent) => {
@@ -123,11 +144,21 @@ const maxLeverageValidator: RiskValidator = openIntentRiskValidator((intent, raw
         return ALLOWED_VALIDATION_RESULT
     }
 
+    const gateEvaluation = createGateEvaluation({
+        gateKey: "okx.maxLeverage",
+        observed: leverage,
+        threshold: policy.maxLeverage,
+        comparison: "max",
+    })
+
     if (leverage > policy.maxLeverage) {
-        return rejectRisk(`Leverage ${leverage}x exceeds configured maxLeverage ${policy.maxLeverage}x`)
+        return rejectRiskWithGateEvaluation(
+            `Leverage ${leverage}x exceeds configured maxLeverage ${policy.maxLeverage}x`,
+            gateEvaluation
+        )
     }
 
-    return ALLOWED_VALIDATION_RESULT
+    return allowWithGateEvaluation(gateEvaluation)
 })
 
 const maxRiskPercentValidator: RiskValidator = openIntentRiskValidator((intent, rawPolicy) => {
@@ -137,18 +168,28 @@ const maxRiskPercentValidator: RiskValidator = openIntentRiskValidator((intent, 
         return ALLOWED_VALIDATION_RESULT
     }
 
+    const gateEvaluation = createGateEvaluation({
+        gateKey: "okx.maxRiskPercent",
+        observed: riskPercent,
+        threshold: policy.maxRiskPercent,
+        comparison: "max",
+    })
+
     if (riskPercent > policy.maxRiskPercent) {
-        return rejectRisk(`Risk ${riskPercent.toFixed(2)}% exceeds maxRiskPercent ${policy.maxRiskPercent}%`)
+        return rejectRiskWithGateEvaluation(
+            `Risk ${riskPercent.toFixed(2)}% exceeds maxRiskPercent ${policy.maxRiskPercent}%`,
+            gateEvaluation
+        )
     }
 
-    return ALLOWED_VALIDATION_RESULT
+    return allowWithGateEvaluation(gateEvaluation)
 })
 
 const tradingHoursValidator: RiskValidator = openIntentRiskValidator((_intent, rawPolicy) => {
     const policy = okxPolicySchema.parse(rawPolicy)
     const { start, end, timezone } = policy.tradingHours
 
-    return validateTradingHoursWindow({ start, end, timezone })
+    return validateTradingHoursWindow({ start, end, timezone, gateKey: "okx.tradingHours" })
 })
 
 const fundingRateValidator: RiskValidator = openIntentRiskValidator((intent, rawPolicy) => {
@@ -159,15 +200,32 @@ const fundingRateValidator: RiskValidator = openIntentRiskValidator((intent, raw
         return ALLOWED_VALIDATION_RESULT
     }
 
+    const gateEvaluation = intent.side === "buy"
+        ? createGateEvaluation({
+            gateKey: "okx.fundingRateThreshold.buy",
+            observed: fundingRate,
+            threshold: policy.fundingRateThreshold,
+            comparison: "max",
+        })
+        : createGateEvaluation({
+            gateKey: "okx.fundingRateThreshold.sell",
+            observed: fundingRate,
+            threshold: -policy.fundingRateThreshold,
+            comparison: "min",
+            scale: policy.fundingRateThreshold,
+        })
     const hostileCarry = intent.side === "buy"
         ? fundingRate > policy.fundingRateThreshold
         : fundingRate < -policy.fundingRateThreshold
 
     if (hostileCarry) {
-        return rejectRisk(`Funding rate ${fundingRate.toFixed(6)} is hostile to ${intent.side} exposure beyond threshold ${policy.fundingRateThreshold.toFixed(6)}`)
+        return rejectRiskWithGateEvaluation(
+            `Funding rate ${fundingRate.toFixed(6)} is hostile to ${intent.side} exposure beyond threshold ${policy.fundingRateThreshold.toFixed(6)}`,
+            gateEvaluation
+        )
     }
 
-    return ALLOWED_VALIDATION_RESULT
+    return allowWithGateEvaluation(gateEvaluation)
 })
 
 export const okxRiskValidators: readonly RiskValidator[] = [

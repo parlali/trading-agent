@@ -39,6 +39,7 @@ import type {
     CodexChatGptAuthRecord,
     ExecutionSafetyFaultRow,
     FullResetAudit,
+    GateEvaluationStats,
     GetRecentAlertsArgs,
     KillSwitchState,
     ManualRunRequest,
@@ -787,6 +788,21 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
                     strategyId,
                     unresolvedOnly,
                 } as never) as ExecutionSafetyFaultRow[]
+            )
+        },
+        async getGateEvaluationStats(
+            strategyId: Id<"strategies">,
+            gateKey?: string,
+            limit?: number
+        ): Promise<GateEvaluationStats> {
+            return await runWithTimeout(
+                "Convex query getGateEvaluationStats",
+                async () => await client.query(api.queries.getGateEvaluationStats, {
+                    ...requireMachineAuth(),
+                    strategyId,
+                    gateKey,
+                    limit,
+                } as never) as GateEvaluationStats
             )
         },
         async getStrategyOrderHistory(

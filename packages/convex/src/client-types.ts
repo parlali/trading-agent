@@ -476,6 +476,14 @@ export interface SuiteLossState {
     evaluatedAt: number
 }
 
+export interface GateEvaluationStats {
+    evaluations: number
+    rejections: number
+    nearMisses: number
+    minMargin?: number
+    maxMargin?: number
+}
+
 export interface RawStrategyRiskStateRow {
     strategyId: string | Id<"strategies">
     app: Exclude<App, "backend">
@@ -694,6 +702,11 @@ export interface TradingBackendClient extends TradeEventLogger, AgentMessageLogg
         strategyId: Id<"strategies">,
         unresolvedOnly?: boolean
     ): Promise<ExecutionSafetyFaultRow[]>
+    getGateEvaluationStats(
+        strategyId: Id<"strategies">,
+        gateKey?: string,
+        limit?: number
+    ): Promise<GateEvaluationStats>
     getStrategyOrderHistory(strategyId: Id<"strategies">, limit?: number): Promise<StrategyOrderHistoryRow[]>
     getSuiteLossState(): Promise<SuiteLossState>
     getPortfolioPositions(app?: Exclude<App, "backend">, strategyId?: Id<"strategies">, accountId?: string): Promise<ProviderPositionRow[]>

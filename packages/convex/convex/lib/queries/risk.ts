@@ -2,11 +2,16 @@ import { query } from "../../_generated/server"
 import type { Doc } from "../../_generated/dataModel"
 import type { QueryCtx } from "../../_generated/server"
 import { v } from "convex/values"
-import { resolveRiskWindowStarts } from "@valiq-trading/core"
-import { requireUserOrServiceToken } from "../authGuards"
+import {
+    resolveRiskWindowStarts,
+    type GateEvaluation,
+} from "@valiq-trading/core"
+import { requireServiceToken, requireUserOrServiceToken } from "../authGuards"
 import { collectBlockedExecutionSafetyFaultsForStrategy } from "../executionSafetyFaultReads"
 
 const STRATEGY_EXECUTION_SAFETY_FAULT_LIMIT = 200
+const GATE_EVALUATION_STATS_DEFAULT_LIMIT = 200
+const GATE_EVALUATION_STATS_MAX_LIMIT = 1000
 
 export const SUITE_REAL_APPS = ["okx-swap", "mt5", "alpaca-options"] as const
 export const SUITE_DAY_STOP_PERCENT = 3
@@ -35,6 +40,14 @@ export interface SuiteLossState {
     dayChangePercent: number
     weekChangePercent: number
     evaluatedAt: number
+}
+
+export interface GateEvaluationStats {
+    evaluations: number
+    rejections: number
+    nearMisses: number
+    minMargin?: number
+    maxMargin?: number
 }
 
 export const getStrategyRiskState = query({
@@ -203,6 +216,137 @@ export const getStrategyExecutionSafetyFaults = query({
             .sort((left, right) => right.occurredAt - left.occurredAt)
     },
 })
+
+export const getGateEvaluationStats = query({
+    args: {
+        serviceToken: v.string(),
+        strategyId: v.id("strategies"),
+        gateKey: v.optional(v.string()),
+        limit: v.optional(v.number()),
+    },
+    handler: async (ctx, args): Promise<GateEvaluationStats> => {
+        requireServiceToken(args.serviceToken)
+
+        const limit = Math.max(
+            1,
+            Math.min(args.limit ?? GATE_EVALUATION_STATS_DEFAULT_LIMIT, GATE_EVALUATION_STATS_MAX_LIMIT)
+        )
+        const gateKey = args.gateKey?.trim()
+        const events = await ctx.db
+            .query("trade_events")
+            .withIndex("by_strategy", (q) => q.eq("strategyId", args.strategyId))
+            .order("desc")
+            .take(limit)
+
+        return computeGateEvaluationStatsFromEvents(events, gateKey && gateKey.length > 0 ? gateKey : undefined)
+    },
+})
+
+function computeGateEvaluationStatsFromEvents(
+    events: Array<Pick<Doc<"trade_events">, "eventType" | "payload">>,
+    gateKey?: string
+): GateEvaluationStats {
+    let evaluations = 0
+    let rejections = 0
+    let nearMisses = 0
+    let minMargin: number | undefined
+    let maxMargin: number | undefined
+
+    for (const event of events) {
+        if (event.eventType !== "validation" && event.eventType !== "rejected") {
+            continue
+        }
+
+        const parsed = parseValidationGateEvaluations(event.payload)
+        if (!parsed) {
+            continue
+        }
+
+        const rejectedGateEvaluation = parsed.allowed === false
+            ? parsed.gateEvaluations[parsed.gateEvaluations.length - 1]
+            : undefined
+
+        for (const gateEvaluation of parsed.gateEvaluations) {
+            if (gateKey !== undefined && gateEvaluation.gateKey !== gateKey) {
+                continue
+            }
+
+            evaluations++
+            if (rejectedGateEvaluation === gateEvaluation) {
+                rejections++
+            }
+            if (Math.abs(gateEvaluation.margin) <= 0.2) {
+                nearMisses++
+            }
+            minMargin = minMargin === undefined
+                ? gateEvaluation.margin
+                : Math.min(minMargin, gateEvaluation.margin)
+            maxMargin = maxMargin === undefined
+                ? gateEvaluation.margin
+                : Math.max(maxMargin, gateEvaluation.margin)
+        }
+    }
+
+    return {
+        evaluations,
+        rejections,
+        nearMisses,
+        minMargin,
+        maxMargin,
+    }
+}
+
+function parseValidationGateEvaluations(payload: string): {
+    allowed: boolean
+    gateEvaluations: GateEvaluation[]
+} | null {
+    let parsed: unknown
+    try {
+        parsed = JSON.parse(payload)
+    } catch {
+        return null
+    }
+
+    if (!parsed || typeof parsed !== "object") {
+        return null
+    }
+
+    const result = (parsed as Record<string, unknown>).result
+    if (!result || typeof result !== "object") {
+        return null
+    }
+
+    const allowed = (result as Record<string, unknown>).allowed
+    const gateEvaluations = (result as Record<string, unknown>).gateEvaluations
+    if (typeof allowed !== "boolean" || !Array.isArray(gateEvaluations)) {
+        return null
+    }
+
+    const records = gateEvaluations.filter(isGateEvaluation)
+    if (records.length === 0) {
+        return null
+    }
+
+    return {
+        allowed,
+        gateEvaluations: records,
+    }
+}
+
+function isGateEvaluation(value: unknown): value is GateEvaluation {
+    if (!value || typeof value !== "object") {
+        return false
+    }
+
+    const record = value as Record<string, unknown>
+    return typeof record.gateKey === "string" &&
+        typeof record.observed === "number" &&
+        Number.isFinite(record.observed) &&
+        typeof record.threshold === "number" &&
+        Number.isFinite(record.threshold) &&
+        typeof record.margin === "number" &&
+        Number.isFinite(record.margin)
+}
 
 export function computeSuiteLossState(
     rows: SuiteLossComputationRow[],
