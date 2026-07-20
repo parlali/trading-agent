@@ -29,7 +29,7 @@ FROM oven/bun:1 AS runner
 WORKDIR /app
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates nodejs openssl \
+    && apt-get install -y --no-install-recommends ca-certificates nodejs openssl tini \
     && update-ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 RUN bun install -g @openai/codex@0.144.0
@@ -49,6 +49,7 @@ ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
 ENV CODEX_CA_CERTIFICATE=/etc/ssl/certs/ca-certificates.crt
 RUN mkdir -p /var/lib/valiq/codex && chmod 700 /var/lib/valiq/codex
 EXPOSE 3100
+ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["bun", "run", "src/index.ts"]
 
 # =========================================================================== #
