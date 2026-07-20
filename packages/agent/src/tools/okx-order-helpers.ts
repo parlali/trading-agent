@@ -139,7 +139,10 @@ export async function prepareOKXOrder(
 
     const instrument = params.instrument.toUpperCase()
     assertToolNotAborted(signal)
-    const markPrice = await venue.getCurrentMarkPrice(instrument)
+    const marketPrice = policy.minStopDistanceSpreadMultiple !== undefined
+        ? await venue.getMarketPrice(instrument)
+        : undefined
+    const markPrice = marketPrice?.markPrice ?? await venue.getCurrentMarkPrice(instrument)
     assertToolNotAborted(signal)
     const entryPrice = params.orderType === "limit"
         ? params.limitPrice ?? 0
@@ -177,7 +180,9 @@ export async function prepareOKXOrder(
         pipeline.getAccountState(),
         pipeline.getPositions(),
         venue.getWorkingOrders(),
-        venue.getCurrentFundingRate(instrument).catch(() => undefined),
+        marketPrice?.fundingRate !== undefined
+            ? Promise.resolve(marketPrice.fundingRate)
+            : venue.getCurrentFundingRate(instrument).catch(() => undefined),
     ])
     assertToolNotAborted(signal)
 
@@ -244,6 +249,7 @@ export async function prepareOKXOrder(
             impliedRR,
             reason: params.reason,
             estimatedPrice: entryPrice,
+            ...(marketPrice !== undefined ? { absoluteSpread: marketPrice.spread } : {}),
             fundingRate,
             cancelAt: resolveCancelAt(policy, action, params.orderType),
         },

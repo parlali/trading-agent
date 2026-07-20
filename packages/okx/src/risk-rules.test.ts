@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it } from "vitest"
 import { validateIntent, type AccountState, type OrderIntent, type Position } from "@valiq-trading/core"
 import { okxRiskValidators } from "./risk-rules"
 
@@ -13,6 +13,7 @@ const account: AccountState = {
 }
 
 const positions: Position[] = []
+const realDateNow = Date.now
 
 const policy = {
     dryRun: true,
@@ -55,6 +56,14 @@ function entryIntent(overrides: Partial<OrderIntent> = {}): OrderIntent {
         ...overrides,
     }
 }
+
+function atUtc(time: string): void {
+    Date.now = () => new Date(`2026-07-01T${time}:00Z`).getTime()
+}
+
+afterEach(() => {
+    Date.now = realDateNow
+})
 
 describe("okxRiskValidators", () => {
     it("rejects entry intents with bounded OKX execution guardrail violations", () => {
@@ -182,5 +191,65 @@ describe("okxRiskValidators", () => {
         expect(rejected.allowed).toBe(false)
         expect(rejected.reason).toContain("Stop distance 0.30% of entry is below the minimum 0.4%")
         expect(allowed.allowed).toBe(true)
+    })
+
+    it("rejects OKX stops that do not clear spread multiple and allows sufficient clearance", () => {
+        atUtc("12:00")
+        const gatedPolicy = {
+            ...policy,
+            minStopDistanceSpreadMultiple: 4,
+        }
+        const noisyStopIntent = entryIntent({
+            metadata: {
+                action: "entry",
+                estimatedPrice: 60_000,
+                absoluteSpread: 100,
+                stopLoss: 59_800,
+                takeProfit: 60_800,
+                riskPercent: 0.5,
+            },
+        })
+        const structuralIntent = entryIntent({
+            metadata: {
+                action: "entry",
+                estimatedPrice: 60_000,
+                absoluteSpread: 100,
+                stopLoss: 59_500,
+                takeProfit: 61_000,
+                riskPercent: 0.5,
+            },
+        })
+
+        const rejected = validateIntent(
+            noisyStopIntent,
+            gatedPolicy,
+            account,
+            positions,
+            okxRiskValidators
+        )
+        const allowed = validateIntent(
+            structuralIntent,
+            gatedPolicy,
+            account,
+            positions,
+            okxRiskValidators
+        )
+
+        expect(rejected.allowed).toBe(false)
+        expect(rejected.reason).toContain("2.00x current spread")
+        expect(rejected.reason).toContain("4x")
+        expect(rejected.gateEvaluations).toContainEqual({
+            gateKey: "okx.minStopDistanceSpreadMultiple",
+            observed: 2,
+            threshold: 4,
+            margin: -0.5,
+        })
+        expect(allowed.allowed).toBe(true)
+        expect(allowed.gateEvaluations).toContainEqual({
+            gateKey: "okx.minStopDistanceSpreadMultiple",
+            observed: 5,
+            threshold: 4,
+            margin: 0.25,
+        })
     })
 })

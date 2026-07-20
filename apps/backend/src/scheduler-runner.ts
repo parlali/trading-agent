@@ -44,6 +44,7 @@ import {
     POST_RUN_HOOK_TIMEOUT_MS,
     PRE_RUN_HOOK_TIMEOUT_MS,
     STRATEGY_RUN_TIMEOUT_MS,
+    buildRunDecisionRecord,
     buildRunDiagnostics,
     checkKillSwitch,
 } from "./scheduler-run-support"
@@ -339,6 +340,10 @@ export async function runStrategy(
                 ? sanitizeRunSummary(result.summary)
                 : result.summary
             const runDiagnostics = buildRunDiagnostics(result, runSystemContextDigest) ?? {}
+            const decisionRecord = buildRunDecisionRecord(policy, result.summary)
+            if (decisionRecord !== undefined) {
+                runDiagnostics.decisionRecord = decisionRecord
+            }
             if (mcpToolDiagnostics.length > 0) {
                 runDiagnostics.mcpToolDiagnostics = mcpToolDiagnostics
             }

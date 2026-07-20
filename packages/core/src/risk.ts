@@ -104,6 +104,14 @@ export function rejectRiskWithGateEvaluations(
     }
 }
 
+export function resolveStopDistanceSpreadMultiple(stopDistance: number, absoluteSpread: number): number {
+    if (absoluteSpread > 0) {
+        return stopDistance / absoluteSpread
+    }
+
+    return stopDistance > 0 ? Number.MAX_SAFE_INTEGER : 0
+}
+
 function resolveGateScale(threshold: number, scale?: number): number {
     const candidate = scale ?? Math.abs(threshold)
     return Number.isFinite(candidate) && candidate > 0
@@ -231,34 +239,60 @@ export function validateTradingHoursWindow(args: {
     timezone: string
     gateKey?: string
 }): ValidationResult {
-    const now = getCurrentTimeInTimezone(args.timezone)
-    const [startHour, startMinute] = args.start.split(":").map(Number) as [number, number]
-    const [endHour, endMinute] = args.end.split(":").map(Number) as [number, number]
-
-    const currentMinutes = now.hours * 60 + now.minutes
-    const startMinutes = startHour * 60 + startMinute
-    const endMinutes = endHour * 60 + endMinute
-
-    const withinWindow = startMinutes <= endMinutes
-        ? currentMinutes >= startMinutes && currentMinutes < endMinutes
-        : currentMinutes >= startMinutes || currentMinutes < endMinutes
+    const windowState = resolveTradingHoursWindowState(args)
     const gateEvaluation = createWindowGateEvaluation({
         gateKey: args.gateKey ?? "core.tradingHours",
-        observed: currentMinutes,
-        start: startMinutes,
-        end: endMinutes,
-        withinWindow,
+        observed: windowState.currentMinutes,
+        start: windowState.startMinutes,
+        end: windowState.endMinutes,
+        withinWindow: windowState.withinWindow,
         scale: 1_440,
     })
 
-    if (!withinWindow) {
+    if (!windowState.withinWindow) {
         return rejectRiskWithGateEvaluation(
-            `Outside trading hours. Current time: ${padTime(now.hours)}:${padTime(now.minutes)} ${args.timezone}. Allowed: ${args.start}-${args.end}`,
+            `Outside trading hours. Current time: ${windowState.currentTime} ${args.timezone}. Allowed: ${args.start}-${args.end}`,
             gateEvaluation
         )
     }
 
     return allowWithGateEvaluation(gateEvaluation)
+}
+
+export function resolveTradingHoursWindowState(args: {
+    start: string
+    end: string
+    timezone: string
+}): {
+    currentTime: string
+    currentMinutes: number
+    startMinutes: number
+    endMinutes: number
+    withinWindow: boolean
+    minutesUntilEnd: number
+} {
+    const now = getCurrentTimeInTimezone(args.timezone)
+    const startMinutes = parseTradingHoursMinutes(args.start)
+    const endMinutes = parseTradingHoursMinutes(args.end)
+    const currentMinutes = now.hours * 60 + now.minutes
+    const withinWindow = startMinutes <= endMinutes
+        ? currentMinutes >= startMinutes && currentMinutes < endMinutes
+        : currentMinutes >= startMinutes || currentMinutes < endMinutes
+    const minutesPerDay = 1_440
+
+    return {
+        currentTime: `${padTime(now.hours)}:${padTime(now.minutes)}`,
+        currentMinutes,
+        startMinutes,
+        endMinutes,
+        withinWindow,
+        minutesUntilEnd: ((endMinutes - currentMinutes) % minutesPerDay + minutesPerDay) % minutesPerDay,
+    }
+}
+
+function parseTradingHoursMinutes(value: string): number {
+    const [hour, minute] = value.split(":").map(Number) as [number, number]
+    return hour * 60 + minute
 }
 
 export function createStrategySafetyValidator(args: {

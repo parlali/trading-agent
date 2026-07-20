@@ -1,11 +1,16 @@
 import type { RunDiagnostics } from "@valiq-trading/convex"
-import type { AgentRunResult } from "@valiq-trading/agent"
+import {
+    parseDecisionRecordOutput,
+    type AgentRunResult,
+} from "@valiq-trading/agent"
 import {
     createKillSwitchGuardedVenue as createRuntimeKillSwitchGuardedVenue,
+    isDecisionRecordPolicyEnabled,
     readConfiguredStrategySafetyPolicy,
     resolveDryRunAccountState,
     resolveRuntimeStrategySafetyPolicy,
     type AccountState,
+    type DecisionRecord,
     type Position,
     type RunSystemContextDigest,
     type StrategyRiskState,
@@ -140,6 +145,15 @@ export function buildRunDiagnostics(result: {
 
     return Object.keys(diagnostics).length > 0
         ? diagnostics
+        : undefined
+}
+
+export function buildRunDecisionRecord(
+    policy: Record<string, unknown>,
+    summary: string | undefined
+): DecisionRecord | undefined {
+    return isDecisionRecordPolicyEnabled(policy)
+        ? parseDecisionRecordOutput(summary ?? "")
         : undefined
 }
 

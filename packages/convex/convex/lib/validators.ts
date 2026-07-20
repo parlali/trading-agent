@@ -40,6 +40,23 @@ export const severityV = stringLiterals(SEVERITY_LEVELS)
 export const eventTypeV = stringLiterals(EVENT_TYPES)
 export const heartbeatStatusV = stringLiterals(["healthy", "degraded", "unhealthy"])
 export const agentLogRoleV = stringLiterals(["system", "user", "assistant", "tool"])
+export const decisionRecordDirectionV = stringLiterals(["long", "short", "neutral"])
+export const decisionRecordDecisionV = stringLiterals(["trade", "no_trade", "manage_only"])
+
+export const decisionRecordV = v.object({
+    forecast: v.optional(v.object({
+        direction: v.optional(decisionRecordDirectionV),
+        p: v.optional(v.number()),
+        expectedMove: v.optional(v.string()),
+        horizon: v.optional(v.string()),
+        invalidation: v.optional(v.string()),
+    })),
+    decision: v.optional(decisionRecordDecisionV),
+    detail: v.optional(v.string()),
+    rulesApplied: v.optional(v.array(v.string())),
+    notInText: v.optional(v.array(v.string())),
+    parseError: v.optional(v.string()),
+})
 
 export const agentChatToolPayloadV = v.object({
     schemaVersion: v.literal(AGENT_CHAT_TOOL_PAYLOAD_SCHEMA_VERSION),

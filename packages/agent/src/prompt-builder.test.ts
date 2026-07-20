@@ -45,6 +45,39 @@ function createContext(): StrategyRunContext {
 }
 
 describe("buildSystemPrompt operational memory", () => {
+    it("omits decision record instructions when the policy flag is absent", () => {
+        const prompt = buildSystemPrompt(createContext(), [])
+
+        expect(prompt).not.toContain("## Decision Record Output")
+        expect(prompt).not.toContain("DECISION_RECORD")
+    })
+
+    it("keeps decisionRecord false identical to an absent policy flag", () => {
+        const absentPrompt = buildSystemPrompt(createContext(), [])
+        const context = createContext()
+        context.policy = {
+            ...context.policy,
+            decisionRecord: false,
+        }
+
+        expect(buildSystemPrompt(context, [])).toBe(absentPrompt)
+    })
+
+    it("includes decision record instructions when the policy flag is true", () => {
+        const context = createContext()
+        context.policy = {
+            ...context.policy,
+            decisionRecord: true,
+        }
+
+        const prompt = buildSystemPrompt(context, [])
+
+        expect(prompt).toContain("## Decision Record Output")
+        expect(prompt).toContain("FORECAST | direction=long|short|neutral")
+        expect(prompt).toContain("DECISION_RECORD")
+        expect(prompt).toContain("NOT IN TEXT")
+    })
+
     it("includes bounded structured memory before current account state", () => {
         const context = createContext()
         context.operationalMemory = [createMemory({

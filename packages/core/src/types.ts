@@ -291,6 +291,27 @@ export interface StrategyRunContext {
     promptSanitizer?: PromptSanitizerContext
 }
 
+export type DecisionRecordDirection = "long" | "short" | "neutral"
+
+export type DecisionRecordDecision = "trade" | "no_trade" | "manage_only"
+
+export interface DecisionRecordForecast {
+    direction?: DecisionRecordDirection
+    p?: number
+    expectedMove?: string
+    horizon?: string
+    invalidation?: string
+}
+
+export interface DecisionRecord {
+    forecast?: DecisionRecordForecast
+    decision?: DecisionRecordDecision
+    detail?: string
+    rulesApplied?: string[]
+    notInText?: string[]
+    parseError?: string
+}
+
 export interface PromptSanitizerContext {
     blockedIdentifiers: string[]
 }

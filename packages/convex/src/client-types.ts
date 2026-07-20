@@ -23,6 +23,7 @@ import type {
     AccountState,
     AccountConfig,
     AgentMessageLogger,
+    DecisionRecord,
     Position,
     WorkingOrder,
     ExecutionResult,
@@ -147,6 +148,7 @@ export interface RunDiagnostics {
     toolFailureCount?: number
     toolRetryCount?: number
     decisionUnderDegradedContext?: boolean
+    decisionRecord?: DecisionRecord
     promptTokens?: number
     completionTokens?: number
     reasoningTokens?: number

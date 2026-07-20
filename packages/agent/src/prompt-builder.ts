@@ -1,5 +1,6 @@
 import {
     getAccountEquity,
+    isDecisionRecordPolicyEnabled,
     type StrategyRunContext,
 } from "@valiq-trading/core"
 
@@ -43,6 +44,9 @@ export function buildSystemPrompt(
     sections.push(buildPolicySection(context))
     sections.push(buildToolsSection(toolDescriptions))
     sections.push(buildRulesSection(context.schedule, context.trigger))
+    if (isDecisionRecordPolicyEnabled(context.policy)) {
+        sections.push(buildDecisionRecordSection())
+    }
 
     return sections.join("\n\n")
 }
@@ -358,6 +362,7 @@ function isHiddenPolicyPath(path: string[]): boolean {
     return joined === "llm" ||
         joined === "model" ||
         joined === "reasoning" ||
+        joined === "decisionRecord" ||
         joined === "safety.expectedExternalInstruments"
 }
 
@@ -431,4 +436,26 @@ function buildRulesSection(schedule?: string, trigger?: string): string {
     }
 
     return rules.join("\n")
+}
+
+function buildDecisionRecordSection(): string {
+    return [
+        "## Decision Record Output",
+        "",
+        "When this section is present, both artifacts below are REQUIRED every run.",
+        "",
+        "Before deciding, state your view as one line:",
+        "`FORECAST | direction=long|short|neutral | p=<0.00-1.00 probability your view is right> | expected_move=<signed % or price target> | horizon=<duration> | invalidation=<one sentence>`",
+        "",
+        "After deciding, emit a fenced block:",
+        "```",
+        "DECISION_RECORD",
+        "decision: trade|no_trade|manage_only",
+        "detail: <one line - the order proposed, or the dominant no-trade reason>",
+        "rules_applied:",
+        "- \"<verbatim quote of each strategy-text or platform rule that governed this decision>\"",
+        "- NOT IN TEXT: <each judgment you applied that is not written in any rule, one per line>",
+        "END_DECISION_RECORD",
+        "```",
+    ].join("\n")
 }

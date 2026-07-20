@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest"
 import {
     migrateLegacyStrategyLlmPolicy,
     POLYMARKET_POLICY_DEFAULTS,
+    isDecisionRecordPolicyEnabled,
     readConfiguredStrategySafetyPolicy,
     resolveStrategyLlmConfig,
     resolveRuntimeStrategySafetyPolicy,
@@ -116,5 +117,20 @@ describe("strategy LLM policy", () => {
                 model: "openai/gpt-4.1-mini",
             },
         })
+        expect(POLYMARKET_POLICY_DEFAULTS.decisionRecord).toBeUndefined()
+    })
+
+    it("keeps decision record policy opt-in explicit", () => {
+        const parsed = validatePolicy("polymarket", {
+            ...POLYMARKET_POLICY_DEFAULTS,
+            decisionRecord: true,
+        })
+
+        expect(isDecisionRecordPolicyEnabled(POLYMARKET_POLICY_DEFAULTS)).toBe(false)
+        expect(isDecisionRecordPolicyEnabled({
+            ...POLYMARKET_POLICY_DEFAULTS,
+            decisionRecord: false,
+        })).toBe(false)
+        expect(isDecisionRecordPolicyEnabled(parsed)).toBe(true)
     })
 })

@@ -2,30 +2,30 @@ import {
     ALLOWED_VALIDATION_RESULT,
     allowWithGateEvaluation,
     createGateEvaluation,
+    getIntentAction,
     openIntentRiskValidator,
     okxPolicySchema,
+    readFiniteNumber,
+    readNonNegativeFiniteNumber,
     rejectRisk,
     rejectRiskWithGateEvaluation,
+    resolveStopDistanceSpreadMultiple,
     validateTradingHoursWindow,
     type OrderIntent,
     type RiskValidator,
 } from "@valiq-trading/core"
 
-function readFiniteNumber(value: unknown): number | undefined {
-    return typeof value === "number" && Number.isFinite(value)
-        ? value
-        : undefined
-}
-
 function readOkxEntryLevels(intent: OrderIntent): {
     entryPrice?: number
     stopLoss?: number
     takeProfit?: number
+    absoluteSpread?: number
 } {
     return {
         entryPrice: readFiniteNumber(intent.limitPrice ?? intent.metadata?.estimatedPrice),
         stopLoss: readFiniteNumber(intent.metadata?.stopLoss),
         takeProfit: readFiniteNumber(intent.metadata?.takeProfit),
+        absoluteSpread: readNonNegativeFiniteNumber(intent.metadata?.absoluteSpread),
     }
 }
 
@@ -122,6 +122,59 @@ const minStopDistanceValidator: RiskValidator = openIntentRiskValidator((intent,
     if (distancePercent < policy.minStopDistancePercent) {
         return rejectRiskWithGateEvaluation(
             `Stop distance ${distancePercent.toFixed(2)}% of entry is below the minimum ${policy.minStopDistancePercent}%. Stops inside execution-cost noise get harvested; place the stop beyond real structure or skip the trade.`,
+            gateEvaluation
+        )
+    }
+
+    return allowWithGateEvaluation(gateEvaluation)
+})
+
+const minStopDistanceSpreadMultipleValidator: RiskValidator = openIntentRiskValidator((intent, rawPolicy) => {
+    const policy = okxPolicySchema.parse(rawPolicy)
+
+    if (policy.minStopDistanceSpreadMultiple === undefined) {
+        return ALLOWED_VALIDATION_RESULT
+    }
+
+    if (getIntentAction(intent) !== "entry") {
+        return ALLOWED_VALIDATION_RESULT
+    }
+
+    const { entryPrice, stopLoss, absoluteSpread } = readOkxEntryLevels(intent)
+    const failClosedGateEvaluation = createGateEvaluation({
+        gateKey: "okx.minStopDistanceSpreadMultiple",
+        observed: 0,
+        threshold: policy.minStopDistanceSpreadMultiple,
+        comparison: "min",
+    })
+
+    if (entryPrice === undefined || stopLoss === undefined) {
+        return rejectRiskWithGateEvaluation(
+            "OKX minStopDistanceSpreadMultiple gate requires finite entry and stopLoss",
+            failClosedGateEvaluation
+        )
+    }
+
+    if (absoluteSpread === undefined) {
+        return rejectRiskWithGateEvaluation(
+            "OKX minStopDistanceSpreadMultiple gate cannot verify stop clearance because intent metadata is missing absoluteSpread",
+            failClosedGateEvaluation
+        )
+    }
+
+    const stopDistance = Math.abs(entryPrice - stopLoss)
+    const spreadMultiple = resolveStopDistanceSpreadMultiple(stopDistance, absoluteSpread)
+    const minimumStopDistance = policy.minStopDistanceSpreadMultiple * absoluteSpread
+    const gateEvaluation = createGateEvaluation({
+        gateKey: "okx.minStopDistanceSpreadMultiple",
+        observed: spreadMultiple,
+        threshold: policy.minStopDistanceSpreadMultiple,
+        comparison: "min",
+    })
+
+    if (stopDistance < minimumStopDistance) {
+        return rejectRiskWithGateEvaluation(
+            `Stop distance ${stopDistance.toFixed(5)} is ${spreadMultiple.toFixed(2)}x current spread ${absoluteSpread.toFixed(5)}, below minimum ${policy.minStopDistanceSpreadMultiple}x. Stops inside execution-cost noise get harvested; place the stop beyond real structure or skip the trade.`,
             gateEvaluation
         )
     }
@@ -237,5 +290,6 @@ export const okxRiskValidators: readonly RiskValidator[] = [
     tradingHoursValidator,
     fundingRateValidator,
     minStopDistanceValidator,
+    minStopDistanceSpreadMultipleValidator,
     minRiskRewardValidator,
 ]

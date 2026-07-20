@@ -212,6 +212,7 @@ export async function prepareMT5Order(
             impliedRR: impliedRR,
             reason: params.reason,
             estimatedPrice: entryPrice,
+            absoluteSpread: Math.abs(symbolInfo.ask - symbolInfo.bid),
         },
     }
 

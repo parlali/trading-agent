@@ -100,6 +100,7 @@ export type StrategyLlmConfig = z.infer<typeof llmProviderSchema>
 export const baseStrategyPolicySchema = z.object({
     dryRun: z.boolean().default(false),
     llm: llmProviderSchema,
+    decisionRecord: z.boolean().optional(),
     maxEntriesPerWeek: z.number().int().positive().optional(),
     maxEntriesPerInstrumentPerWeek: z.number().int().positive().optional(),
     safety: z.object({
@@ -124,6 +125,10 @@ export const baseStrategyPolicySchema = z.object({
 }).passthrough()
 
 export type BaseStrategyPolicy = z.infer<typeof baseStrategyPolicySchema>
+
+export function isDecisionRecordPolicyEnabled(policy: Record<string, unknown>): boolean {
+    return policy.decisionRecord === true
+}
 
 export function resolveStrategyLlmConfig(policy: Record<string, unknown>): StrategyLlmConfig {
     assertNoLegacyLlmPolicyFields(policy)
@@ -325,7 +330,9 @@ export type MT5MarketRegionsByInstrument = z.infer<typeof mt5MarketRegionsByInst
 export const mt5PolicySchema = baseStrategyPolicySchema.extend({
     maxRiskPercent: z.number().positive().max(100),
     minRiskReward: z.number().positive().default(0.5),
+    minStopDistanceSpreadMultiple: z.number().positive().optional(),
     tradingHours: mt5TradingHoursSchema,
+    entryCutoffMinutesBeforeSessionEnd: z.number().int().positive().optional(),
     marketRegionsByInstrument: mt5MarketRegionsByInstrumentSchema.optional(),
     allowMultiplePendingEntryOrdersPerInstrument: z.boolean().default(false),
     allowOverlappingExposure: z.boolean().default(false),
@@ -339,6 +346,7 @@ export const okxPolicySchema = baseStrategyPolicySchema.extend({
     maxRiskPercent: z.number().positive().max(100),
     minRiskReward: z.number().positive().optional(),
     minStopDistancePercent: z.number().positive().optional(),
+    minStopDistanceSpreadMultiple: z.number().positive().optional(),
     tradingHours: mt5TradingHoursSchema,
     fundingRateThreshold: z.number().nonnegative(),
     requireTakeProfit: z.boolean().default(false),
