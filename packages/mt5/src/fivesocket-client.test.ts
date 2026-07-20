@@ -305,6 +305,189 @@ describe("FiveSocketClient transport policy", () => {
         expect(connectTransport.calls()).toBe(1)
     })
 
+    it("honors Retry-After on HTTP 429 before retrying a read", async () => {
+        let positionAttempts = 0
+        const startedAt = Date.now()
+        const fetchImpl = createAccountAwareFetch(async (url, method) => {
+            if (method === "GET" && url.endsWith("/positions")) {
+                positionAttempts += 1
+                if (positionAttempts === 1) {
+                    return new Response(JSON.stringify({
+                        error: {
+                            code: "rate_limit_exceeded",
+                            message: "slow down",
+                            requestId: "rate-1",
+                        },
+                    }), {
+                        status: 429,
+                        statusText: "Too Many Requests",
+                        headers: { "Content-Type": "application/json", "Retry-After": "2" },
+                    })
+                }
+                return jsonResponse({ positions: [] })
+            }
+            throw new Error(`Unexpected ${method} ${url}`)
+        })
+
+        const client = new FiveSocketClient({
+            baseUrl: "https://api.fivesocket.com",
+            apiKey: "test-key",
+            timeout: 3_000,
+            minRequestIntervalMs: 0,
+            fetchImpl,
+        })
+
+        await expect(client.getPositions(credentials)).resolves.toEqual([])
+        expect(positionAttempts).toBe(2)
+        const elapsed = Date.now() - startedAt
+        expect(elapsed).toBeGreaterThanOrEqual(1_900)
+        expect(elapsed).toBeLessThan(3_000)
+    }, 4_000)
+
+    it("watermarks deal reads with overlap and restarts with a full lookback", async () => {
+        const newestDealMs = Date.now() - 30 * 60 * 1000
+        const newestDealTime = new Date(newestDealMs).toISOString()
+        const expectedOverlapFrom = new Date(newestDealMs - 15 * 60 * 1000).toISOString()
+        const dealUrls: string[] = []
+        const fetchImpl = createAccountAwareFetch(async (url, method) => {
+            if (method === "GET" && url.includes("/deals")) {
+                dealUrls.push(url)
+                const deal = createDeal("1815793222", newestDealTime)
+                return jsonResponse({
+                    data: dealUrls.length === 2 ? [deal, deal] : [deal],
+                    nextCursor: null,
+                })
+            }
+            throw new Error(`Unexpected ${method} ${url}`)
+        })
+
+        const client = new FiveSocketClient({
+            baseUrl: "https://api.fivesocket.com",
+            apiKey: "test-key",
+            timeout: 1_000,
+            minRequestIntervalMs: 0,
+            fetchImpl,
+        })
+
+        await expect(client.getPositionClosures(credentials, 24)).resolves.toHaveLength(1)
+        await expect(client.getPositionClosures(credentials, 24)).resolves.toHaveLength(1)
+
+        expect(requireQueryParam(dealUrls[1]!, "from")).toBe(expectedOverlapFrom)
+
+        const restarted = new FiveSocketClient({
+            baseUrl: "https://api.fivesocket.com",
+            apiKey: "test-key",
+            timeout: 1_000,
+            minRequestIntervalMs: 0,
+            fetchImpl,
+        })
+        await expect(restarted.getPositionClosures(credentials, 24)).resolves.toHaveLength(1)
+
+        const restartFrom = Date.parse(requireQueryParam(dealUrls[2]!, "from"))
+        const restartTo = Date.parse(requireQueryParam(dealUrls[2]!, "to"))
+        expect(requireQueryParam(dealUrls[2]!, "from")).not.toBe(expectedOverlapFrom)
+        expect(Math.abs((restartTo - restartFrom) - 24 * 60 * 60 * 1000)).toBeLessThan(1_000)
+    })
+
+    it("paces concurrent reads and lets execution mutations bypass queued reads", async () => {
+        const minRequestIntervalMs = 120
+        const events: Array<{ kind: string; at: number }> = []
+        const fetchImpl: typeof fetch = async (input, init) => {
+            const url = String(input)
+            const method = init?.method ?? "GET"
+            const body = init?.body ? JSON.parse(String(init.body)) : undefined
+
+            if (method === "POST" && url.endsWith("/v1/accounts")) {
+                return jsonResponse({
+                    id: "acc-1",
+                    login: "111",
+                    server: "broker",
+                    status: "active",
+                    createdAt: new Date().toISOString(),
+                }, 201)
+            }
+
+            if (method === "GET" && url.endsWith("/balance")) {
+                return jsonResponse({
+                    accountId: "acc-1",
+                    login: "111",
+                    server: "broker",
+                    observedAt: new Date().toISOString(),
+                    latencyMs: 1,
+                    balance: "1000",
+                    equity: "1000",
+                    currency: "USD",
+                    credit: "0",
+                    margin: "0",
+                    marginFree: "1000",
+                    profit: "0",
+                    leverage: "100",
+                    name: "Demo",
+                    company: "Broker",
+                })
+            }
+
+            if (method === "GET" && url.endsWith("/positions")) {
+                events.push({ kind: "positions", at: Date.now() })
+                return jsonResponse({ positions: [] })
+            }
+
+            if (method === "GET" && url.endsWith("/execution/orders")) {
+                events.push({ kind: "orders", at: Date.now() })
+                return jsonResponse({ data: [] })
+            }
+
+            if (method === "POST" && url.endsWith("/execution/orders")) {
+                events.push({ kind: "mutation", at: Date.now() })
+                return jsonResponse(acceptedCommand({
+                    clientOrderId: body.clientOrderId,
+                    volume: body.volume,
+                    price: body.price ?? "0",
+                }))
+            }
+
+            throw new Error(`Unexpected request ${method} ${url}`)
+        }
+
+        const client = new FiveSocketClient({
+            baseUrl: "https://api.fivesocket.com",
+            apiKey: "test-key",
+            timeout: 1_000,
+            minRequestIntervalMs,
+            fetchImpl,
+        })
+
+        await client.connect(credentials)
+        await delay(minRequestIntervalMs + 20)
+        events.length = 0
+
+        const firstRead = client.getPositions(credentials)
+        const queuedRead = client.getOpenOrders(credentials)
+        await delay(10)
+        const mutation = client.submitOrder(credentials, {
+            symbol: "XAUUSD",
+            side: "buy",
+            volume: 0.01,
+            orderType: "market",
+            comment: "vmte01abcde23456",
+        })
+
+        await Promise.all([firstRead, queuedRead, mutation])
+
+        const readStarts = events
+            .filter((event) => event.kind === "positions" || event.kind === "orders")
+            .map((event) => event.at)
+            .sort((left, right) => left - right)
+        expect(readStarts).toHaveLength(2)
+        expect(readStarts[1]! - readStarts[0]!).toBeGreaterThanOrEqual(minRequestIntervalMs - 10)
+
+        const mutationStart = events.find((event) => event.kind === "mutation")?.at
+        const queuedReadStart = events.find((event) => event.kind === "orders")?.at
+        expect(mutationStart).toBeDefined()
+        expect(queuedReadStart).toBeDefined()
+        expect(mutationStart!).toBeLessThan(queuedReadStart!)
+    })
+
     it("keeps the execution-policy Idempotency-Key within the 128-character API limit for multi-symbol policies", async () => {
         const requests: Array<{ url: string; method: string; headers: Headers }> = []
         const fetchImpl: typeof fetch = async (input, init) => {
@@ -1393,6 +1576,37 @@ function createCountingTransport(handler: typeof fetch): {
             return await handler(input, init)
         },
     }
+}
+
+function requireQueryParam(url: string, key: string): string {
+    const value = new URL(url).searchParams.get(key)
+    if (!value) {
+        throw new Error(`Missing query parameter ${key} in ${url}`)
+    }
+    return value
+}
+
+function createDeal(id: string, time: string) {
+    return {
+        id,
+        orderId: "1815793221",
+        positionId: "1815793220",
+        symbol: "GBPUSD",
+        type: "sell",
+        entry: "out",
+        volume: "0.1",
+        price: "1.285",
+        profit: "31.50",
+        commission: "0",
+        swap: "0",
+        fee: "0",
+        magic: "0",
+        time,
+    }
+}
+
+function delay(delayMs: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, delayMs))
 }
 
 function jsonResponse(body: unknown, status = 200): Response {

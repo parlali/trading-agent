@@ -97,6 +97,7 @@ export function createMT5Client(
         executionSymbols?: readonly FiveSocketExecutionSymbolPolicy[]
         timeout?: number
         connectTimeout?: number
+        minRequestIntervalMs?: number
         fetchImpl?: typeof fetch
     } = {}
 ): FiveSocketClient {
@@ -106,6 +107,7 @@ export function createMT5Client(
         executionSymbols: options.executionSymbols,
         timeout: options.timeout,
         connectTimeout: options.connectTimeout,
+        minRequestIntervalMs: options.minRequestIntervalMs,
         fetchImpl: options.fetchImpl,
     })
 }
