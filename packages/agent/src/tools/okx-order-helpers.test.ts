@@ -183,7 +183,10 @@ describe("prepareOKXOrder exposure guards", () => {
             "entry"
         )
 
-        expect(result.riskValidation.allowed).toBe(false)
+        expect(result.platformHardBlock).toMatchObject({
+            source: "pre_validation",
+            reason: expect.stringContaining("already has a live long position"),
+        })
         expect(result.error).toContain("already has a live long position")
         expect(pipeline.executeIntent).not.toHaveBeenCalled()
     })
@@ -227,7 +230,10 @@ describe("prepareOKXOrder exposure guards", () => {
             "entry"
         )
 
-        expect(result.riskValidation.allowed).toBe(false)
+        expect(result.platformHardBlock).toMatchObject({
+            source: "pre_validation",
+            reason: expect.stringContaining("live non-protection working order"),
+        })
         expect(result.error).toContain("live non-protection working order")
         expect(pipeline.executeIntent).not.toHaveBeenCalled()
     })

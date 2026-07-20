@@ -718,8 +718,8 @@ function recordOpportunityCoverage(
         return
     }
 
-    const riskValidation = readRecord(parsed.riskValidation)
-    if (riskValidation?.allowed === false) {
+    const platformHardBlock = readRecord(parsed.platformHardBlock)
+    if (typeof platformHardBlock?.reason === "string") {
         metrics.rejectedByRisk++
     }
 }

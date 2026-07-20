@@ -5,6 +5,7 @@ import {
     createToolBinding,
     getOptionsChainParamsSchema,
 } from "../tool-contracts"
+import { toModelExecutionCostEvidence } from "./tool-result-evidence"
 
 export function createAlpacaGetOptionsChainTool(
     venue: AlpacaOptionsVenueAdapter
@@ -32,7 +33,6 @@ export function createAlpacaGetOptionsChainTool(
                     optionType: contract.optionType,
                     strikePrice: contract.strikePrice,
                     status: contract.status,
-                    tradable: contract.tradable,
                     bid,
                     ask,
                     midpoint,
@@ -43,7 +43,7 @@ export function createAlpacaGetOptionsChainTool(
                     openInterest: snapshot?.openInterest ?? contract.openInterest,
                     impliedVolatility: snapshot?.impliedVolatility,
                     greeks: snapshot?.greeks,
-                    executionCost,
+                    executionCost: toModelExecutionCostEvidence(executionCost),
                 }
             })
 

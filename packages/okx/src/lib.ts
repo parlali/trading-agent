@@ -30,8 +30,8 @@ export {
 } from "./runtime-config"
 export type { OKXRuntimeConfig } from "./runtime-config"
 export {
-    classifyOKXSetups,
     createOKXMarketContextLine,
-    createOKXSetupClassifierLine,
+    collectOKXSetupEvidence,
+    createOKXSetupEvidenceLine,
 } from "./market-context"
-export type { OKXMarketSnapshot, OKXSetupClassification } from "./market-context"
+export type { OKXMarketSnapshot, OKXSetupEvidence } from "./market-context"

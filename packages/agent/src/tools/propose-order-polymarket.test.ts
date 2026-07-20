@@ -51,8 +51,9 @@ describe("createPolymarketProposeOrderTool", () => {
             errorDetail: {
                 code: "POLYMARKET_DUPLICATE_MARKET",
             },
-            riskValidation: {
-                allowed: false,
+            platformHardBlock: {
+                source: "pre_validation",
+                reason: expect.stringContaining("Duplicate: market "),
             },
         })
         expect(venue.getMarketPrice).not.toHaveBeenCalled()

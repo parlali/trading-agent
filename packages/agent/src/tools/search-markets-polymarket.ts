@@ -6,6 +6,7 @@ import {
     searchMarketsParamsSchema,
 } from "../tool-contracts"
 import { PolymarketMarketHandleRegistry } from "./polymarket-market-handles"
+import { toModelExecutionCostEvidence } from "./tool-result-evidence"
 
 export function createPolymarketSearchMarketsTool(
     venue: PolymarketVenueAdapter,
@@ -27,9 +28,16 @@ export function createPolymarketSearchMarketsTool(
                     : undefined,
             })
             const registeredMarkets = handles.registerMarkets(markets)
+            const modelMarkets = registeredMarkets.map((market) => ({
+                ...market,
+                tokens: market.tokens.map((token) => ({
+                    ...token,
+                    executionCost: toModelExecutionCostEvidence(token.executionCost),
+                })),
+            }))
             return validated.conditionId && registeredMarkets.length === 0
-                ? { markets: registeredMarkets, note: "market_resolved_or_not_found" }
-                : { markets: registeredMarkets }
+                ? { markets: modelMarkets, note: "market_resolved_or_not_found" }
+                : { markets: modelMarkets }
         },
     })
 }

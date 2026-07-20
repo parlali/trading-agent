@@ -10,6 +10,7 @@ import {
     singleSymbolParamsSchema,
 } from "../tool-contracts"
 import { withMT5SymbolAllowList } from "./mt5-symbol-allow-list"
+import { toModelExecutionCostEvidence } from "./tool-result-evidence"
 
 export function createMT5GetSymbolInfoTool(
     venue: MT5VenueAdapter,
@@ -52,7 +53,7 @@ export function createMT5GetSymbolInfoTool(
                 pipSize: info.pipSize,
                 currency: info.currency,
                 description: info.description,
-                executionCost,
+                executionCost: toModelExecutionCostEvidence(executionCost),
             }
         },
     }), "symbol", allowedSymbols)

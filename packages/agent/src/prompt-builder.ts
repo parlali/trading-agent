@@ -291,7 +291,7 @@ function buildPolicySection(context: StrategyRunContext): string {
             "- Start with the top-liquid market list for the category or query you care about",
             "- Narrow to only your top candidate markets before requesting live venue data",
             "- Prefer the returned `tokenHandle` for `get_market_price`, `get_order_book`, and `propose_order`; do not shorten or rewrite token IDs",
-            "- Call `get_market_price` and `get_order_book` individually for only those top candidate token handles before sizing or placing any trade. Treat `executionCost` from venue tools as the canonical liquidity/tradability signal.",
+            "- Call `get_market_price` and `get_order_book` individually for only those top candidate token handles before sizing or placing any trade. Treat `executionCost` from venue tools as liquidity evidence: spread magnitudes, baseline samples, and ratio-to-baseline readings.",
             "- `propose_order` requires the exact `tokenHandle` from discovery, or the exact canonical token ID plus condition ID, market slug, question, and outcome. Never place an order using only a condition ID, event slug, or question string.",
             "- Before using `propose_order`, compare the candidate token ID and condition ID against `get_positions`. If the strategy already holds that token or another outcome from the same condition ID, do not submit another entry; only monitor or use `propose_close` if risk should be reduced.",
             "- Use `propose_close` to reduce or exit existing positions. Polymarket does not support `modify_order` or `propose_adjustment` in this runtime.",

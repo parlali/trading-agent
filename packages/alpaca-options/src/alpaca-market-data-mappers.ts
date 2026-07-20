@@ -83,7 +83,6 @@ function normalizeOptionContract(payload: unknown): AlpacaOptionContract | null 
         symbol,
         name: asOptionalString(record?.name),
         status: asOptionalString(record?.status),
-        tradable: asOptionalBoolean(record?.tradable),
         expirationDate: asOptionalString(record?.expiration_date ?? record?.expirationDate),
         underlyingSymbol: asOptionalString(record?.underlying_symbol ?? record?.underlyingSymbol),
         optionType: normalizeOptionType(record?.type),
@@ -271,10 +270,6 @@ function asArray(value: unknown): unknown[] {
 
 function asOptionalString(value: unknown): string | undefined {
     return typeof value === "string" && value.trim() ? value : undefined
-}
-
-function asOptionalBoolean(value: unknown): boolean | undefined {
-    return typeof value === "boolean" ? value : undefined
 }
 
 function asOptionalNumber(value: unknown): number | undefined {

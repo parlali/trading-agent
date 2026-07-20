@@ -273,6 +273,18 @@ export function formatExecutionCostAssessment(assessment: ExecutionCostAssessmen
     return `${formatExecutionCostMetrics(assessment.metrics)} vs ${baselineText}, ${ratioText}, status ${assessment.status.toUpperCase()}`
 }
 
+export function formatExecutionCostEvidence(assessment: ExecutionCostAssessment): string {
+    const baseline = assessment.baseline
+    const baselineText = baseline
+        ? `baseline ${baseline.nativeSpread !== undefined ? `${formatMetricValue(baseline.nativeSpread)} ${baseline.nativeSpreadUnit}` : "n/a"} (${baseline.spreadBps !== undefined ? `${baseline.spreadBps.toFixed(2)} bps` : "n/a"}, ${baseline.source}, ${baseline.regimeKey}, n=${baseline.sampleCount})`
+        : "baseline unavailable"
+    const ratioText = assessment.ratioToBaseline !== undefined
+        ? `${assessment.ratioToBaseline.toFixed(2)}x baseline`
+        : "ratio unavailable"
+
+    return `${formatExecutionCostMetrics(assessment.metrics)} vs ${baselineText}, ${ratioText}`
+}
+
 export function createExecutionCostContextLine(
     label: string,
     assessments: readonly ExecutionCostAssessment[]
@@ -283,7 +295,7 @@ export function createExecutionCostContextLine(
 
     const segments = [...assessments]
         .sort((left, right) => left.metrics.instrument.localeCompare(right.metrics.instrument))
-        .map((assessment) => formatExecutionCostAssessment(assessment))
+        .map((assessment) => formatExecutionCostEvidence(assessment))
 
     return `${label}: ${segments.join(" | ")}`
 }

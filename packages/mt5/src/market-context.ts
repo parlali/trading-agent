@@ -1,5 +1,5 @@
 import {
-    formatExecutionCostAssessment,
+    formatExecutionCostEvidence,
     type MT5Policy,
     type ExecutionCostAssessment,
 } from "@valiq-trading/core"
@@ -81,7 +81,7 @@ export function createMT5SpreadContextLine(
 
     const parts = [...snapshots]
         .sort((left, right) => left.instrument.localeCompare(right.instrument))
-        .map((snapshot) => formatExecutionCostAssessment(snapshot.executionCost))
+        .map((snapshot) => formatExecutionCostEvidence(snapshot.executionCost))
 
     return `Current MT5 execution context: ${parts.join(" | ")}`
 }

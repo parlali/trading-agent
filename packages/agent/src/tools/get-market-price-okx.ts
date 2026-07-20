@@ -5,6 +5,7 @@ import {
     createToolBinding,
     singleSymbolParamsSchema,
 } from "../tool-contracts"
+import { toModelMarketPriceEvidence } from "./tool-result-evidence"
 
 export function createOKXGetMarketPriceTool(
     venue: OKXVenueAdapter
@@ -14,7 +15,7 @@ export function createOKXGetMarketPriceTool(
         venue: "okx-swap",
         handler: async (params) => {
             const validated = params as z.infer<typeof singleSymbolParamsSchema>
-            return await venue.getMarketPrice(validated.symbol)
+            return toModelMarketPriceEvidence(await venue.getMarketPrice(validated.symbol))
         },
     })
 }

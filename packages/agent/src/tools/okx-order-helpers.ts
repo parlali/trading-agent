@@ -8,12 +8,18 @@ import {
     type OKXPolicy,
     type OrderIntent,
     type Position,
-    type PriceVerification,
     type SubmitOrderContext,
     type WorkingOrder,
 } from "@valiq-trading/core"
 import { computeImpliedRR, computeTakeProfitFromRR } from "@valiq-trading/mt5"
 import { createRejectedExecutionToolResult } from "./execution-response"
+import {
+    createPlatformHardBlock,
+    toModelExecutionErrorDetail,
+    toModelPriceVerificationEvidence,
+    type PlatformHardBlockEvidence,
+    type PriceVerificationEvidence,
+} from "./tool-result-evidence"
 import { assertToolNotAborted, createToolAbortError } from "../tool-registry"
 
 export const okxOrderParamsSchema = z.object({
@@ -55,7 +61,7 @@ export interface OKXOrderResult {
     fillPrice?: number
     error?: string
     errorDetail?: ExecutionErrorDetail
-    priceVerification?: PriceVerification
+    priceVerification?: PriceVerificationEvidence
     protectionOrders?: {
         cancelledOrderIds: string[]
         createdOrderIds: string[]
@@ -74,10 +80,7 @@ export interface OKXOrderResult {
         impliedRR: number
         fundingRate?: number
     }
-    riskValidation: {
-        allowed: boolean
-        reason?: string
-    }
+    platformHardBlock?: PlatformHardBlockEvidence
 }
 
 export type OKXProtectionFailureCategory = Extract<
@@ -286,8 +289,8 @@ export async function prepareOKXOrder(
         filledQuantity: result.filledQuantity,
         fillPrice: result.fillPrice,
         error: result.error,
-        errorDetail: result.errorDetail,
-        priceVerification: result.priceVerification,
+        errorDetail: toModelExecutionErrorDetail(result.errorDetail),
+        priceVerification: toModelPriceVerificationEvidence(result.priceVerification),
         protectionOrders,
         computed: {
             entryPrice,
@@ -300,10 +303,9 @@ export async function prepareOKXOrder(
             impliedRR,
             fundingRate,
         },
-        riskValidation: {
-            allowed: validation.allowed,
-            reason: validation.reason,
-        },
+        platformHardBlock: validation.allowed
+            ? undefined
+            : createPlatformHardBlock("risk_engine", validation.reason ?? "Order rejected by risk engine"),
     }
 }
 

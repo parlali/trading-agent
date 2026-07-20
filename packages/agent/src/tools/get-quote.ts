@@ -5,6 +5,7 @@ import {
     createToolBinding,
     singleSymbolParamsSchema,
 } from "../tool-contracts"
+import { toModelExecutionCostEvidence } from "./tool-result-evidence"
 
 export function createAlpacaGetQuoteTool(
     venue: AlpacaOptionsVenueAdapter
@@ -29,7 +30,7 @@ export function createAlpacaGetQuoteTool(
                 minuteBar: snapshot.minuteBar,
                 dailyBar: snapshot.dailyBar,
                 prevDailyBar: snapshot.prevDailyBar,
-                executionCost,
+                executionCost: toModelExecutionCostEvidence(executionCost),
             }
         },
     })

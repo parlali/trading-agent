@@ -164,7 +164,7 @@ export const polymarketOrderJsonSchema = {
         },
         category: {
             type: "string",
-            description: "Market category from discovery, used by risk validation",
+            description: "Market category from discovery, used by the platform risk engine",
         },
         endDateIso: {
             type: "string",

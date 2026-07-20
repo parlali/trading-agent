@@ -71,7 +71,6 @@ export interface AlpacaOptionContract {
     symbol: string
     name?: string
     status?: string
-    tradable?: boolean
     expirationDate?: string
     underlyingSymbol?: string
     optionType?: "call" | "put"

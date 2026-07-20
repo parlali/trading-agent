@@ -12,6 +12,12 @@ import {
     type ValidationResult,
 } from "@valiq-trading/core"
 import { assertToolNotAborted } from "../tool-registry"
+import {
+    createPlatformHardBlock,
+    toModelExecutionErrorDetail,
+    toModelPriceVerificationEvidence,
+    type PlatformHardBlockEvidence,
+} from "./tool-result-evidence"
 
 export interface RejectedExecutionToolResult {
     orderId: string
@@ -19,10 +25,7 @@ export interface RejectedExecutionToolResult {
     filledQuantity: 0
     error: string
     errorDetail: ExecutionErrorDetail
-    riskValidation: {
-        allowed: false
-        reason: string
-    }
+    platformHardBlock: PlatformHardBlockEvidence
 }
 
 export function createRejectedExecutionToolResult(
@@ -42,11 +45,8 @@ export function createRejectedExecutionToolResult(
         status: "rejected",
         filledQuantity: 0,
         error: formatExecutionError(errorDetail),
-        errorDetail,
-        riskValidation: {
-            allowed: false,
-            reason: errorDetail.message,
-        },
+        errorDetail: toModelExecutionErrorDetail(errorDetail) ?? errorDetail,
+        platformHardBlock: createPlatformHardBlock("pre_validation", errorDetail.message, options.code),
     }
 }
 
@@ -64,19 +64,19 @@ export function toExecutionToolResult(
         filledQuantity: result.filledQuantity,
         fillPrice: result.fillPrice,
         error: result.error,
-        errorDetail: result.errorDetail,
-        priceVerification: result.priceVerification,
+        errorDetail: toModelExecutionErrorDetail(result.errorDetail),
+        priceVerification: toModelPriceVerificationEvidence(result.priceVerification),
     }
 
     if (options.trackedOrder !== undefined) {
         payload.trackedOrder = options.trackedOrder
     }
 
-    if (options.validation) {
-        payload.riskValidation = {
-            allowed: options.validation.allowed,
-            reason: options.validation.reason,
-        }
+    if (options.validation && !options.validation.allowed) {
+        payload.platformHardBlock = createPlatformHardBlock(
+            "risk_engine",
+            options.validation.reason ?? "Order rejected by risk engine"
+        )
     }
 
     if (options.extra) {

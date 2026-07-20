@@ -6,6 +6,7 @@ import {
     polymarketMarketPriceParamsSchema,
 } from "../tool-contracts"
 import { PolymarketMarketHandleRegistry } from "./polymarket-market-handles"
+import { toModelMarketPriceEvidence } from "./tool-result-evidence"
 
 export function createPolymarketGetMarketPriceTool(
     venue: PolymarketVenueAdapter,
@@ -17,7 +18,7 @@ export function createPolymarketGetMarketPriceTool(
         handler: async (params) => {
             const validated = params as z.infer<typeof polymarketMarketPriceParamsSchema>
             const token = handles.resolveToken(validated)
-            return await venue.getMarketPrice(token.tokenId, validated.side)
+            return toModelMarketPriceEvidence(await venue.getMarketPrice(token.tokenId, validated.side))
         },
     })
 }
