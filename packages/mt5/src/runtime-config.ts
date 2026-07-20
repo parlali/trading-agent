@@ -78,8 +78,9 @@ function resolveMT5AccountSecret(
             `MT5 account has an empty credentialEnvPrefix; refusing to resolve ${suffix} against a default account`
         )
     }
+    const canonicalKey = `MT5_${suffix}`
     const scopedKey = `${normalizedPrefix}_${suffix}`
-    const value = secrets[scopedKey] ?? env[scopedKey]
+    const value = secrets[canonicalKey] ?? secrets[scopedKey] ?? env[scopedKey]
 
     if (!value) {
         throw new Error(

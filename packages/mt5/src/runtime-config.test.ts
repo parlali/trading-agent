@@ -64,19 +64,34 @@ describe("MT5 runtime config", () => {
         ).toThrow("Missing required secret: MT5_SECONDARY_LOGIN")
     })
 
-    it("never falls back to canonical or other-account credentials for a scoped prefix", () => {
+    it("resolves canonically re-keyed account secrets from the scheduler pipeline for any prefix", () => {
+        const runtime = resolveMT5RuntimeConfig({
+            FIVESOCKET_API_BASE_URL: null,
+            FIVESOCKET_API_KEY: "fs-key",
+            FIVESOCKET_DEFAULT_MAX_VOLUME: "1.0",
+            MT5_LOGIN: "333",
+            MT5_PASSWORD: "tertiary-secret",
+            MT5_SERVER: "tertiary-broker",
+        }, {}, "MT5_TERTIARY")
+
+        expect(runtime.credentials).toEqual({
+            login: 333,
+            password: "tertiary-secret",
+            server: "tertiary-broker",
+        })
+    })
+
+    it("never reads bare canonical credentials from ambient process env", () => {
         expect(() =>
             resolveMT5RuntimeConfig({
                 FIVESOCKET_API_BASE_URL: null,
                 FIVESOCKET_API_KEY: "fs-key",
                 FIVESOCKET_DEFAULT_MAX_VOLUME: "1.0",
+            }, {
                 MT5_LOGIN: "999",
-                MT5_PASSWORD: "canonical-secret",
-                MT5_SERVER: "canonical-broker",
-                MT5_PRIMARY_LOGIN: "111",
-                MT5_PRIMARY_PASSWORD: "primary-secret",
-                MT5_PRIMARY_SERVER: "primary-broker",
-            }, {}, "MT5_TERTIARY")
+                MT5_PASSWORD: "ambient-secret",
+                MT5_SERVER: "ambient-broker",
+            }, "MT5_TERTIARY")
         ).toThrow("Missing required secret: MT5_TERTIARY_LOGIN")
     })
 
