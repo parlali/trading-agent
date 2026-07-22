@@ -57,7 +57,7 @@ function buildRoleSection(): string {
         "",
         "You operate within a strict risk framework. Every order you propose goes through a deterministic risk validation layer before execution. You cannot bypass this layer.",
         "",
-        "Think step by step. Research thoroughly before acting. The risk engine protects against invalid trades -- your job is to find and execute opportunities, not to second-guess the safety net.",
+        "Think step by step. Gather the evidence your decision actually needs, then decide. The risk engine protects against invalid trades -- your job is to find and execute opportunities, not to second-guess the safety net.",
     ].join("\n")
 }
 
@@ -290,7 +290,7 @@ function buildPolicySection(context: StrategyRunContext): string {
             "Use `search_markets` as a Gamma-backed discovery pass only. Treat the returned list as candidate metadata plus token IDs, not execution-grade pricing.",
             "- Start with the top-liquid market list for the category or query you care about",
             "- Narrow to only your top candidate markets before requesting live venue data",
-            "- Prefer the returned `tokenHandle` for `get_market_price`, `get_order_book`, and `propose_order`; do not shorten or rewrite token IDs",
+            "- Use the returned `tokenHandle` for `get_market_price`, `get_order_book`, and `propose_order`; do not shorten or rewrite token IDs",
             "- Call `get_market_price` and `get_order_book` individually for only those top candidate token handles before sizing or placing any trade. Treat `executionCost` from venue tools as liquidity evidence: spread magnitudes, baseline samples, and ratio-to-baseline readings.",
             "- `propose_order` requires the exact `tokenHandle` from discovery, or the exact canonical token ID plus condition ID, market slug, question, and outcome. Never place an order using only a condition ID, event slug, or question string.",
             "- Before using `propose_order`, compare the candidate token ID and condition ID against `get_positions`. If the strategy already holds that token or another outcome from the same condition ID, do not submit another entry; only monitor or use `propose_close` if risk should be reduced.",
@@ -363,6 +363,13 @@ function isHiddenPolicyPath(path: string[]): boolean {
         joined === "model" ||
         joined === "reasoning" ||
         joined === "decisionRecord" ||
+        joined === "maxEntriesPerWeek" ||
+        joined === "maxEntriesPerInstrumentPerWeek" ||
+        joined === "safety.maxDrawdownDay" ||
+        joined === "safety.maxDrawdownWeek" ||
+        joined === "safety.cooldownMinutesAfterDayBreach" ||
+        joined === "safety.cooldownMinutesAfterWeekBreach" ||
+        joined === "safety.account" ||
         joined === "safety.expectedExternalInstruments"
 }
 
@@ -395,7 +402,7 @@ function buildRulesSection(schedule?: string, trigger?: string): string {
         "## Operating Rules",
         "",
         "1. Your current positions and account state are already provided above. Do NOT call get_positions or get_account at the start -- that data is already in this prompt. Only call them later if you need a refresh after placing an order.",
-        "2. Follow the INFORMATION GATHERING order in your strategy context. Start with the research/data tools specified there, not with generic web searches.",
+        "2. If your strategy context specifies a research or data-gathering order, follow it. Otherwise choose your own order; venue and market-data tools before generic web searches.",
         "3. Treat venue-owned market data as execution truth. Research/data tools can inform your thesis, but any live prices, spreads, execution-cost readings, or current levels from them are advisory only and must yield to venue tools when they disagree.",
         "4. If an order is rejected by the risk engine, do not retry with the same parameters.",
         "5. For limit orders, monitor fill status and adjust or cancel if not filling.",

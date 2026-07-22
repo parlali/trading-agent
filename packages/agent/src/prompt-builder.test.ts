@@ -44,6 +44,39 @@ function createContext(): StrategyRunContext {
     }
 }
 
+describe("buildSystemPrompt policy visibility", () => {
+    it("hides entry budgets, drawdown halts, cooldowns, and allocation from the model-visible policy", () => {
+        const context = createContext()
+        context.policy = {
+            ...context.policy,
+            maxRiskPercent: 0.5,
+            minRiskReward: 2,
+            maxEntriesPerWeek: 4,
+            maxEntriesPerInstrumentPerWeek: 2,
+            safety: {
+                maxDrawdownDay: 3,
+                maxDrawdownWeek: 10,
+                cooldownMinutesAfterDayBreach: 720,
+                cooldownMinutesAfterWeekBreach: 1440,
+                account: {
+                    allocationPercent: 60,
+                },
+            },
+        }
+
+        const prompt = buildSystemPrompt(context, [])
+
+        expect(prompt).toContain("maxRiskPercent")
+        expect(prompt).toContain("minRiskReward")
+        expect(prompt).not.toContain("maxEntriesPerWeek")
+        expect(prompt).not.toContain("maxEntriesPerInstrumentPerWeek")
+        expect(prompt).not.toContain("maxDrawdownDay")
+        expect(prompt).not.toContain("maxDrawdownWeek")
+        expect(prompt).not.toContain("cooldownMinutes")
+        expect(prompt).not.toContain("allocationPercent")
+    })
+})
+
 describe("buildSystemPrompt operational memory", () => {
     it("omits decision record instructions when the policy flag is absent", () => {
         const prompt = buildSystemPrompt(createContext(), [])
