@@ -44,7 +44,7 @@ export function parseDecisionRecordOutput(output: string): DecisionRecord {
 }
 
 function parseForecast(output: string, errors: string[]): DecisionRecordForecast | undefined {
-    const match = output.match(/^\s*FORECAST\s*\|([^\r\n]*)/im)
+    const match = findLastRegexMatch(output, /^[ \t]*FORECAST[ \t]*\|([^\r\n]*)/gim)
     if (!match) {
         errors.push("FORECAST line not found")
         return undefined
@@ -117,13 +117,12 @@ function parseDecisionRecordBlock(output: string, errors: string[]): {
     rulesApplied: string[]
     notInText: string[]
 } | undefined {
-    const match = output.match(/^\s*DECISION_RECORD\s*$([\s\S]*?)^\s*END_DECISION_RECORD\s*$/im)
-    if (!match) {
+    const body = findLastDecisionRecordBody(output)
+    if (body === undefined) {
         errors.push("DECISION_RECORD block not found")
         return undefined
     }
 
-    const body = match[1] ?? ""
     const lines = body.split(/\r?\n/)
     const decision = parseDecision(lines, errors)
     const detail = parseLineField(lines, "detail")
@@ -135,6 +134,40 @@ function parseDecisionRecordBlock(output: string, errors: string[]): {
         rulesApplied,
         notInText,
     }
+}
+
+function findLastDecisionRecordBody(output: string): string | undefined {
+    const matches = [
+        ...findRegexMatches(output, /^[ \t]*```[ \t]*DECISION_RECORD[ \t]*\r?\n([\s\S]*?)^[ \t]*END_DECISION_RECORD[ \t]*$/gim),
+        ...findRegexMatches(output, /^[ \t]*DECISION_RECORD[ \t]*\r?\n([\s\S]*?)^[ \t]*END_DECISION_RECORD[ \t]*$/gim),
+    ].sort((left, right) => left.index - right.index)
+
+    return matches[matches.length - 1]?.value
+}
+
+function findLastRegexMatch(output: string, pattern: RegExp): RegExpExecArray | undefined {
+    let last: RegExpExecArray | undefined
+    let match: RegExpExecArray | null
+
+    while ((match = pattern.exec(output)) !== null) {
+        last = match
+    }
+
+    return last
+}
+
+function findRegexMatches(output: string, pattern: RegExp): Array<{ index: number; value: string }> {
+    const matches: Array<{ index: number; value: string }> = []
+    let match: RegExpExecArray | null
+
+    while ((match = pattern.exec(output)) !== null) {
+        matches.push({
+            index: match.index,
+            value: match[1] ?? "",
+        })
+    }
+
+    return matches
 }
 
 function parseDecision(lines: string[], errors: string[]): DecisionRecordDecision | undefined {

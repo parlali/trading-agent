@@ -150,11 +150,34 @@ export function buildRunDiagnostics(result: {
 
 export function buildRunDecisionRecord(
     policy: Record<string, unknown>,
-    summary: string | undefined
+    summary: string | undefined,
+    transcriptMessages: AgentRunTranscriptMessage[] = []
 ): DecisionRecord | undefined {
     return isDecisionRecordPolicyEnabled(policy)
-        ? parseDecisionRecordOutput(summary ?? "")
+        ? parseDecisionRecordOutput(buildDecisionRecordParserInput(summary, transcriptMessages))
         : undefined
+}
+
+export interface AgentRunTranscriptMessage {
+    sequence: number
+    role: string
+    content: string
+}
+
+function buildDecisionRecordParserInput(
+    summary: string | undefined,
+    transcriptMessages: AgentRunTranscriptMessage[]
+): string {
+    const assistantMessages = transcriptMessages
+        .filter((message) => message.role === "assistant" && message.content.length > 0)
+        .sort((left, right) => left.sequence - right.sequence)
+        .map((message) => message.content)
+
+    if (summary !== undefined && summary.length > 0) {
+        assistantMessages.push(summary)
+    }
+
+    return assistantMessages.join("\n\n")
 }
 
 export async function resolveRuntimeSafetyPolicyForRun(args: {

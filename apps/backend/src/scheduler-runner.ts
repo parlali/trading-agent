@@ -44,6 +44,7 @@ import {
     POST_RUN_HOOK_TIMEOUT_MS,
     PRE_RUN_HOOK_TIMEOUT_MS,
     STRATEGY_RUN_TIMEOUT_MS,
+    type AgentRunTranscriptMessage,
     buildRunDecisionRecord,
     buildRunDiagnostics,
     checkKillSwitch,
@@ -340,7 +341,7 @@ export async function runStrategy(
                 ? sanitizeRunSummary(result.summary)
                 : result.summary
             const runDiagnostics = buildRunDiagnostics(result, runSystemContextDigest) ?? {}
-            const decisionRecord = buildRunDecisionRecord(policy, result.summary)
+            const decisionRecord = buildRunDecisionRecord(policy, result.summary, agentTranscript.getTranscriptMessages())
             if (decisionRecord !== undefined) {
                 runDiagnostics.decisionRecord = decisionRecord
             }
@@ -513,6 +514,7 @@ interface BufferedAgentTranscriptLogger {
     flush(): Promise<void>
     dispose(): void
     getPersistedAgentLogs(): AgentLogMemoryEntry[]
+    getTranscriptMessages(): AgentRunTranscriptMessage[]
     hasCompletePersistedTranscript(): boolean
 }
 
@@ -623,6 +625,10 @@ function createBufferedAgentTranscriptLogger(args: {
             clearFlushTimer()
         },
         getPersistedAgentLogs: () => [...persistedAgentLogs],
+        getTranscriptMessages: () => [
+            ...persistedAgentLogs.map(toTranscriptMessage),
+            ...buffer.map(toTranscriptMessage),
+        ].sort((left, right) => left.sequence - right.sequence),
         hasCompletePersistedTranscript: () => buffer.length === 0 && persistedAgentLogs.length === totalLogged,
     }
 
@@ -640,6 +646,14 @@ function stripQueuedAt(entry: QueuedAgentLogEntry): AgentLogEntryInput {
         toolInput: entry.toolInput,
         toolOutput: entry.toolOutput,
         toolCalls: entry.toolCalls,
+    }
+}
+
+function toTranscriptMessage(entry: AgentLogEntryInput | AgentLogMemoryEntry): AgentRunTranscriptMessage {
+    return {
+        sequence: entry.sequence,
+        role: entry.role,
+        content: entry.content,
     }
 }
 

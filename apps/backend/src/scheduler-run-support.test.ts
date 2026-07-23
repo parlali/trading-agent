@@ -80,6 +80,71 @@ describe("scheduler run diagnostics", () => {
             ],
         })
     })
+
+    it("builds decisionRecord from assistant transcript messages plus run summary with last artifacts winning", async () => {
+        const { buildRunDecisionRecord } = await import("./scheduler-run-support")
+        const earlierAssistant = [
+            "FORECAST | direction=long | p=0.51 | expected_move=stale | horizon=10m | invalidation=Old invalidation.",
+            "DECISION_RECORD",
+            "decision: no_trade",
+            "detail: stale record",
+            "rules_applied:",
+            "- \"Old rule\"",
+            "END_DECISION_RECORD",
+        ].join("\n")
+        const laterAssistant = [
+            "The final assistant turn held the existing position.",
+            "```DECISION_RECORD",
+            "decision: manage_only",
+            "detail: Held existing GBPUSD short 0.09 @ 1.33247 unchanged.",
+            "rules_applied:",
+            "- \"Focus on: checking positions, evaluating if your thesis still holds, adjusting or closing positions, and monitoring fills.\"",
+            "- NOT IN TEXT: Current quote still supports holding because price is below invalidation and spread is normal.",
+            "END_DECISION_RECORD",
+            "```",
+        ].join("\n")
+        const summary = "FORECAST | direction=short | p=0.57 | expected_move=1.3286 target / ~-0.22% from 1.33148 ask | horizon=NY overlap into 20:45 UTC flat buffer | invalidation=Sustained reclaim above 1.3330/1.3340 or SL 1.3343 invalidates downside continuation."
+
+        expect(buildRunDecisionRecord({
+            decisionRecord: true,
+        }, summary, [{
+            sequence: 20,
+            role: "assistant",
+            content: laterAssistant,
+        }, {
+            sequence: 10,
+            role: "assistant",
+            content: earlierAssistant,
+        }, {
+            sequence: 30,
+            role: "tool",
+            content: [
+                "FORECAST | direction=neutral | p=0.99 | expected_move=ignored | horizon=ignored | invalidation=ignored.",
+                "DECISION_RECORD",
+                "decision: trade",
+                "detail: ignored tool content",
+                "rules_applied:",
+                "- \"Ignored rule\"",
+                "END_DECISION_RECORD",
+            ].join("\n"),
+        }])).toMatchObject({
+            forecast: {
+                direction: "short",
+                p: 0.57,
+                expectedMove: "1.3286 target / ~-0.22% from 1.33148 ask",
+                horizon: "NY overlap into 20:45 UTC flat buffer",
+                invalidation: "Sustained reclaim above 1.3330/1.3340 or SL 1.3343 invalidates downside continuation.",
+            },
+            decision: "manage_only",
+            detail: "Held existing GBPUSD short 0.09 @ 1.33247 unchanged.",
+            rulesApplied: [
+                "Focus on: checking positions, evaluating if your thesis still holds, adjusting or closing positions, and monitoring fills.",
+            ],
+            notInText: [
+                "Current quote still supports holding because price is below invalidation and spread is normal.",
+            ],
+        })
+    })
 })
 
 function createAgentRunResult(): AgentRunResult {
