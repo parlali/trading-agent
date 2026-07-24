@@ -81,6 +81,7 @@ describe("scheduler runner Codex dry-run side effects", () => {
             },
             killSwitchCheckers: {},
             logger: createLoggerMock(),
+            syncStrategies: {},
         }))
         vi.doMock("./provider-sync", () => ({
             reconcileProviderPortfolio,

@@ -31,6 +31,7 @@ import {
     createMcpTools,
     executeSessionFlatIfNeeded,
 } from "./shared"
+import { syncStrategies } from "../sync-strategies-state"
 
 export class MT5Plugin implements VenuePlugin {
     readonly app = "mt5"
@@ -271,7 +272,6 @@ export function resolveMt5AccountExecutionPolicySources(
     accountId: string | undefined,
     fallbackPolicy?: Record<string, unknown>
 ): Array<{ enabled: boolean, policy: unknown }> {
-    const { syncStrategies } = require("../state") as typeof import("../state")
     const siblings = accountId
         ? (syncStrategies.mt5 ?? []).filter((entry) => entry.account.accountId === accountId)
         : []

@@ -7,14 +7,13 @@ import {
 } from "@valiq-trading/core"
 import {
     createTradingBackendClient,
-    type StoredAccount,
-    type StoredStrategy,
 } from "@valiq-trading/convex"
 import { AlpacaPlugin } from "./plugins/alpaca"
 import { OKXPlugin } from "./plugins/okx"
 import { PolymarketPlugin } from "./plugins/polymarket"
 import { MT5Plugin } from "./plugins/mt5"
 import type { HealthState, VenueApp, VenuePlugin } from "./types"
+export { syncStrategies, type SyncStrategyEntry } from "./sync-strategies-state"
 
 export const APP_NAME: App = "backend"
 export const HEARTBEAT_INTERVAL_MS = 120_000
@@ -112,15 +111,6 @@ export const killSwitchCheckers: Partial<Record<VenueApp, (context: string) => P
         logger,
     }),
 }
-
-export interface SyncStrategyEntry {
-    strategy: StoredStrategy
-    account: StoredAccount
-    policy: Record<string, unknown>
-    secrets: Record<string, string | null>
-}
-
-export const syncStrategies: Partial<Record<VenueApp, SyncStrategyEntry[]>> = {}
 
 export const ALL_APPS: VenueApp[] = ["alpaca-options", "polymarket", "mt5", "okx-swap"]
 export const MANUAL_RUN_WORKER_ID = `backend-${healthState.startedAt}`
