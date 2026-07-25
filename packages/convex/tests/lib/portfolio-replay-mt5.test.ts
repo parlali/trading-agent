@@ -6,6 +6,226 @@ import { callRegistered, FakeMutationDb as FakeDb } from "./fakeMutationDb"
 describe("Convex MT5 provider close replay", () => {
     const accountId = "account-mt5"
 
+    function createPreSubmitMt5Db(args: {
+        strategyId: string
+        runId: string
+        canonicalOrderId: string
+        submittedAt: number
+    }): FakeDb {
+        return new FakeDb({
+            strategies: [{
+                _id: args.strategyId,
+                app: "mt5",
+                accountId,
+                name: "MT5 US30",
+                policy: { dryRun: false },
+            }],
+            strategy_runs: [{
+                _id: args.runId,
+                strategyId: args.strategyId,
+                app: "mt5",
+                accountId,
+                status: "completed",
+                startedAt: args.submittedAt - 60_000,
+                endedAt: args.submittedAt + 60_000,
+            }],
+            instrument_claims: [],
+            orders: [{
+                _id: "order-pre-submit",
+                orderId: args.canonicalOrderId,
+                canonicalOrderId: args.canonicalOrderId,
+                providerOrderId: "",
+                providerClientOrderId: args.canonicalOrderId,
+                providerOrderAliases: [],
+                submitAttemptId: "attempt-1",
+                submitAttemptSequence: 1,
+                commitOutcome: "commit_unknown",
+                runId: args.runId,
+                strategyId: args.strategyId,
+                app: "mt5",
+                accountId,
+                venue: "mt5",
+                instrument: "US30",
+                status: "pending",
+                action: "entry",
+                quantity: 0.1,
+                filledQuantity: 0,
+                remainingQuantity: 0.1,
+                submittedAt: args.submittedAt,
+                updatedAt: args.submittedAt,
+                intent: {
+                    instrument: "US30",
+                    side: "sell",
+                    quantity: 0.1,
+                    orderType: "limit",
+                    limitPrice: 51980,
+                    timeInForce: "day",
+                    metadata: {
+                        action: "entry",
+                    },
+                },
+                lastTransitionSequence: 1,
+                polling: {
+                    pollIntervalMs: 5_000,
+                    timeoutMs: 120_000,
+                    startedAt: args.submittedAt,
+                    lastCheckedAt: args.submittedAt,
+                    nextCheckAt: args.submittedAt + 5_000,
+                },
+            }],
+            order_identity_aliases: [{
+                _id: "alias-pre-submit",
+                app: "mt5",
+                accountId,
+                alias: args.canonicalOrderId,
+                orderId: args.canonicalOrderId,
+                orderDocId: "order-pre-submit",
+                strategyId: args.strategyId,
+                updatedAt: args.submittedAt,
+            }],
+            provider_positions: [],
+            provider_working_orders: [],
+            provider_sync_state: [],
+            position_syncs: [],
+            positions: [],
+            execution_safety_faults: [],
+            account_snapshots: [],
+            account_pnl_events: [],
+            control_plane_metrics: [],
+            alerts: [],
+        })
+    }
+
+    function createAccountState() {
+        return {
+            balance: 1000,
+            equity: 1000,
+            buyingPower: 1000,
+            marginUsed: 0,
+            marginAvailable: 1000,
+            openPnl: 0,
+            dayPnl: 0,
+        }
+    }
+
+    it("recovers a pre-submit MT5 row from provider working-order truth by canonical comment", async () => {
+        process.env.BACKEND_SERVICE_TOKEN = "test-token"
+        const strategyId = "strategy-mt5-us30"
+        const runId = "run-mt5-us30"
+        const canonicalOrderId = "vmte01prewritezz"
+        const providerOrderId = "1822429976"
+        const submittedAt = Date.now() - 180_000
+        const db = createPreSubmitMt5Db({
+            strategyId,
+            runId,
+            canonicalOrderId,
+            submittedAt,
+        })
+        const ctx = { db } as never
+
+        await callRegistered(reconcileProviderPortfolio, ctx, {
+            serviceToken: "test-token",
+            app: "mt5",
+            accountId,
+            venue: "mt5",
+            source: "periodic_sync",
+            accountState: createAccountState(),
+            positions: [],
+            workingOrders: [{
+                orderId: providerOrderId,
+                providerClientOrderId: canonicalOrderId,
+                instrument: "US30",
+                status: "pending",
+                quantity: 0.1,
+                filledQuantity: 0,
+                remainingQuantity: 0.1,
+                submittedAt,
+                updatedAt: submittedAt + 30_000,
+                side: "sell",
+                limitPrice: 51980,
+                metadata: JSON.stringify({
+                    comment: canonicalOrderId,
+                    providerClientOrderId: canonicalOrderId,
+                }),
+            }],
+            positionClosures: [],
+        })
+
+        const order = db.rows.orders?.find((row) => row.orderId === canonicalOrderId)
+        expect(order).toMatchObject({
+            orderId: canonicalOrderId,
+            providerOrderId,
+            providerClientOrderId: canonicalOrderId,
+            status: "pending",
+            commitOutcome: "recovered",
+            filledQuantity: 0,
+            remainingQuantity: 0.1,
+        })
+        expect(db.rows.order_transitions).toContainEqual(expect.objectContaining({
+            orderId: canonicalOrderId,
+            status: "pending",
+            details: expect.objectContaining({
+                providerOrderId,
+                previousProviderOrderId: "",
+            }),
+        }))
+        expect(db.rows.provider_sync_state?.[0]).toMatchObject({
+            providerStatus: "healthy",
+            driftDetected: false,
+        })
+    })
+
+    it("resolves a stale MT5 pre-submit row as cancelled only after provider truth has no confirmation", async () => {
+        process.env.BACKEND_SERVICE_TOKEN = "test-token"
+        const strategyId = "strategy-mt5-us30"
+        const runId = "run-mt5-us30"
+        const canonicalOrderId = "vmte01stalerowzz"
+        const submittedAt = Date.now() - 180_000
+        const db = createPreSubmitMt5Db({
+            strategyId,
+            runId,
+            canonicalOrderId,
+            submittedAt,
+        })
+        const ctx = { db } as never
+
+        await callRegistered(reconcileProviderPortfolio, ctx, {
+            serviceToken: "test-token",
+            app: "mt5",
+            accountId,
+            venue: "mt5",
+            source: "periodic_sync",
+            accountState: createAccountState(),
+            positions: [],
+            workingOrders: [],
+            positionClosures: [],
+        })
+
+        const order = db.rows.orders?.find((row) => row.orderId === canonicalOrderId)
+        expect(order).toMatchObject({
+            orderId: canonicalOrderId,
+            providerOrderId: "",
+            providerClientOrderId: canonicalOrderId,
+            status: "cancelled",
+            commitOutcome: "recovered",
+            filledQuantity: 0,
+        })
+        expect(order?.polling).toMatchObject({
+            nextCheckAt: undefined,
+            lastError: "Provider reconciliation inferred a cancellation after the order left the live working-order book without fill evidence",
+        })
+        expect(db.rows.order_transitions).toContainEqual(expect.objectContaining({
+            orderId: canonicalOrderId,
+            type: "terminal",
+            status: "cancelled",
+            previousStatus: "pending",
+        }))
+        expect(db.rows.provider_sync_state?.[0]).toMatchObject({
+            providerStatus: "healthy",
+            driftDetected: false,
+        })
+    })
+
     it("keeps expired MT5 provider history out of active drift without deleting it", async () => {
         process.env.BACKEND_SERVICE_TOKEN = "test-token"
         const strategyId = "strategy-mt5"

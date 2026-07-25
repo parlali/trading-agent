@@ -219,6 +219,7 @@ export async function createScheduledRunRuntime(
         machineAuth: {
             serviceToken: backendServiceToken,
         },
+        logger: runLogger,
         orderLookupScope: {
             app,
             accountId: strategy.accountId,

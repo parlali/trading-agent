@@ -34,6 +34,7 @@ import {
     hasUnresolvedLiveWorkingOrderGap,
     importCanonicalProviderProtectionOrder,
     inferClosedOrderStatus,
+    isStalePreSubmitRecoveryCandidate,
     listActiveOrdersForAccount,
     reconcileProviderPositionClosures,
     resolveTerminalLiveWorkingOrderRepairMatch,
@@ -398,7 +399,10 @@ export const reconcileProviderPortfolio = mutation({
                 continue
             }
 
-            if (args.app === "mt5") {
+            const stalePreSubmitRecovery = args.app === "mt5" &&
+                isStalePreSubmitRecoveryCandidate(existingOrder, now)
+
+            if (args.app === "mt5" && !stalePreSubmitRecovery) {
                 closedPersistedOrders.push(existingOrder.orderId)
                 continue
             }
@@ -408,7 +412,9 @@ export const reconcileProviderPortfolio = mutation({
                 order: existingOrder,
                 livePositions: args.positions,
             })
-            closedPersistedOrders.push(existingOrder.orderId)
+            if (!stalePreSubmitRecovery) {
+                closedPersistedOrders.push(existingOrder.orderId)
+            }
 
             await applyClosedOrderInference(ctx, {
                 order: existingOrder,

@@ -12,7 +12,7 @@ import {
 import { assessExecutionCost, resolveExecutionCostMetrics } from "./execution-cost.ts"
 import { createLogger } from "./logger.ts"
 import { createExecutionError } from "./utils.ts"
-import type { OrderPersistenceAdapter } from "./orders.ts"
+import type { OrderPersistenceAdapter, OrderSnapshot } from "./orders.ts"
 import type { AccountState, ExecutionResult, OrderIntent, Position, ValidationResult } from "./types.ts"
 
 const account: AccountState = {
@@ -165,6 +165,164 @@ describe("ExecutionPipeline order operation lock", () => {
             "persist:transition",
             "lock:end:executeIntent",
         ])
+    })
+})
+
+describe("ExecutionPipeline write-ahead submission journal", () => {
+    it("aborts fail-closed when the canonical pre-submit row cannot be written", async () => {
+        const submitOrder = vi.fn(createVenue().submitOrder)
+        const orderPersistence = {
+            upsertOrder: vi.fn(async () => {
+                throw new Error("Convex Server Error")
+            }),
+            logOrderTransition: vi.fn(async () => 1),
+            getOrder: vi.fn(async () => null),
+            listActiveOrders: vi.fn(async () => []),
+        } satisfies OrderPersistenceAdapter
+        const pipeline = createPipeline({
+            venue: {
+                ...createVenue(),
+                submitOrder,
+            },
+            orderPersistence,
+        })
+
+        await expect(pipeline.executeIntent({
+            instrument: "XAUUSD",
+            side: "buy",
+            quantity: 1,
+            orderType: "market",
+            timeInForce: "gtc",
+        }, account, [])).rejects.toThrow("Convex Server Error")
+
+        expect(submitOrder).not.toHaveBeenCalled()
+        expect(orderPersistence.logOrderTransition).not.toHaveBeenCalled()
+    })
+
+    it("persists a recoverable pre-submit row before provider submission and leaves the happy path unchanged", async () => {
+        const snapshots: OrderSnapshot[] = []
+        const submitOrder = vi.fn(async (_intent: OrderIntent, context?: SubmitOrderContext) => {
+            expect(snapshots).toHaveLength(1)
+            expect(snapshots[0]).toMatchObject({
+                providerOrderId: "",
+                providerClientOrderId: context?.identity.providerClientOrderId,
+                status: "pending",
+                commitOutcome: "commit_unknown",
+            })
+
+            return {
+                orderId: "provider-order-1",
+                status: "pending" as const,
+                filledQuantity: 0,
+                timestamp: Date.now(),
+            }
+        })
+        const orderPersistence = {
+            upsertOrder: vi.fn(async (snapshot) => {
+                snapshots.push(snapshot)
+            }),
+            logOrderTransition: vi.fn(async (_transition) => snapshots.length),
+            getOrder: vi.fn(async () => null),
+            listActiveOrders: vi.fn(async () => []),
+        } satisfies OrderPersistenceAdapter
+        const pipeline = createPipeline({
+            venue: {
+                ...createVenue(),
+                submitOrder,
+            },
+            orderPersistence,
+        })
+
+        const { result } = await pipeline.executeIntent({
+            instrument: "XAUUSD",
+            side: "buy",
+            quantity: 1,
+            orderType: "limit",
+            limitPrice: 4715.5,
+            timeInForce: "day",
+        }, account, [])
+
+        expect(result).toMatchObject({
+            orderId: snapshots[0]?.orderId,
+            providerOrderId: "provider-order-1",
+            status: "pending",
+            commitOutcome: "accepted",
+        })
+        expect(snapshots.at(-1)).toMatchObject({
+            orderId: snapshots[0]?.orderId,
+            providerOrderId: "provider-order-1",
+            status: "pending",
+            commitOutcome: "accepted",
+        })
+    })
+
+    it("keeps the pre-submit row recoverable when the provider response is lost and resolves by provider readback", async () => {
+        const snapshots: OrderSnapshot[] = []
+        const submitOrder = vi.fn(async () => {
+            throw createExecutionError("timeout", "FiveSocket submit response timed out", {
+                retryable: true,
+            })
+        })
+        const recoverSubmittedOrder = vi.fn(async (_intent: OrderIntent, context: SubmitOrderContext) => ({
+            outcome: "accepted" as const,
+            result: {
+                orderId: "1822429976",
+                providerOrderId: "1822429976",
+                providerClientOrderId: context.identity.providerClientOrderId,
+                status: "pending" as const,
+                filledQuantity: 0,
+                timestamp: Date.now(),
+            },
+        }))
+        const orderPersistence = {
+            upsertOrder: vi.fn(async (snapshot) => {
+                snapshots.push(snapshot)
+            }),
+            logOrderTransition: vi.fn(async (_transition) => snapshots.length),
+            getOrder: vi.fn(async () => null),
+            listActiveOrders: vi.fn(async () => []),
+        } satisfies OrderPersistenceAdapter
+        const pipeline = createPipeline({
+            venueName: "mt5",
+            venue: {
+                ...createVenue(),
+                submitOrder,
+                recoverSubmittedOrder,
+            },
+            orderPersistence,
+        })
+
+        const { result } = await pipeline.executeIntent({
+            instrument: "US30",
+            side: "sell",
+            quantity: 0.1,
+            orderType: "limit",
+            limitPrice: 51980,
+            timeInForce: "day",
+        }, account, [])
+
+        expect(submitOrder).toHaveBeenCalledTimes(1)
+        expect(recoverSubmittedOrder).toHaveBeenCalledTimes(1)
+        expect(snapshots[0]).toMatchObject({
+            providerOrderId: "",
+            providerClientOrderId: result.providerClientOrderId,
+            status: "pending",
+            commitOutcome: "commit_unknown",
+        })
+        expect(result).toMatchObject({
+            orderId: snapshots[0]?.orderId,
+            providerOrderId: "1822429976",
+            providerClientOrderId: snapshots[0]?.providerClientOrderId,
+            status: "pending",
+            commitOutcome: "recovered",
+        })
+        expect(snapshots.at(-1)).toMatchObject({
+            orderId: snapshots[0]?.orderId,
+            providerOrderId: "1822429976",
+            providerClientOrderId: snapshots[0]?.providerClientOrderId,
+            status: "pending",
+            commitOutcome: "recovered",
+        })
     })
 })
 

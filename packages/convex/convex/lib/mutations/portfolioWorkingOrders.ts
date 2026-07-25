@@ -19,6 +19,8 @@ import {
 import { resolveLatestRunIdForStrategy } from "./portfolioOrderRuns"
 import { isInferredFillAccountingFaultMessage } from "./portfolioInferredFillFaults"
 
+const PRE_SUBMIT_RECOVERY_MAX_WINDOW_MS = 120_000
+
 export function buildActiveOrderLookup(activeOrders: OrderDoc[]): Map<string, OrderDoc> {
     const lookup = new Map<string, OrderDoc>()
 
@@ -324,6 +326,26 @@ export function hasUnresolvedLiveWorkingOrderGap(
     return unresolvedWorkingOrders.some((liveOrder) => {
         return getProviderWorkingOrderIdentityCandidates(liveOrder).some((identifier) => identifiers.has(identifier))
     })
+}
+
+export function isStalePreSubmitRecoveryCandidate(
+    order: Pick<OrderDoc, "status" | "commitOutcome" | "providerOrderId" | "filledQuantity" | "submittedAt" | "polling">,
+    now: number
+): boolean {
+    if (
+        order.status !== "pending" ||
+        order.commitOutcome !== "commit_unknown" ||
+        order.filledQuantity !== 0 ||
+        order.providerOrderId.trim().length > 0
+    ) {
+        return false
+    }
+
+    const timeoutMs = Number.isFinite(order.polling.timeoutMs) && order.polling.timeoutMs > 0
+        ? Math.min(order.polling.timeoutMs, PRE_SUBMIT_RECOVERY_MAX_WINDOW_MS)
+        : PRE_SUBMIT_RECOVERY_MAX_WINDOW_MS
+
+    return now - order.submittedAt >= timeoutMs
 }
 
 function getProviderWorkingOrderIdentityCandidates(

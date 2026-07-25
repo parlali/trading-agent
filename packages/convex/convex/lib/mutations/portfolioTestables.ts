@@ -10,6 +10,7 @@ import {
     buildProviderCloseIntent,
     buildProviderProtectionIntent,
     inferClosedOrderStatus,
+    isStalePreSubmitRecoveryCandidate,
     isRepairableTerminalWorkingOrder,
     resolveCanonicalProviderProtectionOrderId,
     resolveLiveWorkingOrderMatch,
@@ -38,6 +39,7 @@ export const portfolioGovernanceTestables = {
     buildProviderCloseIntent,
     buildProviderProtectionIntent,
     inferClosedOrderStatus,
+    isStalePreSubmitRecoveryCandidate,
     isRepairableTerminalWorkingOrder,
     readOrderCancelAt,
 }

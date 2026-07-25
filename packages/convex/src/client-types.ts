@@ -30,6 +30,7 @@ import type {
     ExecutionSafetyFaultCategory,
     StrategyOperationalMemory,
     ValidationResult,
+    Logger,
 } from "@valiq-trading/core"
 
 export interface ToolManifestEntry {
@@ -53,6 +54,11 @@ export interface ConvexOrderPersistenceConfig {
         serviceToken: string
     }
     timeoutMs?: number
+    writeRetry?: {
+        attempts?: number
+        delayMs?: number
+    }
+    logger?: Pick<Logger, "warn">
     orderLookupScope?: {
         app?: Exclude<App, "backend">
         accountId?: string
