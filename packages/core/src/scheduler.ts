@@ -86,7 +86,7 @@ interface TrackedStrategy {
 }
 
 export const DEFAULT_STALE_RUN_TIMEOUT_MS = 15 * 60 * 1000
-const MIN_ONESHOT_GAP_MS = 5 * 60 * 1000
+export const MIN_ONESHOT_GAP_MS = 5 * 60 * 1000
 
 export interface SchedulerConfig {
     tickInterval?: number

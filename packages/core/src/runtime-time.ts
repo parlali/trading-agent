@@ -1,5 +1,5 @@
-export function getCurrentTimeInTimezone(timezone: string): { hours: number; minutes: number } {
-    const currentInstant = new Date(Date.now())
+export function getCurrentTimeInTimezone(timezone: string, timestamp: number = Date.now()): { hours: number; minutes: number } {
+    const currentInstant = new Date(timestamp)
 
     try {
         const formatter = new Intl.DateTimeFormat("en-US", {
@@ -33,11 +33,12 @@ export function isWithinSessionFlatWindow(args: {
     end: string
     timezone: string
     closeBufferMinutes: number
+    timestamp?: number
 }): {
     shouldFlatten: boolean
     currentTime: string
 } {
-    const now = getCurrentTimeInTimezone(args.timezone)
+    const now = getCurrentTimeInTimezone(args.timezone, args.timestamp)
     const [startHour, startMinute] = args.start.split(":").map(Number) as [number, number]
     const [endHour, endMinute] = args.end.split(":").map(Number) as [number, number]
 

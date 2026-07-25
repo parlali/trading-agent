@@ -58,6 +58,7 @@ export interface ToolExecutionEngineConfig {
     maxToolCalls?: number
     maxRepeatedToolErrors?: number
     nextTranscriptSequence?: () => number
+    onToolCallCountChanged?: (toolCallCount: number) => void
 }
 
 interface OpenRouterToolExecutionCallbacks {
@@ -508,10 +509,12 @@ export class ToolExecutionEngine {
 
     private recordToolCallAttempt(): void {
         this.toolCallCount++
+        this.config.onToolCallCountChanged?.(this.toolCallCount)
     }
 
     private recordToolCallAttempts(count: number): void {
         this.toolCallCount += count
+        this.config.onToolCallCountChanged?.(this.toolCallCount)
     }
 
     private recordMcpToolCallAttempt(toolName: string): string | undefined {

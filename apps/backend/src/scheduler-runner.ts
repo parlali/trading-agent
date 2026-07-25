@@ -15,7 +15,10 @@ import type {
 } from "@valiq-trading/convex"
 import {
     getNextCronFireMs,
+    isWithinSessionFlatWindow,
+    MIN_ONESHOT_GAP_MS,
     parseSummaryMetadata,
+    resolveTradingHoursWindowState,
     sanitizeRunSummary,
     resolveStrategyLlmConfig,
     withTimeout,
@@ -67,6 +70,8 @@ interface RunStrategyOptions {
 const AGENT_TRANSCRIPT_BATCH_SIZE = 25
 const AGENT_TRANSCRIPT_FLUSH_AGE_MS = 2_500
 const OPERATIONAL_MEMORY_AGENT_LOG_PAYLOAD_LIMIT_BYTES = 4 * 1024 * 1024
+const CHEAP_FAILURE_TOOL_CALL_THRESHOLD = 1
+const FAILURE_RECOVERY_MAX_DELAY_MS = 10 * 60 * 1000
 
 export interface StrategyRunOutcome {
     runId?: string
@@ -148,6 +153,8 @@ export async function runStrategy(
     let runtimeContextLines: string[] | undefined
     let registeredToolManifest: ToolManifestEntry[] = []
     let mcpToolDiagnostics: RunDiagnostics["mcpToolDiagnostics"] = []
+    let observedToolCallCount = 0
+    let failureRecoveryFollowUpScheduled = false
 
     try {
         runtime = await createScheduledRunRuntime({
@@ -303,8 +310,12 @@ export async function runStrategy(
                     runTimeoutMs: Math.max(1, STRATEGY_RUN_TIMEOUT_MS - (Date.now() - strategyRunStartedAt)),
                     userMessage: options.userMessage,
                     abortSignal: options.abortSignal,
+                    onToolCallCountChanged: (toolCallCount) => {
+                        observedToolCallCount = toolCallCount
+                    },
                 }
             )
+            observedToolCallCount = result.toolCallCount
             await flushAgentTranscriptForRun(agentTranscript, runLogger, runId, strategy._id)
 
             if (plugin.postRunHooks) {
@@ -360,6 +371,21 @@ export async function runStrategy(
                     }),
                 ])
                 updateHealth("failed", cleanSummary, result.error)
+                if (!failureRecoveryFollowUpScheduled) {
+                    failureRecoveryFollowUpScheduled = await scheduleFailureRecoveryOneshot({
+                        app,
+                        plugin,
+                        strategy,
+                        policy,
+                        strategySecrets,
+                        scheduler,
+                        trigger,
+                        runId,
+                        runtime: activeRuntime,
+                        toolCallCount: result.toolCallCount,
+                        error: result.error,
+                    })
+                }
                 return {
                     runId,
                     status: "failed",
@@ -411,7 +437,13 @@ export async function runStrategy(
                 "failed",
                 undefined,
                 message,
-                buildFailureRunDiagnostics(llmConfig, runSystemContextDigest, registeredToolManifest, mcpToolDiagnostics)
+                buildFailureRunDiagnostics(
+                    llmConfig,
+                    runSystemContextDigest,
+                    registeredToolManifest,
+                    mcpToolDiagnostics,
+                    observedToolCallCount
+                )
             ),
             backend.createAlert({
                 strategyId: strategy._id,
@@ -421,6 +453,21 @@ export async function runStrategy(
             }),
         ])
         updateHealth("failed", undefined, message)
+        if (!failureRecoveryFollowUpScheduled) {
+            failureRecoveryFollowUpScheduled = await scheduleFailureRecoveryOneshot({
+                app,
+                plugin,
+                strategy,
+                policy,
+                strategySecrets,
+                scheduler,
+                trigger,
+                runId,
+                runtime,
+                toolCallCount: observedToolCallCount,
+                error: message,
+            })
+        }
 
         try {
             if (runtime?.isDryRun) {
@@ -471,6 +518,339 @@ export async function runStrategy(
         agentTranscript.dispose()
         runtime?.cleanup()
     }
+}
+
+type FailureRecoveryReason = "cheap_failure" | "supervision_recovery"
+
+type RecoveryFireWindowGuard = {
+    allowed: true
+} | {
+    allowed: false
+    reason: string
+    detail?: string
+}
+
+type RecoveryDelayDecision = {
+    allowed: true
+    delayMs: number
+    firesAt: number
+} | {
+    allowed: false
+    reason: string
+    detail?: string
+}
+
+interface FailureRecoveryOneshotArgs {
+    app: VenueApp
+    plugin: VenuePlugin
+    strategy: StoredStrategy
+    policy: Record<string, unknown>
+    strategySecrets: Record<string, string | null>
+    scheduler?: Scheduler
+    trigger: RunTrigger
+    runId: Id<"strategy_runs">
+    runtime?: ScheduledRunRuntime
+    toolCallCount: number
+    error: string
+}
+
+interface TradingHoursPolicy {
+    start: string
+    end: string
+    timezone: string
+}
+
+async function scheduleFailureRecoveryOneshot(args: FailureRecoveryOneshotArgs): Promise<boolean> {
+    if (!args.scheduler || args.trigger !== "cron") {
+        return false
+    }
+    const scheduler = args.scheduler
+
+    const exposure = resolveRuntimeSupervisionExposure(args.runtime)
+    const recoveryReasons = resolveFailureRecoveryReasons({
+        toolCallCount: args.toolCallCount,
+        openPositionCount: exposure.openPositionCount,
+        workingOrderCount: exposure.workingOrderCount,
+    })
+    if (recoveryReasons.length === 0) {
+        return false
+    }
+
+    try {
+        if (await checkKillSwitch(args.app, `pre-run:${args.strategy._id}`)) {
+            logger.info("Failure recovery follow-up suppressed", {
+                strategyId: args.strategy._id,
+                runId: args.runId,
+                app: args.app,
+                reason: "kill_switch_active",
+            })
+            return false
+        }
+
+        const suiteLossState = await backend.getSuiteLossState()
+        if (suiteLossState.blocked) {
+            logger.info("Failure recovery follow-up suppressed", {
+                strategyId: args.strategy._id,
+                runId: args.runId,
+                app: args.app,
+                reason: "suite_loss_blocked",
+                suiteLossReason: suiteLossState.reason,
+            })
+            return false
+        }
+
+        const delay = resolveFailureRecoveryDelay(args.policy, Date.now())
+        if (!delay.allowed) {
+            logger.info("Failure recovery follow-up suppressed", {
+                strategyId: args.strategy._id,
+                runId: args.runId,
+                app: args.app,
+                reason: delay.reason,
+                detail: delay.detail,
+            })
+            return false
+        }
+
+        scheduler.scheduleOneshot(args.strategy._id, delay.delayMs, async () => {
+            await runStrategy(
+                args.app,
+                args.plugin,
+                args.strategy,
+                args.policy,
+                args.strategySecrets,
+                scheduler,
+                "callback"
+            )
+        })
+        await recordFailureRecoveryTelemetry({
+            ...args,
+            delayMs: delay.delayMs,
+            firesAt: delay.firesAt,
+            recoveryReasons,
+            openPositionCount: exposure.openPositionCount,
+            workingOrderCount: exposure.workingOrderCount,
+        })
+
+        return true
+    } catch (error) {
+        logger.error("Failure recovery follow-up scheduling failed", {
+            strategyId: args.strategy._id,
+            runId: args.runId,
+            app: args.app,
+            error: error instanceof Error ? error.message : String(error),
+        })
+        return false
+    }
+}
+
+async function recordFailureRecoveryTelemetry(args: FailureRecoveryOneshotArgs & {
+    delayMs: number
+    firesAt: number
+    recoveryReasons: FailureRecoveryReason[]
+    openPositionCount: number
+    workingOrderCount: number
+}): Promise<void> {
+    void backend.recordRunCallback(
+        args.runId,
+        args.delayMs / 60_000,
+        args.firesAt
+    ).catch((error) => {
+        logger.warn("Failure recovery callback persistence failed", {
+            strategyId: args.strategy._id,
+            runId: args.runId,
+            app: args.app,
+            error: error instanceof Error ? error.message : String(error),
+        })
+    })
+
+    logger.info("Failure recovery follow-up scheduled", {
+        strategyId: args.strategy._id,
+        runId: args.runId,
+        app: args.app,
+        delayMs: args.delayMs,
+        firesAt: args.firesAt,
+        reasons: args.recoveryReasons,
+        toolCallCount: args.toolCallCount,
+        openPositions: args.openPositionCount,
+        workingOrders: args.workingOrderCount,
+        failureError: args.error,
+    })
+    try {
+        await backend.createAlert({
+            strategyId: args.strategy._id,
+            app: args.app,
+            severity: "info",
+            message: `Failure recovery follow-up scheduled for ${args.strategy.name}: retry in ${args.delayMs / 60_000} minute(s); reasons=${args.recoveryReasons.join(",")}; toolCalls=${args.toolCallCount}; openPositions=${args.openPositionCount}; workingOrders=${args.workingOrderCount}`,
+        })
+    } catch (error) {
+        logger.error("Failure recovery follow-up alert failed", {
+            strategyId: args.strategy._id,
+            runId: args.runId,
+            app: args.app,
+            error: error instanceof Error ? error.message : String(error),
+        })
+    }
+}
+
+function resolveFailureRecoveryReasons(args: {
+    toolCallCount: number
+    openPositionCount: number
+    workingOrderCount: number
+}): FailureRecoveryReason[] {
+    const reasons: FailureRecoveryReason[] = []
+    if (args.toolCallCount <= CHEAP_FAILURE_TOOL_CALL_THRESHOLD) {
+        reasons.push("cheap_failure")
+    }
+    if (args.openPositionCount > 0 || args.workingOrderCount > 0) {
+        reasons.push("supervision_recovery")
+    }
+
+    return reasons
+}
+
+function resolveRuntimeSupervisionExposure(runtime?: ScheduledRunRuntime): {
+    openPositionCount: number
+    workingOrderCount: number
+} {
+    const openPositionCount = runtime?.initialOwnedPositions.filter((position) =>
+        Math.abs(position.quantity) > 0
+    ).length ?? 0
+    const workingOrderCount = runtime?.initialOwnedWorkingOrders.filter((order) =>
+        order.remainingQuantity > 0
+    ).length ?? 0
+
+    return {
+        openPositionCount,
+        workingOrderCount,
+    }
+}
+
+function resolveFailureRecoveryDelay(policy: Record<string, unknown>, nowMs: number): RecoveryDelayDecision {
+    let lastSuppression: RecoveryDelayDecision | undefined
+    for (let delayMs = MIN_ONESHOT_GAP_MS; delayMs <= FAILURE_RECOVERY_MAX_DELAY_MS; delayMs += 60_000) {
+        const firesAt = nowMs + delayMs
+        const guard = validateFailureRecoveryFireWindow(policy, firesAt)
+        if (guard.allowed) {
+            return {
+                allowed: true,
+                delayMs,
+                firesAt,
+            }
+        }
+
+        lastSuppression = {
+            allowed: false,
+            reason: guard.reason,
+            detail: guard.detail,
+        }
+    }
+
+    return lastSuppression ?? {
+        allowed: false,
+        reason: "no_eligible_recovery_window",
+    }
+}
+
+function validateFailureRecoveryFireWindow(
+    policy: Record<string, unknown>,
+    firesAt: number
+): RecoveryFireWindowGuard {
+    const tradingHours = readTradingHoursPolicy(policy)
+    if (!tradingHours) {
+        return { allowed: true }
+    }
+
+    const windowState = resolveTradingHoursWindowState({
+        ...tradingHours,
+        timestamp: firesAt,
+    })
+    if (!windowState.withinWindow) {
+        return {
+            allowed: false,
+            reason: "outside_trading_hours",
+            detail: `target ${windowState.currentTime} ${tradingHours.timezone} outside ${tradingHours.start}-${tradingHours.end}`,
+        }
+    }
+
+    const entryCutoffMinutesBeforeSessionEnd = readPositiveNumber(policy.entryCutoffMinutesBeforeSessionEnd)
+    if (
+        entryCutoffMinutesBeforeSessionEnd !== undefined &&
+        windowState.minutesUntilEnd <= entryCutoffMinutesBeforeSessionEnd
+    ) {
+        return {
+            allowed: false,
+            reason: "entry_cutoff_window",
+            detail: `target ${windowState.currentTime} ${tradingHours.timezone} has ${windowState.minutesUntilEnd} minute(s) until ${tradingHours.end}`,
+        }
+    }
+
+    const sessionFlatPolicy = readSessionFlatPolicy(policy)
+    if (sessionFlatPolicy?.enabled) {
+        const flattenWindow = isWithinSessionFlatWindow({
+            start: tradingHours.start,
+            end: tradingHours.end,
+            timezone: sessionFlatPolicy.timezone ?? tradingHours.timezone,
+            closeBufferMinutes: sessionFlatPolicy.closeBufferMinutes,
+            timestamp: firesAt,
+        })
+        if (flattenWindow.shouldFlatten) {
+            return {
+                allowed: false,
+                reason: "session_flat_window",
+                detail: `target ${flattenWindow.currentTime} ${sessionFlatPolicy.timezone ?? tradingHours.timezone} inside session-flat window before ${tradingHours.end}`,
+            }
+        }
+    }
+
+    return { allowed: true }
+}
+
+function readTradingHoursPolicy(policy: Record<string, unknown>): TradingHoursPolicy | undefined {
+    if (!isRecord(policy.tradingHours)) {
+        return undefined
+    }
+
+    const { start, end, timezone } = policy.tradingHours
+    if (typeof start !== "string" || typeof end !== "string" || typeof timezone !== "string") {
+        return undefined
+    }
+
+    return {
+        start,
+        end,
+        timezone,
+    }
+}
+
+function readSessionFlatPolicy(policy: Record<string, unknown>): {
+    enabled: boolean
+    closeBufferMinutes: number
+    timezone?: string
+} | undefined {
+    if (!isRecord(policy.safety) || !isRecord(policy.safety.sessionFlat)) {
+        return undefined
+    }
+
+    const { enabled, closeBufferMinutes, timezone } = policy.safety.sessionFlat
+    if (enabled !== true || typeof closeBufferMinutes !== "number") {
+        return undefined
+    }
+
+    return {
+        enabled,
+        closeBufferMinutes,
+        timezone: typeof timezone === "string" ? timezone : undefined,
+    }
+}
+
+function readPositiveNumber(value: unknown): number | undefined {
+    return typeof value === "number" && Number.isFinite(value) && value > 0
+        ? value
+        : undefined
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === "object" && value !== null
 }
 
 async function refreshOperationalMemoryForCompletedRun(
@@ -711,7 +1091,8 @@ function buildFailureRunDiagnostics(
     llmConfig: StrategyLlmConfig,
     systemContextDigest?: RunSystemContextDigest,
     toolManifest: ToolManifestEntry[] = [],
-    mcpToolDiagnostics: RunDiagnostics["mcpToolDiagnostics"] = []
+    mcpToolDiagnostics: RunDiagnostics["mcpToolDiagnostics"] = [],
+    toolCallCount?: number
 ): RunDiagnostics {
     const diagnostics: RunDiagnostics = {
         llmProvider: llmConfig.provider,
@@ -733,6 +1114,9 @@ function buildFailureRunDiagnostics(
     }
     if (mcpToolDiagnostics.length > 0) {
         diagnostics.mcpToolDiagnostics = mcpToolDiagnostics
+    }
+    if (toolCallCount !== undefined) {
+        diagnostics.toolCallCount = toolCallCount
     }
     diagnostics.toolManifest = toolManifest
 

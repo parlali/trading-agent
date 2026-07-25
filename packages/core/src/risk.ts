@@ -263,6 +263,7 @@ export function resolveTradingHoursWindowState(args: {
     start: string
     end: string
     timezone: string
+    timestamp?: number
 }): {
     currentTime: string
     currentMinutes: number
@@ -271,7 +272,7 @@ export function resolveTradingHoursWindowState(args: {
     withinWindow: boolean
     minutesUntilEnd: number
 } {
-    const now = getCurrentTimeInTimezone(args.timezone)
+    const now = getCurrentTimeInTimezone(args.timezone, args.timestamp)
     const startMinutes = parseTradingHoursMinutes(args.start)
     const endMinutes = parseTradingHoursMinutes(args.end)
     const currentMinutes = now.hours * 60 + now.minutes

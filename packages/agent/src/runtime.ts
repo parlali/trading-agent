@@ -23,6 +23,7 @@ export interface AgentRuntimeConfig {
     killSwitchChecker?: () => Promise<boolean>
     userMessage?: string
     abortSignal?: AbortSignal
+    onToolCallCountChanged?: (toolCallCount: number) => void
 }
 
 export interface AgentRunResult {
@@ -97,6 +98,7 @@ export async function executeAgentRun(
         runStartedAt,
         runTimeoutMs,
         nextTranscriptSequence: () => conversation.reserveSequence(),
+        onToolCallCountChanged: config.onToolCallCountChanged,
     })
     const provider = createAgentModelProvider(providerConfig)
     let aborted = false
