@@ -24,14 +24,16 @@ import {
     createMcpTools,
 } from "./shared"
 
-const POLYMARKET_LOSS_EXIT_MAX_SPREAD = 0.05
-const POLYMARKET_LOSS_EXIT_MAX_TRIGGER_DISTANCE = 0.05
+const POLYMARKET_LOSS_EXIT_UNEVALUABLE_REASON_BAND_SIZE = 0.05
+const POLYMARKET_LOSS_EXIT_MAX_SPREAD = POLYMARKET_LOSS_EXIT_UNEVALUABLE_REASON_BAND_SIZE
+const POLYMARKET_LOSS_EXIT_MAX_TRIGGER_DISTANCE = POLYMARKET_LOSS_EXIT_UNEVALUABLE_REASON_BAND_SIZE
 const POLYMARKET_LOSS_EXIT_PRICE_EPSILON = 1e-9
 
 export class PolymarketPlugin implements VenuePlugin {
     readonly app = "polymarket"
     readonly venueName = "polymarket"
     private readonly executionCostTracker = new ExecutionCostTracker()
+    private readonly lossCapUnevaluableAlertStateByStrategy = new Map<string, Map<string, PolymarketLossCapUnevaluableAlertState>>()
 
     resolveSecretKeys(): string[] {
         return appendMcpSecretKeys(POLYMARKET_RUNTIME_SECRET_KEYS)
@@ -69,6 +71,7 @@ export class PolymarketPlugin implements VenuePlugin {
         const venue = config.venue as PolymarketVenueAdapter
         const positions = config.ownedPositions
         if (positions.length === 0) {
+            this.lossCapUnevaluableAlertStateByStrategy.delete(config.strategyId)
             return { skip: false }
         }
 
@@ -109,6 +112,7 @@ export class PolymarketPlugin implements VenuePlugin {
                 marketPrice,
                 evaluation: resolvePolymarketLossExitEvaluation(position, marketPrice, lossExitPrice),
             }))
+            let lossCapUnevaluableAlertState = this.lossCapUnevaluableAlertStateByStrategy.get(config.strategyId)
             const unevaluable = lossExitEvaluations.filter(isUnevaluableLossExitEvaluation)
             for (const item of unevaluable) {
                 const label = formatPolymarketPositionLabel(item.position)
@@ -122,16 +126,49 @@ export class PolymarketPlugin implements VenuePlugin {
                     spread: item.marketPrice.spread,
                     lastTradePrice: item.marketPrice.lastTradePrice,
                 })
-                await config.createAlert({
-                    strategyId: config.strategyId,
-                    app: "polymarket",
-                    severity: "warning",
-                    message: `Polymarket loss cap unevaluable for ${label}: ${item.evaluation.reason}`,
-                })
+                if (lossCapUnevaluableAlertState === undefined) {
+                    lossCapUnevaluableAlertState = new Map()
+                    this.lossCapUnevaluableAlertStateByStrategy.set(config.strategyId, lossCapUnevaluableAlertState)
+                }
+
+                const previousState = lossCapUnevaluableAlertState.get(item.position.instrument)
+                if (previousState?.materialReasonKey !== item.evaluation.materialReasonKey) {
+                    await config.createAlert({
+                        strategyId: config.strategyId,
+                        app: "polymarket",
+                        severity: "warning",
+                        message: `Polymarket loss cap unevaluable for ${label}: ${item.evaluation.reason}`,
+                    })
+                    lossCapUnevaluableAlertState.set(item.position.instrument, {
+                        materialReasonKey: item.evaluation.materialReasonKey,
+                    })
+                }
                 runtimeContextLines.push(
                     `LOSS CAP UNEVALUABLE: ${label} was not force-closed because ${item.evaluation.reason}.`
                 )
             }
+
+            for (const item of lossExitEvaluations) {
+                if (item.evaluation.status === "unevaluable") {
+                    continue
+                }
+
+                const previousState = lossCapUnevaluableAlertState?.get(item.position.instrument)
+                if (previousState === undefined) {
+                    continue
+                }
+
+                const label = formatPolymarketPositionLabel(item.position)
+                await config.createAlert({
+                    strategyId: config.strategyId,
+                    app: "polymarket",
+                    severity: "info",
+                    message: `Polymarket loss cap evaluable again for ${label}`,
+                })
+                lossCapUnevaluableAlertState?.delete(item.position.instrument)
+            }
+
+            this.pruneLossCapUnevaluableAlertState(config.strategyId, positions)
 
             const breached = lossExitEvaluations.filter(isBreachedLossExitEvaluation)
 
@@ -176,6 +213,8 @@ export class PolymarketPlugin implements VenuePlugin {
                     runtimeContextLines,
                 }
             }
+        } else {
+            this.lossCapUnevaluableAlertStateByStrategy.delete(config.strategyId)
         }
 
         return {
@@ -183,11 +222,33 @@ export class PolymarketPlugin implements VenuePlugin {
             runtimeContextLines,
         }
     }
+
+    private pruneLossCapUnevaluableAlertState(strategyId: string, positions: Position[]): void {
+        const stateByInstrument = this.lossCapUnevaluableAlertStateByStrategy.get(strategyId)
+        if (stateByInstrument === undefined) {
+            return
+        }
+
+        const activeInstruments = new Set(positions.map((position) => position.instrument))
+        for (const instrument of stateByInstrument.keys()) {
+            if (!activeInstruments.has(instrument)) {
+                stateByInstrument.delete(instrument)
+            }
+        }
+
+        if (stateByInstrument.size === 0) {
+            this.lossCapUnevaluableAlertStateByStrategy.delete(strategyId)
+        }
+    }
 }
 
 interface PolymarketPricedPosition {
     position: Position
     marketPrice: PolymarketMarketPrice
+}
+
+interface PolymarketLossCapUnevaluableAlertState {
+    materialReasonKey: string
 }
 
 function buildPolymarketRuntimeContextLines(pricedPositions: PolymarketPricedPosition[]): string[] {
@@ -251,6 +312,7 @@ type PolymarketLossExitEvaluation =
     | {
         status: "unevaluable"
         reason: string
+        materialReasonKey: string
     }
 
 interface PolymarketLossExitEvaluationItem {
@@ -284,6 +346,7 @@ function resolvePolymarketLossExitEvaluation(
         return {
             status: "unevaluable",
             reason: "short Polymarket loss-cap evaluation is unsupported for a long-token lossExitPrice policy",
+            materialReasonKey: "unsupported-short-side",
         }
     }
 
@@ -292,6 +355,7 @@ function resolvePolymarketLossExitEvaluation(
         return {
             status: "unevaluable",
             reason: "book has no executable bid for the held token",
+            materialReasonKey: "missing-held-token-bid",
         }
     }
 
@@ -300,6 +364,7 @@ function resolvePolymarketLossExitEvaluation(
         return {
             status: "unevaluable",
             reason: "book has no executable ask to validate spread quality",
+            materialReasonKey: "missing-held-token-ask",
         }
     }
 
@@ -307,6 +372,7 @@ function resolvePolymarketLossExitEvaluation(
         return {
             status: "unevaluable",
             reason: "visible top-of-book does not satisfy minimum executable size",
+            materialReasonKey: "insufficient-visible-size",
         }
     }
 
@@ -315,6 +381,7 @@ function resolvePolymarketLossExitEvaluation(
         return {
             status: "unevaluable",
             reason: `book spread ${spread.toFixed(4)} exceeds loss-cap evaluation limit ${POLYMARKET_LOSS_EXIT_MAX_SPREAD.toFixed(2)}`,
+            materialReasonKey: `spread-band:${resolvePolymarketLossExitUnevaluableReasonBand(spread)}`,
         }
     }
 
@@ -327,6 +394,7 @@ function resolvePolymarketLossExitEvaluation(
         return {
             status: "unevaluable",
             reason: `loss cap ${lossExitPrice.toFixed(2)} is not executable within ${POLYMARKET_LOSS_EXIT_MAX_TRIGGER_DISTANCE.toFixed(2)} of best bid ${bestBid.toFixed(4)}`,
+            materialReasonKey: `trigger-distance-band:${lossExitPrice.toFixed(2)}:${resolvePolymarketLossExitUnevaluableReasonBand(triggerDistance)}`,
         }
     }
 
@@ -335,6 +403,10 @@ function resolvePolymarketLossExitEvaluation(
         evaluatedPrice: midpoint,
         executablePrice: bestBid,
     }
+}
+
+function resolvePolymarketLossExitUnevaluableReasonBand(value: number): number {
+    return Math.floor((value + POLYMARKET_LOSS_EXIT_PRICE_EPSILON) / POLYMARKET_LOSS_EXIT_UNEVALUABLE_REASON_BAND_SIZE)
 }
 
 function readExecutableProbability(value: unknown): number | undefined {
