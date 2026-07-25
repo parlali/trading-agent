@@ -72,6 +72,7 @@ const AGENT_TRANSCRIPT_FLUSH_AGE_MS = 2_500
 const OPERATIONAL_MEMORY_AGENT_LOG_PAYLOAD_LIMIT_BYTES = 4 * 1024 * 1024
 const CHEAP_FAILURE_TOOL_CALL_THRESHOLD = 1
 const FAILURE_RECOVERY_MAX_DELAY_MS = 10 * 60 * 1000
+const FAILURE_RECOVERY_BASE_DELAY_MS = 9 * 60 * 1000
 
 export interface StrategyRunOutcome {
     runId?: string
@@ -727,7 +728,7 @@ function resolveRuntimeSupervisionExposure(runtime?: ScheduledRunRuntime): {
 
 function resolveFailureRecoveryDelay(policy: Record<string, unknown>, nowMs: number): RecoveryDelayDecision {
     let lastSuppression: RecoveryDelayDecision | undefined
-    for (let delayMs = MIN_ONESHOT_GAP_MS; delayMs <= FAILURE_RECOVERY_MAX_DELAY_MS; delayMs += 60_000) {
+    for (let delayMs = FAILURE_RECOVERY_BASE_DELAY_MS; delayMs <= FAILURE_RECOVERY_MAX_DELAY_MS; delayMs += 60_000) {
         const firesAt = nowMs + delayMs
         const guard = validateFailureRecoveryFireWindow(policy, firesAt)
         if (guard.allowed) {
