@@ -27,6 +27,7 @@ export {
     getActiveOrders,
     getOrderTransitions,
     getTradeEvents,
+    getOrdersForRun,
     getTradeHistory,
     getStrategyOrderHistory,
 } from "./lib/queries/orders"

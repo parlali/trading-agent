@@ -8,6 +8,7 @@ import {
 } from "./execution-identity-shared"
 import {
     ACTIVE_ORDER_STATUSES,
+    FILLED_ORDER_STATUSES,
     TERMINAL_ORDER_STATUSES,
     type OrderAction,
     type OrderStatus,
@@ -15,6 +16,7 @@ import {
 
 export {
     ACTIVE_ORDER_STATUSES,
+    FILLED_ORDER_STATUSES,
     ORDER_ACTIONS,
     ORDER_STATUSES,
     TERMINAL_ORDER_STATUSES,
@@ -159,6 +161,10 @@ export const isStaleTerminalOrderRegression = (
 
 export const isActiveEntryOrderStatus = (status: OrderStatus): boolean => {
     return ACTIVE_ORDER_STATUSES.includes(status)
+}
+
+export const isFilledOrderStatus = (status: OrderStatus): boolean => {
+    return FILLED_ORDER_STATUSES.includes(status)
 }
 
 export const createOrderSnapshot = (

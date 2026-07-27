@@ -8,6 +8,7 @@ import type {
     AgentLogMemoryEntry,
     CreateRunMetadata,
     Id,
+    RunOrderRow,
     RunDiagnostics,
     RunTrigger,
     StoredStrategy,
@@ -15,6 +16,7 @@ import type {
 } from "@valiq-trading/convex"
 import {
     getNextCronFireMs,
+    isFilledOrderStatus,
     isWithinSessionFlatWindow,
     MIN_ONESHOT_GAP_MS,
     parseSummaryMetadata,
@@ -387,6 +389,12 @@ export async function runStrategy(
                         error: result.error,
                     })
                 }
+                await alertOnFilledOrdersInFailedRun({
+                    app,
+                    strategy,
+                    runId,
+                    supervisionFollowUpScheduled: failureRecoveryFollowUpScheduled,
+                })
                 return {
                     runId,
                     status: "failed",
@@ -513,12 +521,54 @@ export async function runStrategy(
             })
         }
 
+        await alertOnFilledOrdersInFailedRun({
+            app,
+            strategy,
+            runId,
+            supervisionFollowUpScheduled: failureRecoveryFollowUpScheduled,
+        })
+
         throw error
     } finally {
         await flushAgentTranscriptForRun(agentTranscript, runLogger, runId, strategy._id)
         agentTranscript.dispose()
         runtime?.cleanup()
     }
+}
+
+async function alertOnFilledOrdersInFailedRun(args: {
+    app: VenueApp
+    strategy: StoredStrategy
+    runId: Id<"strategy_runs">
+    supervisionFollowUpScheduled: boolean
+}): Promise<void> {
+    try {
+        const orders = await backend.getOrdersForRun(args.runId)
+        const filledOrders = orders.filter(hasExecutedFill)
+        if (filledOrders.length === 0) {
+            return
+        }
+
+        const entryCount = filledOrders.filter((order) => order.action === "entry").length
+        const closeCount = filledOrders.filter((order) => order.action === "close").length
+        await backend.createAlert({
+            strategyId: args.strategy._id,
+            app: args.app,
+            severity: "warning",
+            message: `${args.strategy.name} run ${args.runId}: filled entries=${entryCount}, closes=${closeCount}; executed trades in a failed run - decision record may be missing; supervision follow-up scheduled: ${args.supervisionFollowUpScheduled ? "yes" : "no"}`,
+        })
+    } catch (error) {
+        logger.warn("Failed run filled-order alert check failed", {
+            strategyId: args.strategy._id,
+            runId: args.runId,
+            app: args.app,
+            error: error instanceof Error ? error.message : String(error),
+        })
+    }
+}
+
+function hasExecutedFill(order: RunOrderRow): boolean {
+    return isFilledOrderStatus(order.status) && order.filledQuantity > 0
 }
 
 type FailureRecoveryReason = "cheap_failure" | "supervision_recovery"

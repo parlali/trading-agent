@@ -78,6 +78,24 @@ export const getTradeEvents = query({
     },
 })
 
+export const getOrdersForRun = query({
+    args: {
+        serviceToken: v.optional(v.string()),
+        runId: v.id("strategy_runs"),
+        limit: v.optional(v.number()),
+    },
+    handler: async (ctx, args) => {
+        await requireUserOrServiceToken(ctx, args.serviceToken)
+        const limit = Math.max(1, Math.min(Math.trunc(args.limit ?? MAX_RUN_EVIDENCE_ROWS), MAX_RUN_EVIDENCE_ROWS))
+        const rows = await ctx.db
+            .query("orders")
+            .withIndex("by_run", (q) => q.eq("runId", args.runId))
+            .take(limit + 1)
+
+        return assertWithinRunEvidenceRowLimit(rows, `orders for run ${args.runId}`, limit)
+    },
+})
+
 export const getTradeHistory = query({
     args: {
         serviceToken: v.optional(v.string()),

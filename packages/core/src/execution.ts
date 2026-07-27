@@ -564,12 +564,13 @@ export class ExecutionPipeline {
     private async closePositionWithoutOperationLock(
         instrument: string,
         reason?: string,
-        options: ClosePositionOptions = {}
+        options: ClosePositionOptions = {},
+        resolvedVenueIntent?: OrderIntent
     ): Promise<ExecuteIntentResult> {
         const positions = await this.getPositions()
         const position = positions.find((item) => item.instrument === instrument)
-        let venueIntent: OrderIntent | undefined
-        if (!this.policy.dryRun && this.venue.buildCloseIntent) {
+        let venueIntent: OrderIntent | undefined = resolvedVenueIntent
+        if (!venueIntent && !this.policy.dryRun && this.venue.buildCloseIntent) {
             try {
                 venueIntent = await this.venue.buildCloseIntent(instrument)
             } catch (error) {
@@ -699,7 +700,8 @@ export class ExecutionPipeline {
                     {
                         ...options,
                         estimatedPrice: undefined,
-                    }
+                    },
+                    structureTarget.closeIntent
                 )
                 return {
                     ...delegated,

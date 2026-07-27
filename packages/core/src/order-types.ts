@@ -18,6 +18,11 @@ export const TERMINAL_ORDER_STATUSES: readonly OrderStatus[] = [
     "timed_out",
 ]
 
+export const FILLED_ORDER_STATUSES: readonly OrderStatus[] = [
+    "filled",
+    "partially_filled",
+]
+
 export const ACTIVE_ORDER_STATUSES: readonly OrderStatus[] = [
     "pending",
     "partially_filled",

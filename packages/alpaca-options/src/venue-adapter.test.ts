@@ -634,6 +634,127 @@ describe("AlpacaOptionsVenueAdapter", () => {
         expect(client.getPositions).not.toHaveBeenCalled()
     })
 
+    it("resolves stacked bear-call closes with a shared long wing in one run, then leaves the residual wing single-leg eligible", async () => {
+        const client = createClientMock()
+        client.getPositions
+            .mockResolvedValueOnce([
+                createPosition("SPY260724C00751000", "short", "1", "0.17", "1.67", "150"),
+                createPosition("SPY260724C00752000", "short", "1", "0.12", "1.50", "138"),
+                createPosition("SPY260724C00753000", "long", "2", "0.08", "1.12", "-208"),
+            ])
+            .mockResolvedValueOnce([
+                createPosition("SPY260724C00752000", "short", "1", "0.12", "1.50", "138"),
+                createPosition("SPY260724C00753000", "long", "1", "0.08", "1.12", "-104"),
+            ])
+            .mockResolvedValueOnce([
+                createPosition("SPY260724C00753000", "long", "2", "0.08", "1.12", "-208"),
+            ])
+        const adapter = new AlpacaOptionsVenueAdapter(client as never)
+        const claim751 = "VS:BEAR_CALL_CREDIT:SPY:2026-07-24:SPY260724C00751000|SPY260724C00753000"
+        const claim752 = "VS:BEAR_CALL_CREDIT:SPY:2026-07-24:SPY260724C00752000|SPY260724C00753000"
+        const claims = new Set([claim751, claim752])
+
+        const first = await adapter.resolveProviderCloseStructureTarget({
+            instrument: "SPY260724C00751000",
+            providerPositionId: "SPY260724C00751000",
+            side: "short",
+            quantity: 1,
+            entryPrice: 1.67,
+            currentPrice: 0.17,
+        }, claims)
+        const second = await adapter.resolveProviderCloseStructureTarget({
+            instrument: "SPY260724C00752000",
+            providerPositionId: "SPY260724C00752000",
+            side: "short",
+            quantity: 1,
+            entryPrice: 1.5,
+            currentPrice: 0.12,
+        }, claims)
+        const residual = await adapter.resolveProviderCloseStructureTarget({
+            instrument: "SPY260724C00753000",
+            providerPositionId: "SPY260724C00753000",
+            side: "long",
+            quantity: 2,
+            entryPrice: 1.12,
+            currentPrice: 0.08,
+        }, claims)
+
+        expect(first?.claimInstrument).toBe(claim751)
+        expect(first?.closeIntent?.quantity).toBe(1)
+        expect(first?.closeIntent?.legs).toEqual([
+            {
+                instrument: "SPY260724C00751000",
+                side: "buy_to_close",
+                quantity: 1,
+            },
+            {
+                instrument: "SPY260724C00753000",
+                side: "sell_to_close",
+                quantity: 1,
+            },
+        ])
+        expect(second).toEqual({
+            claimInstrument: claim752,
+            legInstruments: [
+                "SPY260724C00752000",
+                "SPY260724C00753000",
+            ],
+        })
+        expect(residual).toBeNull()
+    })
+
+    it("uses the unique exact live leg set when multiple owned claims contain the requested long leg", async () => {
+        const client = createClientMock()
+        client.getPositions.mockResolvedValueOnce([
+            createPosition("SPY260724C00751000", "short", "1", "0.17", "1.67", "150"),
+            createPosition("SPY260724C00753000", "long", "1", "0.08", "1.12", "-104"),
+        ])
+        const adapter = new AlpacaOptionsVenueAdapter(client as never)
+        const claim751 = "VS:BEAR_CALL_CREDIT:SPY:2026-07-24:SPY260724C00751000|SPY260724C00753000"
+        const claim752 = "VS:BEAR_CALL_CREDIT:SPY:2026-07-24:SPY260724C00752000|SPY260724C00753000"
+
+        const target = await adapter.resolveProviderCloseStructureTarget({
+            instrument: "SPY260724C00753000",
+            providerPositionId: "SPY260724C00753000",
+            side: "long",
+            quantity: 1,
+            entryPrice: 1.12,
+            currentPrice: 0.08,
+        }, new Set([claim751, claim752]))
+
+        expect(target).toEqual({
+            claimInstrument: claim751,
+            legInstruments: [
+                "SPY260724C00751000",
+                "SPY260724C00753000",
+            ],
+        })
+    })
+
+    it("fails closed when duplicate exact claims match the same complete live leg set", async () => {
+        const client = createClientMock()
+        client.getPositions.mockResolvedValueOnce([
+            createPosition("SPY260724C00751000", "short", "1", "0.17", "1.67", "150"),
+            createPosition("SPY260724C00753000", "long", "1", "0.08", "1.12", "-104"),
+        ])
+        const adapter = new AlpacaOptionsVenueAdapter(client as never)
+        const claimInstrument = "VS:BEAR_CALL_CREDIT:SPY:2026-07-24:SPY260724C00751000|SPY260724C00753000"
+
+        await expect(adapter.resolveProviderCloseStructureTarget({
+            instrument: "SPY260724C00753000",
+            providerPositionId: "SPY260724C00753000",
+            side: "long",
+            quantity: 1,
+            entryPrice: 1.12,
+            currentPrice: 0.08,
+        }, [claimInstrument, claimInstrument])).rejects.toMatchObject({
+            executionError: {
+                code: "AMBIGUOUS_STRUCTURE_CLAIM",
+                retryable: false,
+            },
+        })
+    })
+
     it("fails closed when exact claimed vertical legs have reversed provider sides", async () => {
         const client = createClientMock()
         client.getPositions.mockResolvedValueOnce([

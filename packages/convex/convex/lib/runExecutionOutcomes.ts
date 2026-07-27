@@ -1,6 +1,6 @@
 import type { DatabaseWriter } from "../_generated/server"
 import type { Doc, Id } from "../_generated/dataModel"
-import { resolveOrderRealizedPnl } from "@valiq-trading/core"
+import { isFilledOrderStatus, resolveOrderRealizedPnl } from "@valiq-trading/core"
 
 const MAX_RUN_ORDER_ROWS = 64
 
@@ -24,7 +24,7 @@ export function computeRunExecutionOutcomes(
             submitted++
         }
 
-        if (order.status !== "filled" && order.status !== "partially_filled") {
+        if (!isFilledOrderStatus(order.status)) {
             continue
         }
 

@@ -719,6 +719,33 @@ export function resolveGroupForClose(
         resolveGroupFromRelaxedReference(positions, instrument)
 }
 
+export function resolveExactClaimGroupForClose(
+    positions: AlpacaPositionResponse[],
+    instrument: string,
+    quantity: number
+): PositionGroup | null {
+    return resolveClaimGroupForBoundedQuantity(positions, instrument, quantity)
+}
+
+export function resolveMinimumClaimGroupForClose(
+    positions: AlpacaPositionResponse[],
+    instrument: string
+): PositionGroup | null {
+    const claim = parseClaimedStructureInstrument(instrument)
+    if (!claim) {
+        return null
+    }
+
+    const claimedPositions = resolveClaimedPositions(positions, claim)
+    if (!claimedPositions) {
+        return null
+    }
+
+    const quantities = claimedPositions.map((position) => parseOptionQuantity(position))
+    const quantity = Math.min(...quantities)
+    return resolveClaimGroupForBoundedQuantity(positions, instrument, quantity)
+}
+
 function resolveGroupFromCanonicalClaim(
     positions: AlpacaPositionResponse[],
     instrument: string
@@ -759,6 +786,64 @@ function resolveGroupFromCanonicalClaim(
         quantity,
         positions: claimedPositions,
     })
+}
+
+function resolveClaimGroupForBoundedQuantity(
+    positions: AlpacaPositionResponse[],
+    instrument: string,
+    quantity: number
+): PositionGroup | null {
+    const claim = parseClaimedStructureInstrument(instrument)
+    if (!claim || !isPositiveIntegerQuantity(quantity)) {
+        return null
+    }
+
+    const claimedPositions = resolveClaimedPositions(positions, claim)
+    if (!claimedPositions) {
+        return null
+    }
+
+    const claimedEntries = claimedPositions.map(toClaimPositionLike)
+    if (claimedEntries.some((entry) => entry.quantity < quantity)) {
+        return null
+    }
+
+    const scaledEntries = claimedEntries.map((entry) => ({
+        ...entry,
+        quantity,
+    }))
+    if (!isCompleteClaimCloseGroup(claim, scaledEntries)) {
+        return null
+    }
+
+    return buildScaledPositionGroup({
+        structureType: claim.structureType,
+        verticalSpreadType: claim.verticalSpreadType,
+        underlying: claim.underlying,
+        expiration: claim.expiration,
+        quantity,
+        positions: claimedPositions,
+    })
+}
+
+function resolveClaimedPositions(
+    positions: AlpacaPositionResponse[],
+    claim: ClaimedStructureInstrument
+): AlpacaPositionResponse[] | null {
+    const positionsBySymbol = new Map(
+        positions
+            .filter(isAlpacaOptionPosition)
+            .map((position) => [position.symbol.trim().toUpperCase(), position])
+    )
+    const claimedPositions = claim.legs
+        .map((leg) => positionsBySymbol.get(leg))
+        .filter((position): position is AlpacaPositionResponse => Boolean(position))
+
+    return claimedPositions.length === claim.legs.length ? claimedPositions : null
+}
+
+function isPositiveIntegerQuantity(quantity: number): boolean {
+    return Number.isInteger(quantity) && quantity > 0 && Number.isFinite(quantity)
 }
 
 type RelaxedCloseReference =

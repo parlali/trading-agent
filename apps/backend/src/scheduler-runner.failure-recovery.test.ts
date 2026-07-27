@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 import type { AgentRunResult } from "@valiq-trading/agent"
-import type { Id, StoredStrategy } from "@valiq-trading/convex"
+import type { Id, RunOrderRow, StoredStrategy } from "@valiq-trading/convex"
 import type {
     AccountState,
     Position,
@@ -133,6 +133,93 @@ describe("scheduler runner failure recovery", () => {
         }))
     })
 
+    it("alerts once when a failed run has attributed filled orders", async () => {
+        vi.useFakeTimers()
+        vi.setSystemTime(new Date("2026-07-24T10:00:00.000Z"))
+
+        const scheduler = createSchedulerMock()
+        const harness = await createRunnerHarness({
+            agentResults: [
+                { toolCallCount: 0, error: "failed after execution" },
+            ],
+            runOrders: [
+                createRunOrder({
+                    orderId: "entry-order",
+                    action: "entry",
+                    status: "filled",
+                    filledQuantity: 1,
+                }),
+                createRunOrder({
+                    orderId: "close-order",
+                    action: "close",
+                    status: "filled",
+                    filledQuantity: 2,
+                }),
+                createRunOrder({
+                    orderId: "unfilled-close",
+                    action: "close",
+                    status: "cancelled",
+                    filledQuantity: 0,
+                }),
+            ],
+        })
+        const strategy = createStrategy()
+
+        await harness.runStrategy(
+            "okx-swap",
+            createPlugin(),
+            strategy,
+            strategy.policy,
+            { OPENROUTER_API_KEY: "test-key" },
+            scheduler.scheduler,
+            "cron"
+        )
+
+        expect(harness.backend.getOrdersForRun).toHaveBeenCalledTimes(1)
+        expect(harness.backend.getOrdersForRun).toHaveBeenCalledWith("run-1")
+        const alerts = findFailedRunFilledOrderAlerts(harness.backend.createAlert)
+        expect(alerts).toHaveLength(1)
+        expect(alerts[0]).toMatchObject({
+            app: "okx-swap",
+            severity: "warning",
+            message: "Recovery Test Strategy run run-1: filled entries=1, closes=1; executed trades in a failed run - decision record may be missing; supervision follow-up scheduled: yes",
+        })
+    })
+
+    it("does not alert when a failed run has no attributed fills", async () => {
+        vi.useFakeTimers()
+        vi.setSystemTime(new Date("2026-07-24T10:00:00.000Z"))
+
+        const scheduler = createSchedulerMock()
+        const harness = await createRunnerHarness({
+            agentResults: [
+                { toolCallCount: 0, error: "failed without execution" },
+            ],
+            runOrders: [
+                createRunOrder({
+                    orderId: "cancelled-entry",
+                    action: "entry",
+                    status: "cancelled",
+                    filledQuantity: 0,
+                }),
+            ],
+        })
+        const strategy = createStrategy()
+
+        await harness.runStrategy(
+            "okx-swap",
+            createPlugin(),
+            strategy,
+            strategy.policy,
+            { OPENROUTER_API_KEY: "test-key" },
+            scheduler.scheduler,
+            "cron"
+        )
+
+        expect(harness.backend.getOrdersForRun).toHaveBeenCalledTimes(1)
+        expect(findFailedRunFilledOrderAlerts(harness.backend.createAlert)).toHaveLength(0)
+    })
+
     it("suppresses recovery when the follow-up would fire outside trading hours", async () => {
         vi.useFakeTimers()
         vi.setSystemTime(new Date("2026-07-24T18:00:00.000Z"))
@@ -178,6 +265,7 @@ interface AgentResultConfig {
 
 interface RunnerHarnessOptions {
     storedPositions?: Position[]
+    runOrders?: RunOrderRow[]
     agentResults: AgentResultConfig[]
 }
 
@@ -214,13 +302,19 @@ function countInfoAlerts(createAlert: ReturnType<typeof vi.fn>): number {
     ).length
 }
 
+function findFailedRunFilledOrderAlerts(createAlert: ReturnType<typeof vi.fn>): Array<{ app?: string; severity?: string; message?: string }> {
+    return createAlert.mock.calls
+        .map(([alert]) => alert as { app?: string; severity?: string; message?: string })
+        .filter((alert) => alert.message?.includes("executed trades in a failed run"))
+}
+
 async function createRunnerHarness(options: RunnerHarnessOptions): Promise<{
     runStrategy: typeof import("./scheduler-runner")["runStrategy"]
     backend: ReturnType<typeof createBackendMock>
     executeAgentRun: ReturnType<typeof vi.fn>
     logger: ReturnType<typeof createLoggerMock>
 }> {
-    const backend = createBackendMock(options.storedPositions ?? [])
+    const backend = createBackendMock(options.storedPositions ?? [], options.runOrders ?? [])
     const logger = createLoggerMock()
     let agentRunIndex = 0
     const executeAgentRun = vi.fn(async (): Promise<AgentRunResult> => {
@@ -301,7 +395,7 @@ class FakeToolRegistry {
     }
 }
 
-function createBackendMock(storedPositions: Position[]) {
+function createBackendMock(storedPositions: Position[], runOrders: RunOrderRow[]) {
     let runSequence = 0
 
     return {
@@ -313,6 +407,9 @@ function createBackendMock(storedPositions: Position[]) {
         getAllOwnedInstrumentsByApp: vi.fn(async () => []),
         getApplicableStrategyOperationalMemory: vi.fn(async () => []),
         getLatestPositions: vi.fn(async () => storedPositions),
+        getOrdersForRun: vi.fn(async (runId: Id<"strategy_runs">) =>
+            runOrders.filter((order) => order.runId === runId)
+        ),
         getStrategyOrderHistory: vi.fn(async () => []),
         getStrategyOwnershipScope: vi.fn(async () => ({
             instruments: storedPositions.map((position) => position.instrument),
@@ -350,6 +447,46 @@ function createBackendMock(storedPositions: Position[]) {
         })),
         syncPositions: vi.fn(async () => undefined),
         updateRun: vi.fn(async () => undefined),
+    }
+}
+
+function createRunOrder(overrides: Partial<RunOrderRow> = {}): RunOrderRow {
+    const now = Date.now()
+    const orderId = overrides.orderId ?? "order-1"
+    const instrument = overrides.instrument ?? "BTC-USDT-SWAP"
+
+    return {
+        _id: `${orderId}-doc` as Id<"orders">,
+        _creationTime: now,
+        orderId,
+        providerOrderId: orderId,
+        runId: "run-1" as Id<"strategy_runs">,
+        strategyId: "strategy-1" as Id<"strategies">,
+        app: "okx-swap",
+        accountId: "test-account",
+        venue: "okx",
+        instrument,
+        status: "filled",
+        action: "entry",
+        quantity: 1,
+        filledQuantity: 1,
+        remainingQuantity: 0,
+        submittedAt: now,
+        updatedAt: now,
+        intent: {
+            instrument,
+            side: "buy",
+            quantity: 1,
+            orderType: "market",
+        } as RunOrderRow["intent"],
+        lastTransitionSequence: 0,
+        polling: {
+            pollIntervalMs: 1_000,
+            timeoutMs: 30_000,
+            startedAt: now,
+            lastCheckedAt: now,
+        },
+        ...overrides,
     }
 }
 

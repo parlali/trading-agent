@@ -58,6 +58,7 @@ import type {
     ReportHeartbeatSnapshotArgs,
     ReportHeartbeatSnapshotResult,
     ResolveExecutionSafetyFaultsArgs,
+    RunOrderRow,
     RunDiagnostics,
     RunTrigger,
     StoreCodexChatGptAuthArgs,
@@ -301,6 +302,16 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
                     ...requireMachineAuth(),
                     runId,
                 } as never) as TradeEventRow[]
+            )
+        },
+        async getOrdersForRun(runId: Id<"strategy_runs">, limit?: number): Promise<RunOrderRow[]> {
+            return await runWithTimeout(
+                "Convex query getOrdersForRun",
+                async () => await client.query(api.queries.getOrdersForRun, {
+                    ...requireMachineAuth(),
+                    runId,
+                    limit,
+                } as never) as RunOrderRow[]
             )
         },
         async refreshStrategyOperationalMemoryFromRun(

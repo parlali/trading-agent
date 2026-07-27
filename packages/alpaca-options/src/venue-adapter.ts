@@ -47,9 +47,12 @@ import {
     mapSinglePosition,
     parseClaimedStructureInstrument,
     mapWorkingOrder,
+    resolveExactClaimGroupForClose,
     resolveGroupForClose,
+    resolveMinimumClaimGroupForClose,
     roundPrice,
     toNumber,
+    type PositionGroup,
 } from "./venue-adapter-mappers"
 
 export class AlpacaOptionsVenueAdapter implements VenueAdapter, PriceVerifier {
@@ -353,7 +356,7 @@ export class AlpacaOptionsVenueAdapter implements VenueAdapter, PriceVerifier {
 
     async resolveProviderCloseStructureTarget(
         position: Position,
-        claimInstruments: ReadonlySet<string>
+        claimInstruments: ReadonlySet<string> | readonly string[]
     ): Promise<ProviderCloseStructureTarget | null> {
         if (!isAlpacaRawOptionLegPosition(position)) {
             return null
@@ -369,28 +372,78 @@ export class AlpacaOptionsVenueAdapter implements VenueAdapter, PriceVerifier {
             return null
         }
 
-        if (matchingClaims.length > 1) {
-            throw createExecutionError("pre_validation", `Alpaca provider-position close found multiple owned claimed structures for leg ${legSymbol}`, {
-                code: "AMBIGUOUS_STRUCTURE_CLAIM",
-                retryable: false,
-                details: {
-                    instrument: position.instrument,
-                    providerPositionId: position.providerPositionId,
-                    claimInstruments: matchingClaims,
-                },
+        if (matchingClaims.length > 1 && position.side === "short") {
+            throwAmbiguousStructureClaim(position, legSymbol, matchingClaims)
+        }
+
+        const livePositions = await this.client.getPositions()
+        const exactMatches = matchingClaims
+            .map((claimInstrument) => {
+                const canonicalGroup = resolveGroupForClose(livePositions, claimInstrument)
+                if (canonicalGroup) {
+                    return {
+                        claimInstrument,
+                        group: canonicalGroup,
+                    }
+                }
+
+                const boundedGroup = resolveExactClaimGroupForClose(livePositions, claimInstrument, position.quantity)
+                return boundedGroup
+                    ? {
+                        claimInstrument,
+                        group: boundedGroup,
+                        closeIntent: buildGroupCloseIntent(boundedGroup),
+                    }
+                    : null
             })
+            .filter((match): match is {
+                claimInstrument: string
+                group: PositionGroup
+                closeIntent?: OrderIntent
+            } => Boolean(match))
+
+        if (exactMatches.length === 1) {
+            return buildStructureTarget(exactMatches[0]!)
         }
 
-        const claimInstrument = matchingClaims[0]!
-        const group = resolveGroupForClose(await this.client.getPositions(), claimInstrument)
-        if (!group) {
-            return null
+        if (exactMatches.length > 1) {
+            throwAmbiguousStructureClaim(
+                position,
+                legSymbol,
+                exactMatches.map((match) => match.claimInstrument)
+            )
         }
 
-        return {
-            claimInstrument,
-            legInstruments: group.positions.map((groupPosition) => groupPosition.symbol),
+        const viableMatches = matchingClaims
+            .map((claimInstrument) => {
+                const group = resolveMinimumClaimGroupForClose(livePositions, claimInstrument)
+                return group
+                    ? {
+                        claimInstrument,
+                        group,
+                        closeIntent: buildGroupCloseIntent(group),
+                    }
+                    : null
+            })
+            .filter((match): match is {
+                claimInstrument: string
+                group: PositionGroup
+                closeIntent: OrderIntent
+            } => Boolean(match))
+
+        if (viableMatches.length === 1) {
+            return buildStructureTarget(viableMatches[0]!)
         }
+
+        if (viableMatches.length > 1) {
+            throwAmbiguousStructureClaim(
+                position,
+                legSymbol,
+                viableMatches.map((match) => match.claimInstrument)
+            )
+        }
+
+        return null
     }
 
     async getOrderStatus(orderId: string): Promise<ExecutionResult> {
@@ -574,6 +627,34 @@ export class AlpacaOptionsVenueAdapter implements VenueAdapter, PriceVerifier {
             details,
         }
     }
+}
+
+function buildStructureTarget(match: {
+    claimInstrument: string
+    group: PositionGroup
+    closeIntent?: OrderIntent
+}): ProviderCloseStructureTarget {
+    return {
+        claimInstrument: match.claimInstrument,
+        legInstruments: match.group.positions.map((groupPosition) => groupPosition.symbol),
+        ...(match.closeIntent ? { closeIntent: match.closeIntent } : {}),
+    }
+}
+
+function throwAmbiguousStructureClaim(
+    position: Position,
+    legSymbol: string,
+    claimInstruments: string[]
+): never {
+    throw createExecutionError("pre_validation", `Alpaca provider-position close found multiple owned claimed structures for leg ${legSymbol}`, {
+        code: "AMBIGUOUS_STRUCTURE_CLAIM",
+        retryable: false,
+        details: {
+            instrument: position.instrument,
+            providerPositionId: position.providerPositionId,
+            claimInstruments,
+        },
+    })
 }
 
 async function resolveSingleLegCloseLimitPrice(

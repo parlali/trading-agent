@@ -315,6 +315,39 @@ export interface TradeEventRow {
     timestamp: number
 }
 
+export interface RunOrderRow {
+    _id: Id<"orders">
+    _creationTime: number
+    orderId: string
+    canonicalOrderId?: string
+    providerOrderId: string
+    providerClientOrderId?: string
+    providerOrderAliases?: string[]
+    submitAttemptId?: string
+    submitAttemptSequence?: number
+    commitOutcome?: OrderSnapshot["commitOutcome"]
+    signedOrderFingerprint?: string
+    signedOrderMetadata?: unknown
+    runId: Id<"strategy_runs">
+    strategyId: Id<"strategies">
+    app?: App
+    accountId?: string
+    venue: string
+    instrument: string
+    status: OrderSnapshot["status"]
+    action: OrderSnapshot["action"]
+    quantity: number
+    filledQuantity: number
+    remainingQuantity: number
+    avgFillPrice?: number
+    submittedAt: number
+    updatedAt: number
+    intent: OrderIntent
+    metadata?: unknown
+    lastTransitionSequence: number
+    polling: OrderSnapshot["polling"]
+}
+
 export interface KillSwitchState {
     globalKillSwitch: boolean
     appKillSwitches: AppKillSwitches
@@ -663,6 +696,7 @@ export interface TradingBackendClient extends TradeEventLogger, AgentMessageLogg
         toolManifest: ToolManifestEntry[],
         limit?: number
     ): Promise<StoredStrategyOperationalMemory[]>
+    getOrdersForRun(runId: Id<"strategy_runs">, limit?: number): Promise<RunOrderRow[]>
     recoverRunningRuns(): Promise<number>
     recoverStaleRunningRuns(olderThanMs?: number): Promise<number>
     recoverStaleAgentChatMessages(olderThanMs?: number): Promise<number>

@@ -812,6 +812,101 @@ describe("ExecutionPipeline commit-unknown safety", () => {
         expect(result.structureClose).toEqual(structureClose)
     })
 
+    it("uses a resolver-provided structure close intent when rerouting a provider leg close", async () => {
+        const ownedClaims = new Set([
+            "VS:BEAR_CALL_CREDIT:SPY:2026-07-24:SPY260724C00751000|SPY260724C00753000",
+        ])
+        const claimInstrument = "VS:BEAR_CALL_CREDIT:SPY:2026-07-24:SPY260724C00751000|SPY260724C00753000"
+        const closeIntent: OrderIntent = {
+            instrument: claimInstrument,
+            side: "buy",
+            quantity: 1,
+            orderType: "limit",
+            limitPrice: 0.09,
+            timeInForce: "day",
+            legs: [
+                {
+                    instrument: "SPY260724C00751000",
+                    side: "buy_to_close",
+                    quantity: 1,
+                },
+                {
+                    instrument: "SPY260724C00753000",
+                    side: "sell_to_close",
+                    quantity: 1,
+                },
+            ],
+            metadata: {
+                estimatedPrice: 0.09,
+            },
+        }
+        const structureClose = {
+            claimInstrument,
+            legInstruments: [
+                "SPY260724C00751000",
+                "SPY260724C00753000",
+            ],
+            closeIntent,
+        }
+        const buildCloseIntent = vi.fn(async () => {
+            throw new Error("buildCloseIntent should not run")
+        })
+        const closePosition = vi.fn(async (instrument: string, preparedIntent?: OrderIntent) => ({
+            orderId: `close-${instrument}`,
+            status: "filled" as const,
+            filledQuantity: preparedIntent?.quantity ?? 1,
+            fillPrice: preparedIntent?.limitPrice,
+            timestamp: Date.now(),
+        }))
+        const resolveProviderCloseStructureTarget = vi.fn(async () => structureClose)
+        const pipeline = createPipeline({
+            venue: {
+                ...createVenue(),
+                getPositions: async () => [
+                    {
+                        instrument: "SPY260724C00751000",
+                        side: "short",
+                        quantity: 1,
+                        entryPrice: 1.67,
+                    },
+                    {
+                        instrument: "SPY260724C00753000",
+                        side: "long",
+                        quantity: 2,
+                        entryPrice: 1.12,
+                    },
+                ],
+                buildCloseIntent,
+                closePosition,
+                resolveProviderCloseStructureTarget,
+            },
+            venueName: "alpaca-options",
+            ownedInstruments: ownedClaims,
+        })
+
+        const result = await pipeline.closeProviderPosition({
+            instrument: "SPY260724C00751000",
+            providerPositionId: "SPY260724C00751000",
+            side: "short",
+            quantity: 1,
+            entryPrice: 1.67,
+            currentPrice: 0.17,
+        }, "close the exact shared-wing spread")
+
+        expect(buildCloseIntent).not.toHaveBeenCalled()
+        expect(closePosition).toHaveBeenCalledTimes(1)
+        expect(closePosition.mock.calls[0]?.[0]).toBe(claimInstrument)
+        expect(closePosition.mock.calls[0]?.[1]).toMatchObject({
+            instrument: claimInstrument,
+            limitPrice: 0.09,
+            legs: closeIntent.legs,
+            metadata: {
+                reason: "close the exact shared-wing spread",
+            },
+        })
+        expect(result.structureClose).toEqual(structureClose)
+    })
+
     it("cancels untracked provider working orders with a persisted canonical cancel identity", async () => {
         const cancelOrder = vi.fn(async (orderId: string, context) => ({
             orderId,
