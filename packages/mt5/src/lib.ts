@@ -2,6 +2,7 @@ export { MT5Client } from "./mt5-client"
 export type {
     MT5SymbolInfo,
     MT5AccountPnlEvent,
+    MT5AccountStateSnapshot,
     MT5OrderResult,
     MT5AccountCredentials,
 } from "./mt5-client"

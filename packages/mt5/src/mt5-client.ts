@@ -76,6 +76,12 @@ export interface MT5AccountPnlEvent {
     metadata?: Record<string, unknown>
 }
 
+export interface MT5AccountStateSnapshot {
+    account: MT5AccountInfo
+    positionClosures: MT5PositionClosure[]
+    accountPnlEvents: MT5AccountPnlEvent[]
+}
+
 export interface MT5OpenOrder {
     ticket: number
     symbol: string
@@ -156,7 +162,7 @@ export class MT5Client {
         throw unimplementedMT5TransportMethod("disconnect")
     }
 
-    async getHealth(): Promise<{ status: string; connected: boolean; login: number | null }> {
+    async getHealth(_options: { timeout?: number } = {}): Promise<{ status: string; connected: boolean; login: number | null }> {
         throw unimplementedMT5TransportMethod("getHealth")
     }
 
@@ -184,6 +190,23 @@ export class MT5Client {
         _lookbackHours: number = 24
     ): Promise<MT5AccountPnlEvent[]> {
         throw unimplementedMT5TransportMethod("getAccountPnlEvents")
+    }
+
+    async getAccountStateSnapshot(
+        credentials: MT5AccountCredentials,
+        lookbackHours: number = 24
+    ): Promise<MT5AccountStateSnapshot> {
+        const account = await this.getAccount(credentials)
+        const [positionClosures, accountPnlEvents] = await Promise.all([
+            this.getPositionClosures(credentials, lookbackHours),
+            this.getAccountPnlEvents(credentials, lookbackHours),
+        ])
+
+        return {
+            account,
+            positionClosures,
+            accountPnlEvents,
+        }
     }
 
     async submitOrder(_credentials: MT5AccountCredentials, _params: {

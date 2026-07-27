@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest"
 import { createExecutionError, type Position } from "@valiq-trading/core"
+import { FiveSocketClient } from "./fivesocket-client.ts"
 import { MT5Client, type MT5AccountPnlEvent, type MT5OrderResult, type MT5Position, type MT5PositionClosure, type MT5SymbolInfo, type MT5AccountCredentials } from "./mt5-client.ts"
 import { MT5VenueAdapter } from "./venue-adapter.ts"
 
@@ -212,6 +213,86 @@ describe("MT5VenueAdapter", () => {
 
         expect(state.openPnl).toBe(4.5)
         expect(state.dayPnl).toBeCloseTo(10.45)
+    })
+
+    it("reads one FiveSocket balance and one deals page for account state", async () => {
+        let balanceReads = 0
+        let dealReads = 0
+        const fetchImpl: typeof fetch = async (input, init) => {
+            const url = String(input)
+            const method = init?.method ?? "GET"
+
+            if (method === "POST" && url.endsWith("/v1/accounts")) {
+                return jsonResponse({
+                    id: "acc-state",
+                    login: String(credentials.login),
+                    server: credentials.server,
+                    status: "active",
+                    createdAt: new Date().toISOString(),
+                }, 201)
+            }
+
+            if (method === "GET" && url.endsWith("/balance")) {
+                balanceReads += 1
+                return jsonResponse({
+                    accountId: "acc-state",
+                    login: String(credentials.login),
+                    server: credentials.server,
+                    observedAt: new Date().toISOString(),
+                    latencyMs: 1,
+                    balance: "1000",
+                    equity: "1004.5",
+                    currency: "USD",
+                    credit: "0",
+                    margin: "0",
+                    marginFree: "1004.5",
+                    profit: "4.5",
+                    leverage: "100",
+                    name: "Demo",
+                    company: "Broker",
+                })
+            }
+
+            if (method === "GET" && url.includes("/deals")) {
+                dealReads += 1
+                return jsonResponse({
+                    data: [{
+                        id: "7101",
+                        orderId: "6101",
+                        positionId: "4101",
+                        symbol: "XAUUSD",
+                        type: "sell",
+                        entry: "out",
+                        volume: "0.01",
+                        price: "4719",
+                        profit: "7",
+                        commission: "-0.5",
+                        swap: "-0.25",
+                        fee: "-0.1",
+                        magic: "0",
+                        time: new Date().toISOString(),
+                    }],
+                    nextCursor: null,
+                })
+            }
+
+            throw new Error(`Unexpected request ${method} ${url}`)
+        }
+        const client = new FiveSocketClient({
+            baseUrl: "https://api.fivesocket.com",
+            apiKey: "test-key",
+            timeout: 1_000,
+            minRequestIntervalMs: 0,
+            fetchImpl,
+        })
+
+        const adapter = createAdapter(client)
+        const state = await adapter.getAccountState()
+
+        expect(balanceReads).toBe(1)
+        expect(dealReads).toBe(1)
+        expect(state.openPnl).toBe(4.5)
+        expect(state.dayPnl).toBeCloseTo(10.65)
     })
 
     it("uses MT5 position identifier as the canonical provider position id", async () => {
@@ -1157,4 +1238,11 @@ function createSymbolInfo(overrides: Partial<MT5SymbolInfo>): MT5SymbolInfo {
         ask: 4715.5,
         ...overrides,
     }
+}
+
+function jsonResponse(body: unknown, status = 200): Response {
+    return new Response(JSON.stringify(body), {
+        status,
+        headers: { "Content-Type": "application/json" },
+    })
 }

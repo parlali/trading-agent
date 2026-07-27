@@ -66,15 +66,10 @@ export class MT5Plugin implements VenuePlugin {
             throw new Error("FiveSocket preflight requires marketRegionsByInstrument symbols to configure execution policy")
         }
 
-        const healthClient = createMT5Client(runtimeConfig, {
-            timeout: 2_000,
-            executionSymbols,
-        })
-        await healthClient.getHealth()
-
         const client = createMT5Client(runtimeConfig, {
             executionSymbols,
         })
+        await client.getHealth({ timeout: 2_000 })
         await client.connect(runtimeConfig.credentials)
         const venue = new MT5VenueAdapter(client, runtimeConfig.credentials, this.executionCostTracker, {
             allowUnscopedSymbolAccess: true,

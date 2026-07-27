@@ -1,4 +1,4 @@
-import { requireResolvedSecret, mt5PolicySchema, type MT5Policy } from "@valiq-trading/core"
+import { mt5PolicySchema, type MT5Policy } from "@valiq-trading/core"
 import type { MT5AccountCredentials } from "./mt5-client"
 import { FiveSocketClient, type FiveSocketExecutionSymbolPolicy } from "./fivesocket-client"
 import {
@@ -21,8 +21,25 @@ export interface MT5RuntimeConfig {
     baseUrl: string
     apiKey: string
     defaultMaxVolume: string
+    credentialEnvPrefix: string
     credentials: MT5AccountCredentials
 }
+
+type MT5ClientPoolEntry = {
+    client: FiveSocketClient
+    configKey: string
+    fetchImpl?: typeof fetch
+}
+
+type MT5ClientOptions = {
+    executionSymbols?: readonly FiveSocketExecutionSymbolPolicy[]
+    timeout?: number
+    connectTimeout?: number
+    minRequestIntervalMs?: number
+    fetchImpl?: typeof fetch
+}
+
+const mt5ClientPool = new Map<string, MT5ClientPoolEntry>()
 
 export function resolveMT5RuntimeConfig(
     secrets: Record<string, string | null>,
@@ -30,11 +47,12 @@ export function resolveMT5RuntimeConfig(
     credentialEnvPrefix = DEFAULT_MT5_CREDENTIAL_ENV_PREFIX
 ): MT5RuntimeConfig {
     assertMT5TransportGuard(secrets, env)
+    const normalizedCredentialEnvPrefix = credentialEnvPrefix.trim()
 
     const credentials: MT5AccountCredentials = {
-        login: Number(resolveMT5AccountSecret(secrets, env, credentialEnvPrefix, "LOGIN")),
-        password: resolveMT5AccountSecret(secrets, env, credentialEnvPrefix, "PASSWORD"),
-        server: resolveMT5AccountSecret(secrets, env, credentialEnvPrefix, "SERVER"),
+        login: Number(resolveMT5AccountSecret(secrets, env, normalizedCredentialEnvPrefix, "LOGIN")),
+        password: resolveMT5AccountSecret(secrets, env, normalizedCredentialEnvPrefix, "PASSWORD"),
+        server: resolveMT5AccountSecret(secrets, env, normalizedCredentialEnvPrefix, "SERVER"),
     }
 
     const baseUrl = (
@@ -62,6 +80,7 @@ export function resolveMT5RuntimeConfig(
         baseUrl,
         apiKey,
         defaultMaxVolume,
+        credentialEnvPrefix: normalizedCredentialEnvPrefix,
         credentials,
     }
 }
@@ -93,15 +112,21 @@ function resolveMT5AccountSecret(
 
 export function createMT5Client(
     runtime: MT5RuntimeConfig,
-    options: {
-        executionSymbols?: readonly FiveSocketExecutionSymbolPolicy[]
-        timeout?: number
-        connectTimeout?: number
-        minRequestIntervalMs?: number
-        fetchImpl?: typeof fetch
-    } = {}
+    options: MT5ClientOptions = {}
 ): FiveSocketClient {
-    return new FiveSocketClient({
+    const poolKey = resolveMT5ClientPoolKey(runtime)
+    const configKey = resolveMT5ClientPoolConfigKey(runtime, options)
+    const existing = mt5ClientPool.get(poolKey)
+
+    if (existing) {
+        assertCompatibleMT5ClientPoolEntry(poolKey, existing, configKey, options.fetchImpl)
+        if (options.executionSymbols !== undefined) {
+            existing.client.updateExecutionSymbols(options.executionSymbols)
+        }
+        return existing.client
+    }
+
+    const client = new FiveSocketClient({
         baseUrl: runtime.baseUrl,
         apiKey: runtime.apiKey,
         executionSymbols: options.executionSymbols,
@@ -110,6 +135,53 @@ export function createMT5Client(
         minRequestIntervalMs: options.minRequestIntervalMs,
         fetchImpl: options.fetchImpl,
     })
+    mt5ClientPool.set(poolKey, {
+        client,
+        configKey,
+        ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
+    })
+    return client
+}
+
+export function resetMT5ClientPoolForTests(): void {
+    mt5ClientPool.clear()
+}
+
+function resolveMT5ClientPoolKey(runtime: MT5RuntimeConfig): string {
+    const prefix = runtime.credentialEnvPrefix.trim()
+    const accountIdentity = `${runtime.credentials.login}:${runtime.credentials.server}`
+    return prefix
+        ? `prefix:${prefix}:account:${accountIdentity}`
+        : `account:${accountIdentity}`
+}
+
+function resolveMT5ClientPoolConfigKey(
+    runtime: MT5RuntimeConfig,
+    options: MT5ClientOptions
+): string {
+    return JSON.stringify({
+        baseUrl: runtime.baseUrl,
+        apiKey: runtime.apiKey,
+        timeout: options.timeout ?? null,
+        connectTimeout: options.connectTimeout ?? null,
+        minRequestIntervalMs: options.minRequestIntervalMs ?? null,
+        fetchImpl: options.fetchImpl ? "custom" : "default",
+    })
+}
+
+function assertCompatibleMT5ClientPoolEntry(
+    poolKey: string,
+    entry: MT5ClientPoolEntry,
+    configKey: string,
+    fetchImpl: typeof fetch | undefined
+): void {
+    if (entry.configKey === configKey && entry.fetchImpl === fetchImpl) {
+        return
+    }
+
+    throw new Error(
+        `MT5 FiveSocket client pool key ${poolKey} was requested with different transport options; restart the process or use the existing pooled configuration`
+    )
 }
 
 export function toFiveSocketExecutionSymbols(

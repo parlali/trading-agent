@@ -17,6 +17,7 @@ import {
     type MT5PositionClosure,
     type MT5SymbolInfo,
     type MT5AccountCredentials,
+    type MT5AccountStateSnapshot,
 } from "./mt5-client"
 import {
     fromDecimalString,
@@ -88,19 +89,27 @@ type LinkedAccount = {
     status: string
 }
 
+type AccountLinkState = {
+    promise: Promise<string>
+}
+
 export class FiveSocketClient extends MT5Client {
     private readonly fsBaseUrl: string
     private readonly apiKey: string
     private readonly fsTimeout: number
     private readonly fsConnectTimeout: number
     private readonly fsFetchImpl: typeof fetch
-    private readonly executionSymbols: readonly FiveSocketExecutionSymbolPolicy[]
+    private executionSymbols: readonly FiveSocketExecutionSymbolPolicy[]
+    private executionSymbolsKey: string
     private readonly commandPollAttempts: number
     private readonly commandPollDelayMs: number
     private readonly maxDealPages: number
     private readonly minRequestIntervalMs: number
     private readonly accountIdByKey = new Map<string, string>()
+    private readonly accountLinkStateByKey = new Map<string, AccountLinkState>()
     private readonly dealWatermarkByAccountId = new Map<string, number>()
+    private readonly configuredExecutionPolicyKeyByAccountId = new Map<string, string>()
+    private readonly executionPolicyQueueByAccountId = new Map<string, Promise<void>>()
     private pacingQueue: Promise<void> = Promise.resolve()
     private nextPacedRequestStartAt = 0
     private cachedLogin: number | null = null
@@ -112,11 +121,24 @@ export class FiveSocketClient extends MT5Client {
         this.fsTimeout = config.timeout ?? 150_000
         this.fsConnectTimeout = config.connectTimeout ?? Math.max(this.fsTimeout, 150_000)
         this.fsFetchImpl = config.fetchImpl ?? fetch
-        this.executionSymbols = config.executionSymbols ?? []
+        this.executionSymbols = normalizeExecutionSymbols(config.executionSymbols ?? [])
+        this.executionSymbolsKey = executionPolicyKey(this.executionSymbols)
         this.commandPollAttempts = config.commandPollAttempts ?? 3
         this.commandPollDelayMs = config.commandPollDelayMs ?? 250
         this.maxDealPages = config.maxDealPages ?? 10_000
         this.minRequestIntervalMs = normalizeMinRequestIntervalMs(config.minRequestIntervalMs)
+    }
+
+    updateExecutionSymbols(symbols: readonly FiveSocketExecutionSymbolPolicy[]): boolean {
+        const normalized = normalizeExecutionSymbols(symbols)
+        const nextKey = executionPolicyKey(normalized)
+        if (nextKey === this.executionSymbolsKey) {
+            return false
+        }
+
+        this.executionSymbols = normalized
+        this.executionSymbolsKey = nextKey
+        return true
     }
 
     override async connect(credentials: MT5AccountCredentials): Promise<MT5AccountInfo> {
@@ -128,12 +150,12 @@ export class FiveSocketClient extends MT5Client {
     override async disconnect(): Promise<void> {
     }
 
-    override async getHealth(): Promise<{ status: string; connected: boolean; login: number | null }> {
+    override async getHealth(options: { timeout?: number } = {}): Promise<{ status: string; connected: boolean; login: number | null }> {
         const readiness = await this.requestJson<FiveSocketApiReadiness>(
             "GET",
             "/ready",
             {
-                timeout: this.fsTimeout,
+                timeout: options.timeout ?? this.fsTimeout,
                 retry: true,
                 auth: false,
             }
@@ -201,9 +223,22 @@ export class FiveSocketClient extends MT5Client {
         credentials: MT5AccountCredentials,
         lookbackHours: number = 24
     ): Promise<MT5AccountPnlEvent[]> {
+        const snapshot = await this.getAccountStateSnapshot(credentials, lookbackHours)
+        return snapshot.accountPnlEvents
+    }
+
+    override async getAccountStateSnapshot(
+        credentials: MT5AccountCredentials,
+        lookbackHours: number = 24
+    ): Promise<MT5AccountStateSnapshot> {
         const account = await this.getAccount(credentials)
         const deals = await this.listDeals(credentials, lookbackHours)
-        return mapFiveSocketAccountPnlEvents(deals, account.currency)
+
+        return {
+            account,
+            positionClosures: mapFiveSocketPositionClosures(deals),
+            accountPnlEvents: mapFiveSocketAccountPnlEvents(deals, account.currency),
+        }
     }
 
     override async submitOrder(credentials: MT5AccountCredentials, params: {
@@ -428,10 +463,36 @@ export class FiveSocketClient extends MT5Client {
         const cacheKey = accountCacheKey(credentials)
         const cached = this.accountIdByKey.get(cacheKey)
         if (cached) {
+            await this.configureExecutionIfChanged(cached, budget)
             return cached
         }
 
         const linkBudget = budget ?? createTimeoutBudget(this.fsConnectTimeout)
+        const inFlight = this.accountLinkStateByKey.get(cacheKey)
+        if (inFlight) {
+            const accountId = await inFlight.promise
+            await this.configureExecutionIfChanged(accountId, budget)
+            return accountId
+        }
+
+        const linkPromise = this.linkAccount(credentials, cacheKey, linkBudget)
+        this.accountLinkStateByKey.set(cacheKey, { promise: linkPromise })
+
+        try {
+            return await linkPromise
+        } finally {
+            const current = this.accountLinkStateByKey.get(cacheKey)
+            if (current?.promise === linkPromise) {
+                this.accountLinkStateByKey.delete(cacheKey)
+            }
+        }
+    }
+
+    private async linkAccount(
+        credentials: MT5AccountCredentials,
+        cacheKey: string,
+        budget: TimeoutBudget
+    ): Promise<string> {
         const login = String(credentials.login)
         const idempotencyKey = `account:${login}:${credentials.server}`
         let linked: LinkedAccount
@@ -446,7 +507,7 @@ export class FiveSocketClient extends MT5Client {
                         password: credentials.password,
                         server: credentials.server,
                     },
-                    budget: linkBudget,
+                    budget,
                     retry: false,
                     idempotencyKey,
                     acceptStatuses: [201],
@@ -456,7 +517,7 @@ export class FiveSocketClient extends MT5Client {
         } catch (error) {
             const detail = getExecutionErrorDetail(error)
             if (detail?.code === "conflict" || detail?.code === "409") {
-                linked = await this.findLinkedAccount(credentials, linkBudget)
+                linked = await this.findLinkedAccount(credentials, budget)
             } else {
                 throw error
             }
@@ -479,7 +540,7 @@ export class FiveSocketClient extends MT5Client {
             )
         }
 
-        await this.configureExecution(linked.id, linkBudget)
+        await this.configureExecutionIfChanged(linked.id, budget)
         this.accountIdByKey.set(cacheKey, linked.id)
         this.cachedLogin = credentials.login
         return linked.id
@@ -519,52 +580,68 @@ export class FiveSocketClient extends MT5Client {
         return match
     }
 
-    private async configureExecution(
+    private async configureExecutionIfChanged(
         accountId: string,
-        budget: TimeoutBudget
+        budget?: TimeoutBudget
     ): Promise<void> {
-        const symbols = this.resolveExecutionSymbols()
-        if (symbols.length === 0) {
-            return
-        }
-
-        const idempotencyKey = `execution:${accountId}:${stableBodyKey({ symbols })}`
-        await this.requestJson(
-            "PUT",
-            `/v1/accounts/${encodeURIComponent(accountId)}/execution`,
-            {
-                body: { symbols },
-                budget,
-                retry: false,
-                idempotencyKey,
-                acceptStatuses: [200],
-                bypassPacing: true,
+        const queued = this.executionPolicyQueueByAccountId.get(accountId) ?? Promise.resolve()
+        const next = queued.then(async () => {
+            const symbols = this.resolveExecutionSymbols()
+            const policyKey = executionPolicyKey(symbols)
+            const configuredKey = this.configuredExecutionPolicyKeyByAccountId.get(accountId)
+            if (configuredKey === policyKey) {
+                return
             }
-        )
+
+            if (symbols.length === 0) {
+                if (configuredKey !== undefined) {
+                    throw createExecutionError(
+                        "pre_validation",
+                        `FiveSocket execution policy for account ${accountId} cannot be cleared without configured symbols`,
+                        {
+                            code: "MISSING_EXECUTION_SYMBOLS",
+                            retryable: false,
+                            details: {
+                                accountId,
+                            },
+                        }
+                    )
+                }
+                return
+            }
+
+            if (configuredKey !== undefined) {
+                console.warn("FiveSocket execution policy changed; reconfiguring account", {
+                    accountId,
+                    previousPolicyKey: configuredKey,
+                    nextPolicyKey: policyKey,
+                    symbols: symbols.map((symbol) => symbol.symbol),
+                })
+            }
+
+            const configurationBudget = budget ?? createTimeoutBudget(this.fsConnectTimeout)
+            const idempotencyKey = `execution:${accountId}:${stableBodyKey({ symbols })}`
+            await this.requestJson(
+                "PUT",
+                `/v1/accounts/${encodeURIComponent(accountId)}/execution`,
+                {
+                    body: { symbols },
+                    budget: configurationBudget,
+                    retry: false,
+                    idempotencyKey,
+                    acceptStatuses: [200],
+                    bypassPacing: true,
+                }
+            )
+            this.configuredExecutionPolicyKeyByAccountId.set(accountId, policyKey)
+        })
+
+        this.executionPolicyQueueByAccountId.set(accountId, next.catch(() => undefined))
+        await next
     }
 
     private resolveExecutionSymbols(): FiveSocketExecutionSymbolPolicy[] {
-        if (this.executionSymbols.length === 0) {
-            return []
-        }
-        return this.executionSymbols.map((entry) => {
-            const maxVolume = entry.maxVolume.trim()
-            if (!maxVolume) {
-                throw createExecutionError(
-                    "pre_validation",
-                    `FiveSocket execution maxVolume is required for symbol ${entry.symbol}`,
-                    {
-                        code: "MISSING_MAX_VOLUME",
-                        retryable: false,
-                        details: { symbol: entry.symbol },
-                    }
-                )
-            }
-            return {
-                symbol: entry.symbol,
-                maxVolume,
-            }
-        })
+        return [...this.executionSymbols]
     }
 
     private async listDeals(
@@ -873,6 +950,82 @@ export class FiveSocketClient extends MT5Client {
 
 function accountCacheKey(credentials: MT5AccountCredentials): string {
     return `${credentials.login}:${credentials.server}`
+}
+
+function normalizeExecutionSymbols(
+    symbols: readonly FiveSocketExecutionSymbolPolicy[]
+): FiveSocketExecutionSymbolPolicy[] {
+    const bySymbol = new Map<string, string>()
+
+    for (const entry of symbols) {
+        const symbol = entry.symbol.trim()
+        if (!symbol) {
+            throw createExecutionError(
+                "pre_validation",
+                "FiveSocket execution symbol is required",
+                {
+                    code: "MISSING_EXECUTION_SYMBOL",
+                    retryable: false,
+                }
+            )
+        }
+
+        const maxVolume = entry.maxVolume.trim()
+        if (!maxVolume) {
+            throw createExecutionError(
+                "pre_validation",
+                `FiveSocket execution maxVolume is required for symbol ${symbol}`,
+                {
+                    code: "MISSING_MAX_VOLUME",
+                    retryable: false,
+                    details: { symbol },
+                }
+            )
+        }
+        if (!/^(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$/.test(maxVolume) || Number(maxVolume) <= 0) {
+            throw createExecutionError(
+                "pre_validation",
+                `FiveSocket execution maxVolume must be a positive plain decimal string for symbol ${symbol}`,
+                {
+                    code: "INVALID_MAX_VOLUME",
+                    retryable: false,
+                    details: {
+                        symbol,
+                        maxVolume: entry.maxVolume,
+                    },
+                }
+            )
+        }
+
+        const existing = bySymbol.get(symbol)
+        if (existing !== undefined && existing !== maxVolume) {
+            throw createExecutionError(
+                "pre_validation",
+                `FiveSocket execution symbol ${symbol} has conflicting maxVolume policies`,
+                {
+                    code: "CONFLICTING_EXECUTION_SYMBOL_POLICY",
+                    retryable: false,
+                    details: {
+                        symbol,
+                        firstMaxVolume: existing,
+                        nextMaxVolume: maxVolume,
+                    },
+                }
+            )
+        }
+        bySymbol.set(symbol, maxVolume)
+    }
+
+    return [...bySymbol.entries()]
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([symbol, maxVolume]) => ({
+            symbol,
+            maxVolume,
+        }))
+}
+
+function executionPolicyKey(symbols: readonly FiveSocketExecutionSymbolPolicy[]): string {
+    return stableBodyKey({ symbols })
 }
 
 type TimeoutBudget = {

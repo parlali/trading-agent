@@ -21,6 +21,7 @@ import { FiveSocketClient } from "./fivesocket-client.ts"
 import { MT5Client, type MT5AccountCredentials } from "./mt5-client.ts"
 import {
     createMT5Client,
+    resetMT5ClientPoolForTests,
     resolveCanonicalFiveSocketAccountExecutionSymbols,
     resolveFiveSocketExecutionSymbolsForPolicies,
     resolveMT5RuntimeConfig,
@@ -996,6 +997,8 @@ describe("FiveSocketClient transport policy", () => {
     })
 
     it("connection-test style client issues execution-policy PUT on connect", async () => {
+        resetMT5ClientPoolForTests()
+
         const runtime = resolveMT5RuntimeConfig({
             FIVESOCKET_API_KEY: "fs-key",
             FIVESOCKET_DEFAULT_MAX_VOLUME: "1.0",

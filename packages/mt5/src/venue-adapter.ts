@@ -115,13 +115,11 @@ export class MT5VenueAdapter implements VenueAdapter, PriceVerifier {
 
     async getAccountState(): Promise<AccountState> {
         return await this.withRecoverableRead(async () => {
-            const info = await this.readVerifiedAccountInfo()
+            const snapshot = await this.client.getAccountStateSnapshot(this.credentials, 24)
+            const info = snapshot.account
+            this.assertAccountIdentity(info.login)
             assertMT5AccountCurrency(info.currency)
-            const [closures, accountPnlEvents] = await Promise.all([
-                this.client.getPositionClosures(this.credentials, 24),
-                this.client.getAccountPnlEvents(this.credentials, 24),
-            ])
-            for (const event of accountPnlEvents) {
+            for (const event of snapshot.accountPnlEvents) {
                 assertMT5AccountCurrency(event.currency)
             }
 
@@ -132,7 +130,11 @@ export class MT5VenueAdapter implements VenueAdapter, PriceVerifier {
                 marginUsed: info.margin,
                 marginAvailable: info.freeMargin,
                 openPnl: info.profit,
-                dayPnl: resolveMT5DayPnl(info.profit, closures, accountPnlEvents),
+                dayPnl: resolveMT5DayPnl(
+                    info.profit,
+                    snapshot.positionClosures,
+                    snapshot.accountPnlEvents
+                ),
             }
         })
     }
