@@ -860,13 +860,15 @@ export class FiveSocketClient extends MT5Client {
                     const apiError = parseApiError(text)
                     const retryAfterMs = response.status === 429
                         ? resolveRetryAfterMs(readRetryAfterHeader(response), apiError)
-                        : undefined
+                        : response.status === 202
+                            ? resolveRetryAfterMs(readRetryAfterHeader(response), apiError) ?? 3_000
+                            : undefined
                     throw createExecutionError(
                         "venue",
                         `FiveSocket error: ${response.status} ${response.statusText} ${apiError?.message ?? text}`.trim(),
                         {
                             code: apiError?.code ?? String(response.status),
-                            retryable: response.status >= 500 || response.status === 429,
+                            retryable: response.status >= 500 || response.status === 429 || response.status === 202,
                             details: {
                                 path,
                                 status: response.status,

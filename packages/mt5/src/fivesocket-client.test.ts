@@ -1663,3 +1663,44 @@ function commitUnknownCommand(params: {
         latencyMs: 10,
     }
 }
+
+describe("FiveSocket session warming", () => {
+    it("retries a 202 session-warming response and succeeds on the follow-up", async () => {
+        let calls = 0
+        const fetchImpl: typeof fetch = async (input, init) => {
+            const url = String(input)
+            const method = init?.method ?? "GET"
+            if (method === "POST" && url.endsWith("/v1/accounts")) {
+                return jsonResponse({
+                    id: "acc-1",
+                    login: "111",
+                    server: "broker",
+                    status: "active",
+                    createdAt: new Date().toISOString(),
+                }, 201)
+            }
+            if (method === "PUT" && url.endsWith("/execution")) {
+                return jsonResponse({ accountId: "acc-1", status: "enabled", symbols: [], updatedAt: new Date().toISOString() })
+            }
+            if (method === "GET" && url.includes("/positions")) {
+                calls += 1
+                if (calls === 1) {
+                    return jsonResponse({ error: { code: "session_warming", message: "The account session is warming; retry the request", retryAfter: 0 } }, 202)
+                }
+                return jsonResponse({ positions: [] })
+            }
+            throw new Error(`Unexpected ${method} ${url}`)
+        }
+
+        const client = new FiveSocketClient({
+            baseUrl: "https://api.fivesocket.com",
+            apiKey: "test-key",
+            timeout: 5_000,
+            minRequestIntervalMs: 0,
+            fetchImpl,
+        })
+        const positions = await client.getPositions(credentials)
+        expect(positions).toEqual([])
+        expect(calls).toBe(2)
+    })
+})
