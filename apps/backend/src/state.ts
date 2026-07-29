@@ -17,7 +17,7 @@ export { syncStrategies, type SyncStrategyEntry } from "./sync-strategies-state"
 
 export const APP_NAME: App = "backend"
 export const HEARTBEAT_INTERVAL_MS = 120_000
-export const MANUAL_RUN_POLL_INTERVAL_MS = 30_000
+export const MANUAL_RUN_POLL_INTERVAL_MS = 120_000
 export const MANUAL_RUN_LEASE_MS = 30_000
 export const MANUAL_RUN_MAX_ATTEMPTS = 5
 export const MANUAL_RUN_CLAIM_LIMIT = 25

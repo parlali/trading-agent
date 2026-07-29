@@ -10,6 +10,7 @@ import type { App } from "@valiq-trading/core"
 import { STRATEGY_LLM_PROVIDER_SECRET_KEYS } from "../scheduler-provider-gates"
 import type { VenueApp } from "../types"
 import { writeHeartbeatSnapshot } from "../health-write"
+import { invalidateStrategySecretCacheForAccount } from "../strategy-runtime-secret-cache"
 
 export async function resolveAllSecrets(): Promise<void> {
     logger.info("Resolving secrets from Convex environment variables")
@@ -87,6 +88,7 @@ export async function validateAllEnvironments(apps: VenueApp[]): Promise<void> {
                 appValidated = false
                 const message = error instanceof Error ? error.message : String(error)
                 const previousError = accounts[accountId]?.error
+                invalidateStrategySecretCacheForAccount(app, accountId)
                 failedAccounts.push({
                     accountId,
                     label: entry.account.label,

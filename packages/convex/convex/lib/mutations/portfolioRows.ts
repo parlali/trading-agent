@@ -26,6 +26,7 @@ type ProviderWorkingOrderRow = Omit<Doc<"provider_working_orders">, "_id" | "_cr
 
 const PROVIDER_POSITION_HISTORY_RETENTION_MS = 24 * 60 * 60 * 1000
 const PROVIDER_POSITION_HISTORY_APPS = new Set<Doc<"strategies">["app"]>(["mt5", "okx-swap", "alpaca-options"])
+const PROVIDER_POSITION_UNCHANGED_SYNCED_AT_STALE_MS = 60 * 60 * 1000
 
 const PROVIDER_POSITION_COMPARE_FIELDS = [
     "positionKey",
@@ -114,7 +115,9 @@ export async function upsertProviderPositionRows(
 
         const reappearedAfterSuspectSnapshot = current.missingSinceSyncAt !== undefined
         if (!hasFieldChange(current, row, PROVIDER_POSITION_COMPARE_FIELDS)) {
-            await ctx.db.patch(current._id, { syncedAt: row.syncedAt })
+            if (shouldRefreshUnchangedProviderPositionSyncedAt(current, row)) {
+                await ctx.db.patch(current._id, { syncedAt: row.syncedAt })
+            }
             await recordProviderPositionReappearedAlert(ctx, {
                 app,
                 row,
@@ -446,7 +449,6 @@ export async function upsertProviderWorkingOrderRows(
         }
 
         if (!hasFieldChange(current, row, PROVIDER_WORKING_ORDER_COMPARE_FIELDS)) {
-            await ctx.db.patch(current._id, { syncedAt: row.syncedAt })
             stats.unchanged++
             continue
         }
@@ -854,6 +856,13 @@ function fieldValuesEqual(left: unknown, right: unknown): boolean {
     }
 
     return left === right
+}
+
+function shouldRefreshUnchangedProviderPositionSyncedAt(
+    current: Pick<Doc<"provider_positions">, "syncedAt">,
+    row: Pick<ProviderPositionRow, "syncedAt">
+): boolean {
+    return row.syncedAt - current.syncedAt >= PROVIDER_POSITION_UNCHANGED_SYNCED_AT_STALE_MS
 }
 
 function pickFields<TRow, K extends keyof TRow>(

@@ -9,7 +9,10 @@ import {
     logger,
 } from "./state"
 import { resolveAllSecrets, validateAllEnvironments } from "./plugins/init"
-import { registerStrategyWithScheduler } from "./scheduler"
+import {
+    createStrategyRuntimeAccountSnapshot,
+    registerStrategyWithScheduler,
+} from "./scheduler"
 import { startHeartbeat, stopHeartbeat } from "./heartbeat"
 import { startManualRunPolling, stopManualRunPolling } from "./manual-runs"
 import { performStartupSync, startPeriodicSync, stopPeriodicSync } from "./sync"
@@ -51,9 +54,12 @@ async function main(): Promise<void> {
         const strategies = await backend.getStrategyConfigs(app)
         const activeStrategies = strategies.filter((s) => s.enabled)
         totalStrategies += activeStrategies.length
+        const accountSnapshot = activeStrategies.length > 0
+            ? await createStrategyRuntimeAccountSnapshot(app)
+            : undefined
 
         for (const strategy of activeStrategies) {
-            await registerStrategyWithScheduler(scheduler, app, strategy)
+            await registerStrategyWithScheduler(scheduler, app, strategy, accountSnapshot)
         }
 
         logger.info(`Loaded ${activeStrategies.length} strategies for ${app}`)
