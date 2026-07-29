@@ -25,6 +25,7 @@ import {
 } from "./provider-sync"
 import { writeHeartbeatSnapshot } from "./health-write"
 import {
+    createStrategyRuntimeAccountSnapshot,
     registerStrategyWithScheduler,
     resolveStrategyRuntimeState,
     syncStrategyEntryChanged,
@@ -195,10 +196,13 @@ export async function reconcileStrategies(scheduler: Scheduler): Promise<void> {
         }
 
         syncStrategies[app] = currentEntries.filter((entry) => enabledIds.has(entry.strategy._id))
+        const accountSnapshot = enabledStrategies.length > 0
+            ? await createStrategyRuntimeAccountSnapshot(app)
+            : undefined
 
         for (const strategy of enabledStrategies) {
             if (!registered.has(strategy._id)) {
-                await registerStrategyWithScheduler(scheduler, app, strategy)
+                await registerStrategyWithScheduler(scheduler, app, strategy, accountSnapshot)
                 logger.info("Registered newly enabled strategy", {
                     strategyId: strategy._id,
                     name: strategy.name,
@@ -210,7 +214,7 @@ export async function reconcileStrategies(scheduler: Scheduler): Promise<void> {
             const currentEntry = syncStrategies[app]?.find(
                 (entry) => entry.strategy._id === strategy._id
             )
-            const nextEntry = await resolveStrategyRuntimeState(app, strategy)
+            const nextEntry = await resolveStrategyRuntimeState(app, strategy, accountSnapshot)
 
             if (!currentEntry) {
                 upsertSyncStrategyEntry(app, nextEntry)

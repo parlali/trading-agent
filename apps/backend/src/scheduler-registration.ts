@@ -1,6 +1,5 @@
-import type { StoredStrategy } from "@valiq-trading/convex"
+import type { StoredAccount, StoredStrategy } from "@valiq-trading/convex"
 import {
-    buildAccountSecretKeyMap,
     resolveAccountScopedSecretKeys,
     validatePolicy,
     type Scheduler,
@@ -16,31 +15,31 @@ import {
     syncStrategies,
 } from "./state"
 import { runStrategy } from "./scheduler-runner"
+import {
+    clearStrategySecretCache,
+    resolveCachedStrategySecrets,
+} from "./strategy-runtime-secret-cache"
+
+export { invalidateStrategySecretCacheForAccount } from "./strategy-runtime-secret-cache"
 
 export const pendingManualTriggers = new Set<string>()
-const STRATEGY_RUNTIME_CACHE_TTL_MS = 60 * 60 * 1000
 
-type CachedStrategyRuntimeState = {
-    app: VenueApp
-    accountId: string
-    versionSignal: number
-    resolvedAt: number
-    entry: SyncStrategyEntry
-}
+export type StrategyRuntimeAccountSnapshot = ReadonlyMap<string, StoredAccount>
 
-const strategyRuntimeStateCache = new Map<string, CachedStrategyRuntimeState>()
+const pendingAccountSnapshots = new Map<VenueApp, Promise<StrategyRuntimeAccountSnapshot>>()
 
 export async function registerStrategyWithScheduler(
     scheduler: Scheduler,
     app: VenueApp,
-    strategy: StoredStrategy
+    strategy: StoredStrategy,
+    accountSnapshot?: StrategyRuntimeAccountSnapshot
 ): Promise<void> {
     const plugin = plugins[app]
     if (!plugin) {
         logger.warn("No plugin registered for app, skipping strategy", { app, strategyId: strategy._id })
         return
     }
-    const runtimeEntry = await resolveStrategyRuntimeState(app, strategy)
+    const runtimeEntry = await resolveStrategyRuntimeState(app, strategy, accountSnapshot)
     upsertSyncStrategyEntry(app, runtimeEntry)
 
     scheduler.register({
@@ -103,20 +102,9 @@ export async function registerStrategyWithScheduler(
 
 export async function resolveStrategyRuntimeState(
     app: VenueApp,
-    strategy: StoredStrategy
+    strategy: StoredStrategy,
+    accountSnapshot?: StrategyRuntimeAccountSnapshot
 ): Promise<SyncStrategyEntry> {
-    const cacheKey = buildStrategyRuntimeCacheKey(app, strategy)
-    const versionSignal = resolveStrategyVersionSignal(strategy)
-    const now = Date.now()
-    const cached = strategyRuntimeStateCache.get(cacheKey)
-    if (
-        cached &&
-        cached.versionSignal === versionSignal &&
-        now - cached.resolvedAt < STRATEGY_RUNTIME_CACHE_TTL_MS
-    ) {
-        return cached.entry
-    }
-
     const plugin = plugins[app]
     if (!plugin) {
         throw new Error(`No plugin registered for ${app}`)
@@ -124,7 +112,8 @@ export async function resolveStrategyRuntimeState(
 
     const policy = validatePolicy(app, strategy.policy)
     const additionalSecretKeys = plugin.resolveAdditionalSecretKeys?.(policy) ?? []
-    const account = await backend.getAccountByAppAndId(app, strategy.accountId)
+    const accountsById = accountSnapshot ?? await createStrategyRuntimeAccountSnapshot(app)
+    const account = accountsById.get(strategy.accountId) ?? null
     if (!account) {
         throw new Error(`Strategy ${strategy.name} (${strategy._id}) references missing account ${app}:${strategy.accountId}`)
     }
@@ -136,60 +125,50 @@ export async function resolveStrategyRuntimeState(
         ...plugin.resolveSecretKeys(),
         ...additionalSecretKeys,
     ])
-    const accountSecretKeyMap = buildAccountSecretKeyMap(account, accountScopedKeys)
-    const prefixedAccountSecrets = accountSecretKeyMap.size > 0
-        ? await backend.resolveSecrets(Array.from(accountSecretKeyMap.values()))
-        : {}
     const accountScopedKeySet = new Set(accountScopedKeys)
     const additionalSharedSecretKeys = additionalSecretKeys.filter((key) => !accountScopedKeySet.has(key))
-    const additionalSecrets =
-        additionalSharedSecretKeys.length > 0
-            ? await backend.resolveSecrets(additionalSharedSecretKeys)
-            : {}
-    const accountSecrets = Object.fromEntries(
-        Array.from(accountSecretKeyMap.entries()).map(([canonicalKey, prefixedKey]) => [
-            canonicalKey,
-            prefixedAccountSecrets[prefixedKey] ?? null,
-        ])
-    )
+    const strategySecrets = await resolveCachedStrategySecrets({
+        app,
+        strategy,
+        account,
+        accountScopedKeys,
+        additionalSharedSecretKeys,
+    })
 
-    const entry = {
+    return {
         strategy,
         account,
         policy,
         secrets: {
             ...resolvedSecrets,
-            ...additionalSecrets,
-            ...accountSecrets,
+            ...strategySecrets,
         },
     }
-    strategyRuntimeStateCache.set(cacheKey, {
-        app,
-        accountId: account.accountId,
-        versionSignal,
-        resolvedAt: now,
-        entry,
-    })
-
-    return entry
 }
 
-export function invalidateStrategyRuntimeCacheForAccount(
-    app: VenueApp,
-    accountId: string
-): number {
-    let invalidated = 0
-
-    for (const [cacheKey, cached] of strategyRuntimeStateCache) {
-        if (cached.app !== app || cached.accountId !== accountId) {
-            continue
-        }
-
-        strategyRuntimeStateCache.delete(cacheKey)
-        invalidated++
+export async function createStrategyRuntimeAccountSnapshot(
+    app: VenueApp
+): Promise<StrategyRuntimeAccountSnapshot> {
+    const pending = pendingAccountSnapshots.get(app)
+    if (pending) {
+        return await pending
     }
 
-    return invalidated
+    const read = backend.getAccounts(app).then((accounts) => indexAccountsById(app, accounts))
+    pendingAccountSnapshots.set(app, read)
+
+    try {
+        return await read
+    } finally {
+        if (pendingAccountSnapshots.get(app) === read) {
+            pendingAccountSnapshots.delete(app)
+        }
+    }
+}
+
+export function clearStrategyRuntimeResolutionCaches(): void {
+    pendingAccountSnapshots.clear()
+    clearStrategySecretCache()
 }
 
 export function upsertSyncStrategyEntry(
@@ -230,16 +209,28 @@ async function sleep(delayMs: number): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, delayMs))
 }
 
+function indexAccountsById(
+    app: VenueApp,
+    accounts: StoredAccount[]
+): StrategyRuntimeAccountSnapshot {
+    const indexed = new Map<string, StoredAccount>()
+
+    for (const account of accounts) {
+        if (account.app !== app) {
+            throw new Error(`Account batch for ${app} included ${account.app}:${account.accountId}`)
+        }
+        if (indexed.has(account.accountId)) {
+            throw new Error(`Account batch for ${app} included duplicate account ${account.accountId}`)
+        }
+
+        indexed.set(account.accountId, account)
+    }
+
+    return indexed
+}
+
 function stableStringify(value: unknown): string {
     return JSON.stringify(sortJsonValue(value))
-}
-
-function buildStrategyRuntimeCacheKey(app: VenueApp, strategy: StoredStrategy): string {
-    return `${app}:${strategy._id}`
-}
-
-function resolveStrategyVersionSignal(strategy: StoredStrategy): number {
-    return strategy.updatedAt ?? strategy._creationTime
 }
 
 function sortJsonValue(value: unknown): unknown {

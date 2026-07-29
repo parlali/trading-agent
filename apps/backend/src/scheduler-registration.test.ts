@@ -3,7 +3,7 @@ import type { StoredAccount, StoredStrategy } from "@valiq-trading/convex"
 
 const mocks = vi.hoisted(() => {
     const backend = {
-        getAccountByAppAndId: vi.fn(),
+        getAccounts: vi.fn(),
         resolveSecrets: vi.fn(),
     }
     const plugin = {
@@ -39,10 +39,22 @@ vi.mock("@valiq-trading/core", () => ({
         account: StoredAccount,
         keys: string[]
     ) => new Map(keys.map((key) => [key, `${account.credentialEnvPrefix}_${key}`])),
+    compareCodeUnits: (left: string, right: string) => {
+        if (left < right) {
+            return -1
+        }
+        if (left > right) {
+            return 1
+        }
+
+        return 0
+    },
     resolveAccountScopedSecretKeys: (
         _app: string,
         keys: string[]
     ) => keys.filter((key) => key.startsWith("ACCOUNT_")),
+    sha256Hex: (value: string) => `hash:${value}`,
+    stableJsonKey: (value: unknown) => JSON.stringify(value),
     validatePolicy: (
         _app: string,
         policy: Record<string, unknown>
@@ -54,19 +66,21 @@ vi.mock("./scheduler-runner", () => ({
 }))
 
 import {
-    invalidateStrategyRuntimeCacheForAccount,
+    clearStrategyRuntimeResolutionCaches,
+    createStrategyRuntimeAccountSnapshot,
+    invalidateStrategySecretCacheForAccount,
     resolveStrategyRuntimeState,
 } from "./scheduler-registration"
 
-describe("strategy runtime state cache", () => {
+describe("strategy runtime state resolution", () => {
     beforeEach(() => {
         vi.useRealTimers()
-        invalidateStrategyRuntimeCacheForAccount("mt5", "account-mt5")
-        mocks.backend.getAccountByAppAndId.mockReset()
+        clearStrategyRuntimeResolutionCaches()
+        mocks.backend.getAccounts.mockReset()
         mocks.backend.resolveSecrets.mockReset()
         mocks.plugin.resolveSecretKeys.mockReset()
         mocks.plugin.resolveAdditionalSecretKeys.mockReset()
-        mocks.backend.getAccountByAppAndId.mockResolvedValue(createAccount())
+        mocks.backend.getAccounts.mockResolvedValue([createAccount()])
         mocks.backend.resolveSecrets.mockImplementation(async (keys: string[]) =>
             Object.fromEntries(keys.map((key) => [key, `${key}:resolved`]))
         )
@@ -77,55 +91,116 @@ describe("strategy runtime state cache", () => {
         ])
     })
 
-    it("reuses account config and strategy secrets within the TTL for an unchanged strategy version", async () => {
+    it("reads accounts fresh but caches resolved strategy secrets within the TTL", async () => {
         vi.useFakeTimers()
         vi.setSystemTime(1_000)
-        const strategy = createStrategy("strategy-cache-hit", 100)
+        const strategy = createStrategy("strategy-resolve-repeat", 100)
+
+        mocks.backend.resolveSecrets.mockImplementation(async (keys: string[]) =>
+            Object.fromEntries(keys.map((key) => [key, `${key}:initial`]))
+        )
 
         const first = await resolveStrategyRuntimeState("mt5", strategy)
         const second = await resolveStrategyRuntimeState("mt5", strategy)
 
-        expect(second).toBe(first)
-        expect(mocks.backend.getAccountByAppAndId).toHaveBeenCalledTimes(1)
+        expect(second).not.toBe(first)
+        expect(first.secrets).toMatchObject({
+            GLOBAL_SECRET: "global-secret",
+            ACCOUNT_BASE_SECRET: "MT5_ACCOUNT_ACCOUNT_BASE_SECRET:initial",
+            ACCOUNT_EXTRA_SECRET: "MT5_ACCOUNT_ACCOUNT_EXTRA_SECRET:initial",
+            SHARED_EXTRA_SECRET: "SHARED_EXTRA_SECRET:initial",
+        })
+        expect(second.secrets).toMatchObject(first.secrets)
+
+        expect(mocks.backend.getAccounts).toHaveBeenCalledTimes(2)
+        expect(mocks.backend.getAccounts).toHaveBeenNthCalledWith(1, "mt5")
+        expect(mocks.backend.getAccounts).toHaveBeenNthCalledWith(2, "mt5")
+        expect(mocks.backend.resolveSecrets).toHaveBeenCalledTimes(1)
+        expect(mocks.backend.resolveSecrets).toHaveBeenNthCalledWith(1, [
+            "MT5_ACCOUNT_ACCOUNT_BASE_SECRET",
+            "MT5_ACCOUNT_ACCOUNT_EXTRA_SECRET",
+            "SHARED_EXTRA_SECRET",
+        ])
+
+        mocks.backend.resolveSecrets.mockImplementation(async (keys: string[]) =>
+            Object.fromEntries(keys.map((key) => [key, `${key}:rotated`]))
+        )
+        vi.setSystemTime(15 * 60 * 1000 + 1_001)
+
+        const third = await resolveStrategyRuntimeState("mt5", strategy)
+
+        expect(third.secrets).toMatchObject({
+            ACCOUNT_BASE_SECRET: "MT5_ACCOUNT_ACCOUNT_BASE_SECRET:rotated",
+            ACCOUNT_EXTRA_SECRET: "MT5_ACCOUNT_ACCOUNT_EXTRA_SECRET:rotated",
+            SHARED_EXTRA_SECRET: "SHARED_EXTRA_SECRET:rotated",
+        })
+        expect(mocks.backend.getAccounts).toHaveBeenCalledTimes(3)
         expect(mocks.backend.resolveSecrets).toHaveBeenCalledTimes(2)
-
-        vi.setSystemTime(60 * 60 * 1000 + 1_001)
-        await resolveStrategyRuntimeState("mt5", strategy)
-
-        expect(mocks.backend.getAccountByAppAndId).toHaveBeenCalledTimes(2)
-        expect(mocks.backend.resolveSecrets).toHaveBeenCalledTimes(4)
     })
 
-    it("invalidates when the strategy version changes or the account cache is dropped", async () => {
-        vi.useFakeTimers()
-        vi.setSystemTime(2_000)
-        const strategy = createStrategy("strategy-cache-version", 100)
+    it("fails closed when the account is disabled after a previous resolution", async () => {
+        const strategy = createStrategy("strategy-disabled-account", 100)
+        mocks.backend.getAccounts
+            .mockResolvedValueOnce([createAccount()])
+            .mockResolvedValueOnce([{
+                ...createAccount(),
+                status: "disabled",
+            }])
 
         await resolveStrategyRuntimeState("mt5", strategy)
-        await resolveStrategyRuntimeState("mt5", {
-            ...strategy,
-            updatedAt: 101,
-        })
 
-        expect(mocks.backend.getAccountByAppAndId).toHaveBeenCalledTimes(2)
+        await expect(resolveStrategyRuntimeState("mt5", strategy)).rejects.toThrow(
+            "references inactive account mt5:account-mt5"
+        )
+        expect(mocks.backend.getAccounts).toHaveBeenCalledTimes(2)
+        expect(mocks.backend.resolveSecrets).toHaveBeenCalledTimes(1)
+    })
 
-        expect(invalidateStrategyRuntimeCacheForAccount("mt5", strategy.accountId)).toBe(1)
-        await resolveStrategyRuntimeState("mt5", {
-            ...strategy,
-            updatedAt: 101,
-        })
+    it("drops cached strategy secrets when account validation fails", async () => {
+        const strategy = createStrategy("strategy-validation-drop", 100)
 
-        expect(mocks.backend.getAccountByAppAndId).toHaveBeenCalledTimes(3)
-        expect(mocks.backend.resolveSecrets).toHaveBeenCalledTimes(6)
+        await resolveStrategyRuntimeState("mt5", strategy)
+        expect(invalidateStrategySecretCacheForAccount("mt5", "account-mt5")).toBe(1)
+        await resolveStrategyRuntimeState("mt5", strategy)
+
+        expect(mocks.backend.getAccounts).toHaveBeenCalledTimes(2)
+        expect(mocks.backend.resolveSecrets).toHaveBeenCalledTimes(2)
+    })
+
+    it("resolves a fresh account batch once for multiple strategies", async () => {
+        const firstStrategy = createStrategy("strategy-batch-first", 100, "account-mt5")
+        const secondStrategy = createStrategy("strategy-batch-second", 100, "account-other")
+
+        mocks.backend.getAccounts.mockResolvedValue([
+            createAccount("account-mt5", "MT5_ACCOUNT"),
+            createAccount("account-other", "MT5_OTHER"),
+        ])
+
+        const accountSnapshot = await createStrategyRuntimeAccountSnapshot("mt5")
+        const entries = [
+            await resolveStrategyRuntimeState("mt5", firstStrategy, accountSnapshot),
+            await resolveStrategyRuntimeState("mt5", secondStrategy, accountSnapshot),
+        ]
+
+        expect(entries.map((entry) => entry.account.accountId)).toEqual([
+            "account-mt5",
+            "account-other",
+        ])
+        expect(mocks.backend.getAccounts).toHaveBeenCalledTimes(1)
+        expect(mocks.backend.resolveSecrets).toHaveBeenCalledTimes(2)
     })
 })
 
-function createStrategy(id: string, updatedAt: number): StoredStrategy {
+function createStrategy(
+    id: string,
+    updatedAt: number,
+    accountId = "account-mt5"
+): StoredStrategy {
     return {
         _id: id as StoredStrategy["_id"],
         _creationTime: 1,
         app: "mt5",
-        accountId: "account-mt5",
+        accountId,
         name: "MT5 cache test",
         enabled: true,
         schedule: "*/5 * * * *",
@@ -136,14 +211,17 @@ function createStrategy(id: string, updatedAt: number): StoredStrategy {
     }
 }
 
-function createAccount(): StoredAccount {
+function createAccount(
+    accountId = "account-mt5",
+    credentialEnvPrefix = "MT5_ACCOUNT"
+): StoredAccount {
     return {
-        _id: "account-doc-mt5" as StoredAccount["_id"],
+        _id: `account-doc-${accountId}` as StoredAccount["_id"],
         _creationTime: 1,
         app: "mt5",
-        accountId: "account-mt5",
+        accountId,
         label: "MT5",
-        credentialEnvPrefix: "MT5_ACCOUNT",
+        credentialEnvPrefix,
         status: "active",
         createdAt: 1,
         updatedAt: 1,

@@ -10,7 +10,6 @@ import {
     KNOWN_PROVIDER_CLOSE_LOOKBACK_MS,
     orderClaimInstrumentsContain,
 } from "./portfolioOrderClosureReconciliation"
-import { computeHash } from "./portfolioUtils"
 import type {
     PortfolioMutationCtx,
     ReconciliationWriteStats,
@@ -28,6 +27,7 @@ type ProviderWorkingOrderRow = Omit<Doc<"provider_working_orders">, "_id" | "_cr
 const PROVIDER_POSITION_HISTORY_RETENTION_MS = 24 * 60 * 60 * 1000
 const PROVIDER_POSITION_HISTORY_APPS = new Set<Doc<"strategies">["app"]>(["mt5", "okx-swap", "alpaca-options"])
 const PROVIDER_POSITION_UNCHANGED_SYNCED_AT_STALE_MS = 60 * 60 * 1000
+const PROVIDER_WORKING_ORDER_UNCHANGED_SYNCED_AT_STALE_MS = 60 * 60 * 1000
 
 const PROVIDER_POSITION_COMPARE_FIELDS = [
     "positionKey",
@@ -115,7 +115,7 @@ export async function upsertProviderPositionRows(
         }
 
         const reappearedAfterSuspectSnapshot = current.missingSinceSyncAt !== undefined
-        if (!hasContentHashChange(current, row, PROVIDER_POSITION_COMPARE_FIELDS)) {
+        if (!hasFieldChange(current, row, PROVIDER_POSITION_COMPARE_FIELDS)) {
             if (shouldRefreshUnchangedProviderPositionSyncedAt(current, row)) {
                 await ctx.db.patch(current._id, { syncedAt: row.syncedAt })
             }
@@ -449,7 +449,10 @@ export async function upsertProviderWorkingOrderRows(
             continue
         }
 
-        if (!hasContentHashChange(current, row, PROVIDER_WORKING_ORDER_COMPARE_FIELDS)) {
+        if (!hasFieldChange(current, row, PROVIDER_WORKING_ORDER_COMPARE_FIELDS)) {
+            if (shouldRefreshUnchangedProviderWorkingOrderSyncedAt(current, row)) {
+                await ctx.db.patch(current._id, { syncedAt: row.syncedAt })
+            }
             stats.unchanged++
             continue
         }
@@ -843,19 +846,20 @@ function createWriteStats(): ReconciliationWriteStats {
     }
 }
 
-function hasContentHashChange<TCurrent, TRow, K extends keyof TCurrent & keyof TRow>(
+function hasFieldChange<TCurrent, TRow, K extends keyof TCurrent & keyof TRow>(
     current: TCurrent,
     row: TRow,
     fields: readonly K[]
 ): boolean {
-    return computeContentHash(current, fields) !== computeContentHash(row, fields)
+    return fields.some((field) => !fieldValuesEqual(current[field] as unknown, row[field] as unknown))
 }
 
-function computeContentHash<TRow, K extends keyof TRow>(
-    row: TRow,
-    fields: readonly K[]
-): string {
-    return computeHash(pickFields(row, fields))
+function fieldValuesEqual(left: unknown, right: unknown): boolean {
+    if (Array.isArray(left) && Array.isArray(right)) {
+        return left.length === right.length && left.every((value, index) => value === right[index])
+    }
+
+    return left === right
 }
 
 function shouldRefreshUnchangedProviderPositionSyncedAt(
@@ -863,6 +867,13 @@ function shouldRefreshUnchangedProviderPositionSyncedAt(
     row: Pick<ProviderPositionRow, "syncedAt">
 ): boolean {
     return row.syncedAt - current.syncedAt >= PROVIDER_POSITION_UNCHANGED_SYNCED_AT_STALE_MS
+}
+
+function shouldRefreshUnchangedProviderWorkingOrderSyncedAt(
+    current: Pick<Doc<"provider_working_orders">, "syncedAt">,
+    row: Pick<ProviderWorkingOrderRow, "syncedAt">
+): boolean {
+    return row.syncedAt - current.syncedAt >= PROVIDER_WORKING_ORDER_UNCHANGED_SYNCED_AT_STALE_MS
 }
 
 function pickFields<TRow, K extends keyof TRow>(
