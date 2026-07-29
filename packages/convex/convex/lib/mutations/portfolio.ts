@@ -203,6 +203,7 @@ export const reconcileProviderPortfolio = mutation({
         const closedPersistedOrders: string[] = []
         const matchedActiveOrderIds = new Set<string>()
         const matchedWorkingOrdersByLiveId = new Map<string, OrderDoc>()
+        let liveOrderClaimsReconciled = false
 
         for (const liveOrder of args.workingOrders) {
             const existingOrder = resolveLiveWorkingOrderMatch({
@@ -240,6 +241,7 @@ export const reconcileProviderPortfolio = mutation({
 
             const strategy = strategyMap.get(String(existingOrder.strategyId))
             if (strategy) {
+                liveOrderClaimsReconciled = true
                 await reconcileOrderInstrumentClaim(ctx, {
                     strategyId: existingOrder.strategyId,
                     app: strategy.app,
@@ -270,13 +272,14 @@ export const reconcileProviderPortfolio = mutation({
             existingClaims: initialClaims,
         })
 
-        const refreshedClaims = claimRepairScan.repaired
+        const claimsWrittenThisRun = claimRepairScan.repaired || liveOrderClaimsReconciled
+        const refreshedClaims = claimsWrittenThisRun
             ? await ctx.db
                 .query("instrument_claims")
                 .withIndex("by_app_account", (q) => q.eq("app", args.app).eq("accountId", args.accountId))
                 .collect()
             : initialClaims
-        if (claimRepairScan.repaired) {
+        if (claimsWrittenThisRun) {
             await addReferencedStrategiesToMap(ctx, strategyMap, refreshedClaims.map((claim) => claim.strategyId))
         }
         strategies = Array.from(strategyMap.values())

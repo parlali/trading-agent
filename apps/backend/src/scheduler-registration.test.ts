@@ -138,6 +138,39 @@ describe("strategy runtime state resolution", () => {
         expect(mocks.backend.resolveSecrets).toHaveBeenCalledTimes(2)
     })
 
+    it("a run-trigger resolution bypasses the cache and sees a rotated secret immediately", async () => {
+        const strategy = createStrategy("strategy-fresh-run", 100)
+
+        mocks.backend.resolveSecrets.mockImplementation(async (keys: string[]) =>
+            Object.fromEntries(keys.map((key) => [key, `${key}:initial`]))
+        )
+        await resolveStrategyRuntimeState("mt5", strategy)
+
+        mocks.backend.resolveSecrets.mockImplementation(async (keys: string[]) =>
+            Object.fromEntries(keys.map((key) => [key, `${key}:rotated`]))
+        )
+
+        const stale = await resolveStrategyRuntimeState("mt5", strategy)
+        expect(stale.secrets).toMatchObject({
+            ACCOUNT_BASE_SECRET: "MT5_ACCOUNT_ACCOUNT_BASE_SECRET:initial",
+        })
+        expect(mocks.backend.resolveSecrets).toHaveBeenCalledTimes(1)
+
+        const fresh = await resolveStrategyRuntimeState("mt5", strategy, undefined, {
+            freshSecrets: true,
+        })
+        expect(fresh.secrets).toMatchObject({
+            ACCOUNT_BASE_SECRET: "MT5_ACCOUNT_ACCOUNT_BASE_SECRET:rotated",
+        })
+        expect(mocks.backend.resolveSecrets).toHaveBeenCalledTimes(2)
+
+        const afterFresh = await resolveStrategyRuntimeState("mt5", strategy)
+        expect(afterFresh.secrets).toMatchObject({
+            ACCOUNT_BASE_SECRET: "MT5_ACCOUNT_ACCOUNT_BASE_SECRET:rotated",
+        })
+        expect(mocks.backend.resolveSecrets).toHaveBeenCalledTimes(2)
+    })
+
     it("fails closed when the account is disabled after a previous resolution", async () => {
         const strategy = createStrategy("strategy-disabled-account", 100)
         mocks.backend.getAccounts

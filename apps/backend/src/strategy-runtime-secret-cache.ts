@@ -25,6 +25,7 @@ export async function resolveCachedStrategySecrets(args: {
     account: StoredAccount
     accountScopedKeys: string[]
     additionalSharedSecretKeys: string[]
+    fresh?: boolean
 }): Promise<Record<string, string | null>> {
     const accountSecretKeyMap = buildAccountSecretKeyMap(args.account, args.accountScopedKeys)
     const cacheKey = buildStrategySecretCacheKey({
@@ -35,9 +36,15 @@ export async function resolveCachedStrategySecrets(args: {
         additionalSharedSecretKeys: args.additionalSharedSecretKeys,
     })
     const now = Date.now()
+    pruneExpiredStrategySecretEntries(now)
     const cached = strategySecretsCache.get(cacheKey)
 
-    if (cached && now >= cached.resolvedAt && now - cached.resolvedAt < STRATEGY_SECRET_CACHE_TTL_MS) {
+    if (
+        args.fresh !== true &&
+        cached &&
+        now >= cached.resolvedAt &&
+        now - cached.resolvedAt < STRATEGY_SECRET_CACHE_TTL_MS
+    ) {
         return { ...cached.secrets }
     }
 
@@ -99,6 +106,14 @@ export function invalidateStrategySecretCacheForAccount(
 
 export function clearStrategySecretCache(): void {
     strategySecretsCache.clear()
+}
+
+function pruneExpiredStrategySecretEntries(now: number): void {
+    for (const [cacheKey, cached] of strategySecretsCache) {
+        if (now < cached.resolvedAt || now - cached.resolvedAt >= STRATEGY_SECRET_CACHE_TTL_MS) {
+            strategySecretsCache.delete(cacheKey)
+        }
+    }
 }
 
 function buildStrategySecretCacheKey(args: {

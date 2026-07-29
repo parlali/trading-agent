@@ -67,7 +67,9 @@ export async function registerStrategyWithScheduler(
                 return
             }
 
-            const latestRuntimeEntry = await resolveStrategyRuntimeState(app, latestStrategy)
+            const latestRuntimeEntry = await resolveStrategyRuntimeState(app, latestStrategy, undefined, {
+                freshSecrets: true,
+            })
             upsertSyncStrategyEntry(app, latestRuntimeEntry)
 
             const isManual = pendingManualTriggers.delete(strategy._id)
@@ -103,7 +105,8 @@ export async function registerStrategyWithScheduler(
 export async function resolveStrategyRuntimeState(
     app: VenueApp,
     strategy: StoredStrategy,
-    accountSnapshot?: StrategyRuntimeAccountSnapshot
+    accountSnapshot?: StrategyRuntimeAccountSnapshot,
+    options?: { freshSecrets?: boolean }
 ): Promise<SyncStrategyEntry> {
     const plugin = plugins[app]
     if (!plugin) {
@@ -133,6 +136,7 @@ export async function resolveStrategyRuntimeState(
         account,
         accountScopedKeys,
         additionalSharedSecretKeys,
+        fresh: options?.freshSecrets === true,
     })
 
     return {
