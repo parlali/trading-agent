@@ -269,6 +269,7 @@ describe("Convex Alpaca SPY replay", () => {
         const vertical = "VS:BEAR_CALL_CREDIT:SPY:2026-05-01:SPY260501C00720000|SPY260501C00721000"
         const firstSyncAt = Date.parse("2026-05-01T15:00:00.000Z")
         const secondSyncAt = firstSyncAt + 300_000
+        const thirdSyncAt = secondSyncAt + 300_000
         const db = new FakeDb({
             strategies: [{
                 _id: strategyId,
@@ -283,9 +284,10 @@ describe("Convex Alpaca SPY replay", () => {
                 _id: "provider-position-vanish",
                 app: "alpaca-options",
                 accountId,
-                positionKey: `alpaca-options:${vertical}:short`,
+                positionKey: `${vertical}:short`,
                 strategyId,
                 ownershipStatus: "owned",
+                expectedExternal: false,
                 instrument: vertical,
                 side: "short",
                 quantity: 1,
@@ -324,9 +326,35 @@ describe("Convex Alpaca SPY replay", () => {
         vi.useFakeTimers()
         try {
             vi.setSystemTime(firstSyncAt)
-            await callRegistered(reconcileProviderPortfolio, ctx, reconcileArgs)
+            await callRegistered(reconcileProviderPortfolio, ctx, {
+                ...reconcileArgs,
+                positions: [{
+                    instrument: vertical,
+                    side: "short",
+                    quantity: 1,
+                    entryPrice: 0.45,
+                }],
+            })
+
+            expect(db.rows.provider_positions).toEqual([
+                expect.objectContaining({
+                    positionKey: `${vertical}:short`,
+                    syncedAt: firstSyncAt - 60_000,
+                }),
+            ])
 
             vi.setSystemTime(secondSyncAt)
+            await callRegistered(reconcileProviderPortfolio, ctx, reconcileArgs)
+
+            expect(db.rows.provider_positions).toEqual([
+                expect.objectContaining({
+                    positionKey: `${vertical}:short`,
+                    syncedAt: firstSyncAt - 60_000,
+                    missingSinceSyncAt: secondSyncAt,
+                }),
+            ])
+
+            vi.setSystemTime(thirdSyncAt)
             await callRegistered(reconcileProviderPortfolio, ctx, reconcileArgs)
         } finally {
             vi.useRealTimers()

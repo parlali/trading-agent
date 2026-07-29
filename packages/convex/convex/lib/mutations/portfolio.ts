@@ -270,11 +270,15 @@ export const reconcileProviderPortfolio = mutation({
             existingClaims: initialClaims,
         })
 
-        const refreshedClaims = await ctx.db
-            .query("instrument_claims")
-            .withIndex("by_app_account", (q) => q.eq("app", args.app).eq("accountId", args.accountId))
-            .collect()
-        await addReferencedStrategiesToMap(ctx, strategyMap, refreshedClaims.map((claim) => claim.strategyId))
+        const refreshedClaims = claimRepairScan.repaired
+            ? await ctx.db
+                .query("instrument_claims")
+                .withIndex("by_app_account", (q) => q.eq("app", args.app).eq("accountId", args.accountId))
+                .collect()
+            : initialClaims
+        if (claimRepairScan.repaired) {
+            await addReferencedStrategiesToMap(ctx, strategyMap, refreshedClaims.map((claim) => claim.strategyId))
+        }
         strategies = Array.from(strategyMap.values())
         const refreshedClaimsByInstrument = buildClaimsByInstrument(refreshedClaims, strategyMap)
         const ownershipMismatches = new Set<string>()

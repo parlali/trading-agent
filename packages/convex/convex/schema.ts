@@ -293,6 +293,7 @@ export default defineSchema({
         .index("by_strategy_status_updated_at", ["strategyId", "status", "updatedAt"])
         .index("by_app_status", ["app", "status"])
         .index("by_app_account", ["app", "accountId"])
+        .index("by_app_account_status", ["app", "accountId", "status"])
         .index("by_run", ["runId"]),
 
     order_identity_aliases: defineTable({

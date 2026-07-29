@@ -834,17 +834,21 @@ export async function listActiveOrdersForAccount(
     const [pending, partiallyFilled] = await Promise.all([
         ctx.db
             .query("orders")
-            .withIndex("by_app_status", (q) =>
-                q.eq("app", args.app).eq("status", "pending")
+            .withIndex("by_app_account_status", (q) =>
+                q.eq("app", args.app)
+                    .eq("accountId", args.accountId)
+                    .eq("status", "pending")
             )
             .collect(),
         ctx.db
             .query("orders")
-            .withIndex("by_app_status", (q) =>
-                q.eq("app", args.app).eq("status", "partially_filled")
+            .withIndex("by_app_account_status", (q) =>
+                q.eq("app", args.app)
+                    .eq("accountId", args.accountId)
+                    .eq("status", "partially_filled")
             )
             .collect(),
     ])
 
-    return [...pending, ...partiallyFilled].filter((order) => order.accountId === args.accountId)
+    return [...pending, ...partiallyFilled]
 }

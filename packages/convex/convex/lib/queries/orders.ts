@@ -10,6 +10,8 @@ import {
 import { venueAppV } from "../validators"
 
 const TRADE_HISTORY_RECENT_EVENT_LIMIT = 500
+const DEFAULT_STRATEGY_ORDER_HISTORY_LIMIT = 50
+const MAX_STRATEGY_ORDER_HISTORY_LIMIT = 500
 
 export const getOrderById = query({
     args: {
@@ -190,7 +192,7 @@ export const getStrategyOrderHistory = query({
     handler: async (ctx, args) => {
         await requireUserOrServiceToken(ctx, args.serviceToken)
 
-        const limit = Math.max(1, Math.min(args.limit ?? 200, 500))
+        const limit = resolveStrategyOrderHistoryLimit(args.limit)
         const statuses = [
             "filled",
             "partially_filled",
@@ -204,7 +206,7 @@ export const getStrategyOrderHistory = query({
             await Promise.all(
                 statuses.map(async (status) => await ctx.db
                     .query("orders")
-                    .withIndex("by_strategy_status", (q) =>
+                    .withIndex("by_strategy_status_updated_at", (q) =>
                         q.eq("strategyId", args.strategyId).eq("status", status)
                     )
                     .order("desc")
@@ -217,3 +219,15 @@ export const getStrategyOrderHistory = query({
             .slice(0, limit)
     },
 })
+
+function resolveStrategyOrderHistoryLimit(value: number | undefined): number {
+    if (value === undefined) {
+        return DEFAULT_STRATEGY_ORDER_HISTORY_LIMIT
+    }
+
+    if (!Number.isFinite(value)) {
+        throw new Error("getStrategyOrderHistory limit must be finite")
+    }
+
+    return Math.max(1, Math.min(Math.trunc(value), MAX_STRATEGY_ORDER_HISTORY_LIMIT))
+}

@@ -18,6 +18,17 @@ import {
 import { runStrategy } from "./scheduler-runner"
 
 export const pendingManualTriggers = new Set<string>()
+const STRATEGY_RUNTIME_CACHE_TTL_MS = 60 * 60 * 1000
+
+type CachedStrategyRuntimeState = {
+    app: VenueApp
+    accountId: string
+    versionSignal: number
+    resolvedAt: number
+    entry: SyncStrategyEntry
+}
+
+const strategyRuntimeStateCache = new Map<string, CachedStrategyRuntimeState>()
 
 export async function registerStrategyWithScheduler(
     scheduler: Scheduler,
@@ -94,6 +105,18 @@ export async function resolveStrategyRuntimeState(
     app: VenueApp,
     strategy: StoredStrategy
 ): Promise<SyncStrategyEntry> {
+    const cacheKey = buildStrategyRuntimeCacheKey(app, strategy)
+    const versionSignal = resolveStrategyVersionSignal(strategy)
+    const now = Date.now()
+    const cached = strategyRuntimeStateCache.get(cacheKey)
+    if (
+        cached &&
+        cached.versionSignal === versionSignal &&
+        now - cached.resolvedAt < STRATEGY_RUNTIME_CACHE_TTL_MS
+    ) {
+        return cached.entry
+    }
+
     const plugin = plugins[app]
     if (!plugin) {
         throw new Error(`No plugin registered for ${app}`)
@@ -130,7 +153,7 @@ export async function resolveStrategyRuntimeState(
         ])
     )
 
-    return {
+    const entry = {
         strategy,
         account,
         policy,
@@ -140,6 +163,33 @@ export async function resolveStrategyRuntimeState(
             ...accountSecrets,
         },
     }
+    strategyRuntimeStateCache.set(cacheKey, {
+        app,
+        accountId: account.accountId,
+        versionSignal,
+        resolvedAt: now,
+        entry,
+    })
+
+    return entry
+}
+
+export function invalidateStrategyRuntimeCacheForAccount(
+    app: VenueApp,
+    accountId: string
+): number {
+    let invalidated = 0
+
+    for (const [cacheKey, cached] of strategyRuntimeStateCache) {
+        if (cached.app !== app || cached.accountId !== accountId) {
+            continue
+        }
+
+        strategyRuntimeStateCache.delete(cacheKey)
+        invalidated++
+    }
+
+    return invalidated
 }
 
 export function upsertSyncStrategyEntry(
@@ -182,6 +232,14 @@ async function sleep(delayMs: number): Promise<void> {
 
 function stableStringify(value: unknown): string {
     return JSON.stringify(sortJsonValue(value))
+}
+
+function buildStrategyRuntimeCacheKey(app: VenueApp, strategy: StoredStrategy): string {
+    return `${app}:${strategy._id}`
+}
+
+function resolveStrategyVersionSignal(strategy: StoredStrategy): number {
+    return strategy.updatedAt ?? strategy._creationTime
 }
 
 function sortJsonValue(value: unknown): unknown {

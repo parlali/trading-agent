@@ -10,8 +10,22 @@ import type { App } from "@valiq-trading/core"
 import { STRATEGY_LLM_PROVIDER_SECRET_KEYS } from "../scheduler-provider-gates"
 import type { VenueApp } from "../types"
 import { writeHeartbeatSnapshot } from "../health-write"
+import { invalidateStrategyRuntimeCacheForAccount } from "../scheduler-registration"
+
+const RESOLVED_SECRETS_CACHE_TTL_MS = 60 * 60 * 1000
+
+let resolvedSecretsCache: {
+    resolvedAt: number
+    secrets: Record<string, string | null>
+} | undefined
 
 export async function resolveAllSecrets(): Promise<void> {
+    const now = Date.now()
+    if (resolvedSecretsCache && now - resolvedSecretsCache.resolvedAt < RESOLVED_SECRETS_CACHE_TTL_MS) {
+        setResolvedSecrets(resolvedSecretsCache.secrets)
+        return
+    }
+
     logger.info("Resolving secrets from Convex environment variables")
 
     const allKeys = new Set<string>()
@@ -27,6 +41,10 @@ export async function resolveAllSecrets(): Promise<void> {
     }
 
     const secrets = await backend.resolveSecrets(Array.from(allKeys))
+    resolvedSecretsCache = {
+        resolvedAt: now,
+        secrets,
+    }
     setResolvedSecrets(secrets)
 
     const resolved = Object.keys(secrets).filter((k) => secrets[k] !== null)
@@ -87,6 +105,8 @@ export async function validateAllEnvironments(apps: VenueApp[]): Promise<void> {
                 appValidated = false
                 const message = error instanceof Error ? error.message : String(error)
                 const previousError = accounts[accountId]?.error
+                invalidateStrategyRuntimeCacheForAccount(app, accountId)
+                invalidateResolvedSecretsCache()
                 failedAccounts.push({
                     accountId,
                     label: entry.account.label,
@@ -134,4 +154,8 @@ export async function validateAllEnvironments(apps: VenueApp[]): Promise<void> {
         })
     }
 
+}
+
+export function invalidateResolvedSecretsCache(): void {
+    resolvedSecretsCache = undefined
 }
