@@ -781,13 +781,15 @@ export class FiveSocketClient extends MT5Client {
         command: FiveSocketExecutionCommand
     ): Promise<FiveSocketExecutionCommand> {
         let current = command
+        let serverRetryAfterMs: number | undefined
 
         for (let attempt = 0; attempt < this.commandPollAttempts; attempt += 1) {
             if (current.outcome !== "commit_unknown") {
                 return current
             }
 
-            await sleep(this.commandPollDelayMs)
+            await sleep(Math.max(serverRetryAfterMs ?? 0, this.commandPollDelayMs))
+            serverRetryAfterMs = undefined
             current = await this.requestJson<FiveSocketExecutionCommand>(
                 "GET",
                 `/v1/accounts/${encodeURIComponent(accountId)}/execution/commands/${encodeURIComponent(current.commandId)}`,
@@ -796,6 +798,7 @@ export class FiveSocketClient extends MT5Client {
                     retry: true,
                     acceptStatuses: [200, 202],
                     bypassPacing: true,
+                    onAcceptedRetryAfter: (ms) => { serverRetryAfterMs = ms },
                 }
             )
         }
@@ -815,6 +818,7 @@ export class FiveSocketClient extends MT5Client {
             idempotencyKey?: string
             acceptStatuses?: number[]
             bypassPacing?: boolean
+            onAcceptedRetryAfter?: (retryAfterMs: number | undefined) => void
         }
     ): Promise<T> {
         if (options.budget === undefined && options.timeout === undefined) {
@@ -883,6 +887,12 @@ export class FiveSocketClient extends MT5Client {
 
                 if (response.status === 204) {
                     return undefined as T
+                }
+
+                if (response.status === 202 && options.onAcceptedRetryAfter) {
+                    options.onAcceptedRetryAfter(
+                        resolveRetryAfterMs(readRetryAfterHeader(response), undefined)
+                    )
                 }
 
                 return await readResponseJson<T>(response, requestBudget)
