@@ -8,6 +8,10 @@ import type {
 } from "@valiq-trading/core"
 import type { ConvexOrderPersistenceConfig } from "./client-types"
 import { createMachineConvexHttpContext } from "./convex-http"
+import {
+    formatConvexRetryError,
+    retryConvexMutation,
+} from "./convex-retry"
 
 const DEFAULT_WRITE_RETRY_ATTEMPTS = 3
 const DEFAULT_WRITE_RETRY_DELAY_MS = 100
@@ -48,16 +52,18 @@ export const createConvexOrderPersistenceAdapter = (
     const runRetriableMutation = async <T>(
         operation: "upsertOrder" | "logOrderTransition",
         run: () => Promise<T>
-    ): Promise<T> => await retryOrderWrite(
-        config.writeRetry?.attempts ?? DEFAULT_WRITE_RETRY_ATTEMPTS,
-        config.writeRetry?.delayMs ?? DEFAULT_WRITE_RETRY_DELAY_MS,
-        (attempt, attempts, error) => {
-            config.logger?.warn("Retrying Convex order persistence write after transient failure", {
-                operation,
-                attempt,
-                attempts,
-                error: formatRetryError(error),
-            })
+    ): Promise<T> => await retryConvexMutation(
+        {
+            attempts: config.writeRetry?.attempts ?? DEFAULT_WRITE_RETRY_ATTEMPTS,
+            delayMs: config.writeRetry?.delayMs ?? DEFAULT_WRITE_RETRY_DELAY_MS,
+            onRetry: (attempt, attempts, error) => {
+                config.logger?.warn("Retrying Convex order persistence write after transient failure", {
+                    operation,
+                    attempt,
+                    attempts,
+                    error: formatConvexRetryError(error),
+                })
+            },
         },
         async () => await runMutation(operation, run)
     )
@@ -95,7 +101,7 @@ export const createConvexOrderPersistenceAdapter = (
                         updatedAt: snapshot.updatedAt,
                         intent: snapshot.intent,
                         metadata: snapshot.metadata,
-                        lastTransitionSequence: snapshot.lastTransitionSequence,
+                        lastTransitionSequence: snapshot.lastTransitionSequence ?? 0,
                         polling: snapshot.polling,
                     })
                 )
@@ -158,54 +164,4 @@ export const createConvexOrderPersistenceAdapter = (
             )
         },
     }
-}
-
-async function retryOrderWrite<T>(
-    attempts: number,
-    delayMs: number,
-    onRetry: (attempt: number, attempts: number, error: unknown) => void,
-    run: () => Promise<T>
-): Promise<T> {
-    const boundedAttempts = Math.max(1, Math.min(Math.floor(attempts), 5))
-    let lastError: unknown
-
-    for (let attempt = 1; attempt <= boundedAttempts; attempt++) {
-        try {
-            return await run()
-        } catch (error) {
-            lastError = error
-            if (attempt >= boundedAttempts || !isRetryableConvexWriteError(error)) {
-                throw error
-            }
-
-            onRetry(attempt, boundedAttempts, error)
-            if (delayMs > 0) {
-                await sleep(delayMs)
-            }
-        }
-    }
-
-    throw lastError
-}
-
-function isRetryableConvexWriteError(error: unknown): boolean {
-    const message = error instanceof Error
-        ? error.message
-        : String(error)
-    const code = typeof error === "object" && error !== null && "code" in error
-        ? String((error as { code?: unknown }).code ?? "")
-        : ""
-
-    return /server error|internal server error|service unavailable|gateway timeout|too many requests|timeout|connectionrefused|network|fetch failed|unable to connect/i.test(message) ||
-        /ECONNRESET|ETIMEDOUT|ECONNREFUSED|EAI_AGAIN/i.test(code)
-}
-
-function formatRetryError(error: unknown): string {
-    return error instanceof Error
-        ? error.message
-        : String(error)
-}
-
-async function sleep(delayMs: number): Promise<void> {
-    await new Promise((resolve) => setTimeout(resolve, delayMs))
 }

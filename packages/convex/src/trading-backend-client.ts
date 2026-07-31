@@ -75,6 +75,13 @@ import type {
     TradingBackendClientConfig,
     ToolManifestEntry,
 } from "./client-types"
+import {
+    formatConvexRetryError,
+    retryConvexMutation,
+} from "./convex-retry"
+
+const DEFAULT_PROVIDER_RECONCILE_RETRY_ATTEMPTS = 3
+const DEFAULT_PROVIDER_RECONCILE_RETRY_DELAY_MS = 250
 
 function assertAgentLogRole(role: string): asserts role is AgentLogMemoryEntry["role"] {
     if (role !== "system" && role !== "user" && role !== "assistant" && role !== "tool") {
@@ -543,75 +550,91 @@ export const createTradingBackendClient = (config: string | TradingBackendClient
                 })
             )
         },
-    async reconcileProviderPortfolio(
-        app: Exclude<App, "backend">,
-        accountId: string,
-        venue: string,
-        source: ProviderPortfolioReconciliationResult["source"],
-        accountState: AccountState,
-        positions: Position[],
-        workingOrders: WorkingOrder[],
-        positionClosures: ProviderPositionClosure[] = [],
-        accountPnlEvents: AccountPnlEvent[] = []
-    ): Promise<ProviderPortfolioReconciliationResult> {
-            return await runWithTimeout(
-                "Convex mutation reconcileProviderPortfolio",
-                async () => await client.mutation(api.mutations.reconcileProviderPortfolio, {
-                    ...requireMachineAuth(),
-                    app,
-                    accountId,
-                    venue,
-                    source,
-                    accountState: {
-                        balance: accountState.balance,
-                        equity: accountState.equity,
-                        buyingPower: accountState.buyingPower,
-                        marginUsed: accountState.marginUsed,
-                        marginAvailable: accountState.marginAvailable,
-                        openPnl: accountState.openPnl,
-                        dayPnl: accountState.dayPnl,
+        async reconcileProviderPortfolio(
+            app: Exclude<App, "backend">,
+            accountId: string,
+            venue: string,
+            source: ProviderPortfolioReconciliationResult["source"],
+            accountState: AccountState,
+            positions: Position[],
+            workingOrders: WorkingOrder[],
+            positionClosures: ProviderPositionClosure[] = [],
+            accountPnlEvents: AccountPnlEvent[] = []
+        ): Promise<ProviderPortfolioReconciliationResult> {
+            return await retryConvexMutation(
+                {
+                    attempts: resolvedConfig.mutationRetry?.attempts ?? DEFAULT_PROVIDER_RECONCILE_RETRY_ATTEMPTS,
+                    delayMs: resolvedConfig.mutationRetry?.delayMs ?? DEFAULT_PROVIDER_RECONCILE_RETRY_DELAY_MS,
+                    onRetry: (attempt, attempts, error) => {
+                        resolvedConfig.logger?.warn("Retrying Convex provider reconciliation mutation after transient failure", {
+                            app,
+                            accountId,
+                            source,
+                            attempt,
+                            attempts,
+                            error: formatConvexRetryError(error),
+                        })
                     },
-                    positions: positions.map(toProviderPositionInput),
-                    workingOrders: workingOrders.map((order) => ({
-                        orderId: order.orderId,
-                        canonicalOrderId: order.canonicalOrderId,
-                        providerOrderId: order.providerOrderId,
-                        providerClientOrderId: order.providerClientOrderId,
-                        providerOrderAliases: order.providerOrderAliases,
-                        signedOrderFingerprint: order.signedOrderFingerprint,
-                        instrument: order.instrument,
-                        status: order.status,
-                        quantity: order.quantity,
-                        filledQuantity: order.filledQuantity,
-                        remainingQuantity: order.remainingQuantity,
-                        submittedAt: order.submittedAt,
-                        updatedAt: order.updatedAt,
-                        cancelAt: order.cancelAt,
-                        side: order.side,
-                        limitPrice: order.limitPrice,
-                        stopPrice: order.stopPrice,
-                        avgFillPrice: order.avgFillPrice,
-                        metadata: order.metadata ? JSON.stringify(order.metadata) : undefined,
-                    })),
-                    positionClosures: positionClosures.map((closure) => ({
-                        instrument: closure.instrument,
-                        providerPositionId: closure.providerPositionId,
-                        side: closure.side,
-                        quantity: closure.quantity,
-                        fillPrice: closure.fillPrice,
-                        closedAt: closure.closedAt,
-                        metadata: closure.metadata ? JSON.stringify(closure.metadata) : undefined,
-                    })),
-                    accountPnlEvents: accountPnlEvents.map((event) => ({
-                        providerEventId: event.providerEventId,
-                        eventType: event.eventType,
-                        instrument: event.instrument,
-                        amount: event.amount,
-                        currency: event.currency,
-                        occurredAt: event.occurredAt,
-                        metadata: event.metadata ? JSON.stringify(event.metadata) : undefined,
-                    })),
-                } as never) as ProviderPortfolioReconciliationResult
+                },
+                async () => await runWithTimeout(
+                    "Convex mutation reconcileProviderPortfolio",
+                    async () => await client.mutation(api.mutations.reconcileProviderPortfolio, {
+                        ...requireMachineAuth(),
+                        app,
+                        accountId,
+                        venue,
+                        source,
+                        accountState: {
+                            balance: accountState.balance,
+                            equity: accountState.equity,
+                            buyingPower: accountState.buyingPower,
+                            marginUsed: accountState.marginUsed,
+                            marginAvailable: accountState.marginAvailable,
+                            openPnl: accountState.openPnl,
+                            dayPnl: accountState.dayPnl,
+                        },
+                        positions: positions.map(toProviderPositionInput),
+                        workingOrders: workingOrders.map((order) => ({
+                            orderId: order.orderId,
+                            canonicalOrderId: order.canonicalOrderId,
+                            providerOrderId: order.providerOrderId,
+                            providerClientOrderId: order.providerClientOrderId,
+                            providerOrderAliases: order.providerOrderAliases,
+                            signedOrderFingerprint: order.signedOrderFingerprint,
+                            instrument: order.instrument,
+                            status: order.status,
+                            quantity: order.quantity,
+                            filledQuantity: order.filledQuantity,
+                            remainingQuantity: order.remainingQuantity,
+                            submittedAt: order.submittedAt,
+                            updatedAt: order.updatedAt,
+                            cancelAt: order.cancelAt,
+                            side: order.side,
+                            limitPrice: order.limitPrice,
+                            stopPrice: order.stopPrice,
+                            avgFillPrice: order.avgFillPrice,
+                            metadata: order.metadata ? JSON.stringify(order.metadata) : undefined,
+                        })),
+                        positionClosures: positionClosures.map((closure) => ({
+                            instrument: closure.instrument,
+                            providerPositionId: closure.providerPositionId,
+                            side: closure.side,
+                            quantity: closure.quantity,
+                            fillPrice: closure.fillPrice,
+                            closedAt: closure.closedAt,
+                            metadata: closure.metadata ? JSON.stringify(closure.metadata) : undefined,
+                        })),
+                        accountPnlEvents: accountPnlEvents.map((event) => ({
+                            providerEventId: event.providerEventId,
+                            eventType: event.eventType,
+                            instrument: event.instrument,
+                            amount: event.amount,
+                            currency: event.currency,
+                            occurredAt: event.occurredAt,
+                            metadata: event.metadata ? JSON.stringify(event.metadata) : undefined,
+                        })),
+                    } as never) as ProviderPortfolioReconciliationResult
+                )
             )
         },
         async refreshStrategyRiskState(args: RefreshStrategyRiskStateArgs): Promise<StrategyRiskStateRow> {

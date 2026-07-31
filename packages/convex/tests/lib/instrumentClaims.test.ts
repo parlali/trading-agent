@@ -3,8 +3,10 @@ import {
     getClaimInstrumentsForOrder,
     getOwnedInstrumentsByAppAccount,
     getProviderInstrumentClaimAliases,
+    reconcileOrderInstrumentClaim,
 } from "../../convex/lib/instrumentClaims"
 import { createFakeQueryDb } from "./fakeQueryDb"
+import { FakeMutationDb } from "./fakeMutationDb"
 
 describe("getClaimInstrumentsForOrder", () => {
     it("expands grouped Alpaca multi-leg claims into parent, raw-leg, and vertical aliases", () => {
@@ -161,6 +163,47 @@ describe("polymarket condition aliases", () => {
                 strategyId: "strategy-unclaimed",
                 accountId: "account-1",
             },
+        ])
+    })
+})
+
+describe("order claim reconciliation", () => {
+    it("does not rewrite unchanged active order claims", async () => {
+        const strategyId = "strategy-active-order"
+        const orderId = "order-active"
+        const instrument = "SPY260821C00500000"
+        const updatedAt = 1_787_321_600_000
+        const db = new FakeMutationDb({
+            instrument_claims: [{
+                _id: "claim-active-order",
+                strategyId,
+                app: "alpaca-options",
+                accountId: "primary",
+                instrument,
+                source: "order",
+                sourceId: `${orderId}:${instrument}`,
+                updatedAt,
+            }],
+        })
+
+        const changed = await reconcileOrderInstrumentClaim({ db } as never, {
+            strategyId: strategyId as never,
+            app: "alpaca-options",
+            accountId: "primary",
+            orderId,
+            instrument,
+            action: "entry",
+            status: "pending",
+            updatedAt: updatedAt + 1_000,
+        })
+
+        expect(changed).toBe(false)
+        expect(db.rows.instrument_claims).toEqual([
+            expect.objectContaining({
+                _id: "claim-active-order",
+                sourceId: `${orderId}:${instrument}`,
+                updatedAt,
+            }),
         ])
     })
 })

@@ -3,6 +3,13 @@ export type FakeMutationRow = {
     [key: string]: unknown
 }
 
+export type FakeMutationQueryLogEntry = {
+    table: string
+    index?: string
+    operation: "collect" | "first" | "unique" | "take" | "paginate"
+    filters: Array<{ field: string; operator: "eq" | "gt" | "gte" | "lt" | "lte"; value: unknown }>
+}
+
 type RegisteredFunctionForTest = {
     _handler: (ctx: never, args: never) => Promise<unknown>
 }
@@ -10,6 +17,7 @@ type RegisteredFunctionForTest = {
 export class FakeMutationDb {
     rows: Record<string, FakeMutationRow[]> = {}
     documentsRead = 0
+    queryLog: FakeMutationQueryLogEntry[] = []
     private nextId = 1
 
     constructor(seed: Record<string, Array<Record<string, unknown>>>) {
@@ -22,7 +30,7 @@ export class FakeMutationDb {
     }
 
     query(table: string) {
-        return new FakeMutationQuery(this, this.rows[table] ?? [])
+        return new FakeMutationQuery(this, table, this.rows[table] ?? [])
     }
 
     async insert(table: string, row: Record<string, unknown>) {
@@ -72,13 +80,16 @@ export class FakeMutationDb {
 class FakeMutationQuery {
     private filters: Array<{ field: string; operator: "eq" | "gt" | "gte" | "lt" | "lte"; value: unknown }> = []
     private orderDirection: "asc" | "desc" = "asc"
+    private indexName: string | undefined
 
     constructor(
         private readonly db: FakeMutationDb,
+        private readonly table: string,
         private readonly rows: FakeMutationRow[]
     ) {}
 
-    withIndex(_name: string, filter?: (q: FakeIndexFilterBuilder) => unknown) {
+    withIndex(name: string, filter?: (q: FakeIndexFilterBuilder) => unknown) {
+        this.indexName = name
         const queryFilter: FakeIndexFilterBuilder = {
             eq: (field, value) => {
                 this.filters.push({ field, operator: "eq", value })
@@ -112,18 +123,21 @@ class FakeMutationQuery {
 
     async collect() {
         const rows = this.applyFilters()
+        this.recordQuery("collect")
         this.recordDocumentsRead(rows)
         return rows
     }
 
     async first() {
         const row = this.applyFilters()[0] ?? null
+        this.recordQuery("first")
         this.recordDocumentsRead(row ? [row] : [])
         return row
     }
 
     async unique() {
         const rows = this.applyFilters()
+        this.recordQuery("unique")
         this.recordDocumentsRead(rows)
         if (rows.length > 1) {
             throw new Error("Fake query expected unique result")
@@ -134,6 +148,7 @@ class FakeMutationQuery {
 
     async take(limit: number) {
         const rows = this.applyFilters().slice(0, limit)
+        this.recordQuery("take")
         this.recordDocumentsRead(rows)
         return rows
     }
@@ -143,6 +158,7 @@ class FakeMutationQuery {
         const start = args.cursor ? Number(args.cursor) : 0
         const page = rows.slice(start, start + args.numItems)
         const next = start + page.length
+        this.recordQuery("paginate")
         this.recordDocumentsRead(page)
 
         return {
@@ -188,6 +204,15 @@ class FakeMutationQuery {
 
     private recordDocumentsRead(rows: FakeMutationRow[]): void {
         this.db.documentsRead += rows.length
+    }
+
+    private recordQuery(operation: FakeMutationQueryLogEntry["operation"]): void {
+        this.db.queryLog.push({
+            table: this.table,
+            index: this.indexName,
+            operation,
+            filters: [...this.filters],
+        })
     }
 }
 

@@ -5,14 +5,14 @@ import {
     readPolymarketConditionId,
 } from "@valiq-trading/core"
 import type { Id, Doc } from "../_generated/dataModel"
-import type { MutationCtx, QueryCtx } from "../_generated/server"
+import type { DatabaseReader, DatabaseWriter } from "../_generated/server"
 
 type QueryDbCtx = {
-    db: QueryCtx["db"]
+    db: DatabaseReader
 }
 
 type MutationDbCtx = {
-    db: MutationCtx["db"]
+    db: DatabaseWriter
 }
 
 type VenueApp = Doc<"strategies">["app"]
@@ -68,7 +68,7 @@ async function upsertClaim(
         sourceId: string
         updatedAt: number
     }
-): Promise<void> {
+): Promise<boolean> {
     const existing = await getClaimBySource(ctx, args.strategyId, args.source, args.sourceId)
 
     if (existing) {
@@ -77,7 +77,7 @@ async function upsertClaim(
             existing.accountId === args.accountId &&
             existing.instrument === args.instrument
         ) {
-            return
+            return false
         }
 
         await ctx.db.patch(existing._id, {
@@ -86,7 +86,7 @@ async function upsertClaim(
             instrument: args.instrument,
             updatedAt: args.updatedAt,
         })
-        return
+        return true
     }
 
     await ctx.db.insert("instrument_claims", {
@@ -98,25 +98,46 @@ async function upsertClaim(
         sourceId: args.sourceId,
         updatedAt: args.updatedAt,
     })
+    return true
 }
 
 async function deleteOrderClaims(
     ctx: MutationDbCtx,
     strategyId: Id<"strategies">,
     orderId: string
-): Promise<void> {
+): Promise<boolean> {
+    return await deleteOrderClaimsExcept(ctx, strategyId, orderId, new Set())
+}
+
+async function deleteOrderClaimsExcept(
+    ctx: MutationDbCtx,
+    strategyId: Id<"strategies">,
+    orderId: string,
+    sourceIdsToKeep: Set<string>
+): Promise<boolean> {
     const claims = await ctx.db
         .query("instrument_claims")
         .withIndex("by_strategy_source", (q) =>
             q.eq("strategyId", strategyId).eq("source", ORDER_CLAIM_SOURCE)
         )
         .collect()
+    let changed = false
 
     for (const claim of claims) {
-        if (claim.sourceId === orderId || claim.sourceId.startsWith(`${orderId}:`)) {
+        if (isOrderClaimForOrder(claim, orderId) && !sourceIdsToKeep.has(claim.sourceId)) {
             await ctx.db.delete(claim._id)
+            changed = true
         }
     }
+
+    return changed
+}
+
+function isOrderClaimForOrder(
+    claim: Pick<Doc<"instrument_claims">, "sourceId">,
+    orderId: string
+): boolean {
+    return claim.sourceId === orderId || claim.sourceId.startsWith(`${orderId}:`)
 }
 
 function buildOrderClaimSourceId(orderId: string, instrument: string): string {
@@ -165,6 +186,50 @@ export function getProviderInstrumentClaimAliases(
     }
 
     return uniqueInstruments([instrument, ...getAlpacaStructureAliases(instrument)])
+}
+
+export async function getProviderInstrumentClaimsForAppAccountInstruments(
+    ctx: QueryDbCtx,
+    args: {
+        app: VenueApp
+        accountId: string
+        instruments: string[]
+        includeMatchedStrategyClaims?: boolean
+    }
+): Promise<Array<Doc<"instrument_claims">>> {
+    const claimsById = new Map<string, Doc<"instrument_claims">>()
+    const instruments = uniqueInstruments(args.instruments)
+
+    await Promise.all(instruments.map(async (instrument) => {
+        const claims = await ctx.db
+            .query("instrument_claims")
+            .withIndex("by_app_account_instrument", (q) =>
+                q.eq("app", args.app).eq("accountId", args.accountId).eq("instrument", instrument)
+            )
+            .collect()
+
+        for (const claim of claims) {
+            claimsById.set(String(claim._id), claim)
+        }
+    }))
+
+    if (args.includeMatchedStrategyClaims) {
+        const strategyIds = Array.from(new Set(
+            Array.from(claimsById.values()).map((claim) => claim.strategyId)
+        ))
+        await Promise.all(strategyIds.map(async (strategyId) => {
+            const claims = await ctx.db
+                .query("instrument_claims")
+                .withIndex("by_strategy", (q) => q.eq("strategyId", strategyId))
+                .collect()
+
+            for (const claim of claims) {
+                claimsById.set(String(claim._id), claim)
+            }
+        }))
+    }
+
+    return Array.from(claimsById.values())
 }
 
 function readClaimMetadataRecord(metadata: unknown): Record<string, unknown> | undefined {
@@ -586,9 +651,11 @@ export async function upsertPositionInstrumentClaims(
         instruments: string[]
         updatedAt: number
     }
-): Promise<void> {
+): Promise<boolean> {
+    let changed = false
+
     for (const instrument of uniqueInstruments(args.instruments)) {
-        await upsertClaim(ctx, {
+        changed = await upsertClaim(ctx, {
             strategyId: args.strategyId,
             app: args.app,
             accountId: args.accountId,
@@ -596,8 +663,10 @@ export async function upsertPositionInstrumentClaims(
             source: POSITION_CLAIM_SOURCE,
             sourceId: instrument,
             updatedAt: args.updatedAt,
-        })
+        }) || changed
     }
+
+    return changed
 }
 
 export async function reconcileOrderInstrumentClaim(
@@ -613,14 +682,17 @@ export async function reconcileOrderInstrumentClaim(
         status: OrderStatus
         updatedAt: number
     }
-): Promise<void> {
+): Promise<boolean> {
     const instruments = uniqueInstruments(args.claimInstruments ?? [args.instrument])
 
     if (isEntryLikeAction(args.action)) {
         if (isActiveEntryOrderStatus(args.status)) {
-            await deleteOrderClaims(ctx, args.strategyId, args.orderId)
+            const desiredSourceIds = new Set(
+                instruments.map((instrument) => buildOrderClaimSourceId(args.orderId, instrument))
+            )
+            let changed = await deleteOrderClaimsExcept(ctx, args.strategyId, args.orderId, desiredSourceIds)
             for (const instrument of instruments) {
-                await upsertClaim(ctx, {
+                changed = await upsertClaim(ctx, {
                     strategyId: args.strategyId,
                     app: args.app,
                     accountId: args.accountId,
@@ -628,24 +700,25 @@ export async function reconcileOrderInstrumentClaim(
                     source: ORDER_CLAIM_SOURCE,
                     sourceId: buildOrderClaimSourceId(args.orderId, instrument),
                     updatedAt: args.updatedAt,
-                })
+                }) || changed
             }
-            return
+            return changed
         }
 
-        await deleteOrderClaims(ctx, args.strategyId, args.orderId)
+        const deleted = await deleteOrderClaims(ctx, args.strategyId, args.orderId)
 
         if (args.status === "filled") {
-            await upsertPositionInstrumentClaims(ctx, {
+            const upserted = await upsertPositionInstrumentClaims(ctx, {
                 strategyId: args.strategyId,
                 app: args.app,
                 accountId: args.accountId,
                 instruments,
                 updatedAt: args.updatedAt,
             })
+            return deleted || upserted
         }
-        return
+        return deleted
     }
 
-    await deleteOrderClaims(ctx, args.strategyId, args.orderId)
+    return await deleteOrderClaims(ctx, args.strategyId, args.orderId)
 }

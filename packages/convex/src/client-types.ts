@@ -76,6 +76,11 @@ export interface TradingBackendClientConfig {
         serviceToken: string
     }
     timeoutMs?: number
+    mutationRetry?: {
+        attempts?: number
+        delayMs?: number
+    }
+    logger?: Pick<Logger, "warn">
 }
 
 export interface CodexChatGptAuthRecord {

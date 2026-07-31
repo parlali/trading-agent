@@ -4,7 +4,7 @@ import { getClaimInstrumentsForOrder } from "../../convex/lib/instrumentClaims"
 import { reconcileProviderPortfolio } from "../../convex/lib/mutations/portfolio"
 import { resolveExecutionSafetyFaultsFromProviderTruth } from "../../convex/lib/mutations/portfolioRows"
 import { getPortfolioPositions } from "../../convex/lib/queries/portfolio"
-import { callRegistered, FakeMutationDb as FakeDb } from "./fakeMutationDb"
+import { callRegistered, FakeMutationDb as FakeDb, type FakeMutationRow as Row } from "./fakeMutationDb"
 
 describe("Convex Alpaca SPY replay", () => {
     it("keeps separate call and put vertical strategies isolated through provider reconciliation", async () => {
@@ -112,6 +112,108 @@ describe("Convex Alpaca SPY replay", () => {
             callVertical,
             putVertical,
         ])
+    })
+
+    it("scopes same-account option claim reads to the live strategy instruments", async () => {
+        process.env.BACKEND_SERVICE_TOKEN = "test-token"
+        const accountId = "primary"
+        const gldStrategy = "strategy-gld"
+        const aaplStrategy = "strategy-aapl"
+        const gldShort = "GLD260821C00230000"
+        const gldLong = "GLD260821C00231000"
+        const aaplShort = "AAPL260821C00240000"
+        const aaplLong = "AAPL260821C00241000"
+        const gldVertical = `VS:BEAR_CALL_CREDIT:GLD:2026-08-21:${gldShort}|${gldLong}`
+        const aaplVertical = `VS:BEAR_CALL_CREDIT:AAPL:2026-08-21:${aaplShort}|${aaplLong}`
+        const db = new FakeDb({
+            strategies: [
+                {
+                    _id: gldStrategy,
+                    app: "alpaca-options",
+                    accountId,
+                    name: "GLD call vertical",
+                    policy: { dryRun: false },
+                },
+                {
+                    _id: aaplStrategy,
+                    app: "alpaca-options",
+                    accountId,
+                    name: "AAPL call vertical",
+                    policy: { dryRun: false },
+                },
+            ],
+            instrument_claims: [
+                ...buildClaims(gldStrategy, gldVertical, [
+                    { instrument: gldShort, side: "sell_to_open" },
+                    { instrument: gldLong, side: "buy_to_open" },
+                ], accountId),
+                ...buildClaims(aaplStrategy, aaplVertical, [
+                    { instrument: aaplShort, side: "sell_to_open" },
+                    { instrument: aaplLong, side: "buy_to_open" },
+                ], accountId),
+            ],
+            orders: [],
+            provider_positions: [],
+            provider_working_orders: [],
+            provider_sync_state: [],
+            position_syncs: [],
+            positions: [],
+            execution_safety_faults: [],
+            account_snapshots: [],
+            control_plane_metrics: [],
+            alerts: [],
+        })
+        const ctx = { db } as never
+
+        await callRegistered(reconcileProviderPortfolio, ctx, {
+            serviceToken: "test-token",
+            app: "alpaca-options",
+            accountId,
+            venue: "alpaca",
+            source: "periodic_sync",
+            accountState: {
+                balance: 100000,
+                equity: 100000,
+                buyingPower: 100000,
+                marginUsed: 0,
+                marginAvailable: 100000,
+                openPnl: 0,
+                dayPnl: 0,
+            },
+            positions: [
+                createProviderLeg(gldShort, "short", 0.28),
+                createProviderLeg(gldLong, "long", 0.11),
+            ],
+            workingOrders: [],
+        })
+
+        const claimQueries = db.queryLog.filter((entry) => entry.table === "instrument_claims")
+        expect(claimQueries.some((entry) => entry.index === "by_app_account")).toBe(false)
+
+        const pointReadInstruments = new Set(
+            claimQueries
+                .filter((entry) => entry.index === "by_app_account_instrument")
+                .flatMap((entry) => entry.filters)
+                .filter((filter) => filter.field === "instrument")
+                .map((filter) => String(filter.value))
+        )
+        expect(pointReadInstruments).toEqual(new Set([gldShort, gldLong]))
+
+        const strategyClaimReadIds = new Set(
+            claimQueries
+                .filter((entry) => entry.index === "by_strategy")
+                .flatMap((entry) => entry.filters)
+                .filter((filter) => filter.field === "strategyId")
+                .map((filter) => String(filter.value))
+        )
+        expect(strategyClaimReadIds).toEqual(new Set([gldStrategy]))
+
+        const providerPositions = db.rows.provider_positions ?? []
+        expect(providerPositions).toHaveLength(2)
+        expect(providerPositions.every((row) => row.strategyId === gldStrategy)).toBe(true)
+        expect(readMetadata(providerPositions[0]?.metadata)).toMatchObject({
+            alpacaClaimInstrument: gldVertical,
+        })
     })
 
     it("does not create executable Alpaca close metadata from unclaimed raw-leg geometry", async () => {
@@ -977,12 +1079,14 @@ describe("Convex Alpaca SPY replay", () => {
 function buildClaims(
     strategyId: string,
     instrument: string,
-    legs: Array<{ instrument: string; side: string }>
+    legs: Array<{ instrument: string; side: string }>,
+    accountId?: string
 ): Row[] {
     return getClaimInstrumentsForOrder(instrument, { legs }).map((claimInstrument) => ({
         _id: `${strategyId}:${claimInstrument}`,
         strategyId,
         app: "alpaca-options",
+        accountId,
         instrument: claimInstrument,
         source: "position",
         sourceId: claimInstrument,

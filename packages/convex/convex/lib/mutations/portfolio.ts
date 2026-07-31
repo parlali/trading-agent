@@ -7,6 +7,7 @@ import {
 import { requireServiceToken } from "../authGuards"
 import {
     getClaimInstrumentsForOrder,
+    getProviderInstrumentClaimsForAppAccountInstruments,
     reconcileOrderInstrumentClaim,
     resolveAlpacaClaimedStructureForProviderLeg,
 } from "../instrumentClaims"
@@ -179,10 +180,19 @@ export const reconcileProviderPortfolio = mutation({
             .collect()
         await addReferencedStrategiesToMap(ctx, strategyMap, existingProviderPositions.map((position) => position.strategyId))
 
-        const initialClaims = await ctx.db
-            .query("instrument_claims")
-            .withIndex("by_app_account", (q) => q.eq("app", args.app).eq("accountId", args.accountId))
-            .collect()
+        const liveInstrumentAliases = buildLiveInstrumentAliases(
+            args.app,
+            [
+                ...args.positions.map((position) => position.instrument),
+                ...args.workingOrders.map((order) => order.instrument),
+            ]
+        )
+        const initialClaims = await getProviderInstrumentClaimsForAppAccountInstruments(ctx, {
+            app: args.app,
+            accountId: args.accountId,
+            instruments: collectClaimLookupInstruments(liveInstrumentAliases),
+            includeMatchedStrategyClaims: args.app === "alpaca-options",
+        })
         await addReferencedStrategiesToMap(ctx, strategyMap, initialClaims.map((claim) => claim.strategyId))
 
         const activeOrders = await listActiveOrdersForAccount(ctx, {
@@ -241,8 +251,7 @@ export const reconcileProviderPortfolio = mutation({
 
             const strategy = strategyMap.get(String(existingOrder.strategyId))
             if (strategy) {
-                liveOrderClaimsReconciled = true
-                await reconcileOrderInstrumentClaim(ctx, {
+                liveOrderClaimsReconciled = await reconcileOrderInstrumentClaim(ctx, {
                     strategyId: existingOrder.strategyId,
                     app: strategy.app,
                     accountId: strategy.accountId,
@@ -252,7 +261,7 @@ export const reconcileProviderPortfolio = mutation({
                     action: existingOrder.action,
                     status: liveOrder.status,
                     updatedAt: liveOrder.updatedAt,
-                })
+                }) || liveOrderClaimsReconciled
             }
         }
 
@@ -260,13 +269,7 @@ export const reconcileProviderPortfolio = mutation({
             app: args.app,
             accountId: args.accountId,
             strategyMap,
-            liveInstrumentAliases: buildLiveInstrumentAliases(
-                args.app,
-                [
-                    ...args.positions.map((position) => position.instrument),
-                    ...args.workingOrders.map((order) => order.instrument),
-                ]
-            ),
+            liveInstrumentAliases,
             updatedAt: now,
             lastFilledOrderRepairScanAt: previousState?.lastFilledOrderRepairScanAt,
             existingClaims: initialClaims,
@@ -274,10 +277,12 @@ export const reconcileProviderPortfolio = mutation({
 
         const claimsWrittenThisRun = claimRepairScan.repaired || liveOrderClaimsReconciled
         const refreshedClaims = claimsWrittenThisRun
-            ? await ctx.db
-                .query("instrument_claims")
-                .withIndex("by_app_account", (q) => q.eq("app", args.app).eq("accountId", args.accountId))
-                .collect()
+            ? await getProviderInstrumentClaimsForAppAccountInstruments(ctx, {
+                app: args.app,
+                accountId: args.accountId,
+                instruments: collectClaimLookupInstruments(liveInstrumentAliases),
+                includeMatchedStrategyClaims: args.app === "alpaca-options",
+            })
             : initialClaims
         if (claimsWrittenThisRun) {
             await addReferencedStrategiesToMap(ctx, strategyMap, refreshedClaims.map((claim) => claim.strategyId))
@@ -768,6 +773,18 @@ function buildProviderPositionIndex(
     }
 
     return index
+}
+
+function collectClaimLookupInstruments(liveInstrumentAliases: Map<string, Set<string>>): string[] {
+    const instruments = new Set<string>()
+
+    for (const aliases of liveInstrumentAliases.values()) {
+        for (const alias of aliases) {
+            instruments.add(alias)
+        }
+    }
+
+    return Array.from(instruments)
 }
 
 async function addReferencedStrategiesToMap(

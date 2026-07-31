@@ -341,7 +341,8 @@ export default defineSchema({
         .index("by_strategy_source", ["strategyId", "source"])
         .index("by_strategy_source_source_id", ["strategyId", "source", "sourceId"])
         .index("by_app", ["app"])
-        .index("by_app_account", ["app", "accountId"]),
+        .index("by_app_account", ["app", "accountId"])
+        .index("by_app_account_instrument", ["app", "accountId", "instrument"]),
 
     position_syncs: defineTable({
         strategyId: v.id("strategies"),

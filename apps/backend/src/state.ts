@@ -49,6 +49,7 @@ export const backend = createTradingBackendClient({
     machineAuth: {
         serviceToken: backendServiceToken,
     },
+    logger,
 })
 export const searchProvider = new DuckDuckGoSearchProvider()
 

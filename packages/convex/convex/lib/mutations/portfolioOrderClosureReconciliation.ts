@@ -40,6 +40,7 @@ import {
 import { findOrderRowByAlias } from "../orderIdentityAliases"
 import {
     getClaimInstrumentsForOrder,
+    getProviderInstrumentClaimsForAppAccountInstruments,
     getProviderInstrumentClaimAliases,
 } from "../instrumentClaims"
 import {
@@ -972,10 +973,11 @@ async function resolveStrategiesForUnattributedClosureFault(
     }
 
     const closureAliases = new Set(getProviderInstrumentClaimAliases(args.app, args.closure.instrument, args.closure.metadata))
-    const claims = await ctx.db
-        .query("instrument_claims")
-        .withIndex("by_app_account", (q) => q.eq("app", args.app).eq("accountId", args.accountId))
-        .collect()
+    const claims = await getProviderInstrumentClaimsForAppAccountInstruments(ctx, {
+        app: args.app,
+        accountId: args.accountId,
+        instruments: Array.from(closureAliases),
+    })
     const strategyIds = new Set<string>()
 
     for (const claim of claims) {
