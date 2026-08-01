@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 import { validateIntent, type OrderIntent, type Position, type AccountState } from "@valiq-trading/core"
-import { alpacaRiskValidators } from "./risk-rules"
+import { alpacaRiskValidators, buildCreditVerticalInstrumentFromLegs } from "./risk-rules"
 
 const structureValidator = alpacaRiskValidators[0]!
 
@@ -31,6 +31,27 @@ function validate(intent: OrderIntent) {
 
 function validateRisk(intent: OrderIntent, policy: Record<string, unknown>) {
     return validateIntent(intent, policy, accountState, positions, alpacaRiskValidators)
+}
+
+function validateRiskWithState(
+    intent: OrderIntent,
+    policy: Record<string, unknown>,
+    state: AccountState,
+    ownedPositions: Position[]
+) {
+    return validateIntent(intent, policy, state, ownedPositions, alpacaRiskValidators)
+}
+
+function createAccountState(equity: number): AccountState {
+    return {
+        balance: equity,
+        equity,
+        buyingPower: equity,
+        marginUsed: 0,
+        marginAvailable: equity,
+        openPnl: 0,
+        dayPnl: 0,
+    }
 }
 
 describe("alpaca structure validator", () => {
@@ -273,6 +294,106 @@ describe("alpaca structure validator", () => {
         expect(result.allowed).toBe(true)
     })
 
+    it("rejects a replayed same-thesis stack before the aggregate cap", () => {
+        const result = validateRiskWithState(
+            createNvdaBearCallIntent({
+                limitPrice: 0.63,
+            }),
+            {
+                ...maxLossPolicy,
+                maxLossPerPlay: 250,
+                maxAggregateRiskPercent: 3,
+                maxSameThesisEntries: 2,
+            },
+            createAccountState(50_000),
+            createOwnedBearCallLegPositions({
+                quantity: 8,
+                netCredit: 0.63,
+            })
+        )
+
+        expect(result.allowed).toBe(false)
+        expect(result.reason).toContain("Same Alpaca options thesis")
+        expect(result.reason).toContain("limit 2")
+        expect(result.reason).toContain("owned 8")
+    })
+
+    it("rejects aggregate risk above policy and allows the same entry below it", () => {
+        const policy = {
+            ...maxLossPolicy,
+            maxLossPerPlay: 250,
+            maxAggregateRiskPercent: 3,
+        }
+        const entry = createNvdaBearCallIntent({
+            shortStrike: 220,
+            longStrike: 221,
+            limitPrice: 0.7,
+        })
+        const rejected = validateRiskWithState(entry, policy, accountState, [
+            createOwnedBearCallPosition({
+                shortStrike: 200,
+                longStrike: 203,
+                credit: 0.2,
+            }),
+        ])
+
+        expect(rejected.allowed).toBe(false)
+        expect(rejected.reason).toContain("Aggregate Alpaca options max loss")
+        expect(rejected.reason).toContain("3.1%")
+
+        const allowed = validateRiskWithState(entry, policy, accountState, [
+            createOwnedBearCallPosition({
+                shortStrike: 200,
+                longStrike: 203,
+                credit: 0.4,
+            }),
+        ])
+
+        expect(allowed.allowed).toBe(true)
+    })
+
+    it("never blocks closes when aggregate and same-thesis caps are already breached", () => {
+        const result = validateRiskWithState(
+            createNvdaBearCallCloseIntent(),
+            {
+                ...maxLossPolicy,
+                maxLossPerPlay: 250,
+                maxAggregateRiskPercent: 3,
+                maxSameThesisEntries: 2,
+            },
+            createAccountState(50_000),
+            [
+                createOwnedBearCallPosition({
+                    quantity: 9,
+                    credit: 0.63,
+                }),
+            ]
+        )
+
+        expect(result.allowed).toBe(true)
+    })
+
+    it("leaves aggregate and same-thesis validators disabled when policy fields are absent", () => {
+        const result = validateRiskWithState(
+            createNvdaBearCallIntent({
+                limitPrice: 0.63,
+            }),
+            {
+                ...maxLossPolicy,
+                maxLossPerPlay: 250,
+            },
+            createAccountState(50_000),
+            [
+                createOwnedBearCallPosition({
+                    quantity: 9,
+                    credit: 0.63,
+                }),
+            ]
+        )
+
+        expect(result.allowed).toBe(true)
+    })
+
     it("rejects non-2/4-leg structures", () => {
         const result = validate({
             instrument: "SPY",
@@ -320,4 +441,159 @@ function createIwmBullPutIntent(
             },
         ],
     }
+}
+
+function createNvdaBearCallIntent(args: {
+    shortStrike?: number
+    longStrike?: number
+    limitPrice: number
+}): OrderIntent {
+    const legs = createBearCallLegs({
+        underlying: "NVDA",
+        expiration: "2026-07-31",
+        shortStrike: args.shortStrike ?? 202.5,
+        longStrike: args.longStrike ?? 205,
+        action: "entry",
+    })
+
+    return {
+        instrument: "NVDA",
+        side: "sell",
+        quantity: 1,
+        orderType: "limit",
+        limitPrice: args.limitPrice,
+        timeInForce: "day",
+        legs,
+    }
+}
+
+function createNvdaBearCallCloseIntent(): OrderIntent {
+    return {
+        instrument: "NVDA",
+        side: "buy",
+        quantity: 1,
+        orderType: "limit",
+        limitPrice: 0.4,
+        timeInForce: "day",
+        metadata: {
+            action: "close",
+        },
+        legs: createBearCallLegs({
+            underlying: "NVDA",
+            expiration: "2026-07-31",
+            shortStrike: 202.5,
+            longStrike: 205,
+            action: "close",
+        }),
+    }
+}
+
+function createOwnedBearCallPosition(args: {
+    shortStrike?: number
+    longStrike?: number
+    credit: number
+    quantity?: number
+}): Position {
+    const legs = createBearCallLegs({
+        underlying: "NVDA",
+        expiration: "2026-07-31",
+        shortStrike: args.shortStrike ?? 202.5,
+        longStrike: args.longStrike ?? 205,
+        action: "entry",
+    })
+    const instrument = buildCreditVerticalInstrumentFromLegs(
+        "NVDA",
+        "2026-07-31",
+        "bear_call_credit",
+        legs
+    )
+
+    return {
+        instrument,
+        side: "short",
+        quantity: args.quantity ?? 1,
+        entryPrice: args.credit,
+    }
+}
+
+function createOwnedBearCallLegPositions(args: {
+    quantity: number
+    netCredit: number
+}): Position[] {
+    const legs = createBearCallLegs({
+        underlying: "NVDA",
+        expiration: "2026-07-31",
+        shortStrike: 202.5,
+        longStrike: 205,
+        action: "entry",
+    })
+    const claimInstrument = buildCreditVerticalInstrumentFromLegs(
+        "NVDA",
+        "2026-07-31",
+        "bear_call_credit",
+        legs
+    )
+    const shortLeg = legs[0]!
+    const longLeg = legs[1]!
+    const longEntryPrice = 0.17
+    const shortEntryPrice = args.netCredit + longEntryPrice
+
+    return [
+        {
+            instrument: shortLeg.instrument,
+            providerPositionId: `${shortLeg.instrument}:short`,
+            side: "short",
+            quantity: args.quantity,
+            entryPrice: shortEntryPrice,
+            metadata: {
+                alpacaClaimInstrument: claimInstrument,
+            },
+        },
+        {
+            instrument: longLeg.instrument,
+            providerPositionId: `${longLeg.instrument}:long`,
+            side: "long",
+            quantity: args.quantity,
+            entryPrice: longEntryPrice,
+            metadata: {
+                alpacaClaimInstrument: claimInstrument,
+            },
+        },
+    ]
+}
+
+function createBearCallLegs(args: {
+    underlying: string
+    expiration: string
+    shortStrike: number
+    longStrike: number
+    action: "entry" | "close"
+}): NonNullable<OrderIntent["legs"]> {
+    const shortLegSide = args.action === "entry" ? "sell_to_open" : "buy_to_close"
+    const longLegSide = args.action === "entry" ? "buy_to_open" : "sell_to_close"
+
+    return [
+        {
+            instrument: createOptionSymbol(args.underlying, args.expiration, "call", args.shortStrike),
+            side: shortLegSide,
+            quantity: 1,
+        },
+        {
+            instrument: createOptionSymbol(args.underlying, args.expiration, "call", args.longStrike),
+            side: longLegSide,
+            quantity: 1,
+        },
+    ]
+}
+
+function createOptionSymbol(
+    underlying: string,
+    expiration: string,
+    optionType: "call" | "put",
+    strike: number
+): string {
+    const datePart = expiration.slice(2).replaceAll("-", "")
+    const typePart = optionType === "call" ? "C" : "P"
+    const strikePart = String(Math.round(strike * 1000)).padStart(8, "0")
+    return `${underlying}${datePart}${typePart}${strikePart}`
 }

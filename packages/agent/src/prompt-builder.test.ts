@@ -51,6 +51,8 @@ describe("buildSystemPrompt policy visibility", () => {
             ...context.policy,
             maxRiskPercent: 0.5,
             minRiskReward: 2,
+            maxAggregateRiskPercent: 3,
+            maxSameThesisEntries: 2,
             maxEntriesPerWeek: 4,
             maxEntriesPerInstrumentPerWeek: 2,
             safety: {
@@ -68,6 +70,8 @@ describe("buildSystemPrompt policy visibility", () => {
 
         expect(prompt).toContain("maxRiskPercent")
         expect(prompt).toContain("minRiskReward")
+        expect(prompt).not.toContain("maxAggregateRiskPercent")
+        expect(prompt).not.toContain("maxSameThesisEntries")
         expect(prompt).not.toContain("maxEntriesPerWeek")
         expect(prompt).not.toContain("maxEntriesPerInstrumentPerWeek")
         expect(prompt).not.toContain("maxDrawdownDay")

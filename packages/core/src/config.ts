@@ -286,6 +286,8 @@ export function validateAccountConfig(raw: unknown): AccountConfig {
 
 export const alpacaOptionsPolicySchema = baseStrategyPolicySchema.extend({
     maxLossPerPlay: z.number().positive(),
+    maxAggregateRiskPercent: z.number().positive().max(100).optional(),
+    maxSameThesisEntries: z.number().int().positive().optional(),
     minCreditToWidthPercent: z.number().positive().optional(),
     minCreditToSpreadRatio: z.number().positive().optional(),
 })

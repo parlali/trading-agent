@@ -6,10 +6,13 @@ import {
 import type { AlpacaPositionResponse } from "./alpaca-client"
 import {
     buildAlpacaStructureInstrumentFromLegs,
+    parseClaimedStructureInstrument,
     type AlpacaStructureType,
     type AlpacaVerticalSpreadType,
     parseOptionContractSymbol,
 } from "./risk-rules"
+
+export { parseClaimedStructureInstrument }
 
 export interface PositionGroup {
     structureType: AlpacaStructureType
@@ -992,52 +995,6 @@ function toClaimPositionLike(position: AlpacaPositionResponse): PositionLike {
         currentPrice: position.current_price ? toNumber(position.current_price) : undefined,
         unrealizedPnl: position.unrealized_pl ? toNumber(position.unrealized_pl) : undefined,
     }
-}
-
-export function parseClaimedStructureInstrument(instrument: string): {
-    structureType: AlpacaStructureType
-    verticalSpreadType?: AlpacaVerticalSpreadType
-    underlying: string
-    expiration: string
-    legs: string[]
-} | null {
-    const [kind, first, second, third, legList] = instrument.trim().toUpperCase().split(":")
-
-    if (kind === "IC" && first && second && third) {
-        const legs = third.split("|").map((leg) => leg.trim()).filter(Boolean)
-        return legs.length === 4
-            ? {
-                structureType: "iron_condor",
-                underlying: first,
-                expiration: second,
-                legs,
-            }
-            : null
-    }
-
-    if (kind !== "VS" || !first || !second || !third || !legList) {
-        return null
-    }
-
-    const verticalSpreadType = first === "BULL_PUT_CREDIT"
-        ? "bull_put_credit"
-        : first === "BEAR_CALL_CREDIT"
-            ? "bear_call_credit"
-            : undefined
-    if (!verticalSpreadType) {
-        return null
-    }
-
-    const legs = legList.split("|").map((leg) => leg.trim()).filter(Boolean)
-    return legs.length === 2
-        ? {
-            structureType: "credit_vertical",
-            verticalSpreadType,
-            underlying: second,
-            expiration: third,
-            legs,
-        }
-        : null
 }
 
 export function toNumber(value: string | undefined): number {

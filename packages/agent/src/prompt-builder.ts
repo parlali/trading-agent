@@ -363,6 +363,8 @@ function isHiddenPolicyPath(path: string[]): boolean {
         joined === "model" ||
         joined === "reasoning" ||
         joined === "decisionRecord" ||
+        joined === "maxAggregateRiskPercent" ||
+        joined === "maxSameThesisEntries" ||
         joined === "maxEntriesPerWeek" ||
         joined === "maxEntriesPerInstrumentPerWeek" ||
         joined === "safety.maxDrawdownDay" ||

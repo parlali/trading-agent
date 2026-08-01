@@ -46,15 +46,37 @@ interface ResolvedStructure {
     legs: NormalizedOptionLeg[]
 }
 
+interface OwnedOptionStructureRisk {
+    structure: ResolvedStructure
+    quantity: number
+    maxLoss: number
+}
+
+interface OwnedOptionStructureResolution {
+    structures: OwnedOptionStructureRisk[]
+    unevaluablePositions: string[]
+}
+
+interface StructureThesisSignature {
+    underlying: string
+    expiration: string
+    structureType: string
+    shortStrike: number
+}
+
 const SUPPORTED_ALPACA_ORDER_TYPE = "limit"
 const SUPPORTED_ALPACA_TIME_IN_FORCE = "day"
 const SUPPORTED_LEG_COUNTS = new Set([2, 4])
+const OPTION_CONTRACT_MULTIPLIER = 100
 const CREDIT_GATE_EPSILON = 1e-9
+const RISK_GATE_EPSILON = 1e-9
 
 export const alpacaRiskValidators: readonly RiskValidator[] = [
     alpacaStructureValidator,
     openIntentRiskValidator(minCreditEntryValidator),
     openIntentRiskValidator(maxLossPerPlayValidator),
+    openIntentRiskValidator(maxSameThesisEntriesValidator),
+    openIntentRiskValidator(maxAggregateRiskPercentValidator),
     expiryValidationValidator,
 ]
 
@@ -125,6 +147,59 @@ export function buildAlpacaStructureInstrumentFromLegs(structure: {
         structure.verticalSpreadType,
         structure.legs
     )
+}
+
+export function parseClaimedStructureInstrument(instrument: string): {
+    structureType: AlpacaStructureType
+    verticalSpreadType?: AlpacaVerticalSpreadType
+    underlying: string
+    expiration: string
+    legs: string[]
+} | null {
+    const [kind, first, second, third, legList] = instrument.trim().toUpperCase().split(":")
+
+    if (kind === "IC" && first && second && third) {
+        const legs = splitStructureLegList(third)
+        return legs.length === 4
+            ? {
+                structureType: "iron_condor",
+                underlying: first,
+                expiration: second,
+                legs,
+            }
+            : null
+    }
+
+    if (kind !== "VS" || !first || !second || !third || !legList) {
+        return null
+    }
+
+    const verticalSpreadType = first === "BULL_PUT_CREDIT"
+        ? "bull_put_credit"
+        : first === "BEAR_CALL_CREDIT"
+            ? "bear_call_credit"
+            : undefined
+    if (!verticalSpreadType) {
+        return null
+    }
+
+    const legs = splitStructureLegList(legList)
+    return legs.length === 2
+        ? {
+            structureType: "credit_vertical",
+            verticalSpreadType,
+            underlying: second,
+            expiration: third,
+            legs,
+        }
+        : null
+}
+
+function splitStructureLegList(value: string): string[] {
+    return value
+        .split("|")
+        .map((leg) => leg.trim().toUpperCase())
+        .filter((leg) => leg.length > 0)
 }
 
 export function parseOptionContractSymbol(symbol: string): ParsedOptionContract | null {
@@ -341,6 +416,142 @@ function maxLossPerPlayValidator(
     return allowWithGateEvaluation(gateEvaluation)
 }
 
+function maxSameThesisEntriesValidator(
+    intent: OrderIntent,
+    rawPolicy: Record<string, unknown>,
+    _state: AccountState,
+    positions: Position[]
+) {
+    const policy = alpacaOptionsPolicySchema.parse(rawPolicy)
+    if (policy.maxSameThesisEntries === undefined) {
+        return { allowed: true }
+    }
+    const maxSameThesisEntries = policy.maxSameThesisEntries
+
+    if (getIntentAction(intent) !== "entry") {
+        return { allowed: true }
+    }
+
+    const entryStructure = resolveEntryStructure(intent)
+    if (!entryStructure) {
+        return {
+            allowed: false,
+            reason: "Unable to determine Alpaca entry structure thesis",
+        }
+    }
+
+    const entryQuantity = readPositiveIntegerQuantity(intent.quantity)
+    if (entryQuantity === null) {
+        return {
+            allowed: false,
+            reason: "Unable to determine Alpaca entry structure quantity",
+        }
+    }
+
+    const entrySignatures = resolveStructureThesisSignatures(entryStructure)
+    if (entrySignatures.length === 0) {
+        return {
+            allowed: false,
+            reason: "Unable to determine Alpaca entry short strike thesis",
+        }
+    }
+
+    const owned = resolveOwnedOptionStructuresForRisk(positions)
+    if (owned.unevaluablePositions.length > 0) {
+        return {
+            allowed: false,
+            reason: `Unable to evaluate owned Alpaca option structure thesis for ${owned.unevaluablePositions.join(", ")}`,
+        }
+    }
+
+    const ownedCounts = countOwnedThesisStructures(owned.structures)
+    const gateEvaluations = entrySignatures.map((signature) => {
+        const postEntryCount = (ownedCounts.get(formatThesisSignatureKey(signature)) ?? 0) + entryQuantity
+        return {
+            signature,
+            postEntryCount,
+            gateEvaluation: createGateEvaluation({
+                gateKey: "alpacaOptions.maxSameThesisEntries",
+                observed: postEntryCount,
+                threshold: maxSameThesisEntries,
+                comparison: "max",
+            }),
+        }
+    })
+    const breached = gateEvaluations.find((evaluation) =>
+        evaluation.postEntryCount > maxSameThesisEntries
+    )
+
+    if (breached) {
+        const ownedCount = breached.postEntryCount - entryQuantity
+        return rejectRiskWithGateEvaluation(
+            `Same Alpaca options thesis ${formatThesisSignature(breached.signature)} would have ${breached.postEntryCount} structure(s), exceeding limit ${maxSameThesisEntries} (owned ${ownedCount}, entry ${entryQuantity})`,
+            breached.gateEvaluation
+        )
+    }
+
+    return allowWithGateEvaluations(gateEvaluations.map((evaluation) => evaluation.gateEvaluation))
+}
+
+function maxAggregateRiskPercentValidator(
+    intent: OrderIntent,
+    rawPolicy: Record<string, unknown>,
+    state: AccountState,
+    positions: Position[]
+) {
+    const policy = alpacaOptionsPolicySchema.parse(rawPolicy)
+    if (policy.maxAggregateRiskPercent === undefined) {
+        return { allowed: true }
+    }
+
+    if (getIntentAction(intent) !== "entry") {
+        return { allowed: true }
+    }
+
+    const sliceEquity = readFiniteNumber(state.equity)
+    if (sliceEquity === undefined || sliceEquity <= 0) {
+        return {
+            allowed: false,
+            reason: "Unable to evaluate Alpaca aggregate option risk without positive strategy slice equity",
+        }
+    }
+
+    const entryMaxLoss = estimateStructureMaxLoss(intent)
+    if (entryMaxLoss === null) {
+        return {
+            allowed: false,
+            reason: "Unable to determine max loss for Alpaca options entry",
+        }
+    }
+
+    const owned = resolveOwnedOptionStructuresForRisk(positions)
+    if (owned.unevaluablePositions.length > 0) {
+        return {
+            allowed: false,
+            reason: `Unable to evaluate owned Alpaca option max loss for ${owned.unevaluablePositions.join(", ")}`,
+        }
+    }
+
+    const ownedMaxLoss = owned.structures.reduce((sum, structure) => sum + structure.maxLoss, 0)
+    const aggregateMaxLoss = ownedMaxLoss + entryMaxLoss
+    const aggregateRiskPercent = (aggregateMaxLoss / sliceEquity) * 100
+    const gateEvaluation = createGateEvaluation({
+        gateKey: "alpacaOptions.maxAggregateRiskPercent",
+        observed: aggregateRiskPercent,
+        threshold: policy.maxAggregateRiskPercent,
+        comparison: "max",
+    })
+
+    if (aggregateRiskPercent > policy.maxAggregateRiskPercent + RISK_GATE_EPSILON) {
+        return rejectRiskWithGateEvaluation(
+            `Aggregate Alpaca options max loss ${formatCurrency(aggregateMaxLoss)} (${formatPercent(aggregateRiskPercent)} of strategy slice equity ${formatCurrency(sliceEquity)}) exceeds limit ${formatPercent(policy.maxAggregateRiskPercent)}; owned ${formatCurrency(ownedMaxLoss)}, entry ${formatCurrency(entryMaxLoss)}`,
+            gateEvaluation
+        )
+    }
+
+    return allowWithGateEvaluation(gateEvaluation)
+}
+
 function minCreditEntryValidator(
     intent: OrderIntent,
     rawPolicy: Record<string, unknown>,
@@ -490,11 +701,420 @@ function estimateStructureMaxLoss(intent: OrderIntent): number | null {
         return typeof explicitMaxLoss === "number" ? explicitMaxLoss : null
     }
 
-    const credit = intent.limitPrice ?? 0
-    const grossRisk = width * 100 * intent.quantity
-    const creditOffset = credit * 100 * intent.quantity
+    const quantity = readFiniteNumber(intent.quantity)
+    const netPrice = readFiniteNumber(intent.limitPrice) ?? 0
+    if (quantity === undefined || quantity <= 0 || netPrice < 0) {
+        return null
+    }
+
+    return estimateMaxLossFromWidthAndPrice({
+        width,
+        netPrice,
+        quantity,
+        side: intent.side,
+    })
+}
+
+function estimateMaxLossFromWidthAndPrice(args: {
+    width: number
+    netPrice: number
+    quantity: number
+    side: OrderIntent["side"]
+}): number | null {
+    if (
+        !Number.isFinite(args.width) ||
+        !Number.isFinite(args.netPrice) ||
+        !Number.isFinite(args.quantity) ||
+        args.width <= 0 ||
+        args.netPrice < 0 ||
+        args.quantity <= 0
+    ) {
+        return null
+    }
+
+    if (args.side === "buy") {
+        return args.netPrice * OPTION_CONTRACT_MULTIPLIER * args.quantity
+    }
+
+    const grossRisk = args.width * OPTION_CONTRACT_MULTIPLIER * args.quantity
+    const creditOffset = args.netPrice * OPTION_CONTRACT_MULTIPLIER * args.quantity
 
     return Math.max(grossRisk - creditOffset, 0)
+}
+
+function resolveEntryStructure(intent: OrderIntent): ResolvedStructure | null {
+    const normalizedLegs = normalizeOptionLegs(intent)
+    if (!Array.isArray(normalizedLegs)) {
+        return null
+    }
+
+    if (normalizedLegs.some((leg) => leg.positionEffect !== "open")) {
+        return null
+    }
+
+    return resolveStructureFromNormalizedLegs(normalizedLegs)
+}
+
+function resolveOwnedOptionStructuresForRisk(positions: Position[]): OwnedOptionStructureResolution {
+    const structures: OwnedOptionStructureRisk[] = []
+    const unevaluablePositions: string[] = []
+    const consumedIndexes = new Set<number>()
+    const consumedCanonicalInstruments = new Set<string>()
+
+    positions.forEach((position, index) => {
+        const normalizedInstrument = position.instrument.trim().toUpperCase()
+        const claim = parseClaimedStructureInstrument(normalizedInstrument)
+        if (!claim) {
+            if (normalizedInstrument.startsWith("IC:") || normalizedInstrument.startsWith("VS:")) {
+                unevaluablePositions.push(position.instrument)
+            }
+            return
+        }
+
+        const resolved = buildOwnedStructureRiskFromClaimedPosition(position, claim)
+        if (!resolved) {
+            unevaluablePositions.push(position.instrument)
+            return
+        }
+
+        structures.push(resolved)
+        consumedIndexes.add(index)
+        consumedCanonicalInstruments.add(normalizedInstrument)
+    })
+
+    const claimGroups = new Map<string, Array<{ position: Position; index: number }>>()
+    positions.forEach((position, index) => {
+        if (consumedIndexes.has(index)) {
+            return
+        }
+
+        const claimInstrument = readOwnedClaimInstrument(position)
+        if (!claimInstrument) {
+            return
+        }
+
+        const normalizedClaimInstrument = claimInstrument.trim().toUpperCase()
+        if (consumedCanonicalInstruments.has(normalizedClaimInstrument)) {
+            consumedIndexes.add(index)
+            return
+        }
+
+        const claim = parseClaimedStructureInstrument(normalizedClaimInstrument)
+        if (!claim) {
+            unevaluablePositions.push(position.instrument)
+            consumedIndexes.add(index)
+            return
+        }
+
+        const group = claimGroups.get(normalizedClaimInstrument) ?? []
+        group.push({ position, index })
+        claimGroups.set(normalizedClaimInstrument, group)
+    })
+
+    for (const [claimInstrument, entries] of claimGroups) {
+        const claim = parseClaimedStructureInstrument(claimInstrument)
+        const resolved = claim
+            ? buildOwnedStructureRiskFromClaimGroup(claim, entries.map((entry) => entry.position))
+            : null
+
+        if (resolved) {
+            structures.push(resolved)
+        } else {
+            unevaluablePositions.push(...entries.map((entry) => entry.position.instrument))
+        }
+
+        for (const entry of entries) {
+            consumedIndexes.add(entry.index)
+        }
+    }
+
+    const remainingRawOptionPositions = positions
+        .map((position, index) => ({ position, index }))
+        .filter((entry) => !consumedIndexes.has(entry.index) && Boolean(parseOptionContractSymbol(entry.position.instrument)))
+        .map((entry) => entry.position.instrument)
+
+    return {
+        structures,
+        unevaluablePositions: [...unevaluablePositions, ...remainingRawOptionPositions],
+    }
+}
+
+function buildOwnedStructureRiskFromClaimedPosition(
+    position: Position,
+    claim: NonNullable<ReturnType<typeof parseClaimedStructureInstrument>>
+): OwnedOptionStructureRisk | null {
+    const structure = resolveStructureFromClaim(claim)
+    const quantity = readPositiveIntegerQuantity(position.quantity)
+    const entryPrice = readNonNegativeFiniteNumber(position.entryPrice)
+
+    if (!structure || quantity === null || entryPrice === null) {
+        return null
+    }
+
+    return buildOwnedStructureRisk({
+        structure,
+        quantity,
+        entryPrice,
+        side: position.side === "long" ? "buy" : "sell",
+    })
+}
+
+function buildOwnedStructureRiskFromClaimGroup(
+    claim: NonNullable<ReturnType<typeof parseClaimedStructureInstrument>>,
+    positions: Position[]
+): OwnedOptionStructureRisk | null {
+    const structure = resolveStructureFromClaim(claim)
+    if (!structure || positions.length !== claim.legs.length) {
+        return null
+    }
+
+    const normalizedClaimLegs = new Set(claim.legs)
+    const positionsByInstrument = new Map(
+        positions.map((position) => [position.instrument.trim().toUpperCase(), position])
+    )
+    if (positionsByInstrument.size !== positions.length) {
+        return null
+    }
+
+    for (const leg of structure.legs) {
+        const position = positionsByInstrument.get(leg.instrument.trim().toUpperCase())
+        if (!position || !normalizedClaimLegs.has(leg.instrument.trim().toUpperCase())) {
+            return null
+        }
+
+        if (position.side !== leg.exposure) {
+            return null
+        }
+    }
+
+    const quantity = readSharedStructureQuantity(positions)
+    const entryPrice = calculateNetStructureEntryPrice(positions)
+    if (quantity === null || entryPrice === null) {
+        return null
+    }
+
+    return buildOwnedStructureRisk({
+        structure,
+        quantity,
+        entryPrice,
+        side: "sell",
+    })
+}
+
+function buildOwnedStructureRisk(args: {
+    structure: ResolvedStructure
+    quantity: number
+    entryPrice: number
+    side: OrderIntent["side"]
+}): OwnedOptionStructureRisk | null {
+    const maxLoss = estimateMaxLossFromWidthAndPrice({
+        width: args.structure.spreadWidth,
+        netPrice: args.entryPrice,
+        quantity: args.quantity,
+        side: args.side,
+    })
+
+    return maxLoss === null
+        ? null
+        : {
+            structure: args.structure,
+            quantity: args.quantity,
+            maxLoss,
+        }
+}
+
+function resolveStructureFromClaim(
+    claim: NonNullable<ReturnType<typeof parseClaimedStructureInstrument>>
+): ResolvedStructure | null {
+    const normalizedLegs = resolveNormalizedLegsFromClaim(claim)
+    return normalizedLegs ? resolveStructureFromNormalizedLegs(normalizedLegs) : null
+}
+
+function resolveNormalizedLegsFromClaim(
+    claim: NonNullable<ReturnType<typeof parseClaimedStructureInstrument>>
+): NormalizedOptionLeg[] | null {
+    const parsedLegs = claim.legs
+        .map((instrument) => {
+            const parsed = parseOptionContractSymbol(instrument)
+            return parsed
+                ? {
+                    ...parsed,
+                    instrument,
+                }
+                : null
+        })
+        .filter((leg): leg is ParsedOptionContract & { instrument: string } => Boolean(leg))
+
+    if (
+        parsedLegs.length !== claim.legs.length ||
+        parsedLegs.some((leg) => leg.underlying !== claim.underlying || leg.expiration !== claim.expiration)
+    ) {
+        return null
+    }
+
+    if (claim.structureType === "credit_vertical") {
+        return resolveVerticalClaimLegs(claim, parsedLegs)
+    }
+
+    return resolveIronCondorClaimLegs(parsedLegs)
+}
+
+function resolveVerticalClaimLegs(
+    claim: NonNullable<ReturnType<typeof parseClaimedStructureInstrument>>,
+    legs: Array<ParsedOptionContract & { instrument: string }>
+): NormalizedOptionLeg[] | null {
+    if (!claim.verticalSpreadType || legs.length !== 2) {
+        return null
+    }
+
+    const expectedOptionType = claim.verticalSpreadType === "bear_call_credit" ? "call" : "put"
+    if (legs.some((leg) => leg.optionType !== expectedOptionType)) {
+        return null
+    }
+
+    const sorted = [...legs].sort((left, right) => left.strike - right.strike)
+    const shortLeg = claim.verticalSpreadType === "bear_call_credit" ? sorted[0] : sorted[1]
+    const longLeg = claim.verticalSpreadType === "bear_call_credit" ? sorted[1] : sorted[0]
+
+    if (!shortLeg || !longLeg || shortLeg.strike === longLeg.strike) {
+        return null
+    }
+
+    return [
+        toNormalizedClaimLeg(shortLeg, "short"),
+        toNormalizedClaimLeg(longLeg, "long"),
+    ]
+}
+
+function resolveIronCondorClaimLegs(
+    legs: Array<ParsedOptionContract & { instrument: string }>
+): NormalizedOptionLeg[] | null {
+    const calls = legs.filter((leg) => leg.optionType === "call").sort((left, right) => left.strike - right.strike)
+    const puts = legs.filter((leg) => leg.optionType === "put").sort((left, right) => left.strike - right.strike)
+
+    if (calls.length !== 2 || puts.length !== 2) {
+        return null
+    }
+
+    const longPut = puts[0]
+    const shortPut = puts[1]
+    const shortCall = calls[0]
+    const longCall = calls[1]
+
+    if (!longPut || !shortPut || !shortCall || !longCall) {
+        return null
+    }
+
+    return [
+        toNormalizedClaimLeg(longPut, "long"),
+        toNormalizedClaimLeg(shortPut, "short"),
+        toNormalizedClaimLeg(shortCall, "short"),
+        toNormalizedClaimLeg(longCall, "long"),
+    ]
+}
+
+function toNormalizedClaimLeg(
+    leg: ParsedOptionContract & { instrument: string },
+    exposure: "long" | "short"
+): NormalizedOptionLeg {
+    const side = exposure === "short" ? "sell_to_open" : "buy_to_open"
+
+    return {
+        ...leg,
+        quantity: 1,
+        side,
+        positionEffect: "open",
+        exposure,
+    }
+}
+
+function readOwnedClaimInstrument(position: Position): string | undefined {
+    return readTrimmedString(position.metadata?.alpacaClaimInstrument) ??
+        readTrimmedString(position.metadata?.claimInstrument)
+}
+
+function readSharedStructureQuantity(positions: Position[]): number | null {
+    const quantities = positions.map((position) => readPositiveIntegerQuantity(position.quantity))
+    if (quantities.some((quantity) => quantity === null)) {
+        return null
+    }
+
+    const normalized = quantities as number[]
+    const first = normalized[0]
+    if (first === undefined || normalized.some((quantity) => quantity !== first)) {
+        return null
+    }
+
+    return first
+}
+
+function readPositiveIntegerQuantity(value: unknown): number | null {
+    const quantity = readFiniteNumber(value)
+    if (quantity === undefined || quantity <= 0) {
+        return null
+    }
+
+    const rounded = Math.round(quantity)
+    return Math.abs(quantity - rounded) <= RISK_GATE_EPSILON ? rounded : null
+}
+
+function readNonNegativeFiniteNumber(value: unknown): number | null {
+    const number = readFiniteNumber(value)
+    return number !== undefined && number >= 0 ? number : null
+}
+
+function calculateNetStructureEntryPrice(positions: Position[]): number | null {
+    let netPrice = 0
+
+    for (const position of positions) {
+        const entryPrice = readNonNegativeFiniteNumber(position.entryPrice)
+        if (entryPrice === null) {
+            return null
+        }
+
+        netPrice += entryPrice * (position.side === "short" ? -1 : 1)
+    }
+
+    return Math.abs(netPrice)
+}
+
+function resolveStructureThesisSignatures(structure: ResolvedStructure): StructureThesisSignature[] {
+    const thesisStructureType = structure.verticalSpreadType ?? structure.structureType
+
+    return structure.legs
+        .filter((leg) => leg.exposure === "short")
+        .map((leg) => ({
+            underlying: structure.underlying,
+            expiration: structure.expiration,
+            structureType: thesisStructureType,
+            shortStrike: leg.strike,
+        }))
+}
+
+function countOwnedThesisStructures(structures: OwnedOptionStructureRisk[]): Map<string, number> {
+    const counts = new Map<string, number>()
+
+    for (const ownedStructure of structures) {
+        for (const signature of resolveStructureThesisSignatures(ownedStructure.structure)) {
+            const key = formatThesisSignatureKey(signature)
+            counts.set(key, (counts.get(key) ?? 0) + ownedStructure.quantity)
+        }
+    }
+
+    return counts
+}
+
+function formatThesisSignatureKey(signature: StructureThesisSignature): string {
+    return [
+        signature.underlying.trim().toUpperCase(),
+        signature.expiration,
+        signature.structureType,
+        formatNumber(signature.shortStrike),
+    ].join(":")
+}
+
+function formatThesisSignature(signature: StructureThesisSignature): string {
+    return `${signature.underlying.trim().toUpperCase()} ${signature.expiration} ${signature.structureType} short ${formatNumber(signature.shortStrike)}`
 }
 
 function resolveEntryCreditStructure(intent: OrderIntent): ResolvedStructure | null {
@@ -847,6 +1467,10 @@ function formatPercent(value: number): string {
 
 function formatRatio(value: number): string {
     return `${formatNumber(value)}x`
+}
+
+function formatCurrency(value: number): string {
+    return `$${formatNumber(value)}`
 }
 
 function formatNumber(value: number): string {
