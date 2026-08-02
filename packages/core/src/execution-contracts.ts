@@ -18,6 +18,7 @@ import type {
 import type {
     OrderPersistenceAdapter,
     OrderSnapshot,
+    OrderStatus,
     OrderUpdateDecision,
     OrderUpdateContext,
     TrackedOrderHandle,
@@ -67,6 +68,10 @@ export interface OrderOperationContext {
     providerClientOrderId?: string
     providerOrderAliases?: string[]
     signedOrderFingerprint?: string
+    operationTarget?: "working_order" | "position"
+    providerPositionId?: string
+    instrument?: string
+    orderStatus?: OrderStatus
 }
 
 export type SubmitRecoveryResult =

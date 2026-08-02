@@ -324,7 +324,7 @@ export const mt5ModifyOrderParamsSchema = z.object({
 export const mt5ModifyOrderJsonSchema = {
     type: "object",
     properties: {
-        orderId: { type: "number", description: "Numeric MT5 order ticket to modify" },
+        orderId: { type: "number", description: "Numeric MT5 provider position id from get_positions, or a tracked filled entry ticket that has canonical provider position identity" },
         newStopLoss: { type: "number", description: "New absolute stop-loss price" },
         newTakeProfit: { type: "number", description: "New absolute take-profit price" },
         reason: { type: "string", description: "Why the protective levels are changing" },

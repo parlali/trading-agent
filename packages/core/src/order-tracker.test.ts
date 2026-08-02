@@ -88,8 +88,9 @@ function createPendingLifecycleVenue(): VenueAdapter {
             filledQuantity: 0,
             timestamp: 99,
         }),
-        modifyOrder: async (orderId: string) => {
+        modifyOrder: async (orderId: string, _changes, context) => {
             expect(orderId).toBe("provider-entry-1")
+            expect(context?.operationTarget).toBe("working_order")
             return {
                 orderId: "provider-entry-2",
                 status: "pending",
@@ -122,6 +123,11 @@ function createFilledLifecycleVenue(): VenueAdapter {
             filledQuantity: 1,
             fillPrice: 100,
             timestamp: 10,
+            intentUpdates: {
+                metadata: {
+                    providerPositionId: "position-1",
+                },
+            },
         }),
         cancelOrder: async (orderId: string) => ({
             orderId,
@@ -129,10 +135,13 @@ function createFilledLifecycleVenue(): VenueAdapter {
             filledQuantity: 0,
             timestamp: 11,
         }),
-        modifyOrder: async (orderId: string) => {
-            expect(orderId).toBe("filled-entry-1")
+        modifyOrder: async (orderId: string, _changes, context) => {
+            expect(orderId).toBe("position-1")
+            expect(context?.operationTarget).toBe("position")
+            expect(context?.providerPositionId).toBe("position-1")
             return {
                 orderId,
+                providerOrderId: "filled-entry-1",
                 status: "rejected",
                 filledQuantity: 0,
                 timestamp: 12,
@@ -565,5 +574,134 @@ describe("order lifecycle persistence", () => {
         expect(snapshot?.status).toBe("filled")
         expect(snapshot?.avgFillPrice).toBe(100)
         expect(snapshot?.intent.stopPrice).toBeUndefined()
+    })
+
+    it("fails closed before MT5 position modify when filled canonical state has no provider position id", async () => {
+        const persistence = createMemoryOrderPersistence()
+        const modifyOrder = vi.fn(async (): Promise<never> => {
+            throw new Error("provider mutation should not run")
+        })
+        const pipeline = new ExecutionPipeline({
+            venue: {
+                ...createFilledLifecycleVenue(),
+                submitOrder: async () => ({
+                    orderId: "filled-entry-1",
+                    status: "filled",
+                    filledQuantity: 1,
+                    fillPrice: 100,
+                    timestamp: 10,
+                }),
+                modifyOrder,
+            },
+            venueName: "mt5",
+            policy: {
+                dryRun: false,
+                safety: {
+                    account: {
+                        allocationPercent: 100,
+                    },
+                },
+            },
+            riskValidators: [allowIntent],
+            logger: createLogger({ minLevel: "fatal" }),
+            orderPersistence: persistence.adapter,
+            runId: "run-3",
+            strategyId: "strategy-1",
+        })
+
+        await pipeline.executeIntent(
+            {
+                instrument: "XAUUSD",
+                side: "buy",
+                quantity: 1,
+                orderType: "market",
+                timeInForce: "day",
+                metadata: {
+                    action: "entry",
+                },
+            },
+            account,
+            []
+        )
+
+        const result = await pipeline.modifyOrder("filled-entry-1", {
+            metadata: {
+                stopLoss: 95,
+            },
+        }, "tighten protection")
+
+        expect(modifyOrder).not.toHaveBeenCalled()
+        expect(result.status).toBe("filled")
+        expect(result.errorDetail?.code).toBe("MT5_MODIFY_POSITION_ID_MISSING")
+        expect(result.error).toContain("requires provider position identity")
+        expect((await pipeline.getOrderSnapshot("filled-entry-1"))?.status).toBe("filled")
+    })
+
+    it("fails closed before MT5 modify when canonical lifecycle status is ambiguous", async () => {
+        const persistence = createMemoryOrderPersistence()
+        const modifyOrder = vi.fn(async (): Promise<never> => {
+            throw new Error("provider mutation should not run")
+        })
+        const pipeline = new ExecutionPipeline({
+            venue: {
+                ...createPendingLifecycleVenue(),
+                submitOrder: async () => ({
+                    orderId: "partial-entry-1",
+                    status: "partially_filled",
+                    filledQuantity: 0.5,
+                    fillPrice: 100,
+                    timestamp: 10,
+                    intentUpdates: {
+                        metadata: {
+                            providerPositionId: "position-1",
+                        },
+                    },
+                }),
+                modifyOrder,
+            },
+            venueName: "mt5",
+            policy: {
+                dryRun: false,
+                safety: {
+                    account: {
+                        allocationPercent: 100,
+                    },
+                },
+            },
+            riskValidators: [allowIntent],
+            logger: createLogger({ minLevel: "fatal" }),
+            orderPersistence: persistence.adapter,
+            runId: "run-4",
+            strategyId: "strategy-1",
+        })
+
+        await pipeline.executeIntent(
+            {
+                instrument: "XAUUSD",
+                side: "buy",
+                quantity: 1,
+                orderType: "limit",
+                limitPrice: 100,
+                timeInForce: "day",
+                metadata: {
+                    action: "entry",
+                },
+            },
+            account,
+            []
+        )
+
+        const result = await pipeline.modifyOrder("partial-entry-1", {
+            metadata: {
+                stopLoss: 95,
+            },
+        }, "tighten protection")
+
+        expect(modifyOrder).not.toHaveBeenCalled()
+        expect(result.status).toBe("partially_filled")
+        expect(result.errorDetail?.code).toBe("MT5_MODIFY_TARGET_AMBIGUOUS")
+        expect(result.error).toContain("target is ambiguous")
+
+        pipeline.stopAllTracking()
     })
 })

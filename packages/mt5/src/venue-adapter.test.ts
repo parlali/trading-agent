@@ -678,12 +678,17 @@ describe("MT5VenueAdapter", () => {
     it("modifies MT5 pending order price and protection through the order modify endpoint", async () => {
         const client = createClient()
         let modifyParams: Parameters<MT5Client["modifyOrder"]>[1] | undefined
+        let modifyPositionCalled = false
         client.modifyOrder = async (_credentials, params): Promise<MT5OrderResult> => {
             modifyParams = params
             return createOrderResult({
                 orderId: "1607001002",
                 volume: 0,
             })
+        }
+        client.modifyPosition = async (): Promise<MT5OrderResult> => {
+            modifyPositionCalled = true
+            return createOrderResult({})
         }
 
         const adapter = createAdapter(client)
@@ -701,8 +706,81 @@ describe("MT5VenueAdapter", () => {
             stopLoss: 4705,
             takeProfit: 4730,
         })
+        expect(modifyPositionCalled).toBe(false)
         expect(result.status).toBe("pending")
         expect(result.errorDetail).toBeUndefined()
+    })
+
+    it("replays FOMC GBPUSD stop update through the position modify endpoint", async () => {
+        const client = createClient()
+        let modifyOrderCalled = false
+        let modifyPositionParams: Parameters<MT5Client["modifyPosition"]>[1] | undefined
+        client.modifyOrder = async (): Promise<MT5OrderResult> => {
+            modifyOrderCalled = true
+            return createOrderResult({})
+        }
+        client.modifyPosition = async (_credentials, params): Promise<MT5OrderResult> => {
+            modifyPositionParams = params
+            return createOrderResult({
+                orderId: "",
+                volume: 0,
+            })
+        }
+
+        const adapter = createAdapter(client)
+        const result = await adapter.modifyOrder("1830194334", {
+            metadata: {
+                stopLoss: 1.3362,
+                takeProfit: 1.33886,
+            },
+        }, {
+            canonicalOrderId: "vmte01x4mp3z4tvb",
+            providerOrderId: "1830194334",
+            providerClientOrderId: "vmte01x4mp3z4tvb",
+            providerOrderAliases: [],
+            operationTarget: "position",
+            providerPositionId: "1830194334",
+            instrument: "GBPUSD",
+            orderStatus: "filled",
+        })
+
+        expect(modifyOrderCalled).toBe(false)
+        expect(modifyPositionParams).toEqual({
+            positionId: 1830194334,
+            stopLoss: 1.3362,
+            takeProfit: 1.33886,
+        })
+        expect(result.status).toBe("filled")
+        expect(result.providerOrderId).toBe("1830194334")
+        expect(result.intentUpdates?.metadata?.providerPositionId).toBe("1830194334")
+        expect(result.errorDetail).toBeUndefined()
+    })
+
+    it("fails closed before MT5 position modify when a price change is requested", async () => {
+        const client = createClient()
+        let modifyPositionCalled = false
+        client.modifyPosition = async (): Promise<MT5OrderResult> => {
+            modifyPositionCalled = true
+            return createOrderResult({})
+        }
+
+        const adapter = createAdapter(client)
+        const result = await adapter.modifyOrder("1606516021", {
+            limitPrice: 4740,
+            metadata: {
+                stopLoss: 4735.25,
+            },
+        }, {
+            canonicalOrderId: "vmte01abcde23456",
+            providerOrderId: "1606516001",
+            operationTarget: "position",
+            providerPositionId: "1606516021",
+            orderStatus: "filled",
+        })
+
+        expect(modifyPositionCalled).toBe(false)
+        expect(result.status).toBe("rejected")
+        expect(result.errorDetail?.code).toBe("MT5_POSITION_MODIFY_PRICE_UNSUPPORTED")
     })
 
     it("treats MT5 no-change modify responses as accepted no-ops", async () => {

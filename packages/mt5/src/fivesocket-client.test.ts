@@ -797,6 +797,48 @@ describe("FiveSocketClient transport policy", () => {
         }
     })
 
+    it("modifies live position stops through the position endpoint", async () => {
+        let modifyBody: any
+        let modifyKey = ""
+        const fetchImpl = createAccountAwareFetch(async (url, method, body, headers) => {
+            if (method === "PATCH" && url.endsWith("/execution/positions/1606516021")) {
+                modifyBody = body
+                modifyKey = headers.get("Idempotency-Key") ?? ""
+                return jsonResponse({
+                    commandId: "cmd-position-modify",
+                    operation: "position.modify",
+                    outcome: "accepted",
+                    status: "modified",
+                    retcode: 10009,
+                    retcodeExternal: null,
+                    retcodeDescription: "Request completed",
+                    positionId: "1606516021",
+                    volume: "0",
+                    price: "0",
+                    recovered: false,
+                    observedAt: new Date().toISOString(),
+                    latencyMs: 2,
+                })
+            }
+            throw new Error(`Unexpected ${method} ${url}`)
+        })
+
+        const client = createClient(fetchImpl)
+        const result = await client.modifyPosition(credentials, {
+            positionId: 1606516021,
+            stopLoss: 4735.25,
+            takeProfit: 4760.5,
+        })
+
+        expect(modifyBody).toEqual({
+            stopLoss: "4735.25",
+            takeProfit: "4760.5",
+        })
+        expect(modifyKey.startsWith("position.modify:1606516021:")).toBe(true)
+        expect(result.success).toBe(true)
+        expect(result.providerStatus).toBe("modified")
+    })
+
     it("applies the connect timeout as a cumulative cold-start budget", async () => {
         const startedAt = Date.now()
         const fetchImpl: typeof fetch = async (input, init) => {

@@ -399,7 +399,11 @@ export class MT5VenueAdapter implements VenueAdapter, PriceVerifier {
         return aggregateMT5CancelResults(orderId, results)
     }
 
-    async modifyOrder(orderId: string, changes: Partial<OrderIntent>): Promise<ExecutionResult> {
+    async modifyOrder(
+        orderId: string,
+        changes: Partial<OrderIntent>,
+        context?: OrderOperationContext
+    ): Promise<ExecutionResult> {
         const price = isPositiveMT5Price(changes.limitPrice)
             ? changes.limitPrice
             : isPositiveMT5Price(changes.stopPrice)
@@ -419,6 +423,30 @@ export class MT5VenueAdapter implements VenueAdapter, PriceVerifier {
             })
         }
 
+        if (context?.operationTarget === "position") {
+            return await this.modifyPositionStop(orderId, changes, {
+                price,
+                stopLoss,
+                takeProfit,
+                context,
+            })
+        }
+
+        if (
+            context?.operationTarget !== undefined &&
+            context.operationTarget !== "working_order"
+        ) {
+            return rejectMT5PreValidation({
+                orderId,
+                message: `Unsupported MT5 modify target ${context.operationTarget}`,
+                code: "UNSUPPORTED_MT5_MODIFY_TARGET",
+                details: {
+                    orderId,
+                    operationTarget: context.operationTarget,
+                },
+            })
+        }
+
         return await this.withTicket(orderId, async (ticket) => {
             const result = await this.client.modifyOrder(this.credentials, {
                 ticket,
@@ -434,6 +462,70 @@ export class MT5VenueAdapter implements VenueAdapter, PriceVerifier {
                 successRetcodes: [10025],
             })
         })
+    }
+
+    private async modifyPositionStop(
+        orderId: string,
+        changes: Partial<OrderIntent>,
+        params: {
+            price?: number
+            stopLoss?: number
+            takeProfit?: number
+            context: OrderOperationContext
+        }
+    ): Promise<ExecutionResult> {
+        if (params.price !== undefined) {
+            return rejectMT5PreValidation({
+                orderId,
+                message: "MT5 position stop update does not support price modification",
+                code: "MT5_POSITION_MODIFY_PRICE_UNSUPPORTED",
+                details: {
+                    orderId,
+                    providerPositionId: params.context.providerPositionId,
+                },
+            })
+        }
+
+        const positionId = parseMT5Ticket(params.context.providerPositionId ?? orderId)
+        if (positionId === undefined) {
+            return rejectMT5PreValidation({
+                orderId,
+                message: "MT5 position stop update requires a numeric provider position id",
+                code: "INVALID_PROVIDER_POSITION_ID",
+                details: {
+                    orderId,
+                    providerPositionId: params.context.providerPositionId,
+                    canonicalOrderId: params.context.canonicalOrderId,
+                    providerOrderId: params.context.providerOrderId,
+                },
+            })
+        }
+
+        const result = await this.client.modifyPosition(this.credentials, {
+            positionId,
+            stopLoss: params.stopLoss,
+            takeProfit: params.takeProfit,
+        })
+        const mapped = this.client.mapOrderResultToExecution(result, {
+            fallbackOrderId: String(positionId),
+            successStatus: "filled",
+            filledQuantity: 0,
+            successRetcodes: [10025],
+        })
+
+        return {
+            ...mapped,
+            providerOrderId: params.context.providerOrderId ?? mapped.providerOrderId,
+            providerClientOrderId: params.context.providerClientOrderId ?? mapped.providerClientOrderId,
+            providerOrderAliases: params.context.providerOrderAliases ?? mapped.providerOrderAliases,
+            intentUpdates: {
+                ...changes,
+                metadata: {
+                    ...changes.metadata,
+                    providerPositionId: String(positionId),
+                },
+            },
+        }
     }
 
     async closePosition(

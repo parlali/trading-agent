@@ -38,6 +38,7 @@ import type {
     ExecutionSafetyFaultInput,
     ExecutionSafetyFaultRecorder,
     ExecutionPipelineConfig,
+    OrderOperationContext,
     OrderStatusCallback,
     SubmitOrderContext,
     TradeEventLogger,
@@ -83,6 +84,7 @@ import {
     reconcileOwnedInstrumentsFromSnapshots,
     updateOwnedInstrumentsFromResult,
 } from "./execution-ownership"
+import { createOrderOperationContext } from "./execution-order-operation-context"
 
 export * from "./dry-run-ledger"
 export * from "./price-verification"
@@ -493,6 +495,24 @@ export class ExecutionPipeline {
             }
         }
 
+        const dispatch = this.resolveModifyOrderDispatch(orderId, providerOrderId, existing)
+
+        if (dispatch.errorDetail) {
+            const validation: ValidationResult = {
+                allowed: false,
+                reason: dispatch.errorDetail.message,
+            }
+            const result = createModifyPreValidationResult(
+                canonicalOrderId,
+                existing,
+                dispatch.errorDetail
+            )
+
+            void this.tradeEventLogger?.logValidation(this.runId, this.strategyId, validation, intent)
+            void this.tradeEventLogger?.logSubmission(this.runId, this.strategyId, result, intent)
+            return result
+        }
+
         void this.tradeEventLogger?.logValidation(this.runId, this.strategyId, ALLOWED_VALIDATION, intent)
         await this.lifecycleManager.recordModifyAttempt(canonicalOrderId, changes, reason)
 
@@ -517,15 +537,9 @@ export class ExecutionPipeline {
 
         let result: ExecutionResult
         try {
-            result = await this.venue.modifyOrder(providerOrderId, changes, {
-                canonicalOrderId,
-                providerOrderId,
-                providerClientOrderId: existing?.providerClientOrderId,
-                providerOrderAliases: existing?.providerOrderAliases,
-                signedOrderFingerprint: existing?.signedOrderFingerprint,
-            })
+            result = await this.venue.modifyOrder(dispatch.providerId, changes, dispatch.context)
         } catch (error) {
-            result = createUnconfirmedOperationFailureExecutionResult(providerOrderId, error, existing)
+            result = createUnconfirmedOperationFailureExecutionResult(dispatch.providerId, error, existing)
         }
         const identityNormalizedResult = toRecoverableOperationResult(normalizeExecutionResultIdentity(result, {
             canonicalOrderId,
@@ -549,6 +563,118 @@ export class ExecutionPipeline {
         void this.tradeEventLogger?.logSubmission(this.runId, this.strategyId, resultWithIntentUpdates, intent)
         await this.lifecycleManager.captureVenueUpdate(canonicalOrderId, resultWithIntentUpdates, "modify_attempt", reason)
         return resultWithIntentUpdates
+    }
+
+    private resolveModifyOrderDispatch(
+        requestedOrderId: string,
+        providerOrderId: string,
+        existing: OrderSnapshot | null
+    ): {
+        providerId: string
+        context: OrderOperationContext
+        errorDetail?: undefined
+    } | {
+        providerId?: undefined
+        context?: undefined
+        errorDetail: NonNullable<ExecutionResult["errorDetail"]>
+    } {
+        if (this.venueName !== "mt5") {
+            return {
+                providerId: providerOrderId,
+                context: existing
+                    ? createOrderOperationContext(existing)
+                    : {
+                        canonicalOrderId: requestedOrderId,
+                        providerOrderId,
+                    },
+            }
+        }
+
+        if (!existing) {
+            return {
+                errorDetail: createExecutionErrorDetail(
+                    "pre_validation",
+                    "MT5 modify_order requires tracked canonical state to distinguish a working order from a live position",
+                    {
+                        code: "MT5_MODIFY_CANONICAL_STATE_MISSING",
+                        retryable: false,
+                        details: {
+                            requestedOrderId,
+                            providerOrderId,
+                        },
+                    }
+                ),
+            }
+        }
+
+        const context = createOrderOperationContext(existing)
+        if (context.operationTarget === "working_order") {
+            if (!existing.providerOrderId) {
+                return {
+                    errorDetail: createExecutionErrorDetail(
+                        "pre_validation",
+                        `MT5 working-order modify for ${existing.orderId} requires provider order identity`,
+                        {
+                            code: "MT5_MODIFY_ORDER_ID_MISSING",
+                            retryable: false,
+                            details: {
+                                requestedOrderId,
+                                canonicalOrderId: existing.orderId,
+                            },
+                        }
+                    ),
+                }
+            }
+
+            return {
+                providerId: existing.providerOrderId,
+                context,
+            }
+        }
+
+        if (context.operationTarget === "position") {
+            if (!context.providerPositionId) {
+                return {
+                    errorDetail: createExecutionErrorDetail(
+                        "pre_validation",
+                        `MT5 position stop update for ${existing.orderId} requires provider position identity`,
+                        {
+                            code: "MT5_MODIFY_POSITION_ID_MISSING",
+                            retryable: false,
+                            details: {
+                                requestedOrderId,
+                                canonicalOrderId: existing.orderId,
+                                providerOrderId: existing.providerOrderId,
+                                orderStatus: existing.status,
+                            },
+                        }
+                    ),
+                }
+            }
+
+            return {
+                providerId: context.providerPositionId,
+                context,
+            }
+        }
+
+        return {
+            errorDetail: createExecutionErrorDetail(
+                "pre_validation",
+                `MT5 modify_order target is ambiguous for ${existing.orderId} with lifecycle status ${existing.status}`,
+                {
+                    code: "MT5_MODIFY_TARGET_AMBIGUOUS",
+                    retryable: false,
+                    details: {
+                        requestedOrderId,
+                        canonicalOrderId: existing.orderId,
+                        providerOrderId: existing.providerOrderId,
+                        providerPositionId: context.providerPositionId,
+                        orderStatus: existing.status,
+                    },
+                }
+            ),
+        }
     }
 
     async closePosition(
@@ -1319,6 +1445,22 @@ function createRejectedExecuteIntentResult(
             errorDetail,
         },
         validation,
+    }
+}
+
+function createModifyPreValidationResult(
+    orderId: string,
+    existing: OrderSnapshot | null,
+    errorDetail: ReturnType<typeof createExecutionErrorDetail>
+): ExecutionResult {
+    return {
+        orderId,
+        status: existing?.status ?? "rejected",
+        filledQuantity: existing?.filledQuantity ?? 0,
+        fillPrice: existing?.avgFillPrice,
+        timestamp: Date.now(),
+        error: formatExecutionError(errorDetail),
+        errorDetail,
     }
 }
 

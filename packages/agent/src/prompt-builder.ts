@@ -252,7 +252,7 @@ function buildPolicySection(context: StrategyRunContext): string {
             `If takeProfit is given as an absolute price, the implied risk-reward ratio must be >= ${minRR}. Orders below this threshold will be rejected.`,
             "",
             "Lifecycle expectations:",
-            "- Use `modify_order` only to change stop-loss and/or take-profit on an existing MT5 position using its numeric ticket",
+            "- Use `modify_order` only to change stop-loss and/or take-profit on an existing MT5 position using its numeric provider position id from current positions",
             "- Do not use `modify_order` to change quantity, entry price, or replace a pending order",
             "- If a pending MT5 entry order already exists, manage or cancel it before proposing another one unless the typed strategy policy explicitly allows overlap",
             "",

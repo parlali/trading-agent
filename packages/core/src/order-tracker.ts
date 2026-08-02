@@ -26,12 +26,12 @@ import type {
     VenueAdapter,
     TradeEventLogger,
     OrderLifecycleConfig,
-    OrderOperationContext,
     OrderStatusCallback,
 } from "./execution-contracts"
 import type { Logger } from "./logger"
 import { hasIntentChanges } from "./intent"
 import { toRecoverableOperationResult } from "./execution-result-helpers"
+import { createOrderOperationContext } from "./execution-order-operation-context"
 
 interface TrackedOrderState {
     handle: TrackedOrderHandle
@@ -590,16 +590,6 @@ export class OrderLifecycleManager {
         return Array.from(this.trackedOrders.values()).find((tracked) =>
             matchesOrderIdentifier(tracked.handle.snapshot, orderId)
         )
-    }
-}
-
-function createOrderOperationContext(snapshot: OrderSnapshot): OrderOperationContext {
-    return {
-        canonicalOrderId: snapshot.orderId,
-        providerOrderId: snapshot.providerOrderId,
-        providerClientOrderId: snapshot.providerClientOrderId,
-        providerOrderAliases: snapshot.providerOrderAliases,
-        signedOrderFingerprint: snapshot.signedOrderFingerprint,
     }
 }
 

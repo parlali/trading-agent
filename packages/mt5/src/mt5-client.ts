@@ -233,6 +233,14 @@ export class MT5Client {
         throw unimplementedMT5TransportMethod("modifyOrder")
     }
 
+    async modifyPosition(_credentials: MT5AccountCredentials, _params: {
+        positionId: number
+        stopLoss?: number
+        takeProfit?: number
+    }): Promise<MT5OrderResult> {
+        throw unimplementedMT5TransportMethod("modifyPosition")
+    }
+
     async cancelOrder(_credentials: MT5AccountCredentials, _params: {
         ticket: number
     }): Promise<MT5OrderResult> {

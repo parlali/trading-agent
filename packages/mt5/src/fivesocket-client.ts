@@ -319,6 +319,31 @@ export class FiveSocketClient extends MT5Client {
         return await this.resolveMutationCommand(accountId, command)
     }
 
+    override async modifyPosition(credentials: MT5AccountCredentials, params: {
+        positionId: number
+        stopLoss?: number
+        takeProfit?: number
+    }): Promise<MT5OrderResult> {
+        const accountId = await this.ensureAccount(credentials)
+        const body: Record<string, unknown> = {}
+        if (params.stopLoss !== undefined) {
+            body.stopLoss = toPriceDecimalString(params.stopLoss)
+        }
+        if (params.takeProfit !== undefined) {
+            body.takeProfit = toPriceDecimalString(params.takeProfit)
+        }
+
+        const idempotencyKey = createAttemptIdempotencyKey("position.modify", params.positionId)
+        const command = await this.mutateExecutionCommand(
+            accountId,
+            "PATCH",
+            `/v1/accounts/${encodeURIComponent(accountId)}/execution/positions/${encodeURIComponent(String(params.positionId))}`,
+            body,
+            idempotencyKey
+        )
+        return await this.resolveMutationCommand(accountId, command)
+    }
+
     override async cancelOrder(credentials: MT5AccountCredentials, params: {
         ticket: number
     }): Promise<MT5OrderResult> {
@@ -1315,7 +1340,7 @@ function sleep(delayMs: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, delayMs))
 }
 
-function createAttemptIdempotencyKey(operation: "modify" | "cancel", ticket: number): string {
+function createAttemptIdempotencyKey(operation: "modify" | "position.modify" | "cancel", ticket: number): string {
     return `${operation}:${ticket}:${crypto.randomUUID()}`
 }
 

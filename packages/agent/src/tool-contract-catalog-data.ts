@@ -210,7 +210,7 @@ export const toolContractDefinitions = [
                 errorSemantics: "Broker rejections are returned in the execution payload.",
             },
             mt5: {
-                description: "Adjust stop-loss and or take-profit on an existing MT5 position using its numeric order ticket. Quantity and entry price changes are not supported.",
+                description: "Adjust stop-loss and or take-profit on an existing MT5 position using its numeric provider position id from current positions. Quantity and entry price changes are not supported.",
                 parameters: executionSchemas.mt5ModifyOrderParamsSchema,
                 jsonSchema: executionSchemas.mt5ModifyOrderJsonSchema,
                 outputDescription: "Returns the normalized order modification result plus the refreshed tracked order snapshot.",
