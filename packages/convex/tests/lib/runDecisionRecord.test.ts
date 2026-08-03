@@ -29,6 +29,7 @@ describe("run decision record persistence", () => {
                 invalidation: "Lose the prior low.",
             },
             decision: "no_trade" as const,
+            effectiveDecision: "trade_blocked" as const,
             detail: "sit out because the spread is wider than the setup can carry",
             rulesApplied: [
                 "Treat venue-owned market data as execution truth.",

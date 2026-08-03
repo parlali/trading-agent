@@ -295,6 +295,8 @@ export type DecisionRecordDirection = "long" | "short" | "neutral"
 
 export type DecisionRecordDecision = "trade" | "no_trade" | "manage_only"
 
+export type DecisionRecordEffectiveDecision = DecisionRecordDecision | "trade_blocked"
+
 export interface DecisionRecordForecast {
     direction?: DecisionRecordDirection
     p?: number
@@ -306,6 +308,7 @@ export interface DecisionRecordForecast {
 export interface DecisionRecord {
     forecast?: DecisionRecordForecast
     decision?: DecisionRecordDecision
+    effectiveDecision?: DecisionRecordEffectiveDecision
     detail?: string
     rulesApplied?: string[]
     notInText?: string[]

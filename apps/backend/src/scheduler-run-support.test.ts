@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest"
 import type { AgentRunResult } from "@valiq-trading/agent"
+import type { RunOrderRow } from "@valiq-trading/convex"
 
 const testEnv = {
     CONVEX_URL: "https://convex.test",
@@ -145,7 +146,84 @@ describe("scheduler run diagnostics", () => {
             ],
         })
     })
+
+    it("marks model trades with only validation rejections as trade_blocked", async () => {
+        const { buildRunDecisionRecord } = await import("./scheduler-run-support")
+
+        expect(buildRunDecisionRecord({
+            decisionRecord: true,
+        }, decisionRecordSummary("trade"), [], {
+            canonicalOrders: [],
+            validationRejectedCount: 3,
+        })).toMatchObject({
+            decision: "trade",
+            effectiveDecision: "trade_blocked",
+        })
+    })
+
+    it("marks accepted entry or close orders as trade", async () => {
+        const { buildRunDecisionRecord } = await import("./scheduler-run-support")
+
+        expect(buildRunDecisionRecord({
+            decisionRecord: true,
+        }, decisionRecordSummary("trade"), [], {
+            canonicalOrders: [canonicalOrder("entry", "filled", 1)],
+            validationRejectedCount: 3,
+        })).toMatchObject({
+            decision: "trade",
+            effectiveDecision: "trade",
+        })
+    })
+
+    it("marks pure model declines as no_trade", async () => {
+        const { buildRunDecisionRecord } = await import("./scheduler-run-support")
+
+        expect(buildRunDecisionRecord({
+            decisionRecord: true,
+        }, decisionRecordSummary("no_trade"), [], {
+            canonicalOrders: [],
+            validationRejectedCount: 0,
+        })).toMatchObject({
+            decision: "no_trade",
+            effectiveDecision: "no_trade",
+        })
+    })
+
+    it("marks modify-only runs as manage_only", async () => {
+        const { buildRunDecisionRecord } = await import("./scheduler-run-support")
+
+        expect(buildRunDecisionRecord({
+            decisionRecord: true,
+        }, decisionRecordSummary("manage_only"), [], {
+            canonicalOrders: [canonicalOrder("modify", "pending", 0)],
+            validationRejectedCount: 0,
+        })).toMatchObject({
+            decision: "manage_only",
+            effectiveDecision: "manage_only",
+        })
+    })
 })
+
+function decisionRecordSummary(decision: "trade" | "no_trade" | "manage_only"): string {
+    return [
+        "DECISION_RECORD",
+        `decision: ${decision}`,
+        "detail: replay fixture",
+        "END_DECISION_RECORD",
+    ].join("\n")
+}
+
+function canonicalOrder(
+    action: RunOrderRow["action"],
+    status: RunOrderRow["status"],
+    filledQuantity: number
+): Pick<RunOrderRow, "action" | "status" | "filledQuantity"> {
+    return {
+        action,
+        status,
+        filledQuantity,
+    }
+}
 
 function createAgentRunResult(): AgentRunResult {
     return {

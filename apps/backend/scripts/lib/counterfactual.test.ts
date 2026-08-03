@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest"
 import {
     resolveCounterfactualEntry,
+    resolveBlockedCounterfactual,
     resolveDeclinedCounterfactual,
+    summarizeCounterfactualRows,
     type CounterfactualPriceSeries,
 } from "./counterfactual"
 
@@ -132,6 +134,48 @@ describe("counterfactual ledger resolution", () => {
 
         expect(row?.resolution).toBe("unresolvable")
         expect(row?.reason).toContain("not parseable")
+    })
+
+    it("classifies effective trade_blocked decisions as blocked instead of declined or unfilled", () => {
+        const decisionRecord = {
+            decision: "no_trade" as const,
+            effectiveDecision: "trade_blocked" as const,
+            forecast: {
+                direction: "long" as const,
+                expectedMove: "+1%",
+                invalidation: "Break below 99",
+                horizon: "30m",
+            },
+        }
+        const blocked = resolveBlockedCounterfactual({
+            runId: "run-6",
+            book: "book",
+            instrument: "GBPUSD",
+            decisionRecord,
+        })
+        const declined = resolveDeclinedCounterfactual({
+            runId: "run-6",
+            book: "book",
+            instrument: "GBPUSD",
+            runStartedAt: 0,
+            decisionRecord,
+            priceSeries: series([
+                sample(1_000, 101, 99, 100),
+            ]),
+        })
+
+        expect(blocked).toMatchObject({
+            kind: "blocked",
+            resolution: "blocked",
+        })
+        expect(declined).toBeUndefined()
+
+        const summary = summarizeCounterfactualRows([blocked!])
+        expect(summary[0]).toMatchObject({
+            blockedCount: 1,
+            declinedCount: 0,
+            unfilledCount: 0,
+        })
     })
 })
 

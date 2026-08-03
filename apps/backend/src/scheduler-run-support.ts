@@ -1,4 +1,4 @@
-import type { RunDiagnostics } from "@valiq-trading/convex"
+import type { RunDiagnostics, RunOrderRow } from "@valiq-trading/convex"
 import {
     parseDecisionRecordOutput,
     type AgentRunResult,
@@ -151,17 +151,76 @@ export function buildRunDiagnostics(result: {
 export function buildRunDecisionRecord(
     policy: Record<string, unknown>,
     summary: string | undefined,
-    transcriptMessages: AgentRunTranscriptMessage[] = []
+    transcriptMessages: AgentRunTranscriptMessage[] = [],
+    derivationSource?: RunDecisionDerivationSource
 ): DecisionRecord | undefined {
-    return isDecisionRecordPolicyEnabled(policy)
-        ? parseDecisionRecordOutput(buildDecisionRecordParserInput(summary, transcriptMessages))
-        : undefined
+    if (!isDecisionRecordPolicyEnabled(policy)) {
+        return undefined
+    }
+
+    const decisionRecord = parseDecisionRecordOutput(buildDecisionRecordParserInput(summary, transcriptMessages))
+    const effectiveDecision = deriveEffectiveDecision(decisionRecord, derivationSource)
+
+    return effectiveDecision === undefined
+        ? decisionRecord
+        : {
+            ...decisionRecord,
+            effectiveDecision,
+        }
 }
 
 export interface AgentRunTranscriptMessage {
     sequence: number
     role: string
     content: string
+}
+
+export interface RunDecisionDerivationSource {
+    canonicalOrders?: readonly RunDecisionCanonicalOrder[]
+    validationRejectedCount?: number
+}
+
+export type RunDecisionCanonicalOrder = Pick<RunOrderRow, "action" | "status" | "filledQuantity">
+
+export function deriveEffectiveDecision(
+    decisionRecord: DecisionRecord,
+    source: RunDecisionDerivationSource = {}
+): DecisionRecord["effectiveDecision"] | undefined {
+    if (decisionRecord.decision === undefined || source.canonicalOrders === undefined) {
+        return undefined
+    }
+
+    if (source.canonicalOrders.some(isAcceptedEntryOrCloseOrder)) {
+        return "trade"
+    }
+
+    if (decisionRecord.decision === "trade" && readNonNegativeCount(source.validationRejectedCount) > 0) {
+        return "trade_blocked"
+    }
+
+    if (source.canonicalOrders.some(isManageOnlyOrder) || decisionRecord.decision === "manage_only") {
+        return "manage_only"
+    }
+
+    if (decisionRecord.decision === "no_trade") {
+        return "no_trade"
+    }
+
+    return undefined
+}
+
+function isAcceptedEntryOrCloseOrder(order: RunDecisionCanonicalOrder): boolean {
+    return order.action === "entry" || order.action === "close"
+}
+
+function isManageOnlyOrder(order: RunDecisionCanonicalOrder): boolean {
+    return order.action === "adjustment" || order.action === "modify" || order.action === "cancel"
+}
+
+function readNonNegativeCount(value: unknown): number {
+    return typeof value === "number" && Number.isFinite(value) && value > 0
+        ? value
+        : 0
 }
 
 function buildDecisionRecordParserInput(

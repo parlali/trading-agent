@@ -1,8 +1,8 @@
 import type { DecisionRecord, OrderIntent } from "@valiq-trading/core"
 
 export type CounterfactualDirection = "long" | "short"
-export type CounterfactualKind = "taken" | "unfilled" | "declined"
-export type CounterfactualResolution = "tp" | "sl" | "horizon_exit" | "unfilled" | "unresolvable"
+export type CounterfactualKind = "taken" | "unfilled" | "declined" | "blocked"
+export type CounterfactualResolution = "tp" | "sl" | "horizon_exit" | "unfilled" | "blocked" | "unresolvable"
 
 export interface CounterfactualPriceSample {
     timestamp: number
@@ -58,6 +58,7 @@ export interface BookSummaryRow {
     unfilledMissedR: number
     declinedCount: number
     declinedForegoneR: number
+    blockedCount: number
     conservativeFlagCount: number
     unresolvableCount: number
 }
@@ -283,7 +284,7 @@ export function resolveDeclinedCounterfactual(args: {
 }): CounterfactualResolutionRow | undefined {
     const forecast = args.decisionRecord?.forecast
     const rawDirection = forecast?.direction
-    if (args.decisionRecord?.decision !== "no_trade" || rawDirection === undefined || rawDirection === "neutral") {
+    if (resolveDecisionRecordDecision(args.decisionRecord) !== "no_trade" || rawDirection === undefined || rawDirection === "neutral") {
         return undefined
     }
 
@@ -426,6 +427,34 @@ export function resolveFilledCounterfactualTrade(args: {
     })
 }
 
+export function resolveBlockedCounterfactual(args: {
+    runId: string
+    book: string
+    instrument?: string
+    decisionRecord: DecisionRecord | undefined
+}): CounterfactualResolutionRow | undefined {
+    if (resolveDecisionRecordDecision(args.decisionRecord) !== "trade_blocked") {
+        return undefined
+    }
+
+    return {
+        runId: args.runId,
+        book: args.book,
+        kind: "blocked",
+        resolution: "blocked",
+        granularity: "decision_record_effective_decision",
+        conservativeFlag: false,
+        instrument: args.instrument,
+        reason: "model trade proposal rejected by platform validation before any entry or close order was accepted",
+    }
+}
+
+export function resolveDecisionRecordDecision(
+    decisionRecord: DecisionRecord | undefined
+): DecisionRecord["effectiveDecision"] | DecisionRecord["decision"] | undefined {
+    return decisionRecord?.effectiveDecision ?? decisionRecord?.decision
+}
+
 export function parseForecastLevels(args: {
     forecast: DecisionRecord["forecast"]
     direction: CounterfactualDirection
@@ -498,6 +527,7 @@ export function summarizeCounterfactualRows(rows: CounterfactualResolutionRow[])
             const takenR = finiteValues(takenRows.map((row) => row.rMultiple))
             const unfilledRows = bookRows.filter((row) => row.kind === "unfilled")
             const declinedRows = bookRows.filter((row) => row.kind === "declined")
+            const blockedRows = bookRows.filter((row) => row.kind === "blocked")
 
             return {
                 book,
@@ -507,6 +537,7 @@ export function summarizeCounterfactualRows(rows: CounterfactualResolutionRow[])
                 unfilledMissedR: sum(finiteValues(unfilledRows.map((row) => row.rMultiple))),
                 declinedCount: declinedRows.length,
                 declinedForegoneR: sum(finiteValues(declinedRows.map((row) => row.rMultiple))),
+                blockedCount: blockedRows.length,
                 conservativeFlagCount: bookRows.filter((row) => row.conservativeFlag).length,
                 unresolvableCount: bookRows.filter((row) => row.resolution === "unresolvable").length,
             }
@@ -516,8 +547,8 @@ export function summarizeCounterfactualRows(rows: CounterfactualResolutionRow[])
 
 export function renderCounterfactualSummaryMarkdown(summary: BookSummaryRow[]): string {
     const lines = [
-        "| Book | Taken n/avgR | Unfilled n/missedR | Declined n/foregoneR | Conservative | Unresolvable |",
-        "| --- | ---: | ---: | ---: | ---: | ---: |",
+        "| Book | Taken n/avgR | Unfilled n/missedR | Declined n/foregoneR | Blocked | Conservative | Unresolvable |",
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
 
     for (const row of summary) {
@@ -526,6 +557,7 @@ export function renderCounterfactualSummaryMarkdown(summary: BookSummaryRow[]): 
             `${row.takenCount}/${formatOptionalNumber(row.takenAvgR)}`,
             `${row.unfilledCount}/${formatNumber(row.unfilledMissedR)}`,
             `${row.declinedCount}/${formatNumber(row.declinedForegoneR)}`,
+            String(row.blockedCount),
             String(row.conservativeFlagCount),
             `${row.unresolvableCount} |`,
         ].join(" | "))

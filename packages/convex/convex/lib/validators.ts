@@ -42,6 +42,7 @@ export const heartbeatStatusV = stringLiterals(["healthy", "degraded", "unhealth
 export const agentLogRoleV = stringLiterals(["system", "user", "assistant", "tool"])
 export const decisionRecordDirectionV = stringLiterals(["long", "short", "neutral"])
 export const decisionRecordDecisionV = stringLiterals(["trade", "no_trade", "manage_only"])
+export const decisionRecordEffectiveDecisionV = stringLiterals(["trade", "trade_blocked", "no_trade", "manage_only"])
 
 export const decisionRecordV = v.object({
     forecast: v.optional(v.object({
@@ -52,6 +53,7 @@ export const decisionRecordV = v.object({
         invalidation: v.optional(v.string()),
     })),
     decision: v.optional(decisionRecordDecisionV),
+    effectiveDecision: v.optional(decisionRecordEffectiveDecisionV),
     detail: v.optional(v.string()),
     rulesApplied: v.optional(v.array(v.string())),
     notInText: v.optional(v.array(v.string())),

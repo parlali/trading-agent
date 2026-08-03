@@ -17,6 +17,7 @@ import type {
 import {
     getNextCronFireMs,
     isFilledOrderStatus,
+    isDecisionRecordPolicyEnabled,
     isWithinSessionFlatWindow,
     MIN_ONESHOT_GAP_MS,
     parseSummaryMetadata,
@@ -355,7 +356,18 @@ export async function runStrategy(
                 ? sanitizeRunSummary(result.summary)
                 : result.summary
             const runDiagnostics = buildRunDiagnostics(result, runSystemContextDigest) ?? {}
-            const decisionRecord = buildRunDecisionRecord(policy, result.summary, agentTranscript.getTranscriptMessages())
+            const decisionRecordCanonicalOrders = isDecisionRecordPolicyEnabled(policy)
+                ? await loadRunDecisionRecordCanonicalOrders({
+                    app,
+                    runId,
+                    strategyId: strategy._id,
+                    logger: runLogger,
+                })
+                : undefined
+            const decisionRecord = buildRunDecisionRecord(policy, result.summary, agentTranscript.getTranscriptMessages(), {
+                canonicalOrders: decisionRecordCanonicalOrders,
+                validationRejectedCount: result.opportunityCoverage.rejectedByRisk,
+            })
             if (decisionRecord !== undefined) {
                 runDiagnostics.decisionRecord = decisionRecord
             }
@@ -569,6 +581,25 @@ async function alertOnFilledOrdersInFailedRun(args: {
 
 function hasExecutedFill(order: RunOrderRow): boolean {
     return isFilledOrderStatus(order.status) && order.filledQuantity > 0
+}
+
+async function loadRunDecisionRecordCanonicalOrders(args: {
+    app: VenueApp
+    runId: Id<"strategy_runs">
+    strategyId: Id<"strategies">
+    logger: Logger
+}): Promise<RunOrderRow[] | undefined> {
+    try {
+        return await backend.getOrdersForRun(args.runId)
+    } catch (error) {
+        args.logger.warn("Decision record effectiveDecision derivation skipped because canonical run orders could not be loaded", {
+            app: args.app,
+            runId: args.runId,
+            strategyId: args.strategyId,
+            error: error instanceof Error ? error.message : String(error),
+        })
+        return undefined
+    }
 }
 
 type FailureRecoveryReason = "cheap_failure" | "supervision_recovery"
