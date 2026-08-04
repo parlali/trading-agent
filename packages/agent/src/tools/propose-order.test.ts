@@ -93,4 +93,36 @@ describe("createProposeOrderTool", () => {
         expect(intent.metadata).not.toHaveProperty("riskReducing")
         expect(intent.metadata).not.toHaveProperty("optionContractMultiplier")
     })
+
+    it("persists proposal-level Alpaca cap math and entry thesis in order metadata", async () => {
+        const { pipeline, executeIntent } = createPipeline()
+        const tool = createProposeOrderTool(pipeline)
+
+        await tool.handler({
+            instrument: "VS:BEAR_CALL_CREDIT:SPY:2026-08-05:SPY260805C00750000|SPY260805C00751000",
+            side: "sell",
+            quantity: 2,
+            orderType: "limit",
+            limitPrice: 0.28,
+            timeInForce: "day",
+            legs: [
+                { instrument: "SPY260805C00750000", side: "sell_to_open", quantity: 1 },
+                { instrument: "SPY260805C00751000", side: "buy_to_open", quantity: 1 },
+            ],
+            entryThesis: "Bearish intraday reversal after 746.295 high",
+            maxLossArithmetic: "(1.00 - 0.28) x 100 x 2 = $144",
+            metadata: {
+                action: "cancel",
+                events: "FOMC passed",
+            },
+        })
+
+        const [intent] = executeIntent.mock.calls[0] as [OrderIntent, unknown, unknown, OrderLifecycleContext]
+
+        expect(intent.metadata).toEqual({
+            events: "FOMC passed",
+            thesis: "Bearish intraday reversal after 746.295 high",
+            maxLossArithmetic: "(1.00 - 0.28) x 100 x 2 = $144",
+        })
+    })
 })

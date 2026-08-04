@@ -27,7 +27,7 @@ export function createProposeOrderTool(
                 limitPrice: validated.limitPrice,
                 timeInForce: validated.timeInForce,
                 legs: validated.legs,
-                metadata: sanitizeModelIntentMetadata(validated.metadata),
+                metadata: buildAlpacaEntryMetadata(validated),
             }
 
             return await executeToolIntent(pipeline, intent, { action: "entry" }, {
@@ -36,4 +36,27 @@ export function createProposeOrderTool(
             })
         },
     })
+}
+
+function buildAlpacaEntryMetadata(
+    proposal: z.infer<typeof alpacaOrderParamsSchema>
+): Record<string, unknown> | undefined {
+    const metadata = sanitizeModelIntentMetadata(proposal.metadata)
+    const entryThesis = proposal.entryThesis ?? proposal.thesis
+    const proposalMetadata: Record<string, unknown> = {}
+
+    if (proposal.maxLossArithmetic !== undefined) {
+        proposalMetadata.maxLossArithmetic = proposal.maxLossArithmetic
+    }
+
+    if (entryThesis !== undefined) {
+        proposalMetadata.thesis = entryThesis
+    }
+
+    return Object.keys(proposalMetadata).length > 0 || metadata
+        ? {
+            ...metadata,
+            ...proposalMetadata,
+        }
+        : undefined
 }

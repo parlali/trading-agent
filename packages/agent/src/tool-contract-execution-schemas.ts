@@ -196,6 +196,9 @@ export const alpacaOrderParamsSchema = z.object({
     legs: z.array(alpacaLegSchema).refine((legs) => legs.length === 2 || legs.length === 4, {
         message: "Alpaca options structures must contain exactly 2 or 4 legs",
     }),
+    thesis: z.string().trim().min(1).optional(),
+    entryThesis: z.string().trim().min(1).optional(),
+    maxLossArithmetic: z.string().trim().min(1).optional(),
     metadata: z.record(z.string(), z.unknown()).optional(),
 })
 
@@ -241,6 +244,9 @@ export const alpacaOrderJsonSchema = {
                 required: ["instrument", "side", "quantity"],
             },
         },
+        thesis: { type: "string", description: "Entry thesis to persist on the tracked order metadata." },
+        entryThesis: { type: "string", description: "Entry thesis to persist on the tracked order metadata. Use this when separating entry thesis from other notes." },
+        maxLossArithmetic: { type: "string", description: "Human-readable cap math for the proposed structure, e.g. `(width - credit) x 100 x contracts = max loss`." },
         metadata: { type: "object", description: "Optional metadata for deterministic processing. Reserved lifecycle, identity, and accounting keys such as action, riskReducing, and contract multipliers are stripped and set deterministically by the system." },
     },
     required: ["instrument", "side", "quantity", "orderType", "limitPrice", "timeInForce", "legs"],

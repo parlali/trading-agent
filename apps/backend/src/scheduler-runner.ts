@@ -602,7 +602,7 @@ async function loadRunDecisionRecordCanonicalOrders(args: {
     }
 }
 
-type FailureRecoveryReason = "cheap_failure" | "supervision_recovery"
+type FailureRecoveryReason = "cheap_failure" | "supervision_recovery" | "intra_run_fill"
 
 type RecoveryFireWindowGuard = {
     allowed: true
@@ -654,6 +654,15 @@ async function scheduleFailureRecoveryOneshot(args: FailureRecoveryOneshotArgs):
         openPositionCount: exposure.openPositionCount,
         workingOrderCount: exposure.workingOrderCount,
     })
+    if (recoveryReasons.length === 0) {
+        try {
+            const runOrders = await backend.getOrdersForRun(args.runId)
+            if (runOrders.some((order) => isFilledOrderStatus(order.status) && (order.filledQuantity ?? 0) > 0)) {
+                recoveryReasons.push("intra_run_fill")
+            }
+        } catch {
+        }
+    }
     if (recoveryReasons.length === 0) {
         return false
     }
