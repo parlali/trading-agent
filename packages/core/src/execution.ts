@@ -40,6 +40,7 @@ import type {
     ExecutionPipelineConfig,
     OrderOperationContext,
     OrderStatusCallback,
+    ProviderCloseStructureTarget,
     SubmitOrderContext,
     TradeEventLogger,
     VenueAdapter,
@@ -103,6 +104,7 @@ export type {
     OrderStatusCallback,
     OrderOperationContext,
     ProviderCloseStructureTarget,
+    SingleLegCloseStructureResolutionInput,
     SubmitOrderContext,
     SubmitRecoveryResult,
     TradeEventLogger,
@@ -695,6 +697,22 @@ export class ExecutionPipeline {
     ): Promise<ExecuteIntentResult> {
         const positions = await this.getPositions()
         const position = positions.find((item) => item.instrument === instrument)
+        const structureOwnershipFailure = await this.validateSingleLegCloseStructureOwnership(instrument, positions)
+        if (structureOwnershipFailure) {
+            const intent = buildClosePositionIntent({
+                instrument,
+                position,
+                reason,
+                options,
+            })
+            void this.tradeEventLogger?.logIntent(this.runId, this.strategyId, intent)
+            void this.tradeEventLogger?.logValidation(this.runId, this.strategyId, structureOwnershipFailure.validation, intent)
+            return createRejectedExecuteIntentResult(
+                structureOwnershipFailure.validation,
+                structureOwnershipFailure.errorDetail
+            )
+        }
+
         let venueIntent: OrderIntent | undefined = resolvedVenueIntent
         if (!venueIntent && !this.policy.dryRun && this.venue.buildCloseIntent) {
             try {
@@ -1002,6 +1020,38 @@ export class ExecutionPipeline {
             intent,
             positions: await this.resolveCloseInventoryPositions(intent),
         })
+    }
+
+    private async validateSingleLegCloseStructureOwnership(
+        instrument: string,
+        positions: Position[]
+    ): Promise<ReturnType<typeof validateCloseIntentInventory>> {
+        const claimInstruments = this.ownershipScope?.instruments ?? this.ownedInstruments
+        if (!claimInstruments || !this.venue.resolveSingleLegCloseStructureTarget) {
+            return undefined
+        }
+
+        try {
+            const structureTarget = await this.venue.resolveSingleLegCloseStructureTarget({
+                instrument,
+                claimInstruments,
+                positions,
+                allowProviderPositionRefresh: !this.policy.dryRun,
+            })
+
+            return structureTarget
+                ? createSingleLegCloseClaimedStructureFailure(instrument, structureTarget)
+                : undefined
+        } catch (error) {
+            const errorDetail = getExecutionErrorDetail(error) ?? createExecutionErrorDetail("internal", getErrorMessage(error))
+            return {
+                validation: {
+                    allowed: false,
+                    reason: errorDetail.message,
+                },
+                errorDetail,
+            }
+        }
     }
 
     private async resolveCloseInventoryPositions(intent: OrderIntent): Promise<Position[]> {
@@ -1445,6 +1495,33 @@ function createRejectedExecuteIntentResult(
             errorDetail,
         },
         validation,
+    }
+}
+
+function createSingleLegCloseClaimedStructureFailure(
+    instrument: string,
+    target: ProviderCloseStructureTarget
+): NonNullable<ReturnType<typeof validateCloseIntentInventory>> {
+    const normalizedInstrument = instrument.trim().toUpperCase()
+    const instruction = `Use structure-close by submitting propose_close for ${target.claimInstrument}`
+    const message = `Alpaca raw option leg close for ${normalizedInstrument} is rejected because the leg belongs to live claimed structure ${target.claimInstrument}. ${instruction}; do not submit single-leg closes for claimed structure legs.`
+    const errorDetail = createExecutionErrorDetail("risk_engine", message, {
+        code: "ALPACA_RAW_LEG_CLOSE_CLAIMED_STRUCTURE",
+        retryable: false,
+        details: {
+            instrument: normalizedInstrument,
+            claimInstrument: target.claimInstrument,
+            legInstruments: target.legInstruments,
+            instruction,
+        },
+    })
+
+    return {
+        validation: {
+            allowed: false,
+            reason: message,
+        },
+        errorDetail,
     }
 }
 

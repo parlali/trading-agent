@@ -14,6 +14,7 @@ import {
     type Position,
     type ProviderCloseStructureTarget,
     type ProviderPositionClosure,
+    type SingleLegCloseStructureResolutionInput,
     type SubmitOrderContext,
     type SubmitRecoveryResult,
     type VenueAdapter,
@@ -46,7 +47,9 @@ import {
     mapAlpacaOptionActivityClosure,
     mapSinglePosition,
     parseClaimedStructureInstrument,
+    hasClaimedStructureSingleLegOwnershipCandidate,
     mapWorkingOrder,
+    resolveClaimedStructureSingleLegOwnership,
     resolveExactClaimGroupForClose,
     resolveGroupForClose,
     resolveMinimumClaimGroupForClose,
@@ -446,6 +449,37 @@ export class AlpacaOptionsVenueAdapter implements VenueAdapter, PriceVerifier {
         return null
     }
 
+    async resolveSingleLegCloseStructureTarget(
+        args: SingleLegCloseStructureResolutionInput
+    ): Promise<ProviderCloseStructureTarget | null> {
+        if (!hasClaimedStructureSingleLegOwnershipCandidate(args.instrument, args.claimInstruments)) {
+            return null
+        }
+
+        const scopedTarget = resolveClaimedStructureSingleLegOwnership({
+            instrument: args.instrument,
+            claimInstruments: args.claimInstruments,
+            positions: args.positions,
+            onAmbiguous: (legSymbol, claimInstruments) =>
+                throwAmbiguousRawLegStructureClaim(args.instrument, args.positions, legSymbol, claimInstruments),
+        })
+        if (scopedTarget || !args.allowProviderPositionRefresh) {
+            return scopedTarget
+        }
+
+        const livePositions = (await this.client.getPositions())
+            .filter(isAlpacaOptionPosition)
+            .map((position) => mapSinglePosition(position))
+
+        return resolveClaimedStructureSingleLegOwnership({
+            instrument: args.instrument,
+            claimInstruments: args.claimInstruments,
+            positions: livePositions,
+            onAmbiguous: (legSymbol, claimInstruments) =>
+                throwAmbiguousRawLegStructureClaim(args.instrument, livePositions, legSymbol, claimInstruments),
+        })
+    }
+
     async getOrderStatus(orderId: string): Promise<ExecutionResult> {
         return await this.client.getOrder(orderId)
     }
@@ -639,6 +673,27 @@ function buildStructureTarget(match: {
         legInstruments: match.group.positions.map((groupPosition) => groupPosition.symbol),
         ...(match.closeIntent ? { closeIntent: match.closeIntent } : {}),
     }
+}
+
+function throwAmbiguousRawLegStructureClaim(
+    instrument: string,
+    positions: readonly Position[],
+    legSymbol: string,
+    claimInstruments: string[]
+): never {
+    const position = positions.find((candidate) =>
+        candidate.instrument.trim().toUpperCase() === legSymbol
+    )
+
+    throw createExecutionError("pre_validation", `Alpaca raw option leg close found multiple owned claimed structures for leg ${legSymbol}`, {
+        code: "AMBIGUOUS_STRUCTURE_CLAIM",
+        retryable: false,
+        details: {
+            instrument,
+            providerPositionId: position?.providerPositionId,
+            claimInstruments,
+        },
+    })
 }
 
 function throwAmbiguousStructureClaim(

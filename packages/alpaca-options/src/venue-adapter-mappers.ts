@@ -33,11 +33,14 @@ export {
     isAlpacaOptionPosition,
     mapSinglePosition,
     parseClaimedStructureInstrument,
+    hasClaimedStructureSingleLegOwnershipCandidate,
+    resolveClaimedStructureSingleLegOwnership,
     resolveExactClaimGroupForClose,
     resolveGroupForClose,
     resolveMinimumClaimGroupForClose,
     roundPrice,
     toNumber,
+    type ClaimedStructureSingleLegOwnershipTarget,
     type PositionGroup,
 } from "./alpaca-position-structures"
 

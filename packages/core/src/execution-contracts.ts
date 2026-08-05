@@ -48,6 +48,7 @@ export interface VenueAdapter {
     closePosition(instrument: string, preparedIntent?: OrderIntent, context?: SubmitOrderContext): Promise<ExecutionResult>
     closeProviderPosition?(position: Position, preparedIntent?: OrderIntent, context?: SubmitOrderContext): Promise<ExecutionResult>
     resolveProviderCloseStructureTarget?(position: Position, claimInstruments: ReadonlySet<string> | readonly string[]): Promise<ProviderCloseStructureTarget | null>
+    resolveSingleLegCloseStructureTarget?(args: SingleLegCloseStructureResolutionInput): Promise<ProviderCloseStructureTarget | null>
     getOrderStatus(orderId: string): Promise<ExecutionResult>
     buildCloseIntent?(instrument: string): Promise<OrderIntent>
 }
@@ -56,6 +57,13 @@ export interface ProviderCloseStructureTarget {
     claimInstrument: string
     legInstruments: string[]
     closeIntent?: OrderIntent
+}
+
+export interface SingleLegCloseStructureResolutionInput {
+    instrument: string
+    claimInstruments: ReadonlySet<string> | readonly string[]
+    positions: readonly Position[]
+    allowProviderPositionRefresh: boolean
 }
 
 export interface SubmitOrderContext {

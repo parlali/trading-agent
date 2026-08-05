@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from "vitest"
-import type { ExecutionResult } from "@valiq-trading/core"
+import {
+    createLogger,
+    ExecutionPipeline,
+    type ExecutionResult,
+    type Position,
+} from "@valiq-trading/core"
 import type { AlpacaPositionResponse } from "./alpaca-client.ts"
 import { buildAlpacaStructureInstrumentFromLegs } from "./risk-rules.ts"
 import { AlpacaOptionsVenueAdapter } from "./venue-adapter.ts"
@@ -90,6 +95,31 @@ function createClientMock() {
     }
 }
 
+const testLogger = createLogger({ minLevel: "fatal" })
+
+function createPipeline(
+    venue: AlpacaOptionsVenueAdapter,
+    ownedInstruments: Set<string>,
+    dryRun = false
+): ExecutionPipeline {
+    return new ExecutionPipeline({
+        venue,
+        venueName: "alpaca-options",
+        policy: {
+            dryRun,
+            safety: {
+                account: {
+                    allocationPercent: 100,
+                },
+            },
+        },
+        logger: testLogger,
+        runId: "alpaca-options-test-run",
+        strategyId: "alpaca-options-test-strategy",
+        ownedInstruments,
+    })
+}
+
 function createLoggedResetPositions(): AlpacaPositionResponse[] {
     return [
         createPosition("SPY260424C00685000", "short", "1", "8.37"),
@@ -159,6 +189,13 @@ function createBullPutVerticalPositions(): AlpacaPositionResponse[] {
             current_price: "0.90",
             unrealized_pl: "-0.30",
         },
+    ]
+}
+
+function createIncidentBearCallPositions(): AlpacaPositionResponse[] {
+    return [
+        createPosition("SPY260803C00748000", "short", "1", "0.42", "1.79", "1.37"),
+        createPosition("SPY260803C00749000", "long", "1", "0.21", "0.84", "-0.63"),
     ]
 }
 
@@ -589,6 +626,181 @@ describe("AlpacaOptionsVenueAdapter", () => {
                 "SPY260724C00764000",
             ],
         })
+    })
+
+    it("rejects raw single-leg closes on live claimed structures and leaves orphan legs single-leg eligible", async () => {
+        const shortLeg = "SPY260803C00748000"
+        const longLeg = "SPY260803C00749000"
+        const claimInstrument = `VS:BEAR_CALL_CREDIT:SPY:2026-08-03:${shortLeg}|${longLeg}`
+        const claimedClient = createClientMock()
+        claimedClient.getPositions.mockResolvedValue(createIncidentBearCallPositions())
+        const claimedAdapter = new AlpacaOptionsVenueAdapter(claimedClient as never)
+        const claimedPipeline = createPipeline(claimedAdapter, new Set([claimInstrument, shortLeg, longLeg]))
+
+        const rejected = await claimedPipeline.closePosition(shortLeg, "incident replay raw leg close")
+
+        expect(rejected.validation.allowed).toBe(false)
+        expect(rejected.result.status).toBe("rejected")
+        expect(rejected.result.errorDetail).toMatchObject({
+            code: "ALPACA_RAW_LEG_CLOSE_CLAIMED_STRUCTURE",
+            retryable: false,
+            details: {
+                claimInstrument,
+                legInstruments: [
+                    shortLeg,
+                    longLeg,
+                ],
+            },
+        })
+        expect(rejected.result.error).toContain(claimInstrument)
+        expect(rejected.result.error).toContain("structure-close")
+        expect(claimedClient.createOrder).not.toHaveBeenCalled()
+
+        const orphanClient = createClientMock()
+        orphanClient.getPositions.mockResolvedValue([createIncidentBearCallPositions()[0]!])
+        const orphanAdapter = new AlpacaOptionsVenueAdapter(orphanClient as never)
+        const orphanPipeline = createPipeline(orphanAdapter, new Set([shortLeg]))
+        const orphanPosition: Position = {
+            instrument: shortLeg,
+            providerPositionId: shortLeg,
+            side: "short",
+            quantity: 1,
+            entryPrice: 1.79,
+            currentPrice: 0.42,
+        }
+
+        const orphanClose = await orphanPipeline.closeProviderPosition(orphanPosition, "claim released orphan close")
+
+        expect(orphanClose.validation.allowed).toBe(true)
+        expect(orphanClose.result.status).toBe("pending")
+        const payload = orphanClient.createOrder.mock.calls[0]?.[0]
+        expect(payload).toMatchObject({
+            instrument: shortLeg,
+            side: "buy",
+            orderType: "limit",
+            limitPrice: 0.42,
+            legs: [{
+                instrument: shortLeg,
+                side: "buy_to_close",
+                quantity: 1,
+            }],
+            metadata: {
+                structureType: "single_option",
+            },
+        })
+    })
+
+    it("allows whole-structure closes for the same claimed legs", async () => {
+        const shortLeg = "SPY260803C00748000"
+        const longLeg = "SPY260803C00749000"
+        const claimInstrument = `VS:BEAR_CALL_CREDIT:SPY:2026-08-03:${shortLeg}|${longLeg}`
+        const client = createClientMock()
+        client.getPositions.mockResolvedValue(createIncidentBearCallPositions())
+        const adapter = new AlpacaOptionsVenueAdapter(client as never)
+        const pipeline = createPipeline(adapter, new Set([claimInstrument, shortLeg, longLeg]))
+
+        const result = await pipeline.closePosition(claimInstrument, "close entire claimed structure")
+
+        expect(result.validation.allowed).toBe(true)
+        expect(result.result.status).toBe("pending")
+        const payload = client.createOrder.mock.calls[0]?.[0]
+        expect(payload).toMatchObject({
+            instrument: claimInstrument,
+            side: "buy",
+            quantity: 1,
+            orderType: "limit",
+            legs: [
+                {
+                    instrument: shortLeg,
+                    side: "buy_to_close",
+                    quantity: 1,
+                },
+                {
+                    instrument: longLeg,
+                    side: "sell_to_close",
+                    quantity: 1,
+                },
+            ],
+        })
+    })
+
+    it("enforces raw-leg structure ownership in dry-run books", async () => {
+        const shortLeg = "SPY260803C00748000"
+        const longLeg = "SPY260803C00749000"
+        const claimInstrument = `VS:BEAR_CALL_CREDIT:SPY:2026-08-03:${shortLeg}|${longLeg}`
+        const adapter = new AlpacaOptionsVenueAdapter(createClientMock() as never)
+        const claimedPipeline = createPipeline(adapter, new Set([claimInstrument, shortLeg, longLeg]), true)
+        claimedPipeline.seedDryRunPositions([
+            {
+                instrument: shortLeg,
+                side: "short",
+                quantity: 1,
+                entryPrice: 1.79,
+                currentPrice: 0.42,
+            },
+            {
+                instrument: longLeg,
+                side: "long",
+                quantity: 1,
+                entryPrice: 0.84,
+                currentPrice: 0.21,
+            },
+        ])
+
+        const claimedResult = await claimedPipeline.closePosition(shortLeg, "dry-run claimed raw leg")
+
+        expect(claimedResult.validation.allowed).toBe(false)
+        expect(claimedResult.result.errorDetail?.code).toBe("ALPACA_RAW_LEG_CLOSE_CLAIMED_STRUCTURE")
+
+        const orphanPipeline = createPipeline(adapter, new Set([shortLeg]), true)
+        orphanPipeline.seedDryRunPositions([
+            {
+                instrument: shortLeg,
+                side: "short",
+                quantity: 1,
+                entryPrice: 1.79,
+                currentPrice: 0.42,
+            },
+        ])
+
+        const orphanResult = await orphanPipeline.closePosition(shortLeg, "dry-run orphan raw leg")
+
+        expect(orphanResult.validation.allowed).toBe(true)
+        expect(orphanResult.result.status).toBe("filled")
+    })
+
+    it("uses the exact live leg set before rejecting raw shared-wing closes", async () => {
+        const sharedLongLeg = "SPY260724C00753000"
+        const claim751 = `VS:BEAR_CALL_CREDIT:SPY:2026-07-24:SPY260724C00751000|${sharedLongLeg}`
+        const claim752 = `VS:BEAR_CALL_CREDIT:SPY:2026-07-24:SPY260724C00752000|${sharedLongLeg}`
+        const client = createClientMock()
+        client.getPositions.mockResolvedValue([
+            createPosition("SPY260724C00751000", "short", "1", "0.17", "1.67", "150"),
+            createPosition(sharedLongLeg, "long", "1", "0.08", "1.12", "-104"),
+        ])
+        const adapter = new AlpacaOptionsVenueAdapter(client as never)
+        const pipeline = createPipeline(adapter, new Set([
+            claim751,
+            claim752,
+            "SPY260724C00751000",
+            sharedLongLeg,
+        ]))
+
+        const result = await pipeline.closePosition(sharedLongLeg, "raw shared wing replay")
+
+        expect(result.validation.allowed).toBe(false)
+        expect(result.result.errorDetail).toMatchObject({
+            code: "ALPACA_RAW_LEG_CLOSE_CLAIMED_STRUCTURE",
+            details: {
+                claimInstrument: claim751,
+                legInstruments: [
+                    "SPY260724C00751000",
+                    sharedLongLeg,
+                ],
+            },
+        })
+        expect(result.result.error).toContain(claim751)
+        expect(client.createOrder).not.toHaveBeenCalled()
     })
 
     it("keeps provider leg close single-leg eligible when the owned claimed structure is incomplete", async () => {

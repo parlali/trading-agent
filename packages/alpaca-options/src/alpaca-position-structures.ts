@@ -27,7 +27,7 @@ export interface PositionGroup {
     unrealizedPnl?: number
 }
 
-interface PositionLike {
+export interface PositionLike {
     instrument: string
     providerPositionId?: string
     side: "long" | "short"
@@ -36,6 +36,19 @@ interface PositionLike {
     currentPrice?: number
     unrealizedPnl?: number
     metadata?: Record<string, unknown>
+}
+
+export interface ClaimedStructureSingleLegOwnershipTarget {
+    claimInstrument: string
+    legInstruments: string[]
+}
+
+export interface ResolveClaimedStructureSingleLegOwnershipArgs<TPosition extends PositionLike> {
+    instrument: string
+    positions: readonly TPosition[]
+    claimInstruments: ReadonlySet<string> | readonly string[]
+    requestedPosition?: TPosition
+    onAmbiguous?: (legSymbol: string, claimInstruments: string[]) => never
 }
 
 export function buildGroupCloseIntent(group: PositionGroup): OrderIntent {
@@ -66,6 +79,62 @@ export function buildGroupCloseIntent(group: PositionGroup): OrderIntent {
                 .sort(),
         },
     }
+}
+
+export function resolveClaimedStructureSingleLegOwnership<TPosition extends PositionLike>(
+    args: ResolveClaimedStructureSingleLegOwnershipArgs<TPosition>
+): ClaimedStructureSingleLegOwnershipTarget | null {
+    const legSymbol = args.instrument.trim().toUpperCase()
+    if (!parseOptionContractSymbol(legSymbol)) {
+        return null
+    }
+
+    const matchingClaims = readMatchingClaimInstruments(legSymbol, args.claimInstruments)
+    if (matchingClaims.length === 0) {
+        return null
+    }
+
+    const requestedPosition = args.requestedPosition ?? args.positions.find((position) =>
+        position.instrument.trim().toUpperCase() === legSymbol
+    )
+    if (matchingClaims.length > 1 && requestedPosition?.side === "short") {
+        throwSingleLegAmbiguousStructureClaim(args, legSymbol, matchingClaims.map((match) => match.claimInstrument))
+    }
+
+    const exactMatches = matchingClaims
+        .map((match) => resolveExactSingleLegOwnershipMatch(args.positions, match, requestedPosition?.quantity))
+        .filter((match): match is ClaimedStructureSingleLegOwnershipTarget => Boolean(match))
+
+    if (exactMatches.length === 1) {
+        return exactMatches[0]!
+    }
+
+    if (exactMatches.length > 1) {
+        throwSingleLegAmbiguousStructureClaim(args, legSymbol, exactMatches.map((match) => match.claimInstrument))
+    }
+
+    const viableMatches = matchingClaims
+        .map((match) => resolveMinimumSingleLegOwnershipMatch(args.positions, match))
+        .filter((match): match is ClaimedStructureSingleLegOwnershipTarget => Boolean(match))
+
+    if (viableMatches.length === 1) {
+        return viableMatches[0]!
+    }
+
+    if (viableMatches.length > 1) {
+        throwSingleLegAmbiguousStructureClaim(args, legSymbol, viableMatches.map((match) => match.claimInstrument))
+    }
+
+    return null
+}
+
+export function hasClaimedStructureSingleLegOwnershipCandidate(
+    instrument: string,
+    claimInstruments: ReadonlySet<string> | readonly string[]
+): boolean {
+    const legSymbol = instrument.trim().toUpperCase()
+    return Boolean(parseOptionContractSymbol(legSymbol)) &&
+        readMatchingClaimInstruments(legSymbol, claimInstruments).length > 0
 }
 
 function resolveGroupCloseLimitPrice(group: PositionGroup): number {
@@ -438,6 +507,130 @@ function isCreditVerticalLongLeg(
 }
 
 type ClaimedStructureInstrument = NonNullable<ReturnType<typeof parseClaimedStructureInstrument>>
+type ClaimedStructureMatch = {
+    claimInstrument: string
+    claim: ClaimedStructureInstrument
+}
+
+function readMatchingClaimInstruments(
+    legSymbol: string,
+    claimInstruments: ReadonlySet<string> | readonly string[]
+): ClaimedStructureMatch[] {
+    return Array.from(claimInstruments)
+        .map((claimInstrument) => {
+            const normalizedClaimInstrument = claimInstrument.trim().toUpperCase()
+            const claim = parseClaimedStructureInstrument(normalizedClaimInstrument)
+            return claim?.legs.includes(legSymbol)
+                ? {
+                    claimInstrument: normalizedClaimInstrument,
+                    claim,
+                }
+                : null
+        })
+        .filter((match): match is ClaimedStructureMatch => Boolean(match))
+}
+
+function resolveExactSingleLegOwnershipMatch<TPosition extends PositionLike>(
+    positions: readonly TPosition[],
+    match: ClaimedStructureMatch,
+    requestedQuantity: number | undefined
+): ClaimedStructureSingleLegOwnershipTarget | null {
+    const claimedPositions = resolveClaimedPositionLikes(positions, match.claim)
+    if (!claimedPositions) {
+        return null
+    }
+
+    if (isCompleteClaimCloseGroup(match.claim, claimedPositions)) {
+        return buildSingleLegOwnershipTarget(match.claimInstrument, claimedPositions)
+    }
+
+    const boundedQuantity = requestedQuantity ?? 0
+    if (!isPositiveIntegerQuantity(boundedQuantity)) {
+        return null
+    }
+
+    if (claimedPositions.some((position) => position.quantity < boundedQuantity)) {
+        return null
+    }
+
+    const scaledPositions = claimedPositions.map((position) => ({
+        ...position,
+        quantity: boundedQuantity,
+    }))
+
+    return isCompleteClaimCloseGroup(match.claim, scaledPositions)
+        ? buildSingleLegOwnershipTarget(match.claimInstrument, claimedPositions)
+        : null
+}
+
+function resolveMinimumSingleLegOwnershipMatch<TPosition extends PositionLike>(
+    positions: readonly TPosition[],
+    match: ClaimedStructureMatch
+): ClaimedStructureSingleLegOwnershipTarget | null {
+    const claimedPositions = resolveClaimedPositionLikes(positions, match.claim)
+    if (!claimedPositions) {
+        return null
+    }
+
+    const quantity = Math.min(...claimedPositions.map((position) => position.quantity))
+    if (!isPositiveIntegerQuantity(quantity)) {
+        return null
+    }
+
+    const scaledPositions = claimedPositions.map((position) => ({
+        ...position,
+        quantity,
+    }))
+
+    return isCompleteClaimCloseGroup(match.claim, scaledPositions)
+        ? buildSingleLegOwnershipTarget(match.claimInstrument, claimedPositions)
+        : null
+}
+
+function resolveClaimedPositionLikes<TPosition extends PositionLike>(
+    positions: readonly TPosition[],
+    claim: ClaimedStructureInstrument
+): TPosition[] | null {
+    const positionsBySymbol = new Map(
+        positions
+            .filter((position) => Boolean(parseOptionContractSymbol(position.instrument)))
+            .map((position) => [position.instrument.trim().toUpperCase(), position])
+    )
+    const claimedPositions = claim.legs
+        .map((leg) => positionsBySymbol.get(leg))
+        .filter((position): position is TPosition => Boolean(position))
+
+    return claimedPositions.length === claim.legs.length ? claimedPositions : null
+}
+
+function buildSingleLegOwnershipTarget<TPosition extends PositionLike>(
+    claimInstrument: string,
+    positions: readonly TPosition[]
+): ClaimedStructureSingleLegOwnershipTarget {
+    return {
+        claimInstrument,
+        legInstruments: positions.map((position) => position.instrument.trim().toUpperCase()),
+    }
+}
+
+function throwSingleLegAmbiguousStructureClaim<TPosition extends PositionLike>(
+    args: ResolveClaimedStructureSingleLegOwnershipArgs<TPosition>,
+    legSymbol: string,
+    claimInstruments: string[]
+): never {
+    if (args.onAmbiguous) {
+        return args.onAmbiguous(legSymbol, claimInstruments)
+    }
+
+    throw createExecutionError("pre_validation", `Alpaca raw option leg close found multiple owned claimed structures for leg ${legSymbol}`, {
+        code: "AMBIGUOUS_STRUCTURE_CLAIM",
+        retryable: false,
+        details: {
+            instrument: legSymbol,
+            claimInstruments,
+        },
+    })
+}
 
 function isCompleteClaimCloseGroup<TPosition extends PositionLike>(
     claim: ClaimedStructureInstrument,
