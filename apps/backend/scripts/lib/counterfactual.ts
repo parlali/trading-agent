@@ -1,7 +1,7 @@
 import type { DecisionRecord, OrderIntent } from "@valiq-trading/core"
 
 export type CounterfactualDirection = "long" | "short"
-export type CounterfactualKind = "taken" | "unfilled" | "declined" | "blocked"
+export type CounterfactualKind = "taken" | "unfilled" | "declined" | "blocked" | "pending"
 export type CounterfactualResolution = "tp" | "sl" | "horizon_exit" | "unfilled" | "blocked" | "unresolvable"
 
 export interface CounterfactualPriceSample {
@@ -39,6 +39,13 @@ export interface CounterfactualResolutionRow {
     reason?: string
     resolvedAt?: string
     actualPnl?: number
+    pmMarket?: string
+    pmMyP?: number
+    pmMarketP?: number
+    pmOutcome?: "YES" | "NO"
+    pmBrierScore?: number
+    optionsCreditPct?: number
+    optionsCreditToMaxLossPct?: number
 }
 
 export interface CounterfactualPriceSource {
@@ -61,6 +68,26 @@ export interface BookSummaryRow {
     blockedCount: number
     conservativeFlagCount: number
     unresolvableCount: number
+    pmResolvedCount: number
+    pmPendingCount: number
+    pmBrierAvg?: number
+    pmMarketBrierAvg?: number
+    optionsCreditPctAvg?: number
+    optionsCreditToMaxLossPctAvg?: number
+}
+
+export interface PMForecastLine {
+    market: string
+    resolutionDate?: string
+    myP: number
+    marketP: number
+}
+
+export interface PMResolvedLine {
+    market: string
+    outcome: "YES" | "NO"
+    myLastP?: number
+    marketLastP?: number
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000
@@ -528,6 +555,21 @@ export function summarizeCounterfactualRows(rows: CounterfactualResolutionRow[])
             const unfilledRows = bookRows.filter((row) => row.kind === "unfilled")
             const declinedRows = bookRows.filter((row) => row.kind === "declined")
             const blockedRows = bookRows.filter((row) => row.kind === "blocked")
+            const pendingRows = bookRows.filter((row) => row.kind === "pending")
+
+            const pmResolvedRows = takenRows.filter((row) => row.pmBrierScore !== undefined)
+            const pmBrierScores = finiteValues(pmResolvedRows.map((row) => row.pmBrierScore))
+            const pmMarketBrierScores = finiteValues(
+                pmResolvedRows
+                    .filter((row) => row.pmMarketP !== undefined && row.pmOutcome !== undefined)
+                    .map((row) => computeBrierScore(row.pmMarketP!, row.pmOutcome!))
+            )
+
+            const optionsTakenRows = takenRows.filter((row) => row.optionsCreditPct !== undefined)
+            const optionsCreditPcts = finiteValues(optionsTakenRows.map((row) => row.optionsCreditPct))
+            const optionsCreditToMaxLossPcts = finiteValues(
+                optionsTakenRows.map((row) => row.optionsCreditToMaxLossPct)
+            )
 
             return {
                 book,
@@ -540,30 +582,262 @@ export function summarizeCounterfactualRows(rows: CounterfactualResolutionRow[])
                 blockedCount: blockedRows.length,
                 conservativeFlagCount: bookRows.filter((row) => row.conservativeFlag).length,
                 unresolvableCount: bookRows.filter((row) => row.resolution === "unresolvable").length,
+                pmResolvedCount: pmResolvedRows.length,
+                pmPendingCount: pendingRows.length,
+                pmBrierAvg: average(pmBrierScores),
+                pmMarketBrierAvg: average(pmMarketBrierScores),
+                optionsCreditPctAvg: average(optionsCreditPcts),
+                optionsCreditToMaxLossPctAvg: average(optionsCreditToMaxLossPcts),
             }
         })
         .sort((left, right) => left.book.localeCompare(right.book))
 }
 
-export function renderCounterfactualSummaryMarkdown(summary: BookSummaryRow[]): string {
-    const lines = [
-        "| Book | Taken n/avgR | Unfilled n/missedR | Declined n/foregoneR | Blocked | Conservative | Unresolvable |",
-        "| --- | ---: | ---: | ---: | ---: | ---: | ---: |",
-    ]
-
-    for (const row of summary) {
-        lines.push([
-            `| ${escapeMarkdownCell(row.book)}`,
-            `${row.takenCount}/${formatOptionalNumber(row.takenAvgR)}`,
-            `${row.unfilledCount}/${formatNumber(row.unfilledMissedR)}`,
-            `${row.declinedCount}/${formatNumber(row.declinedForegoneR)}`,
-            String(row.blockedCount),
-            String(row.conservativeFlagCount),
-            `${row.unresolvableCount} |`,
-        ].join(" | "))
+export function renderCounterfactualSummaryMarkdown(summary: BookSummaryRow[], bookKinds?: Map<string, "price-walk" | "pm" | "options">): string {
+    const classify = (row: BookSummaryRow): "price-walk" | "pm" | "options" => {
+        const kind = bookKinds?.get(row.book)
+        if (kind) {
+            return kind
+        }
+        if (row.pmResolvedCount > 0 || row.pmPendingCount > 0) {
+            return "pm"
+        }
+        if (row.optionsCreditPctAvg !== undefined || row.optionsCreditToMaxLossPctAvg !== undefined) {
+            return "options"
+        }
+        return "price-walk"
     }
 
-    return `${lines.join("\n")}\n`
+    const priceWalkRows = summary.filter((row) => classify(row) === "price-walk")
+    const pmRows = summary.filter((row) => classify(row) === "pm")
+    const optionsRows = summary.filter((row) => classify(row) === "options")
+
+    const lines: string[] = []
+
+    if (priceWalkRows.length > 0) {
+        lines.push(
+            "| Book | Taken n/avgR | Unfilled n/missedR | Declined n/foregoneR | Blocked | Conservative | Unresolvable |",
+            "| --- | ---: | ---: | ---: | ---: | ---: | ---: |"
+        )
+        for (const row of priceWalkRows) {
+            lines.push([
+                `| ${escapeMarkdownCell(row.book)}`,
+                `${row.takenCount}/${formatOptionalNumber(row.takenAvgR)}`,
+                `${row.unfilledCount}/${formatNumber(row.unfilledMissedR)}`,
+                `${row.declinedCount}/${formatNumber(row.declinedForegoneR)}`,
+                String(row.blockedCount),
+                String(row.conservativeFlagCount),
+                `${row.unresolvableCount} |`,
+            ].join(" | "))
+        }
+        lines.push("")
+    }
+
+    if (optionsRows.length > 0) {
+        lines.push(
+            "## Options Books",
+            "",
+            "| Book | Taken n/creditPct | Declined | Blocked | Unresolvable |",
+            "| --- | ---: | ---: | ---: | ---: |"
+        )
+        for (const row of optionsRows) {
+            lines.push([
+                `| ${escapeMarkdownCell(row.book)}`,
+                `${row.takenCount}/${formatOptionalNumber(row.optionsCreditPctAvg)}%`,
+                String(row.declinedCount),
+                String(row.blockedCount),
+                `${row.unresolvableCount} |`,
+            ].join(" | "))
+        }
+        lines.push("")
+    }
+
+    if (pmRows.length > 0) {
+        lines.push(
+            "## PM Brier Scores",
+            "",
+            "| Book | Resolved | Pending | Model Brier avg | Market Brier avg |",
+            "| --- | ---: | ---: | ---: | ---: |"
+        )
+        for (const row of pmRows) {
+            lines.push([
+                `| ${escapeMarkdownCell(row.book)}`,
+                String(row.pmResolvedCount),
+                String(row.pmPendingCount),
+                formatOptionalNumber(row.pmBrierAvg),
+                `${formatOptionalNumber(row.pmMarketBrierAvg)} |`,
+            ].join(" | "))
+        }
+        lines.push("")
+    }
+
+    return lines.join("\n")
+}
+
+export function parsePMForecastLine(text: string): PMForecastLine | undefined {
+    const trimmed = text.trim()
+    if (!/^FORECAST\s*\|/iu.test(trimmed)) {
+        return undefined
+    }
+
+    const parts = trimmed.split("|").map((part) => part.trim())
+    const market = parts[1]
+    if (!market || market.includes("=")) {
+        return undefined
+    }
+
+    let resolutionDate: string | undefined
+    let kvStart = 2
+    if (parts[2] !== undefined && !parts[2].includes("=")) {
+        resolutionDate = parts[2] || undefined
+        kvStart = 3
+    }
+
+    const fields = new Map<string, string>()
+    for (let i = kvStart; i < parts.length; i++) {
+        const part = parts[i]
+        if (!part) {
+            continue
+        }
+        const sep = part.indexOf("=")
+        if (sep < 0) {
+            continue
+        }
+        const key = part.slice(0, sep).trim().toLowerCase().replace(/-/gu, "_")
+        const value = part.slice(sep + 1).trim()
+        if (key && value) {
+            fields.set(key, value)
+        }
+    }
+
+    const myP = readFiniteNumber(fields.get("my_p"))
+    const marketP = readFiniteNumber(fields.get("market_p"))
+
+    if (myP === undefined || marketP === undefined) {
+        return undefined
+    }
+    if (myP < 0 || myP > 1 || marketP < 0 || marketP > 1) {
+        return undefined
+    }
+
+    return {
+        market,
+        resolutionDate,
+        myP,
+        marketP,
+    }
+}
+
+export function parsePMResolvedLine(text: string): PMResolvedLine | undefined {
+    const trimmed = text.trim()
+    if (!/^RESOLVED\s*\|/iu.test(trimmed)) {
+        return undefined
+    }
+
+    const parts = trimmed.split("|").map((part) => part.trim())
+    const market = parts[1]
+    if (!market) {
+        return undefined
+    }
+
+    const fields = new Map<string, string>()
+    for (let i = 2; i < parts.length; i++) {
+        const part = parts[i]
+        if (!part) {
+            continue
+        }
+        const sep = part.indexOf("=")
+        if (sep < 0) {
+            continue
+        }
+        const key = part.slice(0, sep).trim().toLowerCase().replace(/-/gu, "_")
+        const value = part.slice(sep + 1).trim()
+        if (key && value) {
+            fields.set(key, value)
+        }
+    }
+
+    const outcomeStr = fields.get("outcome")?.toUpperCase()
+    if (outcomeStr !== "YES" && outcomeStr !== "NO") {
+        return undefined
+    }
+
+    return {
+        market,
+        outcome: outcomeStr,
+        myLastP: readFiniteNumber(fields.get("my_last_p")),
+        marketLastP: readFiniteNumber(fields.get("market_last_p")),
+    }
+}
+
+export function computeBrierScore(myP: number, outcome: "YES" | "NO"): number {
+    const outcomeValue = outcome === "YES" ? 1 : 0
+    return (myP - outcomeValue) ** 2
+}
+
+export function buildPMLogRow(args: {
+    runId: string
+    book: string
+    market: string
+    myP: number
+    marketP: number
+    resolvedAt?: string
+    outcome?: "YES" | "NO"
+}): CounterfactualResolutionRow {
+    const brier = args.outcome !== undefined ? computeBrierScore(args.myP, args.outcome) : undefined
+
+    return {
+        runId: args.runId,
+        book: args.book,
+        kind: args.outcome !== undefined ? "taken" : "pending",
+        resolution: args.outcome !== undefined ? "horizon_exit" : "unresolvable",
+        granularity: "pm_forecast_log",
+        conservativeFlag: false,
+        pmMarket: args.market,
+        pmMyP: args.myP,
+        pmMarketP: args.marketP,
+        pmOutcome: args.outcome,
+        pmBrierScore: brier,
+        resolvedAt: args.resolvedAt,
+    }
+}
+
+export function buildOptionsRealizationRow(args: {
+    runId: string
+    book: string
+    instrument: string
+    orderId: string
+    credit: number
+    debit?: number
+    maxLoss?: number
+    resolvedAt?: string
+}): CounterfactualResolutionRow {
+    const realized = args.debit !== undefined ? args.credit - args.debit : undefined
+    const creditPct = realized !== undefined && args.credit > 0
+        ? (realized / args.credit) * 100
+        : undefined
+    const creditToMaxLossPct = realized !== undefined && args.maxLoss !== undefined && args.maxLoss > 0
+        ? (realized / args.maxLoss) * 100
+        : undefined
+    const resolution: CounterfactualResolution = realized !== undefined
+        ? (realized > 0 ? "tp" : realized < 0 ? "sl" : "horizon_exit")
+        : "unresolvable"
+
+    return {
+        runId: args.runId,
+        book: args.book,
+        kind: "taken",
+        resolution,
+        granularity: "options_entry_close_pair",
+        conservativeFlag: false,
+        instrument: args.instrument,
+        orderId: args.orderId,
+        percent: creditPct,
+        resolvedAt: args.resolvedAt,
+        optionsCreditPct: creditPct,
+        optionsCreditToMaxLossPct: creditToMaxLossPct,
+        reason: args.debit === undefined ? "close order not found in bounded strategy order history" : undefined,
+    }
 }
 
 export function resolveDirectionFromIntent(intent: Pick<OrderIntent, "side">): CounterfactualDirection {
