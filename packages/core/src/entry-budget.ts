@@ -46,6 +46,13 @@ export function computeWeekEntryCounts(args: {
     return { total, byInstrument, weekStartAt }
 }
 
+export function isWeeklyEntryBudgetExhausted(args: {
+    counts: EntryBudgetCounts
+    maxEntriesPerWeek?: number
+}): boolean {
+    return args.maxEntriesPerWeek !== undefined && args.counts.total >= args.maxEntriesPerWeek
+}
+
 export function createEntryBudgetValidator(args: {
     maxEntriesPerWeek?: number
     maxEntriesPerInstrumentPerWeek?: number

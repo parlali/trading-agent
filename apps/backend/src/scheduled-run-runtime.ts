@@ -12,6 +12,7 @@ import {
     computeRecentTradeDigest,
     computeWeekEntryCounts,
     createEntryBudgetValidator,
+    isWeeklyEntryBudgetExhausted,
     createInstrumentConflictValidator,
     createStrategySafetyValidator,
     filterPositionsByOwnershipScope,
@@ -523,6 +524,15 @@ export async function prepareScheduledRunAgentTurn(
             runtime.addRuntimeRiskValidator(validator)
             runtimeRiskValidatorAdded = true
         }
+        if (isWeeklyEntryBudgetExhausted({ counts, maxEntriesPerWeek }) && tools.unregister("propose_order")) {
+            runtimeContextLines = mergeRuntimeContextLines(runtimeContextLines, [
+                "Order proposal is not available this run; manage existing positions and record your view as usual.",
+            ])
+            runLogger.info("Entry proposal tool suppressed for this run", {
+                strategyId: strategy._id,
+                app,
+            })
+        }
     }
     if (runtimeRiskValidatorAdded) {
         runtime.applyRiskState(runRiskState)
@@ -573,7 +583,7 @@ export async function prepareScheduledRunAgentTurn(
         runSystemContextDigest,
         riskState: runRiskState,
         runtimeContextLines,
-        toolManifest,
+        toolManifest: tools.getManifest(),
         mcpToolDiagnostics,
     }
 }

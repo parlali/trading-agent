@@ -65,6 +65,10 @@ export class ToolRegistry {
         return this.tools.has(name)
     }
 
+    unregister(name: string): boolean {
+        return this.tools.delete(name)
+    }
+
     getDescriptions(): Array<{ name: string; description: string }> {
         return this.getAll().map((t) => ({
             name: t.name,
