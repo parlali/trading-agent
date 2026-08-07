@@ -194,7 +194,7 @@ export function deriveEffectiveDecision(
         return "trade"
     }
 
-    if (decisionRecord.decision === "trade" && readNonNegativeCount(source.validationRejectedCount) > 0) {
+    if (readNonNegativeCount(source.validationRejectedCount) > 0) {
         return "trade_blocked"
     }
 
