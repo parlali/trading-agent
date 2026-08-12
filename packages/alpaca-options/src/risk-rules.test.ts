@@ -210,7 +210,7 @@ describe("alpaca structure validator", () => {
     })
 
     it("nets the credit received when enforcing max loss per play", () => {
-        const maxLossValidator = alpacaRiskValidators[2]!
+        const maxLossValidator = alpacaRiskValidators[3]!
         const nvdaWideStrikesIntent: OrderIntent = {
             instrument: "NVDA",
             side: "sell",
@@ -261,7 +261,7 @@ describe("alpaca structure validator", () => {
     })
 
     it("never blocks closes on max loss per play", () => {
-        const maxLossValidator = alpacaRiskValidators[2]!
+        const maxLossValidator = alpacaRiskValidators[3]!
         const result = maxLossValidator(
             {
                 instrument: "NVDA",
@@ -415,6 +415,117 @@ describe("alpaca structure validator", () => {
         expect(result.reason).toContain("2 or 4")
     })
 })
+
+describe("alpaca short-strike delta ceiling", () => {
+    const deltaCeilingPolicy = {
+        ...maxLossPolicy,
+        shortStrikeDeltaCeiling: 0.2,
+    }
+
+    it("rejects credit verticals whose short strike sits beyond the delta ceiling", () => {
+        const tooDirectional = validateRisk(
+            createIwmBullPutIntent(0.28, { shortStrikeDelta: -0.3 }),
+            deltaCeilingPolicy
+        )
+
+        expect(tooDirectional.allowed).toBe(false)
+        expect(tooDirectional.reason).toContain("short-strike delta 0.3")
+        expect(tooDirectional.reason).toContain("ceiling 0.2")
+
+        const withinCeiling = validateRisk(
+            createIwmBullPutIntent(0.28, { shortStrikeDelta: -0.15 }),
+            deltaCeilingPolicy
+        )
+
+        expect(withinCeiling.allowed).toBe(true)
+    })
+
+    it("rejects iron condors when either short side breaches the delta ceiling", () => {
+        const breachedCallSide = validateRisk(
+            createSpyIronCondorIntent({ shortCallDelta: 0.25, shortPutDelta: 0.15 }),
+            deltaCeilingPolicy
+        )
+
+        expect(breachedCallSide.allowed).toBe(false)
+        expect(breachedCallSide.reason).toContain("short-strike delta 0.25")
+        expect(breachedCallSide.reason).toContain("shortCallDelta")
+
+        const bothSidesWithinCeiling = validateRisk(
+            createSpyIronCondorIntent({ shortCallDelta: 0.15, shortPutDelta: -0.15 }),
+            deltaCeilingPolicy
+        )
+
+        expect(bothSidesWithinCeiling.allowed).toBe(true)
+    })
+
+    it("rejects ceiling-bearing entries that omit the short-strike delta", () => {
+        const missingDelta = validateRisk(createIwmBullPutIntent(0.28), deltaCeilingPolicy)
+
+        expect(missingDelta.allowed).toBe(false)
+        expect(missingDelta.reason).toContain("supply shortStrikeDelta")
+        expect(missingDelta.reason).toContain("IWM260717P00284000")
+
+        const missingCondorSide = validateRisk(
+            createSpyIronCondorIntent({ shortCallDelta: 0.15 }),
+            deltaCeilingPolicy
+        )
+
+        expect(missingCondorSide.allowed).toBe(false)
+        expect(missingCondorSide.reason).toContain("supply shortPutDelta")
+    })
+
+    it("keeps the legacy credit-to-width floor working without demanding a delta", () => {
+        const legacyPolicy = {
+            ...maxLossPolicy,
+            minCreditToWidthPercent: 18,
+        }
+
+        const belowFloor = validateRisk(createIwmBullPutIntent(0.09), legacyPolicy)
+
+        expect(belowFloor.allowed).toBe(false)
+        expect(belowFloor.reason).toContain("credit-to-width 9%")
+
+        const aboveFloor = validateRisk(createIwmBullPutIntent(0.28), legacyPolicy)
+
+        expect(aboveFloor.allowed).toBe(true)
+    })
+})
+
+function createSpyIronCondorIntent(
+    metadata?: Record<string, unknown>
+): OrderIntent {
+    return {
+        instrument: "SPY",
+        side: "sell",
+        quantity: 1,
+        orderType: "limit",
+        limitPrice: 0.6,
+        timeInForce: "day",
+        metadata,
+        legs: [
+            {
+                instrument: "SPY260417C00550000",
+                side: "sell_to_open",
+                quantity: 1,
+            },
+            {
+                instrument: "SPY260417C00551000",
+                side: "buy_to_open",
+                quantity: 1,
+            },
+            {
+                instrument: "SPY260417P00500000",
+                side: "sell_to_open",
+                quantity: 1,
+            },
+            {
+                instrument: "SPY260417P00499000",
+                side: "buy_to_open",
+                quantity: 1,
+            },
+        ],
+    }
+}
 
 function createIwmBullPutIntent(
     limitPrice: number,

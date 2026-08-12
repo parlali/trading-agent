@@ -111,9 +111,11 @@ describe("createProposeOrderTool", () => {
             ],
             entryThesis: "Bearish intraday reversal after 746.295 high",
             maxLossArithmetic: "(1.00 - 0.28) x 100 x 2 = $144",
+            shortStrikeDelta: 0.17,
             metadata: {
                 action: "cancel",
                 events: "FOMC passed",
+                shortStrikeDelta: 0.01,
             },
         })
 
@@ -123,6 +125,7 @@ describe("createProposeOrderTool", () => {
             events: "FOMC passed",
             thesis: "Bearish intraday reversal after 746.295 high",
             maxLossArithmetic: "(1.00 - 0.28) x 100 x 2 = $144",
+            shortStrikeDelta: 0.17,
         })
     })
 })

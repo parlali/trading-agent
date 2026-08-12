@@ -3,6 +3,7 @@ import {
     createLogger,
     ExecutionPipeline,
     type ExecutionResult,
+    type OrderIntent,
     type Position,
 } from "@valiq-trading/core"
 import type { AlpacaPositionResponse } from "./alpaca-client.ts"
@@ -1112,4 +1113,95 @@ describe("AlpacaOptionsVenueAdapter", () => {
         expect(client.createOrder).not.toHaveBeenCalled()
     })
 
+    it("blocks entries whose claimed short-strike delta contradicts the live chain", async () => {
+        const client = createClientMock()
+        client.getOptionContracts.mockResolvedValue({
+            contracts: [
+                { symbol: "SPY260805P00700000" },
+                { symbol: "SPY260805P00699000" },
+            ],
+        })
+        client.getOptionSnapshots.mockResolvedValue({
+            snapshots: {
+                SPY260805P00700000: {
+                    latestQuote: { bidPrice: 0.6, askPrice: 0.7 },
+                    greeks: { delta: -0.32 },
+                },
+                SPY260805P00699000: {
+                    latestQuote: { bidPrice: 0.3, askPrice: 0.4 },
+                    greeks: { delta: -0.24 },
+                },
+            },
+        })
+        const adapter = new AlpacaOptionsVenueAdapter(client as never)
+
+        const mismatched = await adapter.verify(createBullPutEntryIntent({ shortStrikeDelta: -0.15 }))
+
+        expect(mismatched.ok).toBe(false)
+        expect(mismatched.status).toBe("block")
+        expect(mismatched.message).toContain("SPY260805P00700000")
+        expect(mismatched.message).toContain("claimed -0.15")
+        expect(mismatched.message).toContain("chain -0.32")
+
+        const verified = await adapter.verify(createBullPutEntryIntent({ shortStrikeDelta: -0.3 }))
+
+        expect(verified.ok).toBe(true)
+        expect(verified.status).toBeUndefined()
+    })
+
+    it("blocks entries when the chain carries no delta or the claim is absent", async () => {
+        const client = createClientMock()
+        client.getOptionContracts.mockResolvedValue({
+            contracts: [
+                { symbol: "SPY260805P00700000" },
+                { symbol: "SPY260805P00699000" },
+            ],
+        })
+        client.getOptionSnapshots.mockResolvedValue({
+            snapshots: {
+                SPY260805P00700000: {
+                    latestQuote: { bidPrice: 0.6, askPrice: 0.7 },
+                },
+                SPY260805P00699000: {
+                    latestQuote: { bidPrice: 0.3, askPrice: 0.4 },
+                },
+            },
+        })
+        const adapter = new AlpacaOptionsVenueAdapter(client as never)
+
+        const unverifiable = await adapter.verify(createBullPutEntryIntent({ shortStrikeDelta: -0.18 }))
+
+        expect(unverifiable.status).toBe("block")
+        expect(unverifiable.message).toContain("no delta for SPY260805P00700000")
+
+        const missingClaim = await adapter.verify(createBullPutEntryIntent())
+
+        expect(missingClaim.status).toBe("block")
+        expect(missingClaim.message).toContain("supply shortStrikeDelta")
+    })
+
 })
+
+function createBullPutEntryIntent(metadata?: Record<string, unknown>): OrderIntent {
+    return {
+        instrument: "VS:BULL_PUT_CREDIT:SPY:2026-08-05:SPY260805P00699000|SPY260805P00700000",
+        side: "sell",
+        quantity: 1,
+        orderType: "limit",
+        limitPrice: 0.3,
+        timeInForce: "day",
+        metadata,
+        legs: [
+            {
+                instrument: "SPY260805P00700000",
+                side: "sell_to_open",
+                quantity: 1,
+            },
+            {
+                instrument: "SPY260805P00699000",
+                side: "buy_to_open",
+                quantity: 1,
+            },
+        ],
+    }
+}

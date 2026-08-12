@@ -1,4 +1,5 @@
 import { z } from "zod"
+import { SHORT_STRIKE_DELTA_FIELDS } from "@valiq-trading/alpaca-options"
 import {
     POLYMARKET_TOKEN_HANDLE_PATTERN,
     POLYMARKET_TOKEN_ID_PATTERN,
@@ -186,6 +187,8 @@ export const polymarketOrderJsonSchema = {
     required: ["side", "quantity", "orderType"],
 } satisfies Record<string, unknown>
 
+const shortStrikeDeltaSchema = z.number().min(-1).max(1)
+
 export const alpacaOrderParamsSchema = z.object({
     instrument: z.string(),
     side: z.literal("sell"),
@@ -199,7 +202,24 @@ export const alpacaOrderParamsSchema = z.object({
     thesis: z.string().trim().min(1).optional(),
     entryThesis: z.string().trim().min(1).optional(),
     maxLossArithmetic: z.string().trim().min(1).optional(),
+    shortStrikeDelta: shortStrikeDeltaSchema.optional(),
+    shortCallDelta: shortStrikeDeltaSchema.optional(),
+    shortPutDelta: shortStrikeDeltaSchema.optional(),
     metadata: z.record(z.string(), z.unknown()).optional(),
+}).superRefine((value, ctx) => {
+    const requiredFields = value.legs.length === 4
+        ? SHORT_STRIKE_DELTA_FIELDS.iron_condor
+        : SHORT_STRIKE_DELTA_FIELDS.credit_vertical
+
+    for (const field of requiredFields) {
+        if (value[field] === undefined) {
+            ctx.addIssue({
+                code: "custom",
+                path: [field],
+                message: `${field} is required for ${value.legs.length === 4 ? "iron condors" : "credit verticals"} and must be the short-strike delta you read from the option chain`,
+            })
+        }
+    }
 })
 
 export const alpacaOrderJsonSchema = {
@@ -247,6 +267,18 @@ export const alpacaOrderJsonSchema = {
         thesis: { type: "string", description: "Entry thesis to persist on the tracked order metadata." },
         entryThesis: { type: "string", description: "Entry thesis to persist on the tracked order metadata. Use this when separating entry thesis from other notes." },
         maxLossArithmetic: { type: "string", description: "Human-readable cap math for the proposed structure, e.g. `(width - credit) x 100 x contracts = max loss`." },
+        shortStrikeDelta: {
+            type: "number",
+            description: "Required for 2-leg credit verticals: the short strike delta read from the live option chain. Sign is ignored, magnitude is verified against the chain within 0.05 and the order is rejected on mismatch.",
+        },
+        shortCallDelta: {
+            type: "number",
+            description: "Required for 4-leg iron condors: the short call strike delta read from the live option chain. Verified against the chain within 0.05.",
+        },
+        shortPutDelta: {
+            type: "number",
+            description: "Required for 4-leg iron condors: the short put strike delta read from the live option chain. Verified against the chain within 0.05.",
+        },
         metadata: { type: "object", description: "Optional metadata for deterministic processing. Reserved lifecycle, identity, and accounting keys such as action, riskReducing, and contract multipliers are stripped and set deterministically by the system." },
     },
     required: ["instrument", "side", "quantity", "orderType", "limitPrice", "timeInForce", "legs"],

@@ -1,4 +1,5 @@
 import { z } from "zod"
+import { SHORT_STRIKE_DELTA_FIELD_NAMES } from "@valiq-trading/alpaca-options"
 import {
     type ExecutionPipeline,
     type OrderIntent,
@@ -51,6 +52,13 @@ function buildAlpacaEntryMetadata(
 
     if (entryThesis !== undefined) {
         proposalMetadata.thesis = entryThesis
+    }
+
+    for (const field of SHORT_STRIKE_DELTA_FIELD_NAMES) {
+        const claimedDelta = proposal[field]
+        if (claimedDelta !== undefined) {
+            proposalMetadata[field] = claimedDelta
+        }
     }
 
     return Object.keys(proposalMetadata).length > 0 || metadata

@@ -274,6 +274,7 @@ function buildPolicySection(context: StrategyRunContext): string {
             "- Supported time in force: `day` only",
             "- `limitPrice` is the positive net price for the full structure, not a per-leg price",
             "- For entries, pass the net credit as a positive number. The system handles Alpaca's signed `mleg` wire `limit_price` internally",
+            "- Every entry must carry the short-strike delta you read from the live option chain: `shortStrikeDelta` for 2-leg verticals, `shortCallDelta` and `shortPutDelta` for iron condors. The system re-reads the chain and rejects the order if a claim is missing, unavailable, or off by more than 0.05",
             "",
             "Lifecycle expectations:",
             "- Use `modify_order` only to improve or reduce the limit price on a still-working entry order",

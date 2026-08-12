@@ -32,6 +32,7 @@ import {
 } from "./alpaca-client"
 import {
     parseOptionContractSymbol,
+    resolveClaimedShortStrikeDeltas,
 } from "./risk-rules"
 import {
     mapOrderStatus as mapAlpacaOrderStatus,
@@ -588,6 +589,7 @@ export class AlpacaOptionsVenueAdapter implements VenueAdapter, PriceVerifier {
                 bid,
                 ask,
                 midpoint,
+                delta: snapshot?.greeks?.delta,
                 impliedVolatility: snapshot?.impliedVolatility,
                 openInterest: snapshot?.openInterest,
             }
@@ -614,6 +616,21 @@ export class AlpacaOptionsVenueAdapter implements VenueAdapter, PriceVerifier {
                 details: {
                     ...details,
                     missingContracts,
+                },
+            }
+        }
+
+        const deltaFailure = verifyShortStrikeDeltas(intent, snapshotsResponse.snapshots)
+        if (deltaFailure) {
+            return {
+                ok: false,
+                status: "block",
+                livePrices: {},
+                proposedPrice: intent.limitPrice,
+                message: deltaFailure.message,
+                details: {
+                    ...details,
+                    shortStrikeDeltaVerification: deltaFailure.details,
                 },
             }
         }
@@ -661,6 +678,87 @@ export class AlpacaOptionsVenueAdapter implements VenueAdapter, PriceVerifier {
             details,
         }
     }
+}
+
+const SHORT_STRIKE_DELTA_TOLERANCE = 0.05
+
+interface ShortStrikeDeltaVerificationFailure {
+    message: string
+    details: Record<string, unknown>
+}
+
+function verifyShortStrikeDeltas(
+    intent: OrderIntent,
+    snapshots: AlpacaOptionSnapshotsResponse["snapshots"]
+): ShortStrikeDeltaVerificationFailure | undefined {
+    const resolution = resolveClaimedShortStrikeDeltas(intent)
+    if (resolution.status === "not_applicable") {
+        return undefined
+    }
+
+    if (resolution.status === "unresolvable") {
+        return {
+            message: `Alpaca short-strike delta verification could not identify the short strikes of this entry: ${resolution.reason}`,
+            details: {
+                reason: resolution.reason,
+            },
+        }
+    }
+
+    if (resolution.status === "missing") {
+        return {
+            message: `Alpaca credit entries must carry verified short-strike deltas; supply ${resolution.missingFields.join(", ")} for ${resolution.symbols.join(", ")}`,
+            details: {
+                missingFields: resolution.missingFields,
+                shortStrikeSymbols: resolution.symbols,
+            },
+        }
+    }
+
+    const comparisons = resolution.claims.map((claim) => {
+        const chainDelta = snapshots[claim.symbol]?.greeks?.delta
+        const chainMagnitude = chainDelta !== undefined && Number.isFinite(chainDelta)
+            ? Math.abs(chainDelta)
+            : undefined
+
+        return {
+            symbol: claim.symbol,
+            field: claim.field,
+            claimedDelta: claim.claimedDelta,
+            chainDelta,
+            difference: chainMagnitude !== undefined
+                ? Math.abs(Math.abs(claim.claimedDelta) - chainMagnitude)
+                : undefined,
+        }
+    })
+
+    const unverifiable = comparisons.filter((comparison) => comparison.difference === undefined)
+    if (unverifiable.length > 0) {
+        return {
+            message: `Alpaca option chain carries no delta for ${unverifiable.map((comparison) => comparison.symbol).join(", ")}, so the claimed short-strike delta cannot be verified`,
+            details: {
+                comparisons,
+                unverifiableSymbols: unverifiable.map((comparison) => comparison.symbol),
+            },
+        }
+    }
+
+    const mismatches = comparisons.filter((comparison) => comparison.difference! > SHORT_STRIKE_DELTA_TOLERANCE)
+    if (mismatches.length > 0) {
+        const described = mismatches
+            .map((comparison) => `${comparison.symbol} ${comparison.field} claimed ${comparison.claimedDelta} vs chain ${comparison.chainDelta}`)
+            .join("; ")
+
+        return {
+            message: `Claimed Alpaca short-strike delta does not match the live chain within ${SHORT_STRIKE_DELTA_TOLERANCE}: ${described}`,
+            details: {
+                comparisons,
+                tolerance: SHORT_STRIKE_DELTA_TOLERANCE,
+            },
+        }
+    }
+
+    return undefined
 }
 
 function buildStructureTarget(match: {

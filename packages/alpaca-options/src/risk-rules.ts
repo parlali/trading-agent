@@ -64,6 +64,33 @@ interface StructureThesisSignature {
     shortStrike: number
 }
 
+export const SHORT_STRIKE_DELTA_FIELDS = {
+    credit_vertical: ["shortStrikeDelta"],
+    iron_condor: ["shortCallDelta", "shortPutDelta"],
+} as const satisfies Record<AlpacaStructureType, readonly string[]>
+
+export const SHORT_STRIKE_DELTA_FIELD_NAMES = [
+    ...SHORT_STRIKE_DELTA_FIELDS.credit_vertical,
+    ...SHORT_STRIKE_DELTA_FIELDS.iron_condor,
+] as const
+
+export type ShortStrikeDeltaField = typeof SHORT_STRIKE_DELTA_FIELD_NAMES[number]
+
+export interface ShortStrikeDeltaRequirement {
+    field: ShortStrikeDeltaField
+    symbol: string
+}
+
+export interface ShortStrikeDeltaClaim extends ShortStrikeDeltaRequirement {
+    claimedDelta: number
+}
+
+export type ShortStrikeDeltaResolution =
+    | { status: "not_applicable" }
+    | { status: "unresolvable"; reason: string }
+    | { status: "missing"; missingFields: ShortStrikeDeltaField[]; symbols: string[] }
+    | { status: "claimed"; claims: ShortStrikeDeltaClaim[] }
+
 const SUPPORTED_ALPACA_ORDER_TYPE = "limit"
 const SUPPORTED_ALPACA_TIME_IN_FORCE = "day"
 const SUPPORTED_LEG_COUNTS = new Set([2, 4])
@@ -74,6 +101,7 @@ const RISK_GATE_EPSILON = 1e-9
 export const alpacaRiskValidators: readonly RiskValidator[] = [
     alpacaStructureValidator,
     openIntentRiskValidator(minCreditEntryValidator),
+    openIntentRiskValidator(shortStrikeDeltaCeilingValidator),
     openIntentRiskValidator(maxLossPerPlayValidator),
     openIntentRiskValidator(maxSameThesisEntriesValidator),
     openIntentRiskValidator(maxAggregateRiskPercentValidator),
@@ -631,6 +659,127 @@ function minCreditEntryValidator(
     }
 
     return allowWithGateEvaluations(gateEvaluations)
+}
+
+function shortStrikeDeltaCeilingValidator(
+    intent: OrderIntent,
+    rawPolicy: Record<string, unknown>,
+    _state: AccountState,
+    _positions: Position[]
+) {
+    const policy = alpacaOptionsPolicySchema.parse(rawPolicy)
+    if (policy.shortStrikeDeltaCeiling === undefined) {
+        return { allowed: true }
+    }
+
+    const resolution = resolveClaimedShortStrikeDeltas(intent)
+    if (resolution.status === "not_applicable") {
+        return { allowed: true }
+    }
+
+    if (resolution.status === "unresolvable") {
+        return {
+            allowed: false,
+            reason: `Alpaca short-strike delta ceiling cannot identify the short legs of this entry: ${resolution.reason}`,
+        }
+    }
+
+    if (resolution.status === "missing") {
+        return {
+            allowed: false,
+            reason: `Alpaca short-strike delta ceiling ${formatNumber(policy.shortStrikeDeltaCeiling)} requires the verified short-strike delta on the proposal; supply ${resolution.missingFields.join(", ")} for ${resolution.symbols.join(", ")}`,
+        }
+    }
+
+    const worstClaim = resolution.claims.reduce((worst, claim) =>
+        Math.abs(claim.claimedDelta) > Math.abs(worst.claimedDelta) ? claim : worst
+    )
+    const observedDelta = Math.abs(worstClaim.claimedDelta)
+    const gateEvaluation = createGateEvaluation({
+        gateKey: "alpacaOptions.shortStrikeDeltaCeiling",
+        observed: observedDelta,
+        threshold: policy.shortStrikeDeltaCeiling,
+        comparison: "max",
+        tolerance: RISK_GATE_EPSILON,
+    })
+
+    if (observedDelta > policy.shortStrikeDeltaCeiling + RISK_GATE_EPSILON) {
+        return rejectRiskWithGateEvaluation(
+            `Alpaca entry short-strike delta ${formatNumber(observedDelta)} on ${worstClaim.symbol} (${worstClaim.field}) exceeds policy ceiling ${formatNumber(policy.shortStrikeDeltaCeiling)}`,
+            gateEvaluation
+        )
+    }
+
+    return allowWithGateEvaluation(gateEvaluation)
+}
+
+export function resolveClaimedShortStrikeDeltas(intent: OrderIntent): ShortStrikeDeltaResolution {
+    const structure = resolveEntryCreditStructure(intent)
+    if (!structure) {
+        return { status: "not_applicable" }
+    }
+
+    const requirements = resolveShortStrikeDeltaRequirements(structure)
+    if (!requirements) {
+        return {
+            status: "unresolvable",
+            reason: `${structure.structureType} legs do not expose the expected short strikes`,
+        }
+    }
+
+    const claims: ShortStrikeDeltaClaim[] = []
+    const missingFields: ShortStrikeDeltaField[] = []
+
+    for (const requirement of requirements) {
+        const claimedDelta = readFiniteNumber(intent.metadata?.[requirement.field])
+        if (claimedDelta === undefined) {
+            missingFields.push(requirement.field)
+            continue
+        }
+
+        claims.push({ ...requirement, claimedDelta })
+    }
+
+    if (missingFields.length > 0) {
+        return {
+            status: "missing",
+            missingFields,
+            symbols: requirements.map((requirement) => requirement.symbol),
+        }
+    }
+
+    return { status: "claimed", claims }
+}
+
+function resolveShortStrikeDeltaRequirements(
+    structure: ResolvedStructure
+): ShortStrikeDeltaRequirement[] | null {
+    const shortLegs = structure.legs.filter((leg) => leg.exposure === "short")
+
+    if (structure.structureType === "iron_condor") {
+        const shortCall = shortLegs.find((leg) => leg.optionType === "call")
+        const shortPut = shortLegs.find((leg) => leg.optionType === "put")
+        if (shortLegs.length !== 2 || !shortCall || !shortPut) {
+            return null
+        }
+
+        const [callField, putField] = SHORT_STRIKE_DELTA_FIELDS.iron_condor
+        return [
+            { field: callField, symbol: normalizeOptionSymbol(shortCall.instrument) },
+            { field: putField, symbol: normalizeOptionSymbol(shortPut.instrument) },
+        ]
+    }
+
+    if (shortLegs.length !== 1) {
+        return null
+    }
+
+    const [singleField] = SHORT_STRIKE_DELTA_FIELDS.credit_vertical
+    return [{ field: singleField, symbol: normalizeOptionSymbol(shortLegs[0]!.instrument) }]
+}
+
+function normalizeOptionSymbol(instrument: string): string {
+    return instrument.trim().toUpperCase()
 }
 
 function expiryValidationValidator(intent: OrderIntent) {

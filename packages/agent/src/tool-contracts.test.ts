@@ -33,6 +33,48 @@ describe("tool contracts", () => {
         }).success).toBe(false)
     })
 
+    it("requires structure-specific short-strike deltas on Alpaca credit entries", () => {
+        const alpacaOrder = getToolContract("propose_order", "alpaca-options")
+        const verticalLegs = [
+            { instrument: "SPY260805P00700000", side: "sell_to_open", quantity: 1 },
+            { instrument: "SPY260805P00699000", side: "buy_to_open", quantity: 1 },
+        ]
+        const condorLegs = [
+            ...verticalLegs,
+            { instrument: "SPY260805C00760000", side: "sell_to_open", quantity: 1 },
+            { instrument: "SPY260805C00761000", side: "buy_to_open", quantity: 1 },
+        ]
+        const baseProposal = {
+            instrument: "VS:BULL_PUT_CREDIT:SPY:2026-08-05:SPY260805P00699000|SPY260805P00700000",
+            side: "sell",
+            quantity: 1,
+            orderType: "limit",
+            limitPrice: 0.3,
+            timeInForce: "day",
+        }
+
+        expect(alpacaOrder.parameters.safeParse({
+            ...baseProposal,
+            legs: verticalLegs,
+        }).success).toBe(false)
+        expect(alpacaOrder.parameters.safeParse({
+            ...baseProposal,
+            legs: verticalLegs,
+            shortStrikeDelta: -0.18,
+        }).success).toBe(true)
+        expect(alpacaOrder.parameters.safeParse({
+            ...baseProposal,
+            legs: condorLegs,
+            shortStrikeDelta: -0.18,
+        }).success).toBe(false)
+        expect(alpacaOrder.parameters.safeParse({
+            ...baseProposal,
+            legs: condorLegs,
+            shortCallDelta: 0.17,
+            shortPutDelta: -0.18,
+        }).success).toBe(true)
+    })
+
     it("normalizes malformed boolean search strings before venue lookup", () => {
         const searchMarkets = getToolContract("search_markets", "polymarket")
 

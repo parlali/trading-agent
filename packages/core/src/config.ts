@@ -290,6 +290,7 @@ export const alpacaOptionsPolicySchema = baseStrategyPolicySchema.extend({
     maxSameThesisEntries: z.number().int().positive().optional(),
     minCreditToWidthPercent: z.number().positive().optional(),
     minCreditToSpreadRatio: z.number().positive().optional(),
+    shortStrikeDeltaCeiling: z.number().positive().max(1).optional(),
 })
 
 export type AlpacaOptionsPolicy = z.infer<typeof alpacaOptionsPolicySchema>
