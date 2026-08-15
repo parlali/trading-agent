@@ -742,8 +742,28 @@ export class OKXVenueAdapter implements VenueAdapter, PriceVerifier {
         instrument: string,
         price: number
     ): Promise<number> {
-        const rules = await this.getInstrumentRules(normalizeInstrument(instrument))
-        return roundToStep(price, rules.tickSize)
+        const instId = normalizeInstrument(instrument)
+        const rules = await this.getInstrumentRules(instId)
+        const normalized = roundToStep(price, rules.tickSize)
+
+        if (price > 0 && normalized <= 0) {
+            throw createExecutionError(
+                "pre_validation",
+                `OKX price ${price} for ${instId} does not survive tick-size normalization`,
+                {
+                    code: "PRICE_BELOW_TICK_RESOLUTION",
+                    retryable: false,
+                    details: {
+                        instId,
+                        price,
+                        tickSize: rules.tickSize,
+                        normalized,
+                    },
+                }
+            )
+        }
+
+        return normalized
     }
 
     async updateProtectionOrders(config: {

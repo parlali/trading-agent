@@ -3,6 +3,8 @@ import {
     type ExecutionCostAssessment,
 } from "@valiq-trading/core"
 
+const SUB_UNIT_MARK_PRICE_DECIMALS = 8
+
 export interface OKXMarketSnapshot {
     instrument: string
     bid: number
@@ -34,7 +36,7 @@ export function createOKXMarketContextLine(
         .sort((left, right) => left.instrument.localeCompare(right.instrument))
         .map((snapshot) => {
             const funding = formatFundingRate(snapshot.fundingRate)
-            return `${formatExecutionCostEvidence(snapshot.executionCost)}, mark ${snapshot.markPrice.toFixed(2)}, funding ${funding}`
+            return `${formatExecutionCostEvidence(snapshot.executionCost)}, mark ${formatMarkPrice(snapshot.markPrice)}, funding ${funding}`
         })
 
     return `Current OKX swap execution context: ${segments.join(" | ")}`
@@ -87,6 +89,21 @@ export function collectOKXSetupEvidence(
 
 function formatOptionalNumber(value: number | undefined): string {
     return value === undefined ? "n/a" : String(value)
+}
+
+function formatMarkPrice(price: number): string {
+    if (!Number.isFinite(price)) {
+        return "n/a"
+    }
+
+    if (Math.abs(price) >= 1) {
+        return price.toFixed(2)
+    }
+
+    return price
+        .toFixed(SUB_UNIT_MARK_PRICE_DECIMALS)
+        .replace(/0+$/, "")
+        .replace(/\.$/, "")
 }
 
 function formatFundingRate(rate: number): string {

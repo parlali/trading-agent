@@ -36,6 +36,9 @@ export interface CompositeOrderId {
     rawId: string
 }
 
+const MAX_STEP_DECIMALS = 100
+const STEP_ALIGNMENT_TOLERANCE = 1e-9
+
 const OKX_CLOSE_LONG_SUBTYPES = new Set(["5", "100", "125", "208", "274", "328"])
 const OKX_CLOSE_SHORT_SUBTYPES = new Set(["6", "101", "126", "209", "275", "329"])
 
@@ -218,18 +221,11 @@ export function toCompositeOrderId(
 }
 
 export function floorToStep(value: number, step: number): number {
-    if (!Number.isFinite(value) || !Number.isFinite(step) || step <= 0) {
-        return 0
-    }
-
-    const precision = countDecimals(step)
-    const normalized = Math.floor(value / step) * step
-    return Number(normalized.toFixed(precision))
+    return quantizeToStep(value, step, Math.floor)
 }
 
 export function roundToStep(value: number, step: number): number {
-    const precision = countDecimals(step)
-    return Number((Math.round(value / step) * step).toFixed(precision))
+    return quantizeToStep(value, step, Math.round)
 }
 
 export function firstDefinedNumber(...values: Array<string | undefined>): number | undefined {
@@ -371,13 +367,67 @@ export function normalizeInstrument(value: string): string {
     return value.trim().toUpperCase()
 }
 
+function quantizeToStep(
+    value: number,
+    step: number,
+    quantize: (steps: number) => number
+): number {
+    const decimals = resolveStepDecimals(step)
+
+    if (!Number.isFinite(value)) {
+        throw createExecutionError("pre_validation", `Cannot align non-finite value ${value} to OKX step ${step}`, {
+            code: "INVALID_STEP_VALUE",
+            retryable: false,
+            details: {
+                value,
+                step,
+            },
+        })
+    }
+
+    const steps = value / step
+    const nearestStep = Math.round(steps)
+    const alignedSteps = Math.abs(steps - nearestStep) <= STEP_ALIGNMENT_TOLERANCE * Math.max(1, Math.abs(steps))
+        ? nearestStep
+        : quantize(steps)
+
+    return Number((alignedSteps * step).toFixed(decimals))
+}
+
+function resolveStepDecimals(step: number): number {
+    const decimals = Number.isFinite(step) && step > 0 ? countDecimals(step) : undefined
+
+    if (decimals === undefined || decimals > MAX_STEP_DECIMALS) {
+        throw createExecutionError("pre_validation", `Unusable OKX step size ${step}`, {
+            code: "INVALID_STEP_SIZE",
+            retryable: false,
+            details: {
+                step,
+            },
+        })
+    }
+
+    return decimals
+}
+
 function countDecimals(value: number): number {
     const asString = value.toString()
-    const dotIndex = asString.indexOf(".")
+    const exponentIndex = asString.indexOf("e")
+
+    if (exponentIndex === -1) {
+        return countFractionDigits(asString)
+    }
+
+    const exponent = Number(asString.slice(exponentIndex + 1))
+    return Math.max(countFractionDigits(asString.slice(0, exponentIndex)) - exponent, 0)
+}
+
+function countFractionDigits(value: string): number {
+    const dotIndex = value.indexOf(".")
 
     if (dotIndex === -1) {
         return 0
     }
 
-    return asString.length - dotIndex - 1
+    return value.length - dotIndex - 1
 }
