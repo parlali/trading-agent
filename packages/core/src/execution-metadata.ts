@@ -20,6 +20,18 @@ export function orderSideForPositionSide(side: Position["side"]): "buy" | "sell"
     return side === "long" ? "buy" : "sell"
 }
 
+export function positionSideForOrderSide(
+    side: OrderIntent["side"],
+    opensPosition: boolean
+): Position["side"] {
+    const openedSide = side === "buy" ? "long" : "short"
+    if (opensPosition) {
+        return openedSide
+    }
+
+    return openedSide === "long" ? "short" : "long"
+}
+
 export function readPositionSide(value: unknown): Position["side"] | undefined {
     return value === "long" || value === "short"
         ? value

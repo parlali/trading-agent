@@ -36,7 +36,7 @@ interface NormalizedOptionLeg extends ParsedOptionContract {
     exposure: "long" | "short"
 }
 
-interface ResolvedStructure {
+export interface ResolvedStructure {
     structureType: AlpacaStructureType
     verticalSpreadType?: AlpacaVerticalSpreadType
     underlying: string
@@ -46,14 +46,30 @@ interface ResolvedStructure {
     legs: NormalizedOptionLeg[]
 }
 
+export interface AlpacaOptionLegPositionLike {
+    instrument: string
+    side: "long" | "short"
+}
+
+export interface AlpacaOptionLegStructureGroups<TPosition extends AlpacaOptionLegPositionLike> {
+    groups: Array<{ structure: ResolvedStructure; positions: TPosition[] }>
+    ungrouped: TPosition[]
+}
+
 interface OwnedOptionStructureRisk {
     structure: ResolvedStructure
     quantity: number
     maxLoss: number
 }
 
+interface OwnedStructureRiskOnly {
+    instrument: string
+    maxLoss: number
+}
+
 interface OwnedOptionStructureResolution {
     structures: OwnedOptionStructureRisk[]
+    riskOnlyStructures: OwnedStructureRiskOnly[]
     unevaluablePositions: string[]
 }
 
@@ -485,13 +501,6 @@ function maxSameThesisEntriesValidator(
     }
 
     const owned = resolveOwnedOptionStructuresForRisk(positions)
-    if (owned.unevaluablePositions.length > 0) {
-        return {
-            allowed: false,
-            reason: `Unable to evaluate owned Alpaca option structure thesis for ${owned.unevaluablePositions.join(", ")}`,
-        }
-    }
-
     const ownedCounts = countOwnedThesisStructures(owned.structures)
     const gateEvaluations = entrySignatures.map((signature) => {
         const postEntryCount = (ownedCounts.get(formatThesisSignatureKey(signature)) ?? 0) + entryQuantity
@@ -560,7 +569,8 @@ function maxAggregateRiskPercentValidator(
         }
     }
 
-    const ownedMaxLoss = owned.structures.reduce((sum, structure) => sum + structure.maxLoss, 0)
+    const ownedMaxLoss = [...owned.structures, ...owned.riskOnlyStructures]
+        .reduce((sum, structure) => sum + structure.maxLoss, 0)
     const aggregateMaxLoss = ownedMaxLoss + entryMaxLoss
     const aggregateRiskPercent = (aggregateMaxLoss / sliceEquity) * 100
     const gateEvaluation = createGateEvaluation({
@@ -906,29 +916,34 @@ function resolveEntryStructure(intent: OrderIntent): ResolvedStructure | null {
 
 function resolveOwnedOptionStructuresForRisk(positions: Position[]): OwnedOptionStructureResolution {
     const structures: OwnedOptionStructureRisk[] = []
+    const riskOnlyStructures: OwnedStructureRiskOnly[] = []
     const unevaluablePositions: string[] = []
     const consumedIndexes = new Set<number>()
     const consumedCanonicalInstruments = new Set<string>()
 
     positions.forEach((position, index) => {
         const normalizedInstrument = position.instrument.trim().toUpperCase()
-        const claim = parseClaimedStructureInstrument(normalizedInstrument)
-        if (!claim) {
-            if (normalizedInstrument.startsWith("IC:") || normalizedInstrument.startsWith("VS:")) {
-                unevaluablePositions.push(position.instrument)
-            }
+        if (!normalizedInstrument.startsWith("IC:") && !normalizedInstrument.startsWith("VS:")) {
             return
         }
 
-        const resolved = buildOwnedStructureRiskFromClaimedPosition(position, claim)
-        if (!resolved) {
-            unevaluablePositions.push(position.instrument)
-            return
-        }
-
-        structures.push(resolved)
         consumedIndexes.add(index)
-        consumedCanonicalInstruments.add(normalizedInstrument)
+        const claim = parseClaimedStructureInstrument(normalizedInstrument)
+        const resolved = claim ? buildOwnedStructureRiskFromClaimedPosition(position, claim) : null
+        if (resolved) {
+            structures.push(resolved)
+            consumedCanonicalInstruments.add(normalizedInstrument)
+            return
+        }
+
+        const riskOnly = resolveOwnedStructureRiskFromMetadataWidth(position)
+        if (riskOnly) {
+            riskOnlyStructures.push(riskOnly)
+            consumedCanonicalInstruments.add(normalizedInstrument)
+            return
+        }
+
+        unevaluablePositions.push(position.instrument)
     })
 
     const claimGroups = new Map<string, Array<{ position: Position; index: number }>>()
@@ -948,10 +963,7 @@ function resolveOwnedOptionStructuresForRisk(positions: Position[]): OwnedOption
             return
         }
 
-        const claim = parseClaimedStructureInstrument(normalizedClaimInstrument)
-        if (!claim) {
-            unevaluablePositions.push(position.instrument)
-            consumedIndexes.add(index)
+        if (!parseClaimedStructureInstrument(normalizedClaimInstrument)) {
             return
         }
 
@@ -966,26 +978,155 @@ function resolveOwnedOptionStructuresForRisk(positions: Position[]): OwnedOption
             ? buildOwnedStructureRiskFromClaimGroup(claim, entries.map((entry) => entry.position))
             : null
 
-        if (resolved) {
-            structures.push(resolved)
-        } else {
-            unevaluablePositions.push(...entries.map((entry) => entry.position.instrument))
+        if (!resolved) {
+            continue
         }
 
+        structures.push(resolved)
         for (const entry of entries) {
             consumedIndexes.add(entry.index)
         }
     }
 
-    const remainingRawOptionPositions = positions
-        .map((position, index) => ({ position, index }))
-        .filter((entry) => !consumedIndexes.has(entry.index) && Boolean(parseOptionContractSymbol(entry.position.instrument)))
-        .map((entry) => entry.position.instrument)
+    const remainingLegPositions = positions.filter((position, index) =>
+        !consumedIndexes.has(index) && Boolean(parseOptionContractSymbol(position.instrument))
+    )
+    const derived = deriveAlpacaOptionLegStructures(remainingLegPositions)
+
+    for (const group of derived.groups) {
+        const resolved = buildOwnedStructureRiskFromLegs(group.structure, group.positions)
+        if (resolved) {
+            structures.push(resolved)
+        } else {
+            unevaluablePositions.push(...group.positions.map((position) => position.instrument))
+        }
+    }
 
     return {
         structures,
-        unevaluablePositions: [...unevaluablePositions, ...remainingRawOptionPositions],
+        riskOnlyStructures,
+        unevaluablePositions: [
+            ...unevaluablePositions,
+            ...derived.ungrouped.map((position) => position.instrument),
+        ],
     }
+}
+
+export function deriveAlpacaOptionLegStructures<TPosition extends AlpacaOptionLegPositionLike>(
+    positions: readonly TPosition[]
+): AlpacaOptionLegStructureGroups<TPosition> {
+    const buckets = new Map<string, TPosition[]>()
+    const unparsedPositions: TPosition[] = []
+
+    for (const position of positions) {
+        const parsed = parseOptionContractSymbol(position.instrument)
+        if (!parsed) {
+            unparsedPositions.push(position)
+            continue
+        }
+
+        const bucketKey = `${parsed.underlying}:${parsed.expiration}`
+        const bucket = buckets.get(bucketKey) ?? []
+        bucket.push(position)
+        buckets.set(bucketKey, bucket)
+    }
+
+    const groups: AlpacaOptionLegStructureGroups<TPosition>["groups"] = []
+    const ungrouped: TPosition[] = []
+
+    for (const bucket of buckets.values()) {
+        let unused = [...bucket]
+
+        if (unused.length === 4) {
+            const structure = resolveStructureFromLegPositions(unused)
+            if (structure?.structureType === "iron_condor") {
+                groups.push({ structure, positions: unused })
+                unused = []
+            }
+        }
+
+        while (unused.length >= 2) {
+            const vertical = findVerticalLegPositionGroup(unused)
+            if (!vertical) {
+                break
+            }
+
+            groups.push(vertical)
+            unused = unused.filter((position) => !vertical.positions.includes(position))
+        }
+
+        ungrouped.push(...unused)
+    }
+
+    return {
+        groups,
+        ungrouped: [...ungrouped, ...unparsedPositions],
+    }
+}
+
+function findVerticalLegPositionGroup<TPosition extends AlpacaOptionLegPositionLike>(
+    positions: readonly TPosition[]
+): { structure: ResolvedStructure; positions: TPosition[] } | null {
+    for (let leftIndex = 0; leftIndex < positions.length - 1; leftIndex++) {
+        for (let rightIndex = leftIndex + 1; rightIndex < positions.length; rightIndex++) {
+            const candidate = [positions[leftIndex]!, positions[rightIndex]!]
+            const structure = resolveStructureFromLegPositions(candidate)
+            if (structure?.structureType === "credit_vertical") {
+                return { structure, positions: candidate }
+            }
+        }
+    }
+
+    return null
+}
+
+function resolveStructureFromLegPositions<TPosition extends AlpacaOptionLegPositionLike>(
+    positions: readonly TPosition[]
+): ResolvedStructure | null {
+    if (!SUPPORTED_LEG_COUNTS.has(positions.length)) {
+        return null
+    }
+
+    const legs: NormalizedOptionLeg[] = []
+    for (const position of positions) {
+        const instrument = position.instrument.trim().toUpperCase()
+        const parsed = parseOptionContractSymbol(instrument)
+        if (!parsed) {
+            return null
+        }
+
+        legs.push(toNormalizedClaimLeg({ ...parsed, instrument }, position.side))
+    }
+
+    const first = legs[0]!
+    const sharedContract = legs.every((leg) =>
+        leg.underlying === first.underlying && leg.expiration === first.expiration
+    )
+
+    return sharedContract ? resolveStructureFromNormalizedLegs(legs) : null
+}
+
+function resolveOwnedStructureRiskFromMetadataWidth(position: Position): OwnedStructureRiskOnly | null {
+    const width = readFiniteNumber(position.metadata?.spreadWidth)
+    const quantity = readPositiveIntegerQuantity(position.quantity)
+    const entryPrice = readNonNegativeFiniteNumber(position.entryPrice)
+    if (width === undefined || width <= 0 || quantity === null || entryPrice === null) {
+        return null
+    }
+
+    const maxLoss = estimateMaxLossFromWidthAndPrice({
+        width,
+        netPrice: entryPrice,
+        quantity,
+        side: position.side === "long" ? "buy" : "sell",
+    })
+
+    return maxLoss === null
+        ? null
+        : {
+            instrument: position.instrument,
+            maxLoss,
+        }
 }
 
 function buildOwnedStructureRiskFromClaimedPosition(
@@ -1036,6 +1177,13 @@ function buildOwnedStructureRiskFromClaimGroup(
         }
     }
 
+    return buildOwnedStructureRiskFromLegs(structure, positions)
+}
+
+function buildOwnedStructureRiskFromLegs(
+    structure: ResolvedStructure,
+    positions: Position[]
+): OwnedOptionStructureRisk | null {
     const quantity = readSharedStructureQuantity(positions)
     const entryPrice = calculateNetStructureEntryPrice(positions)
     if (quantity === null || entryPrice === null) {

@@ -1956,3 +1956,130 @@ describe("ExecutionPipeline execution-cost gating", () => {
         expect(submitOrder).toHaveBeenCalledTimes(1)
     })
 })
+
+describe("ExecutionPipeline duplicate entry guard", () => {
+    function createUsdJpyShortEntry(): OrderIntent {
+        return {
+            instrument: "USDJPY",
+            side: "sell",
+            quantity: 0.04,
+            orderType: "market",
+            timeInForce: "ioc",
+            metadata: {
+                action: "entry",
+            },
+        }
+    }
+
+    function createOpenedShort(providerPositionId: string): Position {
+        return {
+            instrument: "USDJPY",
+            providerPositionId,
+            side: "short",
+            quantity: 0.04,
+            entryPrice: 159.257,
+            currentPrice: 159.257,
+        }
+    }
+
+    it("blocks a second identical entry while provider truth still shows the first position open", async () => {
+        const providerPositions: Position[] = []
+        const submitOrder = vi.fn(async (intent: OrderIntent) => {
+            providerPositions.push(createOpenedShort(`185351${providerPositions.length + 1}`))
+            return {
+                orderId: `vmte0${providerPositions.length}`,
+                status: "filled" as const,
+                filledQuantity: intent.quantity,
+                fillPrice: 159.257,
+                timestamp: Date.now(),
+            }
+        })
+        const pipeline = createPipeline({
+            venue: {
+                ...createVenue(),
+                getPositions: async () => providerPositions.map((position) => ({ ...position })),
+                submitOrder,
+            },
+            venueName: "mt5",
+            ownershipScope: {
+                instruments: new Set(["USDJPY"]),
+                positionKeys: new Set(["USDJPY:1850537541"]),
+                workingOrderIds: new Set<string>(),
+            },
+        })
+
+        const first = await pipeline.executeIntent(createUsdJpyShortEntry(), account, [])
+        expect(first.result.status).toBe("filled")
+
+        expect(await pipeline.getPositions()).toEqual([])
+
+        const second = await pipeline.executeIntent(createUsdJpyShortEntry(), account, [])
+
+        expect(submitOrder).toHaveBeenCalledTimes(1)
+        expect(second.result.status).toBe("rejected")
+        expect(second.validation.allowed).toBe(false)
+        expect(second.result.error).toContain("Duplicate entry")
+        expect(providerPositions).toHaveLength(1)
+    })
+
+    it("allows a re-entry once provider truth no longer shows the first position", async () => {
+        const providerPositions: Position[] = []
+        const submitOrder = vi.fn(async (intent: OrderIntent) => ({
+            orderId: `vmte0${submitOrder.mock.calls.length}`,
+            status: "filled" as const,
+            filledQuantity: intent.quantity,
+            fillPrice: 159.257,
+            timestamp: Date.now(),
+        }))
+        const pipeline = createPipeline({
+            venue: {
+                ...createVenue(),
+                getPositions: async () => providerPositions.map((position) => ({ ...position })),
+                submitOrder,
+            },
+            venueName: "mt5",
+        })
+
+        providerPositions.push(createOpenedShort("1853516220"))
+        const first = await pipeline.executeIntent(createUsdJpyShortEntry(), account, [])
+        expect(first.result.status).toBe("filled")
+
+        providerPositions.length = 0
+        const second = await pipeline.executeIntent(createUsdJpyShortEntry(), account, [])
+
+        expect(submitOrder).toHaveBeenCalledTimes(2)
+        expect(second.result.status).toBe("filled")
+    })
+
+    it("fails closed when provider position truth cannot be read before a repeat entry", async () => {
+        const submitOrder = vi.fn(async (intent: OrderIntent) => ({
+            orderId: "vmte01",
+            status: "filled" as const,
+            filledQuantity: intent.quantity,
+            fillPrice: 159.257,
+            timestamp: Date.now(),
+        }))
+        let positionsReadable = true
+        const pipeline = createPipeline({
+            venue: {
+                ...createVenue(),
+                getPositions: async () => {
+                    if (!positionsReadable) {
+                        throw new Error("FiveSocket positions unavailable")
+                    }
+                    return []
+                },
+                submitOrder,
+            },
+            venueName: "mt5",
+        })
+
+        await pipeline.executeIntent(createUsdJpyShortEntry(), account, [])
+        positionsReadable = false
+        const second = await pipeline.executeIntent(createUsdJpyShortEntry(), account, [])
+
+        expect(submitOrder).toHaveBeenCalledTimes(1)
+        expect(second.result.status).toBe("rejected")
+        expect(second.result.error).toContain("could not be read")
+    })
+})

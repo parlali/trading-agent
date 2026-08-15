@@ -637,6 +637,176 @@ describe("order lifecycle persistence", () => {
         expect((await pipeline.getOrderSnapshot("filled-entry-1"))?.status).toBe("filled")
     })
 
+    it("resolves the MT5 position id from the owned position book when canonical state lacks it", async () => {
+        const persistence = createMemoryOrderPersistence()
+        const modifyOrder = vi.fn(async (orderId: string, _changes, context) => {
+            expect(orderId).toBe("position-7")
+            expect(context?.operationTarget).toBe("position")
+            expect(context?.providerPositionId).toBe("position-7")
+            return {
+                orderId,
+                providerOrderId: "filled-entry-1",
+                status: "filled" as const,
+                filledQuantity: 1,
+                fillPrice: 100,
+                timestamp: 12,
+                intentUpdates: {
+                    metadata: {
+                        providerPositionId: orderId,
+                    },
+                },
+            }
+        })
+        const pipeline = new ExecutionPipeline({
+            venue: {
+                ...createFilledLifecycleVenue(),
+                getPositions: async () => [
+                    {
+                        instrument: "GBPUSD",
+                        providerPositionId: "position-7",
+                        side: "long",
+                        quantity: 1,
+                        entryPrice: 100,
+                    },
+                    {
+                        instrument: "GBPUSD",
+                        providerPositionId: "position-8",
+                        side: "short",
+                        quantity: 1,
+                        entryPrice: 100,
+                    },
+                ],
+                submitOrder: async () => ({
+                    orderId: "filled-entry-1",
+                    status: "filled",
+                    filledQuantity: 1,
+                    fillPrice: 100,
+                    timestamp: 10,
+                }),
+                modifyOrder,
+            },
+            venueName: "mt5",
+            policy: {
+                dryRun: false,
+                safety: {
+                    account: {
+                        allocationPercent: 100,
+                    },
+                },
+            },
+            riskValidators: [allowIntent],
+            logger: createLogger({ minLevel: "fatal" }),
+            orderPersistence: persistence.adapter,
+            runId: "run-5",
+            strategyId: "strategy-1",
+        })
+
+        await pipeline.executeIntent(
+            {
+                instrument: "GBPUSD",
+                side: "buy",
+                quantity: 1,
+                orderType: "market",
+                timeInForce: "day",
+                metadata: {
+                    action: "entry",
+                },
+            },
+            account,
+            []
+        )
+
+        const result = await pipeline.modifyOrder("filled-entry-1", {
+            metadata: {
+                stopLoss: 1.35090,
+            },
+        }, "trail the winner")
+
+        expect(modifyOrder).toHaveBeenCalledTimes(1)
+        expect(result.errorDetail).toBeUndefined()
+        expect(result.status).toBe("filled")
+
+        const snapshot = await pipeline.getOrderSnapshot("filled-entry-1")
+        expect(snapshot?.intent.metadata?.providerPositionId).toBe("position-7")
+        expect(snapshot?.intent.metadata?.stopLoss).toBe(1.35090)
+    })
+
+    it("fails closed when two owned same-side positions match an MT5 order without a provider position id", async () => {
+        const persistence = createMemoryOrderPersistence()
+        const modifyOrder = vi.fn(async (): Promise<never> => {
+            throw new Error("provider mutation should not run")
+        })
+        const pipeline = new ExecutionPipeline({
+            venue: {
+                ...createFilledLifecycleVenue(),
+                getPositions: async () => [
+                    {
+                        instrument: "GBPUSD",
+                        providerPositionId: "position-7",
+                        side: "long",
+                        quantity: 1,
+                        entryPrice: 100,
+                    },
+                    {
+                        instrument: "GBPUSD",
+                        providerPositionId: "position-9",
+                        side: "long",
+                        quantity: 1,
+                        entryPrice: 101,
+                    },
+                ],
+                submitOrder: async () => ({
+                    orderId: "filled-entry-1",
+                    status: "filled",
+                    filledQuantity: 1,
+                    fillPrice: 100,
+                    timestamp: 10,
+                }),
+                modifyOrder,
+            },
+            venueName: "mt5",
+            policy: {
+                dryRun: false,
+                safety: {
+                    account: {
+                        allocationPercent: 100,
+                    },
+                },
+            },
+            riskValidators: [allowIntent],
+            logger: createLogger({ minLevel: "fatal" }),
+            orderPersistence: persistence.adapter,
+            runId: "run-6",
+            strategyId: "strategy-1",
+        })
+
+        await pipeline.executeIntent(
+            {
+                instrument: "GBPUSD",
+                side: "buy",
+                quantity: 1,
+                orderType: "market",
+                timeInForce: "day",
+                metadata: {
+                    action: "entry",
+                },
+            },
+            account,
+            []
+        )
+
+        const result = await pipeline.modifyOrder("filled-entry-1", {
+            metadata: {
+                stopLoss: 1.35090,
+            },
+        }, "trail the winner")
+
+        expect(modifyOrder).not.toHaveBeenCalled()
+        expect(result.errorDetail?.code).toBe("MT5_MODIFY_POSITION_AMBIGUOUS")
+        expect(result.errorDetail?.details?.providerPositionIds).toEqual(["position-7", "position-9"])
+        expect(result.status).toBe("filled")
+    })
+
     it("fails closed before MT5 modify when canonical lifecycle status is ambiguous", async () => {
         const persistence = createMemoryOrderPersistence()
         const modifyOrder = vi.fn(async (): Promise<never> => {

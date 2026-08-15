@@ -416,6 +416,148 @@ describe("alpaca structure validator", () => {
     })
 })
 
+describe("alpaca owned-structure thesis resolution", () => {
+    const thesisPolicy = {
+        ...maxLossPolicy,
+        maxLossPerPlay: 250,
+        maxSameThesisEntries: 2,
+    }
+
+    it("accepts an entry while the book owns a legacy structure without thesis metadata", () => {
+        const result = validateRiskWithState(
+            createNvdaBearCallIntent({
+                limitPrice: 0.63,
+            }),
+            thesisPolicy,
+            createAccountState(50_000),
+            [createLegacyOwnedStructurePosition()]
+        )
+
+        expect(result.allowed).toBe(true)
+    })
+
+    it("accepts an entry while the book owns unclaimed provider legs of another thesis", () => {
+        const result = validateRiskWithState(
+            createNvdaBearCallIntent({
+                limitPrice: 0.63,
+            }),
+            thesisPolicy,
+            createAccountState(50_000),
+            createOwnedBearCallLegPositions({
+                quantity: 8,
+                netCredit: 0.63,
+                shortStrike: 195,
+                longStrike: 197.5,
+                claimed: false,
+            })
+        )
+
+        expect(result.allowed).toBe(true)
+    })
+
+    it("still rejects same-thesis stacking built from unclaimed provider legs", () => {
+        const result = validateRiskWithState(
+            createNvdaBearCallIntent({
+                limitPrice: 0.63,
+            }),
+            thesisPolicy,
+            createAccountState(50_000),
+            createOwnedBearCallLegPositions({
+                quantity: 8,
+                netCredit: 0.63,
+                claimed: false,
+            })
+        )
+
+        expect(result.allowed).toBe(false)
+        expect(result.reason).toContain("Same Alpaca options thesis")
+        expect(result.reason).toContain("owned 8")
+    })
+
+    it("rejects an entry that cannot state its own thesis even when owned structures are legacy", () => {
+        const thesisValidator = alpacaRiskValidators[4]!
+        const result = thesisValidator(
+            {
+                instrument: "NVDA",
+                side: "sell",
+                quantity: 1,
+                orderType: "limit",
+                limitPrice: 0.63,
+                timeInForce: "day",
+                legs: [
+                    {
+                        instrument: "NVDA-BEAR-CALL-SPREAD",
+                        side: "sell_to_open",
+                        quantity: 1,
+                    },
+                    {
+                        instrument: "NVDA-BEAR-CALL-HEDGE",
+                        side: "buy_to_open",
+                        quantity: 1,
+                    },
+                ],
+            },
+            thesisPolicy,
+            createAccountState(50_000),
+            [createLegacyOwnedStructurePosition()]
+        )
+
+        expect(result.allowed).toBe(false)
+        expect(result.reason).toContain("Unable to determine Alpaca entry structure thesis")
+    })
+
+    it("counts legacy structure max loss in the aggregate cap and fails closed on unmeasurable legs", () => {
+        const entry = createNvdaBearCallIntent({
+            limitPrice: 0.63,
+        })
+        const legacyPosition = createLegacyOwnedStructurePosition()
+
+        const rejected = validateRiskWithState(
+            entry,
+            {
+                ...thesisPolicy,
+                maxAggregateRiskPercent: 0.5,
+            },
+            createAccountState(50_000),
+            [legacyPosition]
+        )
+
+        expect(rejected.allowed).toBe(false)
+        expect(rejected.reason).toContain("Aggregate Alpaca options max loss")
+        expect(rejected.reason).toContain("owned $200, entry $187")
+
+        const allowed = validateRiskWithState(
+            entry,
+            {
+                ...thesisPolicy,
+                maxAggregateRiskPercent: 1,
+            },
+            createAccountState(50_000),
+            [legacyPosition]
+        )
+
+        expect(allowed.allowed).toBe(true)
+
+        const nakedLeg = createOwnedBearCallLegPositions({
+            quantity: 1,
+            netCredit: 0.63,
+            claimed: false,
+        })[0]!
+        const unmeasurable = validateRiskWithState(
+            entry,
+            {
+                ...thesisPolicy,
+                maxAggregateRiskPercent: 5,
+            },
+            createAccountState(50_000),
+            [nakedLeg]
+        )
+
+        expect(unmeasurable.allowed).toBe(false)
+        expect(unmeasurable.reason).toContain("Unable to evaluate owned Alpaca option max loss")
+    })
+})
+
 describe("alpaca short-strike delta ceiling", () => {
     const deltaCeilingPolicy = {
         ...maxLossPolicy,
@@ -630,12 +772,15 @@ function createOwnedBearCallPosition(args: {
 function createOwnedBearCallLegPositions(args: {
     quantity: number
     netCredit: number
+    shortStrike?: number
+    longStrike?: number
+    claimed?: boolean
 }): Position[] {
     const legs = createBearCallLegs({
         underlying: "NVDA",
         expiration: "2026-07-31",
-        shortStrike: 202.5,
-        longStrike: 205,
+        shortStrike: args.shortStrike ?? 202.5,
+        longStrike: args.longStrike ?? 205,
         action: "entry",
     })
     const claimInstrument = buildCreditVerticalInstrumentFromLegs(
@@ -644,6 +789,11 @@ function createOwnedBearCallLegPositions(args: {
         "bear_call_credit",
         legs
     )
+    const metadata = args.claimed === false
+        ? undefined
+        : {
+            alpacaClaimInstrument: claimInstrument,
+        }
     const shortLeg = legs[0]!
     const longLeg = legs[1]!
     const longEntryPrice = 0.17
@@ -656,9 +806,7 @@ function createOwnedBearCallLegPositions(args: {
             side: "short",
             quantity: args.quantity,
             entryPrice: shortEntryPrice,
-            metadata: {
-                alpacaClaimInstrument: claimInstrument,
-            },
+            metadata,
         },
         {
             instrument: longLeg.instrument,
@@ -666,11 +814,22 @@ function createOwnedBearCallLegPositions(args: {
             side: "long",
             quantity: args.quantity,
             entryPrice: longEntryPrice,
-            metadata: {
-                alpacaClaimInstrument: claimInstrument,
-            },
+            metadata,
         },
     ]
+}
+
+function createLegacyOwnedStructurePosition(): Position {
+    return {
+        instrument: "VS:BEAR_CALL_CREDIT:NVDA:2026-07-31",
+        providerPositionId: "legacy-nvda-bear-call",
+        side: "short",
+        quantity: 1,
+        entryPrice: 0.5,
+        metadata: {
+            spreadWidth: 2.5,
+        },
+    }
 }
 
 function createBearCallLegs(args: {

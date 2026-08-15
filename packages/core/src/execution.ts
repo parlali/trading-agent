@@ -46,6 +46,7 @@ import type {
     VenueAdapter,
 } from "./execution-contracts"
 import {
+    positionSideForOrderSide,
     withLifecycleAction,
 } from "./execution-metadata"
 import {
@@ -85,7 +86,11 @@ import {
     reconcileOwnedInstrumentsFromSnapshots,
     updateOwnedInstrumentsFromResult,
 } from "./execution-ownership"
-import { createOrderOperationContext } from "./execution-order-operation-context"
+import {
+    createOrderOperationContext,
+    resolveSnapshotPositionIdentity,
+} from "./execution-order-operation-context"
+import { resolveProviderPositionId } from "./provider-position-key"
 
 export * from "./dry-run-ledger"
 export * from "./price-verification"
@@ -114,6 +119,33 @@ export type {
 
 const ALLOWED_VALIDATION: ValidationResult = { allowed: true }
 
+const RUNTIME_DUPLICATE_ENTRY_WINDOW_MS = 15 * 60 * 1000
+
+interface RuntimeEntryExposure {
+    canonicalOrderId: string
+    instrument: string
+    heldSide: Position["side"]
+    openedAt: number
+}
+
+type ModifyOrderDispatch = {
+    providerId: string
+    context: OrderOperationContext
+    errorDetail?: undefined
+} | {
+    providerId?: undefined
+    context?: undefined
+    errorDetail: NonNullable<ExecutionResult["errorDetail"]>
+}
+
+function isSingleLegIntent(intent: OrderIntent): boolean {
+    return !intent.legs || intent.legs.length === 0
+}
+
+function buildRuntimeEntryExposureKey(instrument: string, heldSide: Position["side"]): string {
+    return `${instrument}:${heldSide}`
+}
+
 export class ExecutionPipeline {
     private venue: VenueAdapter
     private venueName: string
@@ -132,6 +164,7 @@ export class ExecutionPipeline {
     private dryRunBook: DryRunExecutionBook
     private orderIdentitySequences = new Map<string, number>()
     private runtimeCommitUnknownBlockedInstruments = new Set<string>()
+    private runtimeEntryExposures = new Map<string, RuntimeEntryExposure>()
     private executionSafetyFaultRecorder?: ExecutionSafetyFaultRecorder
     private orderOperationLock?: ExecutionOrderOperationLock
     private reservedSubmitAttemptIds = new Set<string>()
@@ -193,10 +226,16 @@ export class ExecutionPipeline {
         this.logger.info("Order intent received", { intent: intentWithLifecycleMetadata, action: lifecycleContext.action })
         void this.tradeEventLogger?.logIntent(this.runId, this.strategyId, intentWithLifecycleMetadata)
 
-        const runtimeBlockValidation = this.validateRuntimeCommitUnknownBlock(
+        const commitUnknownBlockValidation = this.validateRuntimeCommitUnknownBlock(
             intentWithLifecycleMetadata,
             lifecycleContext.action
         )
+        const runtimeBlockValidation = commitUnknownBlockValidation.allowed
+            ? await this.validateRuntimeDuplicateEntryBlock(
+                intentWithLifecycleMetadata,
+                lifecycleContext.action
+            )
+            : commitUnknownBlockValidation
         if (!runtimeBlockValidation.allowed) {
             const errorDetail = createExecutionErrorDetail(
                 "risk_engine",
@@ -297,6 +336,7 @@ export class ExecutionPipeline {
                 lifecycleContext.metadata
             )
             this.rememberSubmitAttemptSnapshot(handle?.snapshot)
+            this.rememberEntryExposure(finalIntent, lifecycleContext.action, mockResult)
             updateOwnedInstrumentsFromResult(this.ownedInstruments, lifecycleContext.action, finalIntent.instrument, mockResult)
             this.dryRunBook.netPosition(
                 finalIntent.instrument,
@@ -346,6 +386,7 @@ export class ExecutionPipeline {
         if (preparedHandle) {
             preparedHandle.snapshot = updatedSnapshot
         }
+        this.rememberEntryExposure(finalIntent, lifecycleContext.action, resultWithVerification)
         updateOwnedInstrumentsFromResult(this.ownedInstruments, lifecycleContext.action, finalIntent.instrument, resultWithVerification)
         return { result: resultWithVerification, validation, handle: preparedHandle }
     }
@@ -497,7 +538,7 @@ export class ExecutionPipeline {
             }
         }
 
-        const dispatch = this.resolveModifyOrderDispatch(orderId, providerOrderId, existing)
+        const dispatch = await this.resolveModifyOrderDispatch(orderId, providerOrderId, existing)
 
         if (dispatch.errorDetail) {
             const validation: ValidationResult = {
@@ -567,19 +608,11 @@ export class ExecutionPipeline {
         return resultWithIntentUpdates
     }
 
-    private resolveModifyOrderDispatch(
+    private async resolveModifyOrderDispatch(
         requestedOrderId: string,
         providerOrderId: string,
         existing: OrderSnapshot | null
-    ): {
-        providerId: string
-        context: OrderOperationContext
-        errorDetail?: undefined
-    } | {
-        providerId?: undefined
-        context?: undefined
-        errorDetail: NonNullable<ExecutionResult["errorDetail"]>
-    } {
+    ): Promise<ModifyOrderDispatch> {
         if (this.venueName !== "mt5") {
             return {
                 providerId: providerOrderId,
@@ -635,29 +668,14 @@ export class ExecutionPipeline {
         }
 
         if (context.operationTarget === "position") {
-            if (!context.providerPositionId) {
+            if (context.providerPositionId) {
                 return {
-                    errorDetail: createExecutionErrorDetail(
-                        "pre_validation",
-                        `MT5 position stop update for ${existing.orderId} requires provider position identity`,
-                        {
-                            code: "MT5_MODIFY_POSITION_ID_MISSING",
-                            retryable: false,
-                            details: {
-                                requestedOrderId,
-                                canonicalOrderId: existing.orderId,
-                                providerOrderId: existing.providerOrderId,
-                                orderStatus: existing.status,
-                            },
-                        }
-                    ),
+                    providerId: context.providerPositionId,
+                    context,
                 }
             }
 
-            return {
-                providerId: context.providerPositionId,
-                context,
-            }
+            return await this.resolveModifyPositionIdentityFromBook(requestedOrderId, existing, context)
         }
 
         return {
@@ -676,6 +694,97 @@ export class ExecutionPipeline {
                     },
                 }
             ),
+        }
+    }
+
+    private async resolveModifyPositionIdentityFromBook(
+        requestedOrderId: string,
+        existing: OrderSnapshot,
+        context: OrderOperationContext
+    ): Promise<ModifyOrderDispatch> {
+        let positions: Position[]
+        try {
+            positions = await this.getPositions()
+        } catch (error) {
+            return {
+                errorDetail: createExecutionErrorDetail(
+                    "pre_validation",
+                    `MT5 position stop update for ${existing.orderId} could not read the owned position book: ${getErrorMessage(error)}`,
+                    {
+                        code: "MT5_MODIFY_POSITION_BOOK_UNAVAILABLE",
+                        retryable: true,
+                        details: {
+                            requestedOrderId,
+                            canonicalOrderId: existing.orderId,
+                            instrument: existing.instrument,
+                        },
+                    }
+                ),
+            }
+        }
+
+        const resolution = resolveSnapshotPositionIdentity({
+            snapshot: existing,
+            positions,
+        })
+
+        if (resolution.outcome === "ambiguous") {
+            return {
+                errorDetail: createExecutionErrorDetail(
+                    "pre_validation",
+                    `MT5 position stop update for ${existing.orderId} matched ${resolution.candidates.length} owned ${existing.instrument} ${resolution.heldSide} positions and cannot select one`,
+                    {
+                        code: "MT5_MODIFY_POSITION_AMBIGUOUS",
+                        retryable: false,
+                        details: {
+                            requestedOrderId,
+                            canonicalOrderId: existing.orderId,
+                            instrument: existing.instrument,
+                            heldSide: resolution.heldSide,
+                            ownedQuantity: existing.filledQuantity,
+                            providerPositionIds: resolution.candidates.map((position) =>
+                                resolveProviderPositionId(position)
+                            ),
+                        },
+                    }
+                ),
+            }
+        }
+
+        if (resolution.outcome === "not_found") {
+            return {
+                errorDetail: createExecutionErrorDetail(
+                    "pre_validation",
+                    `MT5 position stop update for ${existing.orderId} requires provider position identity`,
+                    {
+                        code: "MT5_MODIFY_POSITION_ID_MISSING",
+                        retryable: false,
+                        details: {
+                            requestedOrderId,
+                            canonicalOrderId: existing.orderId,
+                            providerOrderId: existing.providerOrderId,
+                            orderStatus: existing.status,
+                            instrument: existing.instrument,
+                            heldSide: resolution.heldSide,
+                        },
+                    }
+                ),
+            }
+        }
+
+        this.logger.info("Resolved MT5 position identity for stop update from the owned position book", {
+            canonicalOrderId: existing.orderId,
+            instrument: existing.instrument,
+            heldSide: resolution.heldSide,
+            providerPositionId: resolution.providerPositionId,
+        })
+
+        return {
+            providerId: resolution.providerPositionId,
+            context: {
+                ...context,
+                providerPositionId: resolution.providerPositionId,
+            },
         }
     }
 
@@ -1151,6 +1260,74 @@ export class ExecutionPipeline {
     private rememberSubmitAttemptSnapshot(snapshot: OrderSnapshot | undefined | null): void {
         if (snapshot) {
             this.submitAttemptSnapshots.set(snapshot.orderId, snapshot)
+        }
+    }
+
+    private rememberEntryExposure(
+        intent: OrderIntent,
+        action: OrderLifecycleContext["action"],
+        result: ExecutionResult
+    ): void {
+        if (action !== "entry" || !isSingleLegIntent(intent)) {
+            return
+        }
+
+        if (result.status !== "pending" && result.status !== "partially_filled" && result.status !== "filled") {
+            return
+        }
+
+        const heldSide = positionSideForOrderSide(intent.side, true)
+        this.runtimeEntryExposures.set(buildRuntimeEntryExposureKey(intent.instrument, heldSide), {
+            canonicalOrderId: result.canonicalOrderId ?? result.orderId,
+            instrument: intent.instrument,
+            heldSide,
+            openedAt: Date.now(),
+        })
+    }
+
+    private async validateRuntimeDuplicateEntryBlock(
+        intent: OrderIntent,
+        action: OrderLifecycleContext["action"]
+    ): Promise<ValidationResult> {
+        if (action !== "entry" || !isSingleLegIntent(intent)) {
+            return ALLOWED_VALIDATION
+        }
+
+        const heldSide = positionSideForOrderSide(intent.side, true)
+        const exposureKey = buildRuntimeEntryExposureKey(intent.instrument, heldSide)
+        const previous = this.runtimeEntryExposures.get(exposureKey)
+        if (!previous) {
+            return ALLOWED_VALIDATION
+        }
+
+        if (Date.now() - previous.openedAt > RUNTIME_DUPLICATE_ENTRY_WINDOW_MS) {
+            this.runtimeEntryExposures.delete(exposureKey)
+            return ALLOWED_VALIDATION
+        }
+
+        let providerPositions: Position[]
+        try {
+            providerPositions = this.dryRun
+                ? this.dryRunBook.getPositions()
+                : await this.venue.getPositions()
+        } catch (error) {
+            return {
+                allowed: false,
+                reason: `Entry ${previous.canonicalOrderId} already opened ${intent.instrument} ${heldSide} exposure in this run and provider position truth could not be read to confirm it is closed: ${getErrorMessage(error)}`,
+            }
+        }
+
+        const liveExposure = providerPositions.some((position) =>
+            position.instrument === previous.instrument && position.side === previous.heldSide
+        )
+        if (!liveExposure) {
+            this.runtimeEntryExposures.delete(exposureKey)
+            return ALLOWED_VALIDATION
+        }
+
+        return {
+            allowed: false,
+            reason: `Duplicate entry: ${previous.canonicalOrderId} already opened ${intent.instrument} ${heldSide} exposure in this run and provider truth still shows that position open. Close it or size in through an adjustment instead of re-entering.`,
         }
     }
 

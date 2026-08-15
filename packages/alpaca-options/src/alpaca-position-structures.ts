@@ -6,10 +6,12 @@ import {
 import type { AlpacaPositionResponse } from "./alpaca-client"
 import {
     buildAlpacaStructureInstrumentFromLegs,
+    deriveAlpacaOptionLegStructures,
     parseClaimedStructureInstrument,
     type AlpacaStructureType,
     type AlpacaVerticalSpreadType,
     parseOptionContractSymbol,
+    type ResolvedStructure,
 } from "./risk-rules"
 
 export { parseClaimedStructureInstrument }
@@ -215,245 +217,13 @@ function groupEmergencyAlpacaClosePositions<TPosition extends PositionLike>(
         return []
     }
 
-    const derived = deriveProviderStructureGroups(positions)
+    const derived = deriveAlpacaOptionLegStructures(positions)
     return [
         ...derived.groups.map((group) =>
-            buildEmergencySyntheticClosePosition(group.entries, group.structure) as TPosition
+            buildEmergencySyntheticClosePosition(group.positions, group.structure) as TPosition
         ),
         ...derived.ungrouped,
     ]
-}
-
-type ProviderStructure = NonNullable<ReturnType<typeof resolveStructureFromProviderPositions>>
-
-function deriveProviderStructureGroups<TPosition extends PositionLike>(
-    positions: TPosition[]
-): { groups: Array<{ structure: ProviderStructure; entries: TPosition[] }>; ungrouped: TPosition[] } {
-    const buckets = new Map<string, TPosition[]>()
-    for (const position of positions) {
-        const parsed = parseOptionContractSymbol(position.instrument)
-        if (!parsed) {
-            buckets.set(position.instrument, [position])
-            continue
-        }
-
-        const bucketKey = `${parsed.underlying}:${parsed.expiration}`
-        const bucket = buckets.get(bucketKey) ?? []
-        bucket.push(position)
-        buckets.set(bucketKey, bucket)
-    }
-
-    const groups: Array<{ structure: ProviderStructure; entries: TPosition[] }> = []
-    const ungrouped: TPosition[] = []
-    for (const bucket of buckets.values()) {
-        let unused = [...bucket]
-
-        if (unused.length === 4) {
-            const structure = resolveStructureFromProviderPositions(unused)
-            if (structure?.structureType === "iron_condor") {
-                groups.push({ structure, entries: unused })
-                unused = []
-            }
-        }
-
-        while (unused.length >= 2) {
-            const vertical = findProviderStructureSubset(unused, 2)
-            if (!vertical) {
-                break
-            }
-
-            const structure = resolveStructureFromProviderPositions(vertical)
-            if (!structure || structure.structureType !== "credit_vertical") {
-                break
-            }
-
-            groups.push({ structure, entries: vertical })
-            unused = removeProviderPositions(unused, vertical)
-        }
-
-        ungrouped.push(...unused)
-    }
-
-    return { groups, ungrouped }
-}
-
-function findProviderStructureSubset<TPosition extends PositionLike>(
-    positions: TPosition[],
-    size: number
-): TPosition[] | null {
-    if (positions.length < size) {
-        return null
-    }
-
-    if (positions.length === size) {
-        return resolveStructureFromProviderPositions(positions) ? positions : null
-    }
-
-    const indexes = Array.from({ length: positions.length }, (_, index) => index)
-    const combinations = buildIndexCombinations(indexes, size)
-    for (const combination of combinations) {
-        const subset = combination.map((index) => positions[index]!)
-        if (resolveStructureFromProviderPositions(subset)) {
-            return subset
-        }
-    }
-
-    return null
-}
-
-function buildIndexCombinations(indexes: number[], size: number): number[][] {
-    if (size === 0) {
-        return [[]]
-    }
-
-    if (indexes.length < size) {
-        return []
-    }
-
-    if (size === 1) {
-        return indexes.map((index) => [index])
-    }
-
-    const combinations: number[][] = []
-    for (let index = 0; index <= indexes.length - size; index++) {
-        const head = indexes[index]!
-        const tailCombinations = buildIndexCombinations(indexes.slice(index + 1), size - 1)
-        for (const tail of tailCombinations) {
-            combinations.push([head, ...tail])
-        }
-    }
-
-    return combinations
-}
-
-function removeProviderPositions<TPosition extends PositionLike>(
-    positions: TPosition[],
-    remove: TPosition[]
-): TPosition[] {
-    const removeSet = new Set(remove)
-    return positions.filter((position) => !removeSet.has(position))
-}
-
-function resolveStructureFromProviderPositions<TPosition extends PositionLike>(
-    positions: TPosition[]
-): {
-    structureType: AlpacaStructureType
-    verticalSpreadType?: AlpacaVerticalSpreadType
-    underlying: string
-    expiration: string
-    legs: Array<{ instrument: string }>
-} | null {
-    if (positions.length !== 2 && positions.length !== 4) {
-        return null
-    }
-
-    const normalized = positions
-        .map((position) => {
-            const parsed = parseOptionContractSymbol(position.instrument)
-            if (!parsed) {
-                return null
-            }
-
-            return {
-                symbol: position.instrument.trim().toUpperCase(),
-                parsed,
-                exposure: position.side,
-            }
-        })
-        .filter((entry): entry is {
-            symbol: string
-            parsed: NonNullable<ReturnType<typeof parseOptionContractSymbol>>
-            exposure: "long" | "short"
-        } => Boolean(entry))
-
-    if (normalized.length !== positions.length) {
-        return null
-    }
-
-    const underlying = normalized[0]?.parsed.underlying
-    const expiration = normalized[0]?.parsed.expiration
-    const sharedContract = normalized.every((leg) =>
-        leg.parsed.underlying === underlying && leg.parsed.expiration === expiration
-    )
-    if (!underlying || !expiration || !sharedContract) {
-        return null
-    }
-
-    if (normalized.length === 4) {
-        const calls = normalized.filter((leg) => leg.parsed.optionType === "call")
-        const puts = normalized.filter((leg) => leg.parsed.optionType === "put")
-        if (calls.length !== 2 || puts.length !== 2) {
-            return null
-        }
-
-        const shortCall = calls.find((leg) => leg.exposure === "short")
-        const longCall = calls.find((leg) => leg.exposure === "long")
-        const shortPut = puts.find((leg) => leg.exposure === "short")
-        const longPut = puts.find((leg) => leg.exposure === "long")
-        if (!shortCall || !longCall || !shortPut || !longPut) {
-            return null
-        }
-
-        const validGeometry = (
-            longPut.parsed.strike < shortPut.parsed.strike &&
-            shortPut.parsed.strike < shortCall.parsed.strike &&
-            shortCall.parsed.strike < longCall.parsed.strike
-        )
-        if (!validGeometry) {
-            return null
-        }
-
-        return {
-            structureType: "iron_condor",
-            underlying,
-            expiration,
-            legs: normalized.map((leg) => ({
-                instrument: leg.symbol,
-            })),
-        }
-    }
-
-    const shorts = normalized.filter((leg) => leg.exposure === "short")
-    const longs = normalized.filter((leg) => leg.exposure === "long")
-    if (shorts.length !== 1 || longs.length !== 1) {
-        return null
-    }
-
-    const shortLeg = shorts[0]!
-    const longLeg = longs[0]!
-    if (shortLeg.parsed.optionType !== longLeg.parsed.optionType) {
-        return null
-    }
-
-    if (shortLeg.parsed.optionType === "call") {
-        if (shortLeg.parsed.strike >= longLeg.parsed.strike) {
-            return null
-        }
-
-        return {
-            structureType: "credit_vertical",
-            verticalSpreadType: "bear_call_credit",
-            underlying,
-            expiration,
-            legs: normalized.map((leg) => ({
-                instrument: leg.symbol,
-            })),
-        }
-    }
-
-    if (longLeg.parsed.strike >= shortLeg.parsed.strike) {
-        return null
-    }
-
-    return {
-        structureType: "credit_vertical",
-        verticalSpreadType: "bull_put_credit",
-        underlying,
-        expiration,
-        legs: normalized.map((leg) => ({
-            instrument: leg.symbol,
-        })),
-    }
 }
 
 function buildEmergencySyntheticClosePosition<TPosition extends PositionLike>(
@@ -1069,7 +839,7 @@ function resolveGroupFromRelaxedReference(
         return entry
     })
 
-    const matches = deriveProviderStructureGroups(entries).groups.filter((group) =>
+    const matches = deriveAlpacaOptionLegStructures(entries).groups.filter((group) =>
         matchesRelaxedCloseReference(group.structure, reference)
     )
     if (matches.length !== 1) {
@@ -1077,7 +847,7 @@ function resolveGroupFromRelaxedReference(
     }
 
     const match = matches[0]!
-    const quantity = Math.min(...match.entries.map((entry) => entry.quantity))
+    const quantity = Math.min(...match.positions.map((entry) => entry.quantity))
     if (!Number.isFinite(quantity) || quantity <= 0) {
         return null
     }
@@ -1088,7 +858,7 @@ function resolveGroupFromRelaxedReference(
         underlying: match.structure.underlying,
         expiration: match.structure.expiration,
         quantity,
-        positions: match.entries.map((entry) => rawByEntry.get(entry)!),
+        positions: match.positions.map((entry) => rawByEntry.get(entry)!),
     })
 }
 
@@ -1132,7 +902,7 @@ function parseRelaxedCloseReference(instrument: string): RelaxedCloseReference |
 }
 
 function matchesRelaxedCloseReference(
-    structure: ProviderStructure,
+    structure: ResolvedStructure,
     reference: RelaxedCloseReference
 ): boolean {
     if (reference.kind === "leg") {
