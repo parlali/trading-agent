@@ -2011,7 +2011,7 @@ describe("ExecutionPipeline duplicate entry guard", () => {
         const first = await pipeline.executeIntent(createUsdJpyShortEntry(), account, [])
         expect(first.result.status).toBe("filled")
 
-        expect(await pipeline.getPositions()).toEqual([])
+        expect(await pipeline.getPositions()).toEqual([createOpenedShort("1853511")])
 
         const second = await pipeline.executeIntent(createUsdJpyShortEntry(), account, [])
 

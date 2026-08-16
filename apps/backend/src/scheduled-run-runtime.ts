@@ -9,6 +9,7 @@ import type { Id, RunTrigger, StoredStrategy, StrategyMcpToolWhitelist } from "@
 import {
     ExecutionPipeline,
     buildRunSystemContextDigest,
+    collectForeignProviderPositionKeys,
     computeRecentTradeDigest,
     computeWeekEntryCounts,
     createEntryBudgetValidator,
@@ -168,7 +169,7 @@ export async function createScheduledRunRuntime(
         ])
     }
 
-    const ownershipScope = {
+    const ownershipScope: ProviderOwnershipScope = {
         instruments: new Set(ownershipScopeRow.instruments),
         positionKeys: new Set(ownershipScopeRow.positionKeys),
         workingOrderIds: new Set(ownershipScopeRow.workingOrderIds),
@@ -177,6 +178,12 @@ export async function createScheduledRunRuntime(
     const initialOwnedPositions = isDryRun
         ? initialPositions.filter((position) => !isDryRunAccountLedgerPosition(position))
         : filterPositionsByOwnershipScope(initialPositions, ownershipScope)
+    if (!isDryRun) {
+        ownershipScope.foreignPositionKeys = collectForeignProviderPositionKeys(
+            initialPositions,
+            initialOwnedPositions
+        )
+    }
     const initialOwnedWorkingOrders = filterWorkingOrdersByOwnershipScope(initialWorkingOrders, ownershipScope)
     const initialStrategyAccountState = isDryRun
         ? resolveDryRunAccountState({

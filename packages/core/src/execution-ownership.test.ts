@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest"
-import { reconcileOwnedInstrumentsFromSnapshots } from "./execution-ownership"
+import {
+    reconcileOwnedInstrumentsFromSnapshots,
+    reconcileOwnershipScopeFromSnapshot,
+} from "./execution-ownership"
 import type { OrderSnapshot } from "./orders"
+import type { ProviderOwnershipScope } from "./position-filter"
 
 function createSnapshot(overrides: Partial<OrderSnapshot> = {}): OrderSnapshot {
     return {
@@ -52,5 +56,60 @@ describe("execution ownership reconciliation", () => {
         reconcileOwnedInstrumentsFromSnapshots(ownedInstruments, previousSnapshot, currentSnapshot)
 
         expect(ownedInstruments.has("SPY260424P00650000")).toBe(true)
+    })
+
+    it("scopes an intra-run entry by exact key once the provider reports the position id", () => {
+        const scope: ProviderOwnershipScope = {
+            instruments: new Set(["XAUUSD"]),
+            positionKeys: new Set(["XAUUSD:1600700000"]),
+            workingOrderIds: new Set(),
+        }
+        const snapshot = createSnapshot({
+            instrument: "XAUUSD",
+            status: "filled",
+            filledQuantity: 2,
+            remainingQuantity: 0,
+            intent: {
+                instrument: "XAUUSD",
+                side: "buy",
+                quantity: 2,
+                orderType: "market",
+                timeInForce: "ioc",
+                metadata: {
+                    providerPositionId: "1830194335",
+                },
+            },
+        })
+
+        reconcileOwnershipScopeFromSnapshot(scope, snapshot)
+
+        expect(scope.positionKeys.has("XAUUSD:1830194335")).toBe(true)
+        expect(scope.instrumentFallbackUnlocks).toBeUndefined()
+    })
+
+    it("unlocks instrument fallback for an intra-run entry the provider does not key", () => {
+        const scope: ProviderOwnershipScope = {
+            instruments: new Set(["BTC-USDT-SWAP"]),
+            positionKeys: new Set(["BTC-USDT-SWAP:1600700000"]),
+            workingOrderIds: new Set(),
+        }
+        const snapshot = createSnapshot({
+            instrument: "BTC-USDT-SWAP",
+            status: "filled",
+            filledQuantity: 2,
+            remainingQuantity: 0,
+            intent: {
+                instrument: "BTC-USDT-SWAP",
+                side: "buy",
+                quantity: 2,
+                orderType: "market",
+                timeInForce: "ioc",
+            },
+        })
+
+        reconcileOwnershipScopeFromSnapshot(scope, snapshot)
+
+        expect(scope.instrumentFallbackUnlocks).toEqual(new Set(["BTC-USDT-SWAP"]))
+        expect(scope.positionKeys).toEqual(new Set(["BTC-USDT-SWAP:1600700000"]))
     })
 })

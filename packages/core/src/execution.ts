@@ -84,7 +84,10 @@ import { runExecutionPriceVerification } from "./execution-price-verification"
 import { validateCloseIntentInventory } from "./execution-close-inventory"
 import {
     reconcileOwnedInstrumentsFromSnapshots,
+    reconcileOwnershipScopeFromSnapshot,
+    releaseClosedPositionFromOwnershipScope,
     updateOwnedInstrumentsFromResult,
+    updateOwnershipScopeFromResult,
 } from "./execution-ownership"
 import {
     createOrderOperationContext,
@@ -199,9 +202,14 @@ export class ExecutionPipeline {
             config.venueName,
             (previousSnapshot, currentSnapshot) => {
                 reconcileOwnedInstrumentsFromSnapshots(this.ownedInstruments, previousSnapshot, currentSnapshot)
+                reconcileOwnershipScopeFromSnapshot(this.liveOwnershipScope(), currentSnapshot)
             },
             config.orderOperationLock
         )
+    }
+
+    private liveOwnershipScope(): ProviderOwnershipScope | null {
+        return this.dryRun ? null : this.ownershipScope
     }
 
     async executeIntent(
@@ -388,6 +396,7 @@ export class ExecutionPipeline {
         }
         this.rememberEntryExposure(finalIntent, lifecycleContext.action, resultWithVerification)
         updateOwnedInstrumentsFromResult(this.ownedInstruments, lifecycleContext.action, finalIntent.instrument, resultWithVerification)
+        updateOwnershipScopeFromResult(this.liveOwnershipScope(), lifecycleContext.action, finalIntent, resultWithVerification)
         return { result: resultWithVerification, validation, handle: preparedHandle }
     }
 
@@ -887,6 +896,7 @@ export class ExecutionPipeline {
                         0,
                     timestamp: Date.now(),
                 },
+                position,
             })
         }
 
@@ -920,6 +930,7 @@ export class ExecutionPipeline {
             dryRun: false,
             result,
             preparedHandle,
+            position,
         })
     }
 
@@ -1006,6 +1017,7 @@ export class ExecutionPipeline {
                     fillPrice: options.estimatedPrice ?? position.currentPrice ?? position.entryPrice,
                     timestamp: Date.now(),
                 },
+                position,
             })
         }
 
@@ -1041,6 +1053,7 @@ export class ExecutionPipeline {
             dryRun: false,
             result,
             preparedHandle,
+            position,
         })
     }
 
@@ -1063,6 +1076,7 @@ export class ExecutionPipeline {
         reason?: string
         dryRun: boolean
         preparedHandle?: TrackedOrderHandle
+        position?: Position
     }): Promise<ExecuteIntentResult> {
         void this.tradeEventLogger?.logSubmission(this.runId, this.strategyId, args.result, args.intent)
         const handle = args.preparedHandle ?? await this.lifecycleManager.registerSubmittedOrder(args.intent, args.result, "close", { reason: args.reason })
@@ -1076,6 +1090,13 @@ export class ExecutionPipeline {
             args.preparedHandle.snapshot = updatedSnapshot
         }
         updateOwnedInstrumentsFromResult(this.ownedInstruments, "close", args.instrument, args.result)
+        if (args.position) {
+            releaseClosedPositionFromOwnershipScope(this.liveOwnershipScope(), {
+                position: args.position,
+                closeQuantity: args.quantity,
+                result: args.result,
+            })
+        }
 
         if (args.dryRun) {
             this.dryRunBook.netPosition(

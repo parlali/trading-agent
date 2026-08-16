@@ -8,6 +8,8 @@ export interface ProviderOwnershipScope {
     instruments: Set<string>
     positionKeys: Set<string>
     workingOrderIds: Set<string>
+    instrumentFallbackUnlocks?: Set<string>
+    foreignPositionKeys?: Set<string>
 }
 
 export function filterPositionsByOwnership(
@@ -28,17 +30,49 @@ export function filterPositionsByOwnershipScope(
     positions: Position[],
     scope: ProviderOwnershipScope
 ): Position[] {
-    if (scope.positionKeys.size > 0) {
-        return positions.filter((position) =>
-            buildProviderPositionKeyAliases(position).some((key) => scope.positionKeys.has(key)) ||
-            (
-                scope.instruments.has(position.instrument) &&
-                !hasScopedPositionKeyForInstrument(scope, position.instrument)
-            )
-        )
+    return positions.filter((position) => {
+        const aliases = buildProviderPositionKeyAliases(position)
+        if (aliases.some((key) => scope.positionKeys.has(key))) {
+            return true
+        }
+
+        if (!scope.instruments.has(position.instrument)) {
+            return false
+        }
+
+        if (aliases.some((key) => scope.foreignPositionKeys?.has(key))) {
+            return false
+        }
+
+        return scope.positionKeys.size === 0 ||
+            allowsInstrumentFallback(scope, position.instrument)
+    })
+}
+
+export function collectForeignProviderPositionKeys(
+    providerPositions: Position[],
+    ownedPositions: Position[]
+): Set<string> {
+    const ownedKeys = new Set<string>()
+    for (const position of ownedPositions) {
+        for (const key of buildProviderPositionKeyAliases(position)) {
+            ownedKeys.add(key)
+        }
     }
 
-    return filterPositionsByOwnership(positions, scope.instruments)
+    const foreignKeys = new Set<string>()
+    for (const position of providerPositions) {
+        const aliases = buildProviderPositionKeyAliases(position)
+        if (aliases.some((key) => ownedKeys.has(key))) {
+            continue
+        }
+
+        for (const key of aliases) {
+            foreignKeys.add(key)
+        }
+    }
+
+    return foreignKeys
 }
 
 export function filterWorkingOrdersByOwnershipScope(
@@ -56,6 +90,14 @@ export function filterWorkingOrdersByOwnershipScope(
     }
 
     return filterWorkingOrdersByOwnership(orders, scope.instruments)
+}
+
+function allowsInstrumentFallback(
+    scope: ProviderOwnershipScope,
+    instrument: string
+): boolean {
+    return scope.instrumentFallbackUnlocks?.has(instrument) === true ||
+        !hasScopedPositionKeyForInstrument(scope, instrument)
 }
 
 function hasScopedPositionKeyForInstrument(
