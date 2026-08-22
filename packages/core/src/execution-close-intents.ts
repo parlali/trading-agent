@@ -10,6 +10,17 @@ export function resolveCloseOrderSide(position?: Pick<Position, "side">): "buy" 
     return position?.side === "long" ? "sell" : "buy"
 }
 
+function resolveCloseEstimatedPrice(args: {
+    options: ClosePositionOptions
+    position?: Position
+    venueEstimatedPrice?: number
+}): number | undefined {
+    return args.options.estimatedPrice ??
+        args.venueEstimatedPrice ??
+        args.position?.currentPrice ??
+        args.position?.entryPrice
+}
+
 export function buildClosePositionIntent(args: {
     instrument: string
     position?: Position
@@ -37,7 +48,11 @@ export function buildClosePositionIntent(args: {
                 providerPositionKey: args.position ? buildProviderPositionKey(args.position) : undefined,
                 entryPrice: args.position?.entryPrice ?? venueEntryPrice,
                 positionSide: args.position?.side ?? venuePositionSide,
-                estimatedPrice: args.options.estimatedPrice ?? venueEstimatedPrice,
+                estimatedPrice: resolveCloseEstimatedPrice({
+                    options: args.options,
+                    position: args.position,
+                    venueEstimatedPrice,
+                }),
             },
         }
     }
@@ -47,7 +62,7 @@ export function buildClosePositionIntent(args: {
         side: closeSide,
         quantity: args.options.quantity ?? args.position?.quantity ?? 0,
         orderType: "market",
-        timeInForce: "day",
+        timeInForce: "ioc",
         metadata: {
             ...args.position?.metadata,
             ...args.options.metadata,
@@ -57,7 +72,10 @@ export function buildClosePositionIntent(args: {
             providerPositionKey: args.position ? buildProviderPositionKey(args.position) : undefined,
             entryPrice: args.position?.entryPrice,
             positionSide: args.position?.side,
-            estimatedPrice: args.options.estimatedPrice,
+            estimatedPrice: resolveCloseEstimatedPrice({
+                options: args.options,
+                position: args.position,
+            }),
         },
     }
 }
@@ -82,7 +100,10 @@ export function buildProviderPositionCloseIntent(args: {
             providerPositionKey: buildProviderPositionKey(args.position),
             entryPrice: args.position.entryPrice,
             positionSide: args.position.side,
-            estimatedPrice: args.options.estimatedPrice ?? args.position.currentPrice ?? args.position.entryPrice,
+            estimatedPrice: resolveCloseEstimatedPrice({
+                options: args.options,
+                position: args.position,
+            }),
         },
     }
 }

@@ -119,22 +119,30 @@ export function createDryRunAccountLedgerPosition(args: {
 }
 
 export function resolveDryRunCurrentPrice(
+    positionSide: Position["side"],
     metadata?: Record<string, unknown>,
     result?: ExecutionResult
 ): number | undefined {
-    if (typeof result?.priceVerification?.livePrices.mid === "number") {
-        return result.priceVerification.livePrices.mid
+    const livePrices = result?.priceVerification?.livePrices
+    const executableExitPrice = positionSide === "long"
+        ? readPositiveFiniteNumber(livePrices?.bid)
+        : readPositiveFiniteNumber(livePrices?.ask)
+    if (executableExitPrice !== undefined) {
+        return executableExitPrice
     }
 
-    if (typeof metadata?.currentPrice === "number") {
-        return metadata.currentPrice
+    const mid = readPositiveFiniteNumber(livePrices?.mid)
+    if (mid !== undefined) {
+        return mid
     }
 
-    if (typeof metadata?.estimatedPrice === "number") {
-        return metadata.estimatedPrice
-    }
+    return readPositiveFiniteNumber(metadata?.currentPrice) ??
+        readPositiveFiniteNumber(metadata?.estimatedPrice)
+}
 
-    return undefined
+function readPositiveFiniteNumber(value: unknown): number | undefined {
+    const candidate = readFiniteNumber(value)
+    return candidate !== undefined && candidate > 0 ? candidate : undefined
 }
 
 export function resolveDryRunUnrealizedPnl(

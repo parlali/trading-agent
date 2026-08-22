@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from "vitest"
-import { createExecutionError, type OrderIntent } from "@valiq-trading/core"
+import {
+    createExecutionError,
+    createLogger,
+    ExecutionPipeline,
+    type OrderIntent,
+} from "@valiq-trading/core"
 import type { PolymarketClient, PolymarketMarket } from "./polymarket-client.ts"
 import {
     buildPolymarketFeeMetadata,
@@ -248,6 +253,94 @@ describe("PolymarketVenueAdapter.simulateDryRunOrder", () => {
         }), context)
         expect(rejected.status).toBe("rejected")
         expect(rejected.errorDetail?.code).toBe("POLYMARKET_DRY_RUN_INSUFFICIENT_DEPTH")
+    })
+
+    it("exits at the executable bid instead of the mark and rejects when the book is missing", async () => {
+        const client = createClient()
+        client.getOrderBook.mockResolvedValue(createOrderBook({
+            bids: [{ price: "0.59", size: "15" }],
+            asks: [{ price: "0.68", size: "15" }],
+            last_trade_price: "0.637",
+        }))
+        client.getFeeRateBps.mockResolvedValue(undefined)
+        client.getMarketBySlug.mockResolvedValue(null)
+        const venue = new PolymarketVenueAdapter(client.client)
+        const context = createIdentityContext("vpmc01exitbid")
+        const exitIntent = createPolymarketIntent({
+            side: "sell",
+            quantity: 15,
+            orderType: "market",
+            limitPrice: undefined,
+            timeInForce: "ioc",
+            metadata: {
+                ...createCanonicalOrderMetadata(),
+                action: "close",
+                estimatedPrice: 0.637,
+                currentPrice: 0.637,
+            },
+        })
+
+        const filled = await venue.simulateDryRunOrder(exitIntent, context)
+        expect(filled.status).toBe("filled")
+        expect(filled.fillPrice).toBeCloseTo(0.59, 10)
+
+        client.getOrderBook.mockResolvedValue(createOrderBook({
+            bids: [{ price: "0.59", size: "4" }],
+            last_trade_price: "0.637",
+        }))
+        const thinBook = await venue.simulateDryRunOrder(exitIntent, context)
+        expect(thinBook.status).toBe("rejected")
+        expect(thinBook.errorDetail?.code).toBe("POLYMARKET_DRY_RUN_INSUFFICIENT_DEPTH")
+
+        client.getOrderBook.mockRejectedValue(new Error("book unavailable"))
+        const missingBook = await venue.simulateDryRunOrder(exitIntent, context)
+        expect(missingBook.status).toBe("rejected")
+        expect(missingBook.errorDetail?.code).toBe("POLYMARKET_DRY_RUN_BOOK_UNAVAILABLE")
+    })
+
+    it("closes a dry-run pipeline position at the executable bid, not the quoted mark", async () => {
+        const client = createClient()
+        client.getOrderBook.mockResolvedValue(createOrderBook({
+            bids: [{ price: "0.59", size: "20" }],
+            asks: [{ price: "0.68", size: "20" }],
+            last_trade_price: "0.637",
+        }))
+        client.getFeeRateBps.mockResolvedValue(undefined)
+        client.getMarketBySlug.mockResolvedValue(null)
+        const pipeline = new ExecutionPipeline({
+            venue: new PolymarketVenueAdapter(client.client),
+            venueName: "polymarket",
+            policy: {
+                dryRun: true,
+                virtualCash: 1000,
+            },
+            logger: createLogger({ minLevel: "fatal" }),
+            runId: "run-polymarket-dry-run-exit",
+            strategyId: "PM-Macro",
+        })
+        pipeline.seedDryRunPositions([
+            {
+                instrument: "token-1-yes",
+                side: "long",
+                quantity: 10,
+                entryPrice: 0.5,
+                currentPrice: 0.637,
+                unrealizedPnl: 1.37,
+                metadata: createCanonicalOrderMetadata(),
+            },
+        ])
+
+        const { result } = await pipeline.closePosition("token-1-yes", "mandate exit", {
+            estimatedPrice: 0.637,
+        })
+
+        expect(result.status).toBe("filled")
+        expect(result.fillPrice).toBeCloseTo(0.59, 10)
+
+        const state = await pipeline.getAccountState()
+        expect(state.balance).toBeCloseTo(1000.9)
+        expect(state.dayPnl).toBeCloseTo(0.9)
+        expect(pipeline.getDryRunPositions()).toHaveLength(0)
     })
 })
 

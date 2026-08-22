@@ -78,6 +78,7 @@ import {
 } from "./execution-close-intents"
 import {
     DryRunExecutionBook,
+    resolveDryRunNetFill,
     simulateDryRunOrder,
 } from "./execution-dry-run"
 import { runExecutionPriceVerification } from "./execution-price-verification"
@@ -346,15 +347,11 @@ export class ExecutionPipeline {
             this.rememberSubmitAttemptSnapshot(handle?.snapshot)
             this.rememberEntryExposure(finalIntent, lifecycleContext.action, mockResult)
             updateOwnedInstrumentsFromResult(this.ownedInstruments, lifecycleContext.action, finalIntent.instrument, mockResult)
-            this.dryRunBook.netPosition(
-                finalIntent.instrument,
-                finalIntent.side,
-                finalIntent.quantity,
-                mockResult.fillPrice ?? 0,
-                lifecycleContext.action,
-                finalIntent.metadata,
-                mockResult
-            )
+            this.netDryRunFill(finalIntent, mockResult, {
+                instrument: finalIntent.instrument,
+                side: finalIntent.side,
+                action: lifecycleContext.action,
+            })
             return { result: mockResult, validation, handle }
         }
 
@@ -876,26 +873,10 @@ export class ExecutionPipeline {
                 instrument,
                 closeSide,
                 quantity: intent.quantity,
-                fallbackFillPrice: position?.currentPrice ?? position?.entryPrice ?? 0,
                 intent,
                 reason,
                 dryRun: true,
-                result: {
-                    orderId: submitContext.identity.canonicalOrderId,
-                    canonicalOrderId: submitContext.identity.canonicalOrderId,
-                    providerClientOrderId: submitContext.identity.providerClientOrderId,
-                    submitAttemptId: submitContext.identity.submitAttemptId,
-                    submitAttemptSequence: submitContext.identity.submitAttemptSequence,
-                    commitOutcome: "accepted",
-                    status: "filled",
-                    filledQuantity: intent.quantity,
-                    fillPrice:
-                        (intent.metadata?.estimatedPrice as number | undefined) ??
-                        position?.currentPrice ??
-                        position?.entryPrice ??
-                        0,
-                    timestamp: Date.now(),
-                },
+                result: await this.simulateDryRunCloseResult(intent, submitContext),
                 position,
             })
         }
@@ -924,7 +905,6 @@ export class ExecutionPipeline {
             instrument,
             closeSide,
             quantity: intent.quantity,
-            fallbackFillPrice: position?.currentPrice ?? position?.entryPrice ?? 0,
             intent,
             reason,
             dryRun: false,
@@ -1001,22 +981,10 @@ export class ExecutionPipeline {
                 instrument: position.instrument,
                 closeSide,
                 quantity: intent.quantity,
-                fallbackFillPrice: position.currentPrice ?? position.entryPrice,
                 intent,
                 reason,
                 dryRun: true,
-                result: {
-                    orderId: submitContext.identity.canonicalOrderId,
-                    canonicalOrderId: submitContext.identity.canonicalOrderId,
-                    providerClientOrderId: submitContext.identity.providerClientOrderId,
-                    submitAttemptId: submitContext.identity.submitAttemptId,
-                    submitAttemptSequence: submitContext.identity.submitAttemptSequence,
-                    commitOutcome: "accepted",
-                    status: "filled",
-                    filledQuantity: intent.quantity,
-                    fillPrice: options.estimatedPrice ?? position.currentPrice ?? position.entryPrice,
-                    timestamp: Date.now(),
-                },
+                result: await this.simulateDryRunCloseResult(intent, submitContext),
                 position,
             })
         }
@@ -1047,7 +1015,6 @@ export class ExecutionPipeline {
             instrument: position.instrument,
             closeSide,
             quantity: intent.quantity,
-            fallbackFillPrice: position.currentPrice ?? position.entryPrice,
             intent,
             reason,
             dryRun: false,
@@ -1070,7 +1037,6 @@ export class ExecutionPipeline {
         instrument: string
         closeSide: "buy" | "sell"
         quantity: number
-        fallbackFillPrice: number
         intent: OrderIntent
         result: ExecutionResult
         reason?: string
@@ -1099,18 +1065,70 @@ export class ExecutionPipeline {
         }
 
         if (args.dryRun) {
-            this.dryRunBook.netPosition(
-                args.instrument,
-                args.closeSide,
-                args.quantity,
-                args.result.fillPrice ?? args.fallbackFillPrice,
-                "close",
-                args.intent.metadata,
-                args.result
-            )
+            this.netDryRunFill(args.intent, args.result, {
+                instrument: args.instrument,
+                side: args.closeSide,
+                action: "close",
+            })
         }
 
         return { result: args.result, validation: ALLOWED_VALIDATION, handle }
+    }
+
+    private async simulateDryRunCloseResult(
+        intent: OrderIntent,
+        submitContext: SubmitOrderContext
+    ): Promise<ExecutionResult> {
+        try {
+            return normalizeExecutionResultIdentity(
+                await simulateDryRunOrder(this.venue, intent, submitContext),
+                submitContext.identity
+            )
+        } catch (error) {
+            const rejected = createRejectedExecutionResultFromUnknownError("", error)
+            this.logger.warn("Dry-run close simulation rejected", {
+                venue: this.venueName,
+                instrument: intent.instrument,
+                canonicalOrderId: submitContext.identity.canonicalOrderId,
+                error: rejected.error,
+            })
+            return normalizeExecutionResultIdentity(rejected, submitContext.identity)
+        }
+    }
+
+    private netDryRunFill(
+        intent: OrderIntent,
+        result: ExecutionResult,
+        fill: {
+            instrument: string
+            side: "buy" | "sell"
+            action: string
+        }
+    ): void {
+        const simulatedFill = resolveDryRunNetFill(result)
+        if (!simulatedFill) {
+            if (result.status !== "rejected") {
+                this.logger.warn("Dry-run fill skipped because the simulated result carries no executable fill", {
+                    venue: this.venueName,
+                    instrument: fill.instrument,
+                    canonicalOrderId: result.canonicalOrderId,
+                    status: result.status,
+                    fillPrice: result.fillPrice,
+                    filledQuantity: result.filledQuantity,
+                })
+            }
+            return
+        }
+
+        this.dryRunBook.netPosition(
+            fill.instrument,
+            fill.side,
+            simulatedFill.quantity,
+            simulatedFill.price,
+            fill.action,
+            intent.metadata,
+            result
+        )
     }
 
     private async createSubmitContext(

@@ -55,6 +55,32 @@ describe("DryRunExecutionBook close accounting", () => {
         expect(account.dayPnl).toBe(50)
     })
 
+    it("marks dry-run positions at the executable exit side rather than the midpoint", () => {
+        const book = new DryRunExecutionBook({ dryRun: true, dryRunInitialCash: 1_000 }, "run-1")
+
+        book.netPosition("token-yes", "buy", 10, 0.5, "entry", { tokenId: "token-yes" }, {
+            orderId: "dry-run-entry",
+            status: "filled",
+            filledQuantity: 10,
+            fillPrice: 0.5,
+            timestamp: Date.now(),
+            priceVerification: {
+                ok: true,
+                livePrices: {
+                    bid: 0.59,
+                    ask: 0.68,
+                    mid: 0.635,
+                },
+                message: "live prices captured",
+            },
+        })
+
+        const position = book.getPositions()[0]
+        expect(position?.currentPrice).toBe(0.59)
+        expect(position?.unrealizedPnl).toBeCloseTo(0.9)
+        expect(book.getAccountState().openPnl).toBeCloseTo(0.9)
+    })
+
     it("applies the option contract multiplier to raw OCC option symbols", () => {
         const book = new DryRunExecutionBook({ dryRun: true, dryRunInitialCash: 10_000 }, "run-1")
 

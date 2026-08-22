@@ -1402,6 +1402,116 @@ describe("ExecutionPipeline dry-run accounting", () => {
         })
     })
 
+    it("prices dry-run closes from the venue book simulator instead of the quoted mark", async () => {
+        const simulateDryRunOrder = vi.fn(async (intent: OrderIntent, context?: SubmitOrderContext) => ({
+            orderId: context?.identity.canonicalOrderId ?? "dry-run-close",
+            canonicalOrderId: context?.identity.canonicalOrderId,
+            providerClientOrderId: context?.identity.providerClientOrderId,
+            commitOutcome: "accepted" as const,
+            status: "filled" as const,
+            filledQuantity: intent.quantity,
+            fillPrice: 0.59,
+            timestamp: Date.now(),
+        }))
+        const venue = {
+            ...createVenue(),
+            simulateDryRunOrder,
+        }
+        const pipeline = createPipeline({
+            venue,
+            policy: {
+                dryRun: true,
+                virtualCash: 1000,
+            },
+            runId: "run-dry-close-book",
+        })
+
+        pipeline.seedDryRunPositions([
+            {
+                instrument: "token-yes",
+                side: "long",
+                quantity: 10,
+                entryPrice: 0.5,
+                currentPrice: 0.637,
+                unrealizedPnl: 1.37,
+                metadata: {
+                    tokenId: "token-yes",
+                },
+            },
+        ])
+
+        const { result } = await pipeline.closePosition("token-yes", "mandate exit", {
+            estimatedPrice: 0.637,
+        })
+
+        expect(simulateDryRunOrder).toHaveBeenCalledTimes(1)
+        expect(result.status).toBe("filled")
+        expect(result.fillPrice).toBe(0.59)
+
+        const state = await pipeline.getAccountState()
+        expect(state.balance).toBeCloseTo(1000.9)
+        expect(state.equity).toBeCloseTo(1000.9)
+        expect(state.dayPnl).toBeCloseTo(0.9)
+        expect(pipeline.getDryRunPositions()).toHaveLength(0)
+    })
+
+    it("leaves the dry-run book untouched when the venue simulator cannot fill the close", async () => {
+        const venue = {
+            ...createVenue(),
+            simulateDryRunOrder: vi.fn(async () => ({
+                orderId: "",
+                status: "rejected" as const,
+                filledQuantity: 0,
+                timestamp: Date.now(),
+                error: "Polymarket dry-run book cannot fill 10",
+                errorDetail: {
+                    source: "venue" as const,
+                    message: "Polymarket dry-run book cannot fill 10",
+                    code: "POLYMARKET_DRY_RUN_INSUFFICIENT_DEPTH",
+                    retryable: true,
+                },
+            })),
+        }
+        const pipeline = createPipeline({
+            venue,
+            policy: {
+                dryRun: true,
+                virtualCash: 1000,
+            },
+            runId: "run-dry-close-no-depth",
+        })
+
+        pipeline.seedDryRunPositions([
+            {
+                instrument: "token-yes",
+                side: "long",
+                quantity: 10,
+                entryPrice: 0.5,
+                currentPrice: 0.637,
+                unrealizedPnl: 1.37,
+                metadata: {
+                    tokenId: "token-yes",
+                },
+            },
+        ])
+
+        const { result } = await pipeline.closePosition("token-yes", "mandate exit", {
+            estimatedPrice: 0.637,
+        })
+
+        expect(result.status).toBe("rejected")
+        expect(result.filledQuantity).toBe(0)
+        expect(result.errorDetail?.code).toBe("POLYMARKET_DRY_RUN_INSUFFICIENT_DEPTH")
+
+        const positions = pipeline.getDryRunPositions()
+        expect(positions).toHaveLength(1)
+        expect(positions[0]?.quantity).toBe(10)
+
+        const state = await pipeline.getAccountState()
+        expect(state.balance).toBeCloseTo(995)
+        expect(state.dayPnl).toBeCloseTo(1.37)
+    })
+
     it("rejects a stale Polymarket dry-run close after auto-flatten consumed the position", async () => {
         const position: Position = {
             instrument: "token-war-funding-no",

@@ -535,8 +535,48 @@ export class PolymarketVenueAdapter implements VenueAdapter, PriceVerifier, DryR
         intent: OrderIntent,
         canonical: { tokenId: string; conditionId?: string; marketSlug?: string }
     ): Promise<{ fillPrice: number } | { rejection: ExecutionErrorDetail }> {
-        const book = await this.client.getOrderBook(canonical.tokenId)
-        const levels = (intent.side === "buy" ? book.asks : book.bids)
+        let book: PolymarketOrderBook
+        try {
+            book = await this.client.getOrderBook(canonical.tokenId)
+        } catch (error) {
+            return {
+                rejection: createExecutionErrorDetail(
+                    "venue",
+                    `Polymarket dry-run cannot price ${intent.side} ${intent.quantity} without an order book snapshot`,
+                    {
+                        code: "POLYMARKET_DRY_RUN_BOOK_UNAVAILABLE",
+                        retryable: true,
+                        details: {
+                            tokenId: canonical.tokenId,
+                            conditionId: canonical.conditionId,
+                            marketSlug: canonical.marketSlug,
+                            error: error instanceof Error ? error.message : String(error),
+                        },
+                    }
+                ),
+            }
+        }
+
+        const executableSide = intent.side === "buy" ? book.asks : book.bids
+        if (!Array.isArray(executableSide)) {
+            return {
+                rejection: createExecutionErrorDetail(
+                    "venue",
+                    `Polymarket dry-run order book snapshot for ${canonical.tokenId} has no ${intent.side === "buy" ? "ask" : "bid"} side`,
+                    {
+                        code: "POLYMARKET_DRY_RUN_BOOK_UNAVAILABLE",
+                        retryable: true,
+                        details: {
+                            tokenId: canonical.tokenId,
+                            conditionId: canonical.conditionId,
+                            marketSlug: canonical.marketSlug,
+                        },
+                    }
+                ),
+            }
+        }
+
+        const levels = executableSide
             .map((level) => ({ price: Number(level.price), size: Number(level.size) }))
             .filter((level) =>
                 Number.isFinite(level.price) &&

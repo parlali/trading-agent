@@ -15,6 +15,7 @@ import {
     orderSideForPositionSide,
     readNumber,
 } from "./execution-metadata"
+import { FILLED_ORDER_STATUSES } from "./order-types"
 import { createExecutionErrorDetail, createExecutionError, formatExecutionError } from "./utils"
 
 export class DryRunExecutionBook {
@@ -91,7 +92,7 @@ export class DryRunExecutionBook {
             }
             this.applyFillFee(fillFee)
             this.cashAdjustment += resolveDryRunCashDelta(side, quantity, fillPrice, multiplier)
-            const currentPrice = resolveDryRunCurrentPrice(metadata, result) ?? fillPrice
+            const currentPrice = resolveDryRunCurrentPrice(positionSide, metadata, result) ?? fillPrice
             this.positions.set(instrument, {
                 instrument,
                 side: positionSide,
@@ -109,7 +110,7 @@ export class DryRunExecutionBook {
             this.cashAdjustment += resolveDryRunCashDelta(side, quantity, fillPrice, existingMultiplier)
             const totalQty = existing.quantity + quantity
             const avgEntry = (existing.quantity * existing.entryPrice + quantity * fillPrice) / totalQty
-            const currentPrice = resolveDryRunCurrentPrice(metadata, result) ?? existing.currentPrice
+            const currentPrice = resolveDryRunCurrentPrice(existing.side, metadata, result) ?? existing.currentPrice
             this.positions.set(instrument, {
                 ...existing,
                 quantity: totalQty,
@@ -138,7 +139,7 @@ export class DryRunExecutionBook {
             if (netQty === 0) {
                 this.positions.delete(instrument)
             } else if (netQty > 0) {
-                const currentPrice = resolveDryRunCurrentPrice(metadata, result) ?? existing.currentPrice
+                const currentPrice = resolveDryRunCurrentPrice(existing.side, metadata, result) ?? existing.currentPrice
                 const remainingSide = orderSideForPositionSide(existing.side)
                 this.positions.set(instrument, {
                     ...existing,
@@ -159,7 +160,7 @@ export class DryRunExecutionBook {
                 })
             } else {
                 const flippedQty = Math.abs(netQty)
-                const currentPrice = resolveDryRunCurrentPrice(metadata, result) ?? fillPrice
+                const currentPrice = resolveDryRunCurrentPrice(positionSide, metadata, result) ?? fillPrice
                 this.positions.set(instrument, {
                     instrument,
                     side: positionSide,
@@ -268,6 +269,21 @@ export async function simulateDryRunOrder(
         fillPrice,
         timestamp: Date.now(),
     }
+}
+
+export function resolveDryRunNetFill(result: ExecutionResult): { price: number; quantity: number } | undefined {
+    if (!FILLED_ORDER_STATUSES.includes(result.status)) {
+        return undefined
+    }
+
+    const price = readPositiveNumber(result.fillPrice)
+    const quantity = readPositiveNumber(result.filledQuantity)
+    return price !== undefined && quantity !== undefined ? { price, quantity } : undefined
+}
+
+function readPositiveNumber(value: unknown): number | undefined {
+    const candidate = readNumber(value)
+    return candidate !== undefined && candidate > 0 ? candidate : undefined
 }
 
 function hasDryRunOrderSimulator(venue: VenueAdapter): venue is VenueAdapter & DryRunOrderSimulator {
