@@ -175,6 +175,30 @@ describe("alpaca structure validator", () => {
         expect(wideLiveSpread.reason).toContain("floor 1.5x")
     })
 
+    it("rejects Alpaca credit entries below the per-contract credit floor", () => {
+        const policy = {
+            ...maxLossPolicy,
+            minCreditPerContract: 0.2,
+        }
+
+        const pennyCredit = validateRisk(createIwmBullPutIntent(0.15), policy)
+        expect(pennyCredit.allowed).toBe(false)
+        expect(pennyCredit.reason).toContain("credit per contract $0.15")
+        expect(pennyCredit.reason).toContain("floor $0.2")
+
+        const payingCredit = validateRisk(createIwmBullPutIntent(0.25), policy)
+        expect(payingCredit.allowed).toBe(true)
+
+        const gateDisabled = validateRisk(createIwmBullPutIntent(0.15), maxLossPolicy)
+        expect(gateDisabled.allowed).toBe(true)
+
+        const cheapClose = validateRisk(
+            { ...createNvdaBearCallCloseIntent(), limitPrice: 0.05 },
+            policy
+        )
+        expect(cheapClose.allowed).toBe(true)
+    })
+
     it("accepts 2-leg credit vertical closes and normalizes top-level side to buy", () => {
         const result = validate({
             instrument: "SPY",

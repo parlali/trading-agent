@@ -599,7 +599,8 @@ function minCreditEntryValidator(
     const policy = alpacaOptionsPolicySchema.parse(rawPolicy)
     if (
         policy.minCreditToWidthPercent === undefined &&
-        policy.minCreditToSpreadRatio === undefined
+        policy.minCreditToSpreadRatio === undefined &&
+        policy.minCreditPerContract === undefined
     ) {
         return { allowed: true }
     }
@@ -618,6 +619,24 @@ function minCreditEntryValidator(
     }
 
     const gateEvaluations: GateEvaluation[] = []
+
+    if (policy.minCreditPerContract !== undefined) {
+        const gateEvaluation = createGateEvaluation({
+            gateKey: "alpacaOptions.minCreditPerContract",
+            observed: netCredit,
+            threshold: policy.minCreditPerContract,
+            comparison: "min",
+            tolerance: CREDIT_GATE_EPSILON,
+        })
+        gateEvaluations.push(gateEvaluation)
+
+        if (netCredit + CREDIT_GATE_EPSILON < policy.minCreditPerContract) {
+            return rejectRiskWithGateEvaluations(
+                `Alpaca entry credit per contract ${formatCurrency(netCredit)} is below policy floor ${formatCurrency(policy.minCreditPerContract)}`,
+                gateEvaluations
+            )
+        }
+    }
 
     if (policy.minCreditToWidthPercent !== undefined) {
         const narrowestWidth = Math.min(...structure.sideSpreadWidths)
